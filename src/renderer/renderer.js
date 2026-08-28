@@ -1551,7 +1551,7 @@ let updatePaneTimer = null;
 function renderUpdateStateHtml(st) {
   let status;
   if (st.npm) status = _t('up_npm_mode');
-  else if (st.error) status = '⚠ ' + st.error;
+  else   if (st.npm) status = '\u26A0\uFE0E ' + st.error;
   else if (st.downloaded) status = _t('up_downloaded') + ' (v' + (st.version || '?') + ')';
   else if (st.progress) status = _t('up_downloading') + ' %' + st.progress.percent;
   else if (st.checking) status = _t('up_checking');
@@ -1559,7 +1559,7 @@ function renderUpdateStateHtml(st) {
   else if (st.available === false) status = _t('up_uptodate');
   else status = '—';
 
-  return `<div class="usage-stat" style="margin-top:10px"><div class="us-label">${_t('up_status')}</div><div class="us-value" style="font-size:14px">${escapeHtml(status)}</div></div>`;
+  return `<div class="usage-stat" id="upStatusBox"><div class="us-label">${_t('up_status')}</div><div class="us-value" style="font-size:14px">${escapeHtml(status)}</div></div>`;
 }
 
 async function renderUpdatePane() {
@@ -1607,16 +1607,13 @@ beast-agent update</pre></div>`
     if (!r.ok && r.error) toast(r.error);
   });
 
-  /* indirme ilerlemesi için sekme açıkken canlı tazele */
+  /* indirme ilerlemesi için sekme açıkken canlı tazele — YALNIZ durum kutusu */
   updatePaneTimer = setInterval(() => {
     if ($('#tab-update').hidden || els.settingsOverlay.hidden) { clearInterval(updatePaneTimer); return; }
     beast.updateStatus().then((s) => {
       if (!s) return;
-      const box = pane.querySelector('.us-value');
-      if (box) {
-        const wrap = pane.querySelector('.usage-stat');
-        if (wrap) wrap.outerHTML = renderUpdateStateHtml(s);
-      }
+      const box = pane.querySelector('#upStatusBox');
+      if (box) box.outerHTML = renderUpdateStateHtml(s);
     }).catch(() => {});
   }, 1000);
 }

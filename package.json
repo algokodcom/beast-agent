@@ -36,8 +36,8 @@
         "postpublish": "node scripts/swap-electron.js devdeps"
     },
     "devDependencies": {
-        "electron": "40.10.2",
-        "electron-builder": "^26.15.3"
+        "electron-builder": "^26.15.3",
+        "electron": "40.10.2"
     },
     "dependencies": {
         "@pdf-lib/fontkit": "^1.1.1",

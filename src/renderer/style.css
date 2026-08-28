@@ -1102,6 +1102,25 @@ body.browser-open #toast { left: calc((100vw - var(--bw, 480px)) / 2); }
   color: var(--muted);
   padding: 0 12px 10px;
 }
+/* sekme listesi: küçük ekranda taşarsa içeride kayar — alt kısım (Beast Kodu + Kapat) sabit kalır */
+.set-tabs-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 2px;
+  margin: 0 -2px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+.set-tabs-list::-webkit-scrollbar { width: 8px; }
+.set-tabs-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 8px; }
+.set-tabs-list::-webkit-scrollbar-thumb:hover { background: var(--muted); }
+.set-tabs-list::-webkit-scrollbar-track { background: transparent; }
+@media (max-height: 860px) {
+  #setTabs { padding: 10px 8px; }
+  .set-tabs-title { padding: 0 12px 6px; }
+  #setTabs .tab { padding: 6px 12px; font-size: 12.5px; margin-bottom: 1px; }
+}
 #setTabs .tab {
   text-align: left;
   padding: 9px 12px;

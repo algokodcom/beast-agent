@@ -957,9 +957,12 @@ async function tryWaSlash(jid, rawText, senderNum) {
         ? `*${cmd === 'deny' ? 'Reddedildi' : 'Onaylandı'}:* ${r.tool}${always ? ' — bu araç için bir daha sorulmayacak' : ''}`
         : 'Bekleyen onay yok.';
     } else if (cmd === 'update') {
-      /* /update — sürüm kontrol; /update now — indirileni kur */
+      /* /update — sürüm kontrol; /update now — indirileni kur (npm modunda kendini günceller) */
       if (String(arg || '').toLowerCase() === 'now') {
-        if (updateState.downloaded && autoUpdater) {
+        if (isNpmMode()) {
+          out = '*Kendimi güncelliyorum* — kapanıp yeniden açılacağım.';
+          setTimeout(() => npmSelfUpdate(), 1200);
+        } else if (updateState.downloaded && autoUpdater) {
           out = `*v${updateState.version} kuruluyor* — uygulama yeniden başlayacak.`;
           setTimeout(() => { try { autoUpdater.quitAndInstall(); } catch {} }, 1200);
         } else {
@@ -2665,7 +2668,10 @@ ipcMain.handle('agent:send', (_e, { sessionId, text }) => {
     const a = t.slice(7).trim().toLowerCase();
     updateReplies.sids.add(String(sessionId || ''));
     if (a === 'now') {
-      if (updateState.downloaded && autoUpdater) {
+      if (isNpmMode()) {
+        desktopEcho(sessionId, t, '*Kendimi güncelliyorum* — kapanıp yeniden açılacağım.');
+        setTimeout(() => npmSelfUpdate(), 1200);
+      } else if (updateState.downloaded && autoUpdater) {
         desktopEcho(sessionId, t, `*v${updateState.version} kuruluyor* — uygulama yeniden başlayacak.`);
         setTimeout(() => { try { autoUpdater.quitAndInstall(); } catch {} }, 1200);
       } else {
@@ -3230,8 +3236,31 @@ ipcMain.handle('update:check', async () => {
   return out;
 });
 
+/* npm kurulumunda KENDİ KENDİNİ GÜNCELLEME:
+   detached helper bırakır (uygulama çıkınca npm install + yeniden başlatma), sonra app.quit() */
+function npmSelfUpdate() {
+  try {
+    const electronExe = process.execPath;
+    const appPath = app.getAppPath();
+    if (process.platform === 'win32') {
+      const ps =
+        'Start-Sleep -Seconds 3;' +
+        'npm install -g beast-agent@latest;' +
+        'Start-Sleep -Seconds 1;' +
+        `Start-Process -FilePath '${electronExe}' -ArgumentList '\"${appPath}\"'`;
+      spawn('powershell.exe', ['-NoProfile', '-Command', ps], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
+    } else {
+      const sh = `sleep 3; npm install -g beast-agent@latest; sleep 1; '${electronExe}' '${appPath}' &`;
+      spawn('sh', ['-c', sh], { detached: true, stdio: 'ignore' }).unref();
+    }
+    log.info('main', 'npm self-update: helper bırakıldı, uygulama kapatılıyor');
+  } catch {}
+  setTimeout(() => { try { app.quit(); } catch {} }, 400);
+}
+
 ipcMain.handle('update:install', () => {
-  if (isNpmMode() || !autoUpdater) return { ok: false, error: 'updater kullanılamıyor' };
+  if (isNpmMode()) { npmSelfUpdate(); return { ok: true, npm: true }; }
+  if (!autoUpdater) return { ok: false, error: 'updater kullanılamıyor' };
   if (!updateState.downloaded) return { ok: false, error: 'indirilmiş sürüm yok — önce /update' };
   try { autoUpdater.quitAndInstall(); return { ok: true }; } catch (e) {
     return { ok: false, error: String((e && e.message) || e) };
@@ -3251,7 +3280,8 @@ ipcMain.handle('update:setAuto', (_e, cfg) => {
 /* /update komutu (masaüstü + WA): hedefi kaydet, kontrol başlat */
 async function runUpdateCommand(reply /* fn(text) */) {
   if (isNpmMode()) {
-    reply('npm kurulumu — güncellemek için:\n1) Uygulamayı kapat\n2) Terminalde: `beast-agent update`\n3) Tekrar: `beast-agent`');
+    reply('🔄 *Kendimi güncelliyorum* — kapanıp yeniden açılacağım, birazdan görüşürüz.');
+    setTimeout(() => npmSelfUpdate(), 1200);
     return;
   }
   if (!autoUpdater) {

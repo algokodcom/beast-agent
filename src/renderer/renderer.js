@@ -1582,8 +1582,10 @@ async function renderUpdatePane() {
       <label class="lock-row"><input type="checkbox" id="upAutoDl" ${st.autoDownload ? 'checked' : ''}/><span>${_t('up_auto_dl')}</span></label>
     </div>` +
     (st.npm
-      ? `<div class="codeblock npm" style="margin-top:10px"><pre># uygulamayı kapat, sonra:
-beast-agent update</pre></div>`
+      ? `<div class="form-grid" style="grid-template-columns:auto auto;gap:8px;margin-top:12px">
+          <button id="upInstall" class="btn ghost" ${st.available ? '' : 'disabled style="opacity:.45;cursor:default"'}>${_t('up_install_now')}</button>
+        </div>
+        <div class="sub" style="margin-top:8px">${_t('up_npm_note')}</div>`
       : `<div class="form-grid" style="grid-template-columns:auto auto;gap:8px;margin-top:12px">
           <button id="upCheck" class="btn ghost">${_t('up_check_now')}</button>
           <button id="upInstall" class="btn ghost" ${st.downloaded ? '' : 'disabled style="opacity:.45;cursor:default"'}>${_t('up_install_now')}</button>

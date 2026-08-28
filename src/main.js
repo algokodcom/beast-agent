@@ -1675,11 +1675,8 @@ if (!gotLock) {
   app.quit();
 } else {
   app.on('second-instance', () => {
-    if (win) {
-      if (win.isMinimized()) win.restore();
-      win.show();
-      win.focus();
-    }
+    /* ikinci `beast-agent` çağrısı: tepside gizli olsa bile pencereyi öne getir */
+    try { showWin(); } catch {}
   });
 
   /* npm (global) kurulumda masaüstü kısayolu — yoksa bir kez oluşturulur.
@@ -2508,7 +2505,14 @@ function createWindow() {
   win.once('ready-to-show', () => {
     closeSplash();
     if (startHidden) win.hide();
-    else win.show();
+    else {
+      win.show();
+      win.focus();
+      /* emniyet: bazı başlatma yollarında ilk show yutulur — tekrar dene */
+      setTimeout(() => {
+        try { if (win && !win.isDestroyed() && !win.isVisible()) { win.show(); win.focus(); } } catch {}
+      }, 1200);
+    }
   });
   win.on('resize', layoutBrowser);
   win.on('maximize', layoutBrowser);

@@ -25,26 +25,27 @@ Beast Agent is a personal AI agent that runs on your machine and connects to **a
 - **Full TR/EN interface** — everything switches language instantly
 - **/health** — `http://127.0.0.1:8788/health` liveness endpoint from the moment the app boots
 
-## 📦 Download
+## 📦 Download & Install — 2 commands, ready
 
-### Installer (recommended)
-Grab `BeastAgent-Setup-x.x.x.exe` from the [Releases](../../releases) page. After install, Beast starts automatically with Windows (lives in the tray).
+### Option 1 · npm (recommended)
 
-### npm
 ```bash
 npm install -g beast-agent
 ```
-Then run `beast-agent` from any terminal. On first launch Beast creates a desktop shortcut and registers itself for auto-start.
 
-### From source
+Then start it:
+
 ```bash
-git clone https://github.com/algokodcom/beast-agent.git
-cd beast-agent
-npm install
-npm start
+beast-agent
 ```
 
-> Requirements: Node.js 18+, Windows 10/11. Python and ffmpeg are optional — Beast installs missing tooling itself.
+That's it — the app window opens. On first launch Beast also creates a **desktop shortcut** and registers itself to **start with Windows** (lives in the tray). Later updates: close the app and run `beast-agent update`.
+
+### Option 2 · Installer
+
+Grab `BeastAgent-Setup-x.x.x.exe` from the [Releases](../../releases) page — installs with a desktop shortcut and auto-start. A portable `BeastAgent.exe` (no install) is also available there.
+
+**Website:** [beast.algokod.com](https://beast.algokod.com)
 
 ## ⚙️ Configuration
 

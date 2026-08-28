@@ -27,7 +27,7 @@ const appPath = path.resolve(__dirname, '..');
 const child = spawn(electron, [appPath, ...process.argv.slice(2)], {
   stdio: 'ignore',
   detached: true,
-  windowsHide: true,
+  /* windowsHide KULLANMA: Chromium ilk pencereyi gizli başlatıyor (tray-only bug) */
 });
 child.unref();
 process.exit(0);

@@ -1550,12 +1550,12 @@ let updatePaneTimer = null;
 
 function renderUpdateStateHtml(st) {
   let status;
-  if (st.npm) status = _t('up_npm_mode');
-  else   if (st.npm) status = '\u26A0\uFE0E ' + st.error;
+  if (st.error) status = '\u26A0\uFE0E ' + st.error;
   else if (st.downloaded) status = _t('up_downloaded') + ' (v' + (st.version || '?') + ')';
   else if (st.progress) status = _t('up_downloading') + ' %' + st.progress.percent;
   else if (st.checking) status = _t('up_checking');
   else if (st.available) status = _t('up_available') + ' (v' + (st.version || '?') + ')';
+  else if (st.npm) status = _t('up_npm_mode');
   else if (st.available === false) status = _t('up_uptodate');
   else status = '—';
 
@@ -2191,6 +2191,7 @@ function onEvent(ev) {
   }
   if (ev.type === 'update') {
     if (ev.downloaded) toast(_t('up_downloaded') + ' (v' + (ev.version || '?') + ') — /update now');
+    else if (ev.available && ev.version && ev.version !== ev.current) toast(_t('up_available') + ' (v' + ev.version + ')');
     if (!els.settingsOverlay.hidden && setTab === 'update') renderUpdatePane();
     return;
   }

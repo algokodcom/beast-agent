@@ -30,6 +30,33 @@ function isNpmMode() {
   return !app.isPackaged && /node_modules[\\/]beast-agent/i.test(String(app.getAppPath()));
 }
 
+/* npm registry'den en son sürüm (10 dk cache) — Update sekmesi + otomatik kontrol */
+let npmLatestCache = { version: null, at: 0 };
+
+function isNewerVersion(a, b) {
+  const pa = String(a).split('.').map(Number);
+  const pb = String(b).split('.').map(Number);
+  for (let i = 0; i < 3; i++) {
+    const d = (pa[i] || 0) - (pb[i] || 0);
+    if (d) return d > 0;
+  }
+  return false;
+}
+
+async function getNpmLatest() {
+  const now = Date.now();
+  if (npmLatestCache.version && now - npmLatestCache.at < 10 * 60 * 1000) return npmLatestCache.version;
+  try {
+    const res = await fetch('https://registry.npmjs.org/beast-agent/latest', { signal: AbortSignal.timeout(15000) });
+    if (res.ok) {
+      const j = await res.json();
+      const v = String(j.version || '').trim();
+      if (v) npmLatestCache = { version: v, at: now };
+    }
+  } catch {}
+  return npmLatestCache.version;
+}
+
 function emitUpdateEvent() {
   try {
     if (win && !win.isDestroyed()) {
@@ -98,6 +125,24 @@ function startAutoUpdater() {
       setInterval(check, 6 * 60 * 60 * 1000);
     }
   } catch {}
+}
+
+/* npm kurulumu için otomatik sürüm kontrolü (registry üzerinden, 6 saatte bir) */
+function startNpmUpdateWatch() {
+  if (!isNpmMode() || settings.autoCheckUpdate === false) return;
+  const check = async () => {
+    try {
+      const v = await getNpmLatest();
+      if (v && isNewerVersion(v, app.getVersion()) && !updateState.available) {
+        updateState.available = true;
+        updateState.version = v;
+        emitUpdateEvent();
+        log.info('main', `npm: yeni sürüm var ${v} (mevcut ${app.getVersion()})`);
+      }
+    } catch {}
+  };
+  check();
+  setInterval(check, 6 * 60 * 60 * 1000);
 }
 const { htmlToText, setExaKey, setTinyfishKey } = require('./agent/tools');
 const { waToolLine } = require('./agent/watext');
@@ -1740,6 +1785,7 @@ app.whenReady().then(() => {
     maybeRunWhereWasI();
     falloutResume();
     startAutoUpdater(); // #3 sessiz güncelleme
+    startNpmUpdateWatch(); // npm kurulumunda registry üzerinden otomatik sürüm kontrolü
 
     // #12 STT prefetch: whisper modelini arka planda hazırla (ilk sesli mesajda bekleme olmasın)
     if (settings.sttPrefetch !== false) {
@@ -3135,14 +3181,26 @@ ipcMain.handle('sec:set', (_e, cfg) => {
 ipcMain.handle('approval:respond', (_e, { id, ok, always }) => resolveApproval(id, ok, always));
 
 /* ---------------- #Update IPC ---------------- */
-ipcMain.handle('update:status', () => ({
-  current: app.getVersion(),
-  packaged: app.isPackaged,
-  npm: isNpmMode(),
-  ...updateState,
-  autoCheck: settings.autoCheckUpdate !== false,
-  autoDownload: settings.autoDownloadUpdate !== false,
-}));
+ipcMain.handle('update:status', async () => {
+  const st = {
+    current: app.getVersion(),
+    packaged: app.isPackaged,
+    npm: isNpmMode(),
+    ...updateState,
+    autoCheck: settings.autoCheckUpdate !== false,
+    autoDownload: settings.autoDownloadUpdate !== false,
+  };
+  try {
+    /* npm registry'den güncel sürüm — updater ne yaparsa yapsın "En son sürüm" kartı dolu olsun */
+    const v = await getNpmLatest();
+    if (v) {
+      st.npmLatest = v;
+      if (!st.version) st.version = v;
+      if (isNewerVersion(v, app.getVersion())) st.available = true;
+    }
+  } catch {}
+  return st;
+});
 
 ipcMain.handle('update:check', async (_e, viaCommand) => {
   if (isNpmMode()) return { ok: false, npm: true, error: 'npm kurulumu — güncelleme: beast-agent update' };

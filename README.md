@@ -92,6 +92,16 @@ All app data lives under `%APPDATA%\beast` (sessions, memory, WhatsApp pairing, 
 
 Type `/help` in the chat to see every command.
 
+## 🗑️ Uninstall
+
+```bash
+beast-agent uninstall
+```
+
+This removes the app (package, startup registration, desktop shortcut) but **keeps all your personal data** — `config.yaml`, `.env`, sessions, memory, WhatsApp pairing and encrypted backups stay in `%APPDATA%\beast`. Reinstall later with `npm install -g beast-agent` and everything is exactly where you left it.
+
+To wipe everything instead, delete the `%APPDATA%\beast` folder after uninstalling.
+
 ## 🔒 Security & Privacy
 
 - Everything runs **locally**: sessions, memory and logs stay on your disk

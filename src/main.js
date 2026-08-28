@@ -43,9 +43,9 @@ function isNewerVersion(a, b) {
   return false;
 }
 
-async function getNpmLatest() {
+async function getNpmLatest(force) {
   const now = Date.now();
-  if (npmLatestCache.version && now - npmLatestCache.at < 10 * 60 * 1000) return npmLatestCache.version;
+  if (!force && npmLatestCache.version && now - npmLatestCache.at < 10 * 60 * 1000) return npmLatestCache.version;
   try {
     const res = await fetch('https://registry.npmjs.org/beast-agent/latest', { signal: AbortSignal.timeout(15000) });
     if (res.ok) {
@@ -3202,16 +3202,27 @@ ipcMain.handle('update:status', async () => {
   return st;
 });
 
-ipcMain.handle('update:check', async (_e, viaCommand) => {
-  if (isNpmMode()) return { ok: false, npm: true, error: 'npm kurulumu — güncelleme: beast-agent update' };
-  if (!autoUpdater) return { ok: false, error: 'updater kullanılamıyor (taşınabilir/geliştirme modu)' };
-  try {
-    const r = await autoUpdater.checkForUpdates();
-    const v = r && r.update && r.update.version;
-    return { ok: true, version: v, available: !!v && v !== app.getVersion() };
-  } catch (e) {
-    return { ok: false, error: String((e && e.message) || e) };
+ipcMain.handle('update:check', async () => {
+  const current = app.getVersion();
+  /* her modda npm registry'den taze kontrol (cache bypass) */
+  const v = await getNpmLatest(true);
+  const out = { ok: true, npm: isNpmMode(), version: v || undefined, available: v ? isNewerVersion(v, current) : false };
+  if (v) {
+    if (!updateState.version || isNewerVersion(v, updateState.version)) updateState.version = v;
+    if (isNewerVersion(v, current)) updateState.available = true;
   }
+  /* packaged + updater: GitHub Releases kontrolü de çalışsın */
+  if (!isNpmMode() && autoUpdater) {
+    try {
+      const r = await autoUpdater.checkForUpdates();
+      const uv = r && r.update && r.update.version;
+      if (uv) { out.version = uv; out.available = uv !== current; }
+    } catch (e) {
+      if (!v) return { ok: false, error: String((e && e.message) || e) };
+    }
+  }
+  emitUpdateEvent();
+  return out;
 });
 
 ipcMain.handle('update:install', () => {

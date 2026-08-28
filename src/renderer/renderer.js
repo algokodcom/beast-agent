@@ -1599,7 +1599,9 @@ beast-agent update</pre></div>`
   if (btnCheck) btnCheck.addEventListener('click', async () => {
     btnCheck.disabled = true;
     const r = await beast.updateCheck().catch(() => ({ ok: false, error: 'ipc' }));
+    btnCheck.disabled = false;
     if (!r.ok && r.error) toast(r.error);
+    renderUpdatePane();
   });
   const btnInstall = pane.querySelector('#upInstall');
   if (btnInstall) btnInstall.addEventListener('click', async () => {

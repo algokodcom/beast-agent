@@ -1548,7 +1548,7 @@ function showApprovalCard(ev) {
   const card = document.createElement('div');
   card.className = 'tool-card';
   card.innerHTML =
-    `<div class="tool-head"><span class="tool-icon">&#x26A0;&#xFE0E;</span>` +
+    `<div class="tool-head"><span class="tool-icon"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></span>` +
     `<span class="tool-name">${escapeHtml(ev.tool || 'tool')}</span>` +
     `<span class="tool-arg">${escapeHtml(ev.argsPreview || '')}</span></div>` +
     `<div class="tool-body open" style="display:flex;gap:8px;align-items:center">` +
@@ -1928,7 +1928,7 @@ function renderAgentRail() {
        `<span class="rj-time">${j.status === 'running' ? when + ' · ' + _t('ag_working') : (agStText(j.status) === _t('ag_st_done') ? '\u2713' : (agStText(j.status) || j.status))}</span>` +
        (j.status === 'running'
          ? `<button class="rj-cancel" title="${_t('ag_cancel')}">×</button>`
-         : `<button class="rj-cancel" title="${_t('ag_delete')}">🗑</button>`) +
+         : `<button class="rj-cancel" title="${_t('ag_delete')}"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M10 11v6M14 11v6"/></svg></button>`) +
       `</div>` +
       (j.status === 'running' && agentState.last.get(j.id)
         ? `<div class="rj-last" title="${escapeHtml(agentState.last.get(j.id))}">${escapeHtml(agentState.last.get(j.id))}</div>`
@@ -2233,7 +2233,7 @@ function addFileCard(ev) {
   const wrap = document.createElement('div');
   wrap.className = 'file-card';
   wrap.innerHTML =
-    `<div class="fc-icon">&#x1F4C4;</div>` +
+    `<div class="fc-icon"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg></div>` +
     `<div class="fc-main">` +
     `<div class="fc-name">${escapeHtml(ev.name || 'dosya')}</div>` +
     (ev.caption ? `<div class="fc-cap">${escapeHtml(ev.caption)}</div>` : '') +
@@ -2862,7 +2862,8 @@ async function init() {
 
   const syncLangBtn = () => {
     if (!els.langBtn) return;
-    els.langBtn.textContent = '\u{1F310}\u{FE0E}';
+    els.langBtn.innerHTML =
+      '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3c2.6 2.6 2.6 15.4 0 18M12 3c-2.6 2.6-2.6 15.4 0 18"/></svg>';
   };
 
   refreshAgentsPane();

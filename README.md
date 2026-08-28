@@ -1,34 +1,42 @@
 # Beast Agent
 
-> **hızlı, hafif ve becerikli** — Windows için yerel ajan kabuğu. Sohbet eder, komut çalıştırır, dosya yazar, web'de arar, WhatsApp'tan yönetilir.
+> **fast, light and resourceful** — a local agent shell for Windows. It chats, runs commands, writes files, searches the web, and is fully controllable from WhatsApp.
 
 ![platform](https://img.shields.io/badge/platform-Windows-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![electron](https://img.shields.io/badge/electron-40-47848F)
 
-Beast Agent; makinenizde çalışan, OpenAI-uyumlu **herhangi bir provider'a** bağlanabilen kişisel bir yapay zekâ ajanıdır. Tek bir `config.yaml` ile tüm modellerinizi tanımlarsınız; Beast gerisini halleder.
+**Website:** [beast.algokod.com](https://beast.algokod.com) · **AlgoKod:** [algokod.com](https://algokod.com)
 
-## ✨ Özellikler
+Beast Agent is a personal AI agent that runs on your machine and connects to **any OpenAI-compatible provider**. Define all your models in a single `config.yaml`; Beast handles the rest.
 
-- **Çoklu Provider** — config.yaml'dan sınırsız model; picker'dan anında geçiş, rol bazlı modeller (vision / terminal / coding / subagent)
-- **FALLOUT Zinciri** ⚛ — model çökerse otomatik olarak sıradaki sağlayıcıya geçer; kaldığı yerden devam eder
-- **CEO Modu** — konuşan ajan iş yapmaz, emirleri paralel ajanlara devreder; canlı izleme paneli
-- **WhatsApp Entegrasyonu** — QR ile bağlanın; DM + grup (@mention), sesli mesajlar yerel Whisper ile otomatik transkript olur, cevaplar sesli not olarak da gidebilir
-- **Slash Komutları** — `/new`, `/open`, `/change`, `/think`, `/rule`, `/allow`, `/block`, `/backup`, `/approve` ve dahası
-- **Olay Merkezi** — IMAP IDLE e-posta takibi, dosya değişim izleme, fiyat feed'i (Binance), webhook girişleri
-- **Cron + İzleyiciler** — zamanlanmış görevler, dosya/web/pil izleyiciler
-- **Web Arama Zinciri** — TinyFish (ücretsiz, anahtar girilirse önce o) → dahili tarayıcı (direkt Google) → python çoklu-motor (DDG/Bing/Mojeek) → Exa
-- **Güvenlik Kapısı** — riskli işlemler (komut/dosya silme-değiştirme) için onay sistemi: varsayılan kapalı (her şey serbest), açılırsa ajan sorar (`/approve`, `/approve always`, `/deny`)
-- **Provider Bazlı Limit** — model başına max input token limiti + bağlam sıkıştırma
-- **Şifreli Yedek** — tüm veri AES-256 ile şifrelenir, makinenizin benzersiz **Beast Kodu** ile imzalanır
-- **Dashboard** — oturum geçmişi, mesaj istatistikleri, maliyet takibi
-- **Tam TR/EN arayüz** — her şey anında dil değiştirir
-- **/health** — açılıştan itibaren `http://127.0.0.1:8788/health` ile yaşam durumu
+## ✨ Features
 
-## 📦 Kurulum
+- **Multi-provider** — unlimited models from config.yaml; instant switching in the picker, role-based models (vision / terminal / coding / subagent)
+- **FALLOUT chain** ⚛ — if a model fails, Beast automatically moves to the next provider and resumes where it left off
+- **CEO mode** — the talking agent does no work itself; it delegates orders to parallel agents with a live monitoring panel
+- **WhatsApp integration** — pair via QR; DMs + groups (@mention), voice notes auto-transcribed by local Whisper, replies can be sent as voice notes too
+- **Slash commands** — `/new`, `/open`, `/change`, `/think`, `/rule`, `/allow`, `/block`, `/backup`, `/approve` and more
+- **Event center** — IMAP IDLE email watching, file-change watching, price feed (Binance), webhook inputs
+- **Cron + watchers** — scheduled tasks, file/web/battery watchers
+- **Web search chain** — TinyFish (free, used first if a key is set) → built-in browser (direct Google) → python multi-engine (DDG/Bing/Mojeek) → Exa
+- **Approval gate** — optional confirmation for risky actions (commands / file deletion-modification): default OFF (everything free), when ON the agent asks (`/approve`, `/approve always`, `/deny`)
+- **Provider-based limits** — per-provider max input token limit with context compression
+- **Encrypted backups** — all data is AES-256 encrypted and signed with your machine's unique **Beast Code**
+- **Dashboard** — session history, message statistics, cost tracking
+- **Full TR/EN interface** — everything switches language instantly
+- **/health** — `http://127.0.0.1:8788/health` liveness endpoint from the moment the app boots
 
-### Hazır kurulum (önerilen)
-[Releases](../../releases) sayfasından `BeastAgent-Setup-x.x.x.exe` indirin. Kurulumdan sonra Windows ile birlikte otomatik başlar (tepside yaşar).
+## 📦 Download
 
-### Kaynaktan
+### Installer (recommended)
+Grab `BeastAgent-Setup-x.x.x.exe` from the [Releases](../../releases) page. After install, Beast starts automatically with Windows (lives in the tray).
+
+### npm
+```bash
+npm install -g beast-agent
+```
+Then run `beast-agent` from any terminal. On first launch Beast creates a desktop shortcut and registers itself for auto-start.
+
+### From source
 ```bash
 git clone https://github.com/algokodcom/beast-agent.git
 cd beast-agent
@@ -36,16 +44,11 @@ npm install
 npm start
 ```
 
-> Gereksinimler: Node.js 18+, Windows 10/11. Python ve ffmpeg isteğe bağlıdır — eksikse Beast gerekli araçları kendisi kurar.
+> Requirements: Node.js 18+, Windows 10/11. Python and ffmpeg are optional — Beast installs missing tooling itself.
 
-### npm
-```bash
-npm install -g beast-agent
-```
+## ⚙️ Configuration
 
-## ⚙️ Yapılandırma
-
-1. `config.example.yaml` → `config.yaml` olarak kopyalayın, provider'larınızı girin:
+1. Copy `config.example.yaml` → `config.yaml` and add your providers:
 ```yaml
 defaultSelection: openrouter::anthropic/claude-3.5-sonnet
 providers:
@@ -57,35 +60,35 @@ providers:
       - anthropic/claude-3.5-sonnet
       - gpt-4o
 ```
-2. API anahtarlarını `.env` ile de verebilirsiniz: `.env.example` → `.env`
-3. Uygulama ilk açılışta Ayarlar → Provider'dan modelleri otomatik çeker.
+2. You can also provide API keys via `.env`: copy `.env.example` → `.env`
+3. On first launch, Settings → Provider pulls your models automatically.
 
-Tüm uygulama verisi `%APPDATA%\beast` altında tutulur (oturumlar, hafıza, WhatsApp eşlemesi, şifreli ayarlar).
+All app data lives under `%APPDATA%\beast` (sessions, memory, WhatsApp pairing, encrypted settings).
 
-## 🗣️ Kullanım
+## 🗣️ Usage
 
-| Nerede | Ne yapar |
+| Where | What it does |
 |---|---|
-| Sohbet | Görev ver — araçlarıyla (dosya, komut, web, python, tarayıcı) kendi başına çalışır |
-| WhatsApp | Numaranızı allow listesine ekleyin, telefondan aynen yönetin |
-| Tepsi | Kapatınca ölmez — tepside yaşamaya devam eder |
+| Chat | Give it a task — it works on its own with tools (files, commands, web, python, browser) |
+| WhatsApp | Add your number to the allow list, control the agent from your phone |
+| Tray | Closing the window doesn't kill it — Beast keeps living in the tray |
 
-Yardım için sohbete `/help` yazın.
+Type `/help` in the chat to see every command.
 
-## 🔒 Güvenlik & Gizlilik
+## 🔒 Security & Privacy
 
-- Her şey **lokal** çalışır: oturumlar, hafıza, loglar sizin diskinizde
-- API anahtarları renderer'a düz metin gönderilmez, maskeleme uygulanır
-- Yedekler AES-256 şifreli + Beast Kodu imzalı — yalnız sizin makineniz geri yükleyebilir
-- Riskli işlem onayı varsayılan **kapalıdır**; Güvenlik sekmesinden açabilirsiniz
+- Everything runs **locally**: sessions, memory and logs stay on your disk
+- API keys are never sent to the renderer in plaintext — masking is applied
+- Backups are AES-256 encrypted + signed with the Beast Code — only your machine can restore them
+- The approval gate is **off by default**; enable it from the Security tab if you want
 
-## 🧪 Geliştirme
+## 🧪 Development
 
 ```bash
-npm test        # motor + araç testleri (node --test)
-npm run dist    # NSIS + portable derleme
+npm test        # engine + tool tests (node --test)
+npm run dist    # NSIS + portable build
 ```
 
-## 📄 Lisans
+## 📄 License
 
 [MIT](LICENSE) © 2026 algokodcom (AlgoKod)

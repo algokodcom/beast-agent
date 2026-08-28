@@ -10,6 +10,9 @@ config.yaml
 *.log
 logs/
 
+# web sitesi (firebase yapılandırması ile ayrı dağıtılır)
+beast agent web/
+
 # OS çöp dosyaları
 .DS_Store
 Thumbs.db

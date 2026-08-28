@@ -1,0 +1,16 @@
+# bağımlılıklar / derleme
+node_modules/
+dist/
+
+# gizli anahtarlar ve kişisel yapılandırma — ASLA commit edilmez
+.env
+config.yaml
+
+# çalışma zamanı verileri (%APPDATA%\beast dışına yazılanlar)
+*.log
+logs/
+
+# OS çöp dosyaları
+.DS_Store
+Thumbs.db
+desktop.ini

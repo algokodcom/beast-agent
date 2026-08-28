@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; script-src 'self'" />
+  <title>Beast Agent</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="app">
+    <aside id="sidebar">
+      <div id="brand"><span class="brand-beast">BEAST</span><span class="brand-sub">Agent</span></div>
+      <button id="newChat" title="Yeni sohbet" data-i18n="newChat">+ Yeni Sohbet</button>
+      <div id="sessList"></div>
+      <div id="sideFoot">
+        <button id="gearBtn" title="Ayarlar" data-i18n-title="tipGear">&#x2699;&#xFE0E;</button>
+        <button id="themeBtn" title="Koyu tema">&#x263E;</button>
+        <button id="langBtn" title="Dil değiştir / Switch language" data-i18n-title="tipLang">&#x1F310;&#xFE0E;</button>
+      </div>
+    </aside>
+
+    <main id="main">
+      <header id="topbar">
+        <div id="modelDD" class="dd">
+          <button id="modelBtn" class="dd-btn" title="Model seç" data-i18n-title="tipModel"><span id="modelBtnLabel">Model</span><span class="dd-caret">▾</span></button>
+          <div id="modelMenu" class="dd-menu" hidden>
+            <input id="modelFilter" class="dd-filter" placeholder="Model ara…" autocomplete="off" />
+            <div id="modelList" class="dd-list"></div>
+          </div>
+        </div>
+        <div id="thinkDD" class="dd">
+          <button id="thinkBtn" class="dd-btn dd-icon-btn" title="Düşünme (reasoning) seviyesi" data-i18n-title="tipThink"><span id="thinkBtnLabel"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 2A2.5 2.5 0 0 0 7 4.5v.55A3.5 3.5 0 0 0 4.5 8.5c0 .74.23 1.43.62 2A3.5 3.5 0 0 0 4 13.5 3.5 3.5 0 0 0 7 16.95v.55A2.5 2.5 0 0 0 9.5 20a2.5 2.5 0 0 0 2.5-2.5v-13A2.5 2.5 0 0 0 9.5 2z"/><path d="M14.5 2A2.5 2.5 0 0 1 17 4.5v.55a3.5 3.5 0 0 1 2.5 3.45c0 .74-.23 1.43-.62 2a3.5 3.5 0 0 1 1.12 3 3.5 3.5 0 0 1-3 3.45v.55A2.5 2.5 0 0 1 14.5 20 2.5 2.5 0 0 1 12 17.5v-13A2.5 2.5 0 0 1 14.5 2z"/></svg></span></button>
+          <div id="thinkMenu" class="dd-menu think-menu" hidden>
+            <div id="thinkList" class="dd-list"></div>
+          </div>
+        </div>
+        <button id="modelRefreshBtn" class="dd-btn dd-icon-btn" title="Modelleri yeniden çek" data-i18n-title="tipModelRefresh">&#x27F3;</button>
+        <div id="pickCfg" class="dd">
+          <button id="pickCfgBtn" class="dd-btn dd-icon-btn" title="Picker'da görünecek modeller" data-i18n-title="tipPickCfg">⚙</button>
+          <div id="pickCfgMenu" class="dd-menu cfg-menu" hidden>
+            <div class="cfg-head">
+              <span>Picker modelleri</span>
+              <span class="cfg-quick"><button id="cfgAll">Tümü</button><button id="cfgNone">Hiçbiri</button></span>
+            </div>
+            <div id="cfgList" class="dd-list"></div>
+          </div>
+        </div>
+        <button id="railBtn" class="dd-btn dd-icon-btn on" title="Paralel Ajan Konsolu" data-i18n-title="tipRail">&#x25A4;</button>
+        <button id="watchBtn" class="dd-btn dd-icon-btn" title="İzleyiciler (Watchers)" data-i18n-title="tipWatch">&#x25CE;</button>
+        <button id="cronBtn" class="dd-btn dd-icon-btn" title="Cron Görevler" data-i18n-title="tipCron">&#x23F1;&#xFE0E;</button>
+        <button id="termBtn" class="dd-btn dd-icon-btn" title="Terminal (PowerShell)" data-i18n-title="tipTerm">&gt;</button>
+        <button id="termGBtn" class="dd-btn dd-icon-btn" title="Git Bash terminali" data-i18n-title="tipTermG">&#x25C8;</button>
+        <button id="termCBtn" class="dd-btn dd-icon-btn" title="CMD terminali" data-i18n-title="tipTermC">&#x276F;&#xFE0E;</button>
+        <button id="browserBtn" class="dd-btn dd-icon-btn" title="Dahili tarayıcı" data-i18n-title="tipBrowser">&#x29C9;</button>
+        <button id="eyeBtn" class="dd-btn dd-icon-btn" title="Ajan tarayıcısı görünür/gizli — göz açıkken aramalar panelde izlenir, kapalıyken gizli çalışır" data-i18n-title="tipEye">&#x1F441;&#xFE0E;</button>
+        <div class="drag-spacer"></div>
+      </header>
+
+      <div id="chatScroll">
+        <div id="empty">
+          <div id="emptyLogo">BEAST</div>
+          <div id="emptyHint" data-i18n="emptyHint">Hızlı · hafif · becerikli. Ne yapalım?</div>
+        </div>
+        <div id="msgs"></div>
+      </div>
+
+      <div id="composerWrap">
+        <div id="todoPanel" hidden></div>
+        <div id="statusPill" hidden></div>
+        <div id="chips" hidden></div>
+        <div id="slashMenu" hidden></div>
+        <div id="composer">
+          <button id="attachBtn" title="Dosya / resim ekle" data-i18n-title="tipAttach">+</button>
+          <button id="micBtn" title="Sesli komut — konuş, bırakınca yazıya çevirsin" data-i18n-title="tipMic">&#x1F3A4;&#xFE0E;</button>
+          <textarea id="input" rows="1" placeholder="Bir şey sor ya da görev ver…  (Enter: gönder · Shift+Enter: satır · /: komutlar)" data-i18n-ph="composerPh"></textarea>
+          <button id="stopBtn" title="Durdur" hidden data-i18n-title="tipStop">■</button>
+          <button id="sendBtn" title="Gönder" data-i18n-title="tipSend">&#x27A4;&#xFE0E;</button>
+        </div>
+      </div>
+    </main>
+
+    <aside id="rail">
+      <div id="railHead" data-i18n="labelParallel">Paralel Ajanlar</div>
+      <div id="railList"></div>
+      <div id="sideFoot2">
+        <span class="foot-label2" data-i18n="labelParallel">Paralel Ajanlar</span>
+      </div>
+    </aside>
+  </div>
+
+  <div id="settingsOverlay" hidden>
+    <div id="settingsDialog">
+      <aside id="setTabs">
+        <div class="set-tabs-title" data-i18n="set_title">AYARLAR</div>
+        <button class="tab active" data-tab="provider" data-i18n="tab_provider">Provider</button>
+        <button class="tab" data-tab="fallout" data-i18n="tab_fallout">Fallout</button>
+        <button class="tab" data-tab="memory" data-i18n="tab_memory">Memory</button>
+        <button class="tab" data-tab="skills" data-i18n="tab_skills">Skills</button>
+        <button class="tab" data-tab="agents" data-i18n="tab_agents">Paralel Ajanlar</button>
+        <button class="tab" data-tab="tts" data-i18n="tab_tts">Sesli Yanıt</button>
+        <button class="tab" data-tab="email" data-i18n="tab_email">E-posta</button>
+        <button class="tab" data-tab="integrations" data-i18n="tab_integrations">Entegrasyonlar</button>
+        <button class="tab" data-tab="websearch" data-i18n="tab_websearch">Web Arama</button>
+        <button class="tab" data-tab="events" data-i18n="tab_events">Olay Merkezi</button>
+        <button class="tab" data-tab="cron" data-i18n="tab_cron">Cron</button>
+        <button class="tab" data-tab="usage" data-i18n="tab_usage">Maliyet</button>
+        <button class="tab" data-tab="logs" data-i18n="tab_logs">Log</button>
+        <button class="tab" data-tab="dash" data-i18n="tab_dash">Dashboard</button>
+        <button class="tab" data-tab="limits" data-i18n="tab_limits">Limit</button>
+        <button class="tab" data-tab="sec" data-i18n="tab_security">Güvenlik</button>
+        <div class="set-tabs-foot">
+          <div id="beastCodeBox" class="beast-code" data-i18n-title="bc_label" title="Beast Kodu">
+            <div class="bc-row">
+              <code id="beastCode" class="bc-value">—</code>
+              <button id="bcCopy" class="bc-copy" data-i18n="bc_copy">Kopyala</button>
+            </div>
+          </div>
+          <button id="setClose" data-i18n="btn_close">Kapat</button>
+        </div>
+      </aside>
+      <section id="setContent">
+        <div id="tab-provider" class="pane"></div>
+        <div id="tab-fallout" class="pane" hidden></div>
+        <div id="tab-memory" class="pane" hidden></div>
+        <div id="tab-skills" class="pane" hidden></div>
+        <div id="tab-agents" class="pane" hidden></div>
+        <div id="tab-tts" class="pane" hidden></div>
+        <div id="tab-email" class="pane" hidden></div>
+        <div id="tab-integrations" class="pane" hidden></div>
+        <div id="tab-websearch" class="pane" hidden></div>
+        <div id="tab-events" class="pane" hidden></div>
+        <div id="tab-usage" class="pane" hidden></div>
+        <div id="tab-logs" class="pane" hidden></div>
+        <div id="tab-dash" class="pane" hidden></div>
+        <div id="tab-limits" class="pane" hidden></div>
+        <div id="tab-sec" class="pane" hidden></div>
+        <div id="tab-cron" class="pane" hidden>
+          <h2 data-i18n="cron_h2">Cron Görevler</h2>
+          <div class="sub" data-i18n="cron_sub">Zamanlanmış görevler — saati gelince agent otomatik çalışır</div>
+          <div id="cronForm">
+            <input id="cronName" placeholder="Görev adı" maxlength="80" data-i18n-ph="cron_name_ph" />
+            <div id="cronSchedRow">
+              <select id="cronPreset">
+                <option value="*/5 * * * *" data-i18n="cron_pr_5">Her 5 dakika</option>
+                <option value="*/15 * * * *" data-i18n="cron_pr_15">Her 15 dakika</option>
+                <option value="*/30 * * * *" data-i18n="cron_pr_30">Her 30 dakika</option>
+                <option value="0 * * * *" data-i18n="cron_pr_hour">Her saat başı</option>
+                <option value="0 9 * * *" data-i18n="cron_pr_day9">Her gün 09:00</option>
+                <option value="0 21 * * 1-5" data-i18n="cron_pr_wd21">Hafta içi 21:00</option>
+                <option value="__custom" data-i18n="cron_pr_custom">Özel cron…</option>
+              </select>
+              <input id="cronSchedule" placeholder="*/15 * * * *" spellcheck="false" />
+            </div>
+            <textarea id="cronPrompt" rows="3" placeholder="Agent'a verilecek görev…" data-i18n-ph="cron_prompt_ph"></textarea>
+            <button id="cronAddBtn" data-i18n="cron_add">+ Görev Ekle</button>
+          </div>
+          <div id="cronList"></div>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <div id="bbResize" hidden title="Sürükleyerek boyutlandır"></div>
+
+  <div id="watchOverlay" class="mini-overlay" hidden>
+    <div class="mini-dialog">
+      <div class="mini-head">
+        <span class="mini-title" data-i18n="mini_watch">İzleyiciler (Watchers)</span>
+        <button class="mini-close" id="watchClose" title="Kapat" data-i18n-title="btn_close">&#x00D7;</button>
+      </div>
+      <div class="mini-body">
+        <div id="watchList" class="mini-list"></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="cronOverlay" class="mini-overlay" hidden>
+    <div class="mini-dialog">
+      <div class="mini-head">
+        <span class="mini-title" data-i18n="mini_cron">Cron Görevler</span>
+        <button class="mini-close" id="cronClose" title="Kapat" data-i18n-title="btn_close">&#x00D7;</button>
+      </div>
+      <div class="mini-body">
+        <div id="cronModalList" class="mini-list"></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="browserBar" hidden>
+    <button id="bbBack" title="Geri" data-i18n-title="tip_bb_back">&#x2190;</button>
+    <button id="bbFwd" title="İleri" data-i18n-title="tip_bb_fwd">&#x2192;</button>
+    <button id="bbReload" title="Yenile" data-i18n-title="tip_bb_reload">&#x21BB;</button>
+    <input id="bbUrl" placeholder="adres yaz veya ara…" autocomplete="off" spellcheck="false" data-i18n-ph="bb_ph" />
+    <button id="bbShot" title="Ekran görüntüsünü sohbete ekle" data-i18n-title="tip_bb_shot">&#x25A3;</button>
+    <button id="bbOpenExt" title="Tarayıcıda aç" data-i18n-title="tip_bb_open">&#x2197;</button>
+    <button id="bbClose" title="Kapat" data-i18n-title="btn_close">&#x00D7;</button>
+  </div>
+
+  <div id="termPanel" hidden>
+    <div id="termHead">
+      <span id="termTitle">TERMINAL</span>
+      <span id="termCwd" title=""></span>
+      <span class="term-spacer"></span>
+      <button id="termClear" title="Çıktıyı temizle" data-i18n="term_clear" data-i18n-title="btn_close">Temizle</button>
+      <button id="termClose" title="Kapat" data-i18n-title="btn_close">&#x00D7;</button>
+    </div>
+    <div id="termBody">
+      <div id="termOut"></div>
+    </div>
+    <div id="termInputRow">
+      <span id="termPrompt">PS&gt;</span>
+      <input id="termInput" spellcheck="false" autocomplete="off" placeholder="komut yaz, Enter'la çalıştır…" data-i18n-ph="term_ph" />
+      <button id="termStop" title="Çalışan komutu durdur" hidden data-i18n-title="term_stop">&#x25A0;&#xFE0E;</button>
+    </div>
+  </div>
+  <div id="termResize" hidden title="Sürükleyerek boyutlandır"></div>
+
+  <div id="toast"></div>
+
+  <input type="file" id="fileInput" multiple hidden
+         accept="image/*,.txt,.md,.json,.csv,.log,.js,.ts,.py,.ps1,.bat,.cmd,.html,.css,.yaml,.yml,.xml,.ini" />
+
+  <script src="i18n.js"></script>
+  <script src="renderer.js"></script>
+</body>
+</html>

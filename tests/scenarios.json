@@ -1,0 +1,81 @@
+{
+  "note": "Beast eval senaryoları (#4). Her senaryo offline doğrulanabilir olmalı: ya modül fonksiyonu çağrılır ya da prompt/sistem davranışı regex ile kontrol edilir. LLM çağıran uçtan uca testler burada DEĞİL — maliyet ve kararsızlık nedeniyle.",
+  "scenarios": [
+    {
+      "id": "cron-invalid-rejected",
+      "desc": "Bozuk cron ifadesi kabul edilmez",
+      "module": "cron",
+      "call": { "fn": "parseCron", "args": ["61 * * * *"] },
+      "expectNull": true
+    },
+    {
+      "id": "reminder-daily-schedule",
+      "desc": "Tekrarlı hatırlatma daily preset doğru cron üretir",
+      "module": "cron",
+      "call": { "fn": "reminderSchedule", "args": ["2026-08-27T09:00", "daily"] },
+      "expectEquals": { "schedule": "0 9 * * *" }
+    },
+    {
+      "id": "watcher-edge-trigger",
+      "desc": "İzleyici kenar tetiklemeli: koşul doğruyken tek atış",
+      "module": "watchers",
+      "manual": true,
+      "coveredBy": "watchers.test.js"
+    },
+    {
+      "id": "wa-multi-message-merge",
+      "desc": "Ard arda WA mesajları tek pakette birleşir",
+      "module": "main",
+      "manual": true,
+      "coveredBy": "manuel (wa.log queue→flush→perm zinciri)"
+    },
+    {
+      "id": "session-code-format",
+      "desc": "Oturum kodu 6 haneli, karıştırılan harfler yok",
+      "module": "engine",
+      "coveredBy": "sessioncode.test.js"
+    },
+    {
+      "id": "reflection-json-parse",
+      "desc": "Yansıma JSON'u fence'li/gömülü olsa da ayrışır",
+      "module": "engine",
+      "coveredBy": "v11.test.js"
+    },
+    {
+      "id": "kb-search-citation",
+      "desc": "kb_search sonucu citation taşır",
+      "module": "kb",
+      "check": "citation"
+    },
+    {
+      "id": "memory-hygiene-dedup",
+      "desc": "Duplike hafıza kayıtları tekilleşir",
+      "module": "memory",
+      "coveredBy": "eval.test.js"
+    },
+    {
+      "id": "system-prompt-has-local-time",
+      "desc": "Sistem promptu yerel tarih/saat bildirir",
+      "module": "engine",
+      "regex": "Yerel saat:"
+    },
+    {
+      "id": "system-prompt-rules-injected",
+      "desc": "Kalıcı kurallar sistem promptuna girer",
+      "module": "engine",
+      "check": "rules"
+    },
+    {
+      "id": "usage-cost-math",
+      "desc": "Maliyet hesabı (1M token fiyatıyla) doğru",
+      "module": "usage",
+      "coveredBy": "usage.test.js"
+    },
+    {
+      "id": "bus-price-filter",
+      "desc": "Fiyat olayı eşiğiyle filtrelenir",
+      "module": "bus",
+      "coveredBy": "bus.test.js"
+    }
+  ]
+}

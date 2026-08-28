@@ -1,0 +1,26 @@
+# Beast Agent sağlayıcı yapılandırması örneği.
+# Kullanım: bu dosyayı %APPDATA%\beast\config.yaml olarak kopyala ve düzenle.
+# (Taşınabilir kullanım için BEAST_DATA ortam değişkeni ile başka klasöre alabilirsin.)
+
+providers:
+  zhipu:
+    name: Zhipu AI
+    base_url: https://api.z.ai/api/paas/v4
+    key_env: ZHIPU_API_KEY
+    models:
+      glm-4.6: {}
+      glm-4.5-air: {}
+
+  openai:
+    name: OpenAI
+    base_url: https://api.openai.com/v1
+    key_env: OPENAI_API_KEY
+    models:
+      gpt-4o-mini: {}
+      gpt-4o: {}
+
+model:
+  provider: zhipu      # varsayılan provider id (yoksa ilk provider kullanılır)
+  default: glm-4.6     # varsayılan model
+  # base_url: ...      # istersen aktif provider'ın URL'ini override et
+  # key_env: ...       # istersen anahtarı farklı env'den oku

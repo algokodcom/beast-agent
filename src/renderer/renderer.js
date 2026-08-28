@@ -527,7 +527,7 @@ function switchTab(name) {
   if (name === 'dash') renderDashboardPane();
   if (name === 'limits') renderLimitsPane();
   if (name === 'sec') renderSecurityPane();
-  if (name === 'update') renderUpdatePane();
+  if (name === 'update') renderUpdatePane(true);
   if (name === 'agents') refreshAgentsPane();
   if (name === 'websearch') renderWebSearchPane();
   /* Fallout: her açılışta güncel provider zincirini çek */
@@ -1562,7 +1562,7 @@ function renderUpdateStateHtml(st) {
   return `<div class="usage-stat" id="upStatusBox"><div class="us-label">${_t('up_status')}</div><div class="us-value" style="font-size:14px">${escapeHtml(status)}</div></div>`;
 }
 
-async function renderUpdatePane() {
+async function renderUpdatePane(autoCheck) {
   const pane = $('#tab-update');
   if (!pane) return;
   const st = await beast.updateStatus().catch(() => null);
@@ -1632,6 +1632,9 @@ async function renderUpdatePane() {
       if (box) box.outerHTML = renderUpdateStateHtml(s);
     }).catch(() => {});
   }, 1000);
+
+  /* sekme açılırken otomatik sürüm kontrolü */
+  if (autoCheck) beast.updateCheck().catch(() => {});
 }
 
 /* Sohbete onay kartı düşürür — Onayla / Her zaman / Reddet */function showApprovalCard(ev) {

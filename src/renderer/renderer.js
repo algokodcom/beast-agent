@@ -3051,6 +3051,10 @@ async function init() {
     });
     document.addEventListener('langchange', syncLangBtn);
     document.addEventListener('langchange', renderActiveSettingsTab);
+    /* Whisper STT dili arayüz dilini izler (WA sesli notları da) */
+    const syncSttLang = () => { try { beast.sttLangSet((window.I18N && window.I18N.lang) || 'tr'); } catch {} };
+    syncSttLang();
+    document.addEventListener('langchange', syncSttLang);
   }
 
   els.attachBtn.addEventListener('click', () => els.fileInput.click());
@@ -3091,7 +3095,9 @@ async function init() {
         if (!blob.size) return;
         toast(_t('mic_transcribing'));
         const b64 = await blobToDataUrl(blob);
-        const r = await beast.sttTranscribe(b64).catch(() => ({ ok: false, error: 'ipc' }));
+        /* arayüz dili = Whisper dili: TR ise Türkçe, EN ise İngilizce algılar */
+        const uiLang = (window.I18N && window.I18N.lang) || 'tr';
+        const r = await beast.sttTranscribe(b64, uiLang).catch(() => ({ ok: false, error: 'ipc' }));
         if (r && r.ok && r.text) {
           els.input.value = (els.input.value ? els.input.value.replace(/\s+$/, '') + ' ' : '') + r.text;
           els.input.focus();

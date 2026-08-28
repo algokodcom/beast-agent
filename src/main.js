@@ -505,12 +505,17 @@ function decodeAudioToPcm16k(buf) {
   });
 }
 
-async function transcribeAudio(buf /* , mimetype */) {
+async function transcribeAudio(buf, langOverride /* 'tr' | 'en' | 'auto' */) {
   try {
     const audio = await decodeAudioToPcm16k(buf);
     if (!audio || !audio.length) return null;
     const asr = await ensureStt();
-    const out = await asr(audio, { language: 'turkish', task: 'transcribe', chunk_length_s: 30, stride_length_s: 5 });
+    /* dil: arayüz diline bağlı — UI Türkçe ise Türkçe, İngilizce ise İngilizce algılar */
+    const lang = langOverride || settings.sttLang || 'tr';
+    const opts = { task: 'transcribe', chunk_length_s: 30, stride_length_s: 5 };
+    if (lang === 'en') opts.language = 'english';
+    else if (lang === 'tr') opts.language = 'turkish';
+    const out = await asr(audio, opts);
     return String((out && out.text) || '').trim() || null;
   } catch (e) {
     waLog('stt hata: ' + String((e && e.message) || e));
@@ -3260,15 +3265,24 @@ async function runUpdateCommand(reply /* fn(text) */) {
 }
 
 /* #STT: sohbet mikrofonu — MediaRecorder sesini (webm/opus) yerel whisper'a çevir */
-ipcMain.handle('stt:transcribe', async (_e, b64) => {
+/* #STT: sohbet mikrofonu — MediaRecorder sesini (webm/opus) yerel whisper'a çevir */
+ipcMain.handle('stt:transcribe', async (_e, b64, lang) => {
   try {
     const buf = Buffer.from(String(b64 || '').split(',').pop() || '', 'base64');
     if (!buf.length) return { ok: false, error: 'boş ses kaydı' };
-    const text = await transcribeAudio(buf);
+    const text = await transcribeAudio(buf, lang === 'en' || lang === 'auto' ? lang : undefined);
     return text ? { ok: true, text } : { ok: false, error: 'konuşma algılanamadı' };
   } catch (e) {
     return { ok: false, error: String((e && e.message) || e) };
   }
+});
+
+ipcMain.handle('stt:lang:get', () => settings.sttLang || 'tr');
+ipcMain.handle('stt:lang:set', (_e, lang) => {
+  const v = ['auto', 'tr', 'en'].includes(String(lang)) ? String(lang) : 'tr';
+  settings.sttLang = v;
+  saveSettings();
+  return v;
 });
 
 ipcMain.handle('limits:get', () => {

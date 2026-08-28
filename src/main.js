@@ -960,8 +960,7 @@ async function tryWaSlash(jid, rawText, senderNum) {
       /* /update — sürüm kontrol; /update now — indirileni kur (npm modunda kendini günceller) */
       if (String(arg || '').toLowerCase() === 'now') {
         if (isNpmMode()) {
-          out = '*Kendimi güncelliyorum* — kapanıp yeniden açılacağım.';
-          setTimeout(() => npmSelfUpdate(), 1200);
+          npmUpdateNow(async (text) => { out = text; });
         } else if (updateState.downloaded && autoUpdater) {
           out = `*v${updateState.version} kuruluyor* — uygulama yeniden başlayacak.`;
           setTimeout(() => { try { autoUpdater.quitAndInstall(); } catch {} }, 1200);
@@ -2669,8 +2668,7 @@ ipcMain.handle('agent:send', (_e, { sessionId, text }) => {
     updateReplies.sids.add(String(sessionId || ''));
     if (a === 'now') {
       if (isNpmMode()) {
-        desktopEcho(sessionId, t, '*Kendimi güncelliyorum* — kapanıp yeniden açılacağım.');
-        setTimeout(() => npmSelfUpdate(), 1200);
+        npmUpdateNow((text) => desktopEcho(sessionId, t, text));
       } else if (updateState.downloaded && autoUpdater) {
         desktopEcho(sessionId, t, `*v${updateState.version} kuruluyor* — uygulama yeniden başlayacak.`);
         setTimeout(() => { try { autoUpdater.quitAndInstall(); } catch {} }, 1200);
@@ -3278,19 +3276,45 @@ ipcMain.handle('update:setAuto', (_e, cfg) => {
 });
 
 /* /update komutu (masaüstü + WA): hedefi kaydet, kontrol başlat */
+/* npm modunda güncelle-şimdi: sürüm kontrolü + numaralarıyla bildir + kendi kendini güncelle */
+function npmUpdateNow(reply /* fn(text) */) {
+  const current = app.getVersion();
+  getNpmLatest(true).then((v) => {
+    if (v && isNewerVersion(v, current)) {
+      updateState.available = true;
+      updateState.version = v;
+      reply(`🔄 *Güncelleniyor*\nMevcut: v${current}\nYeni: v${v}\nKapanıp yeniden açılıyorum…`);
+      setTimeout(() => npmSelfUpdate(), 1500);
+    } else {
+      reply(`✅ *Güncelsin* — v${current} zaten en son sürüm.`);
+    }
+  }).catch(() => reply('Sürüm kontrol edilemedi — bağlantıyı kontrol et.'));
+}
+
 async function runUpdateCommand(reply /* fn(text) */) {
-  if (isNpmMode()) {
-    reply('🔄 *Kendimi güncelliyorum* — kapanıp yeniden açılacağım, birazdan görüşürüz.');
-    setTimeout(() => npmSelfUpdate(), 1200);
-    return;
-  }
+  const current = app.getVersion();
+  if (isNpmMode()) return npmUpdateNow(reply);
   if (!autoUpdater) {
-    reply('Updater bu modda kullanılamıyor (taşınabilir sürüm). Yeni exe: github.com/algokodcom/beast-agent/releases');
+    reply('Updater bu modda kullanılamıyor. Yeni sürüm: github.com/algokodcom/beast-agent/releases');
     return;
   }
-  reply(`🔍 v${app.getVersion()} — güncellemeler kontrol ediliyor…`);
-  try { await autoUpdater.checkForUpdates(); } catch (e) {
-    reply('Güncelleme kontrolü başarısız: ' + String((e && e.message) || e));
+  /* önce npm registry'den sürüm bilgisi — kullanıcıya numaraları söyle */
+  const v = await getNpmLatest(true);
+  if (v && isNewerVersion(v, current)) {
+    updateState.available = true;
+    updateState.version = v;
+    emitUpdateEvent();
+    reply(`🔄 *Yeni sürüm bulundu*\nMevcut: v${current}\nYeni: v${v}\nİndiriliyor… (kurulum için: /update now)`);
+    try { await autoUpdater.checkForUpdates(); } catch (e) {
+      reply('İndirme başlatılamadı: ' + String((e && e.message) || e));
+    }
+  } else if (v) {
+    reply(`✅ *Güncelsin* — v${current} en son sürüm.`);
+  } else {
+    reply(`🔍 Kontrol ediliyor (mevcut sürüm v${current})…`);
+    try { await autoUpdater.checkForUpdates(); } catch (e) {
+      reply('Kontrol başarısız: ' + String((e && e.message) || e));
+    }
   }
 }
 

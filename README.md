@@ -27,8 +27,6 @@ Beast Agent is a personal AI agent that runs on your machine and connects to **a
 
 ## 📦 Download & Install — 2 commands, ready
 
-### Option 1 · npm (recommended)
-
 ```bash
 npm install -g beast-agent
 ```
@@ -41,15 +39,33 @@ beast-agent
 
 That's it — the app window opens. On first launch Beast also creates a **desktop shortcut** and registers itself to **start with Windows** (lives in the tray). Later updates: close the app and run `beast-agent update`.
 
-### Option 2 · Installer
-
-Grab `BeastAgent-Setup-x.x.x.exe` from the [Releases](../../releases) page — installs with a desktop shortcut and auto-start. A portable `BeastAgent.exe` (no install) is also available there.
-
-**Website:** [beast.algokod.com](https://beast.algokod.com)
-
 ## ⚙️ Configuration
 
-1. Copy `config.example.yaml` → `config.yaml` and add your providers:
+### Recommended: OpenCode Zen (free tier, no credit card)
+
+Get a key at [opencode.ai/auth](https://opencode.ai/auth), then copy `config.example.yaml` → `config.yaml`:
+
+```yaml
+defaultSelection: opencode::glm-5.2
+providers:
+  - id: opencode
+    name: OpenCode Zen
+    baseUrl: https://opencode.ai/zen/v1
+    apiKey: <your-key>
+    models:
+      - glm-5.2
+      - kimi-k2.7-code
+      - deepseek-v4-flash-free
+      - big-pickle
+      - minimax-m3
+```
+
+> Free models include `deepseek-v4-flash-free`, `big-pickle`, `mimo-v2.5-free`, `nemotron-3-ultra-free`. If you have an **OpenCode Go** subscription, use the same config with `baseUrl: https://opencode.ai/zen/go/v1`.
+
+### Any other OpenAI-compatible provider
+
+OpenRouter, Zhipu, Ollama, OpenAI — anything that speaks `/v1/chat/completions` works:
+
 ```yaml
 defaultSelection: openrouter::anthropic/claude-3.5-sonnet
 providers:
@@ -61,8 +77,8 @@ providers:
       - anthropic/claude-3.5-sonnet
       - gpt-4o
 ```
-2. You can also provide API keys via `.env`: copy `.env.example` → `.env`
-3. On first launch, Settings → Provider pulls your models automatically.
+
+API keys can also go into `.env` (copy `.env.example` → `.env`). On first launch, Settings → Provider pulls your models automatically.
 
 All app data lives under `%APPDATA%\beast` (sessions, memory, WhatsApp pairing, encrypted settings).
 

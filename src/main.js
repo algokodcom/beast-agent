@@ -3258,7 +3258,7 @@ function npmSelfUpdate() {
 
 ipcMain.handle('update:install', () => {
   if (isNpmMode()) { npmSelfUpdate(); return { ok: true, npm: true }; }
-  if (!autoUpdater) return { ok: false, error: 'updater kullanılamıyor' };
+  if (!app.isPackaged) return { ok: false, error: 'Geliştirme modu — güncelleme npm / GitHub Releases üzerinden yapılır' };
   if (!updateState.downloaded) return { ok: false, error: 'indirilmiş sürüm yok — önce /update' };
   try { autoUpdater.quitAndInstall(); return { ok: true }; } catch (e) {
     return { ok: false, error: String((e && e.message) || e) };

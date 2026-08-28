@@ -1569,6 +1569,27 @@ async function renderUpdatePane() {
   if (!st) return;
   clearInterval(updatePaneTimer);
 
+  /* mod bazlı butonlar: npm → available, installer → downloaded, dev → sadece kontrol */
+  const isDev = !st.packaged && !st.npm;
+  let actions;
+  if (st.npm) {
+    actions = `<div class="form-grid" style="grid-template-columns:auto auto;gap:8px;margin-top:12px">
+        <button id="upInstall" class="btn ghost" ${st.available ? '' : 'disabled style="opacity:.45;cursor:default"'}>${_t('up_install_now')}</button>
+      </div>
+      <div class="sub" style="margin-top:8px">${_t('up_npm_note')}</div>`;
+  } else if (isDev) {
+    actions = `<div class="form-grid" style="grid-template-columns:auto auto;gap:8px;margin-top:12px">
+        <button id="upCheck" class="btn ghost">${_t('up_check_now')}</button>
+      </div>
+      <div class="sub" style="margin-top:8px">${_t('up_dev_note')}</div>`;
+  } else {
+    actions = `<div class="form-grid" style="grid-template-columns:auto auto;gap:8px;margin-top:12px">
+        <button id="upCheck" class="btn ghost">${_t('up_check_now')}</button>
+        <button id="upInstall" class="btn ghost" ${st.downloaded ? '' : 'disabled style="opacity:.45;cursor:default"'}>${_t('up_install_now')}</button>
+      </div>
+      <div class="sub" style="margin-top:8px">${_t('up_note')}</div>`;
+  }
+
   pane.innerHTML =
     '<h2>' + _t('up_h2') + '</h2>' +
     '<div class="sub">' + _t('up_sub') + '</div>' +
@@ -1581,16 +1602,7 @@ async function renderUpdatePane() {
       <label class="lock-row"><input type="checkbox" id="upAutoCheck" ${st.autoCheck ? 'checked' : ''}/><span>${_t('up_auto_check')}</span></label>
       <label class="lock-row"><input type="checkbox" id="upAutoDl" ${st.autoDownload ? 'checked' : ''}/><span>${_t('up_auto_dl')}</span></label>
     </div>` +
-    (st.npm
-      ? `<div class="form-grid" style="grid-template-columns:auto auto;gap:8px;margin-top:12px">
-          <button id="upInstall" class="btn ghost" ${st.available ? '' : 'disabled style="opacity:.45;cursor:default"'}>${_t('up_install_now')}</button>
-        </div>
-        <div class="sub" style="margin-top:8px">${_t('up_npm_note')}</div>`
-      : `<div class="form-grid" style="grid-template-columns:auto auto;gap:8px;margin-top:12px">
-          <button id="upCheck" class="btn ghost">${_t('up_check_now')}</button>
-          <button id="upInstall" class="btn ghost" ${st.downloaded ? '' : 'disabled style="opacity:.45;cursor:default"'}>${_t('up_install_now')}</button>
-        </div>
-        <div class="sub" style="margin-top:8px">${_t('up_note')}</div>`);
+    actions;
 
   const chk = pane.querySelector('#upAutoCheck');
   if (chk) chk.addEventListener('change', async (e) => { await beast.updateSetAuto({ autoCheck: e.target.checked }); });

@@ -2,10 +2,20 @@
 'use strict';
 
 /* Beast Agent global npm başlatıcısı:
-   `beast-agent` komutu uygulamayı detached başlatır ve terminali hemen serbest bırakır. */
+   `beast-agent`            → uygulamayı detached başlatır, terminali hemen serbest bırakır
+   `beast-agent update`     → npm'den en son sürümü yükler (uygulama kapalıyken çalıştır) */
 
-const { spawn } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 const path = require('path');
+
+/* güncelleme modu: uygulama kapalıyken dosyalar kilitli olmaz */
+if (process.argv[2] === 'update') {
+  const r = spawnSync('npm', ['install', '-g', 'beast-agent@latest'], { stdio: 'inherit', shell: true });
+  console.log(r.status === 0
+    ? '\n✓ beast-agent güncellendi — "beast-agent" ile başlatabilirsin.'
+    : '\n✗ güncelleme başarısız — elle: npm install -g beast-agent@latest');
+  process.exit(r.status || 0);
+}
 
 const electron = require('electron');
 if (typeof electron !== 'string') {

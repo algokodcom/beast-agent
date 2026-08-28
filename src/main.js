@@ -1694,7 +1694,7 @@ function ensureDesktopShortcut() {
       args: app.getAppPath(),
       cwd: app.getAppPath(),
       description: 'Beast Agent — hızlı, hafif ve becerikli',
-      icon: process.execPath,
+      icon: path.join(__dirname, '..', 'assets', 'app.ico'),
       iconIndex: 0,
     });
     log.info('main', ok ? 'Masaüstü kısayolu oluşturuldu (npm modu)' : 'Masaüstü kısayolu oluşturulamadı');
@@ -1733,6 +1733,7 @@ app.whenReady().then(() => {
       ensureDesktopShortcut();
     }
     reloadBackend();
+    createSplash();
     createWindow();
     log.info('main', 'Beast Agent başlatıldı');
     createTray();
@@ -2433,6 +2434,49 @@ const startHidden =
   process.argv.includes('--silent') ||
   String(process.env.BEAST_HIDDEN || '') === '1';
 
+/* Splash: npm/ portable başlangıcında logolu karşılama penceresi — ana pencere
+   hazır olunca kapanır. */
+let splash = null;
+
+function createSplash() {
+  try {
+    const dark = settings.theme === 'dark';
+    const bg = dark ? '#0d0d0f' : '#f7f7f8';
+    const fg = dark ? '#f2f2f4' : '#17171a';
+    const muted = dark ? '#9a9aa2' : '#707078';
+    splash = new BrowserWindow({
+      width: 420,
+      height: 250,
+      frame: false,
+      resizable: false,
+      alwaysOnTop: true,
+      skipTaskbar: true,
+      center: true,
+      backgroundColor: bg,
+      icon: path.join(__dirname, '..', 'assets', 'app.ico'),
+    });
+    const html = `<!doctype html><html><head><meta charset="utf-8"><style>
+      body{margin:0;height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;background:${bg};font-family:'Segoe UI',sans-serif;color:${fg}}
+      .logo{width:84px;height:84px;border-radius:20px;background:${fg};color:${bg};display:flex;align-items:center;justify-content:center;font-weight:900;font-size:44px}
+      .t{margin-top:16px;font-size:20px;color:${fg}}.t b{font-weight:900}
+      .s{margin-top:6px;font-size:12px;color:${muted}}
+      .bar{margin-top:18px;width:180px;height:3px;background:${muted}44;border-radius:2px;overflow:hidden}
+      .bar>i{display:block;height:100%;width:40%;background:${fg};border-radius:2px;animation:sw 1.1s ease-in-out infinite}
+      @keyframes sw{0%{transform:translateX(-100%)}100%{transform:translateX(260%)}}
+    </style></head><body>
+      <div class="logo">B</div>
+      <div class="t"><b>BEAST</b> Agent</div>
+      <div class="s">hızlı · hafif · becerikli — v${app.getVersion()}</div>
+      <div class="bar"><i></i></div>
+    </body></html>`;
+    splash.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
+  } catch {}
+}
+
+function closeSplash() {
+  try { if (splash) { splash.close(); splash = null; } } catch {}
+}
+
 function createWindow() {
   log.info('main', 'Pencere oluşturuluyor…');
   const dark = settings.theme === 'dark';
@@ -2443,6 +2487,7 @@ function createWindow() {
     minHeight: 500,
     show: false,
     backgroundColor: dark ? '#0d0d0f' : '#f7f7f8',
+    icon: path.join(__dirname, '..', 'assets', 'app.ico'),
     titleBarStyle: 'hidden',
     titleBarOverlay: {
       color: 'transparent',
@@ -2461,6 +2506,7 @@ function createWindow() {
   win.setMenuBarVisibility(false);
   win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
   win.once('ready-to-show', () => {
+    closeSplash();
     if (startHidden) win.hide();
     else win.show();
   });
@@ -3095,7 +3141,7 @@ ipcMain.handle('update:status', () => ({
 }));
 
 ipcMain.handle('update:check', async (_e, viaCommand) => {
-  if (isNpmMode()) return { ok: false, npm: true, error: 'npm kurulumu — güncelleme: npm update -g beast-agent' };
+  if (isNpmMode()) return { ok: false, npm: true, error: 'npm kurulumu — güncelleme: beast-agent update' };
   if (!autoUpdater) return { ok: false, error: 'updater kullanılamıyor (taşınabilir/geliştirme modu)' };
   try {
     const r = await autoUpdater.checkForUpdates();
@@ -3127,7 +3173,7 @@ ipcMain.handle('update:setAuto', (_e, cfg) => {
 /* /update komutu (masaüstü + WA): hedefi kaydet, kontrol başlat */
 async function runUpdateCommand(reply /* fn(text) */) {
   if (isNpmMode()) {
-    reply('npm kurulumu — güncellemek için terminalde: `npm update -g beast-agent`');
+    reply('npm kurulumu — güncellemek için:\n1) Uygulamayı kapat\n2) Terminalde: `beast-agent update`\n3) Tekrar: `beast-agent`');
     return;
   }
   if (!autoUpdater) {

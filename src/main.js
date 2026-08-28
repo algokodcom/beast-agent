@@ -1611,7 +1611,28 @@ if (!gotLock) {
     }
   });
 
-  app.whenReady().then(() => {
+  /* npm (global) kurulumda masaüstü kısayolu — yoksa bir kez oluşturulur.
+   (NSIS packaged modda kısayolu electron-builder zaten yapar.) */
+function ensureDesktopShortcut() {
+  try {
+    const desktop = app.getPath('desktop');
+    const lnk = path.join(desktop, 'Beast Agent.lnk');
+    if (fs.existsSync(lnk)) return;
+    const ok = shell.writeShortcutLink(lnk, 'create', {
+      target: process.execPath,
+      args: app.getAppPath(),
+      cwd: app.getAppPath(),
+      description: 'Beast Agent — hızlı, hafif ve becerikli',
+      icon: process.execPath,
+      iconIndex: 0,
+    });
+    log.info('main', ok ? 'Masaüstü kısayolu oluşturuldu (npm modu)' : 'Masaüstü kısayolu oluşturulamadı');
+  } catch (e) {
+    log.info('main', 'Kısayol hatası: ' + String((e && e.message) || e));
+  }
+}
+
+app.whenReady().then(() => {
     // Tailscale modu: paketli uygulamada Windows ile otomatik başlat (sessiz, tepside)
     if (app.isPackaged) {
       try {
@@ -1626,6 +1647,19 @@ if (!gotLock) {
       } catch (e) {
         log.error('main', 'Startup kaydı başarısız: ' + String((e && e.message) || e));
       }
+    } else if (!app.isPackaged && /node_modules[\\/]beast-agent/i.test(String(app.getAppPath()))) {
+      /* npm (global) kurulum modu: startup kaydı + masaüstü kısayolu */
+      try {
+        app.setLoginItemSettings({
+          openAtLogin: true,
+          path: process.execPath,
+          args: [app.getAppPath(), '--hidden'],
+        });
+        log.info('main', 'Startup kaydı açık (npm modu): ' + app.getAppPath());
+      } catch (e) {
+        log.error('main', 'Startup kaydı (npm) başarısız: ' + String((e && e.message) || e));
+      }
+      ensureDesktopShortcut();
     }
     reloadBackend();
     createWindow();

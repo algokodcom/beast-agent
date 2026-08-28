@@ -19,27 +19,84 @@ const computeruse = require('./agent/computeruse');
 const log = require('./agent/logger');
 
 /* #3 otomatik updater: sessiz — indirir, kapanışta kurar, kullanıcıya soru sormaz.
-   Paketlenmemiş (npm start) modda devre dışı. */
+   Paketlenmemiş (npm start) modda devre dışı; Update sekmesi ve /update komutu kontrol eder. */
 let autoUpdater = null;
 try { if (app.isPackaged) autoUpdater = require('electron-updater').autoUpdater; } catch {}
+
+const updateState = { checking: false, available: false, downloaded: false, version: null, progress: null, error: null };
+const updateReplies = { sids: new Set(), jids: new Set() }; // /update isteyen hedefler — sonuç oraya gider
+
+function isNpmMode() {
+  return !app.isPackaged && /node_modules[\\/]beast-agent/i.test(String(app.getAppPath()));
+}
+
+function emitUpdateEvent() {
+  try {
+    if (win && !win.isDestroyed()) {
+      win.webContents.send('agent:event', { type: 'update', ...updateState, current: app.getVersion() });
+    }
+  } catch {}
+}
+
+function replyUpdate(text) {
+  try {
+    for (const sid of updateReplies.sids) desktopEcho(sid, '/update', text);
+    for (const jid of updateReplies.jids) sendWaSafe(jid, text).catch(() => {});
+    updateReplies.sids.clear();
+    updateReplies.jids.clear();
+  } catch {}
+}
 
 function startAutoUpdater() {
   if (!autoUpdater || !app.isPackaged) return;
   try {
-    autoUpdater.autoDownload = true;          // sessiz indir
-    autoUpdater.autoInstallOnAppQuit = true;  // kapanışta sessiz kur
+    autoUpdater.autoDownload = settings.autoDownloadUpdate !== false;   // sessiz indir (toggle'lı)
+    autoUpdater.autoInstallOnAppQuit = true;                            // kapanışta sessiz kur
     autoUpdater.logger = {
       info: (m) => waLog('[UPD] ' + m),
       warn: (m) => waLog('[UPD] ' + m),
       error: (m) => waLog('[UPD] ' + m),
       debug: () => {},
     };
-    autoUpdater.on('update-downloaded', () => {
-      try { fs.appendFileSync(path.join(APP_DIR, 'wa.log'), `[${new Date().toISOString()}] [UPD] güncelleme indirildi — kapanışta kurulacak\n`); } catch {}
+    autoUpdater.on('checking-for-update', () => {
+      updateState.checking = true; updateState.error = null; emitUpdateEvent();
     });
-    const check = () => autoUpdater.checkForUpdates().catch(() => {});
-    check();
-    setInterval(check, 6 * 60 * 60 * 1000); // 6 saatte bir sessiz kontrol
+    autoUpdater.on('update-available', (i) => {
+      updateState.checking = false; updateState.available = true;
+      updateState.version = (i && i.version) || null;
+      emitUpdateEvent();
+      replyUpdate(`🔄 *Yeni sürüm bulundu:* v${updateState.version} (mevcut v${app.getVersion()}) — indiriliyor…`);
+    });
+    autoUpdater.on('update-not-available', () => {
+      updateState.checking = false; updateState.available = false; updateState.version = null;
+      emitUpdateEvent();
+      replyUpdate(`✅ *Güncelsin* — v${app.getVersion()} en son sürüm.`);
+    });
+    autoUpdater.on('download-progress', (p) => {
+      updateState.progress = {
+        percent: Math.round(Number(p && p.percent) || 0),
+        mbps: Math.round((Number(p && p.bytesPerSecond) || 0) / 1048576 * 10) / 10,
+      };
+      emitUpdateEvent();
+    });
+    autoUpdater.on('update-downloaded', (i) => {
+      updateState.checking = false; updateState.downloaded = true;
+      updateState.version = (i && i.version) || updateState.version;
+      updateState.progress = null;
+      emitUpdateEvent();
+      waLog('[UPD] güncelleme indirildi — /update now veya kapanışta kurulacak');
+      replyUpdate(`✅ *v${updateState.version} indirildi.* Kurmak için: \`/update now\` — ya da uygulama kapanınca otomatik kurulur.`);
+    });
+    autoUpdater.on('error', (e) => {
+      updateState.checking = false; updateState.error = String((e && e.message) || e);
+      emitUpdateEvent();
+    });
+    /* otomatik kontrol: açılışta + 6 saatte bir (Update sekmesinden kapatılabilir) */
+    if (settings.autoCheckUpdate !== false) {
+      const check = () => autoUpdater.checkForUpdates().catch(() => {});
+      check();
+      setInterval(check, 6 * 60 * 60 * 1000);
+    }
   } catch {}
 }
 const { htmlToText, setExaKey, setTinyfishKey } = require('./agent/tools');
@@ -472,6 +529,7 @@ function waSlashHelp() {
     '• /allow <isim> <numara> – WhatsApp allow listesine kişi ekle (örn: /allow batu 905414178456)',
     '• /block – allow listesini numaralarıyla listele (/block 3: 3. kişiyi çıkar; 1 = sahip, silinemez)',
     '• /approve – bekleyen riskli işlemi onayla (/approve always: bir daha sorulmasın · /deny: reddet)',
+    '• /update – yeni sürüm kontrolü (/update now: indirileni hemen kur)',
     '• /model – aktif modeli göster (/model <isim> ile değiştir)',
     '• /skills – kurulu skill\u2019ler',
     '• /usage – bugünkü kullanım',
@@ -848,6 +906,19 @@ async function tryWaSlash(jid, rawText, senderNum) {
       out = r.ok
         ? `*${cmd === 'deny' ? 'Reddedildi' : 'Onaylandı'}:* ${r.tool}${always ? ' — bu araç için bir daha sorulmayacak' : ''}`
         : 'Bekleyen onay yok.';
+    } else if (cmd === 'update') {
+      /* /update — sürüm kontrol; /update now — indirileni kur */
+      if (String(arg || '').toLowerCase() === 'now') {
+        if (updateState.downloaded && autoUpdater) {
+          out = `*v${updateState.version} kuruluyor* — uygulama yeniden başlayacak.`;
+          setTimeout(() => { try { autoUpdater.quitAndInstall(); } catch {} }, 1200);
+        } else {
+          out = 'İndirilmiş sürüm yok — önce `/update` yaz.';
+        }
+      } else {
+        updateReplies.jids.add(jid);
+        await runUpdateCommand(async (text) => { out = text; });
+      }
     } else if (cmd === 'think') {
       const r = arg ? applyThinkLevel(arg) : null;
       out = r && r.error ? r.error : r ? r.text : thinkStatusText();
@@ -2489,6 +2560,21 @@ ipcMain.handle('agent:send', (_e, { sessionId, text }) => {
     );
     return true;
   }
+  if (t === '/update' || t.startsWith('/update ')) {
+    const a = t.slice(7).trim().toLowerCase();
+    updateReplies.sids.add(String(sessionId || ''));
+    if (a === 'now') {
+      if (updateState.downloaded && autoUpdater) {
+        desktopEcho(sessionId, t, `*v${updateState.version} kuruluyor* — uygulama yeniden başlayacak.`);
+        setTimeout(() => { try { autoUpdater.quitAndInstall(); } catch {} }, 1200);
+      } else {
+        desktopEcho(sessionId, t, 'İndirilmiş sürüm yok — önce `/update` yaz.');
+      }
+    } else {
+      runUpdateCommand((text) => desktopEcho(sessionId, t, text));
+    }
+    return true;
+  }
   resumeServices(); // pause durumunda gerçek mesaj her şeyi canlandırır
   queueDesktopMessage(sessionId, text);
   return true;
@@ -2997,6 +3083,62 @@ ipcMain.handle('sec:set', (_e, cfg) => {
   return { approvals: settings.security.approvals, alwaysAllow: settings.security.alwaysAllow };
 });
 ipcMain.handle('approval:respond', (_e, { id, ok, always }) => resolveApproval(id, ok, always));
+
+/* ---------------- #Update IPC ---------------- */
+ipcMain.handle('update:status', () => ({
+  current: app.getVersion(),
+  packaged: app.isPackaged,
+  npm: isNpmMode(),
+  ...updateState,
+  autoCheck: settings.autoCheckUpdate !== false,
+  autoDownload: settings.autoDownloadUpdate !== false,
+}));
+
+ipcMain.handle('update:check', async (_e, viaCommand) => {
+  if (isNpmMode()) return { ok: false, npm: true, error: 'npm kurulumu — güncelleme: npm update -g beast-agent' };
+  if (!autoUpdater) return { ok: false, error: 'updater kullanılamıyor (taşınabilir/geliştirme modu)' };
+  try {
+    const r = await autoUpdater.checkForUpdates();
+    const v = r && r.update && r.update.version;
+    return { ok: true, version: v, available: !!v && v !== app.getVersion() };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+});
+
+ipcMain.handle('update:install', () => {
+  if (isNpmMode() || !autoUpdater) return { ok: false, error: 'updater kullanılamıyor' };
+  if (!updateState.downloaded) return { ok: false, error: 'indirilmiş sürüm yok — önce /update' };
+  try { autoUpdater.quitAndInstall(); return { ok: true }; } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+});
+
+ipcMain.handle('update:setAuto', (_e, cfg) => {
+  if (cfg && typeof cfg.autoCheck === 'boolean') settings.autoCheckUpdate = cfg.autoCheck;
+  if (cfg && typeof cfg.autoDownload === 'boolean') {
+    settings.autoDownloadUpdate = cfg.autoDownload;
+    if (autoUpdater) autoUpdater.autoDownload = cfg.autoDownload;
+  }
+  saveSettings();
+  return { autoCheck: settings.autoCheckUpdate !== false, autoDownload: settings.autoDownloadUpdate !== false };
+});
+
+/* /update komutu (masaüstü + WA): hedefi kaydet, kontrol başlat */
+async function runUpdateCommand(reply /* fn(text) */) {
+  if (isNpmMode()) {
+    reply('npm kurulumu — güncellemek için terminalde: `npm update -g beast-agent`');
+    return;
+  }
+  if (!autoUpdater) {
+    reply('Updater bu modda kullanılamıyor (taşınabilir sürüm). Yeni exe: github.com/algokodcom/beast-agent/releases');
+    return;
+  }
+  reply(`🔍 v${app.getVersion()} — güncellemeler kontrol ediliyor…`);
+  try { await autoUpdater.checkForUpdates(); } catch (e) {
+    reply('Güncelleme kontrolü başarısız: ' + String((e && e.message) || e));
+  }
+}
 
 /* #STT: sohbet mikrofonu — MediaRecorder sesini (webm/opus) yerel whisper'a çevir */
 ipcMain.handle('stt:transcribe', async (_e, b64) => {

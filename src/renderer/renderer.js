@@ -508,6 +508,7 @@ async function renderActiveSettingsTab() {
     case 'dash': await renderDashboardPane(); break;
     case 'limits': await renderLimitsPane(); break;
     case 'sec': await renderSecurityPane(); break;
+    case 'update': await renderUpdatePane(); break;
   }
 }
 
@@ -516,7 +517,7 @@ function switchTab(name) {
   document.querySelectorAll('#setTabs .tab').forEach((b) =>
     b.classList.toggle('active', b.dataset.tab === name)
   );
-  for (const p of ['provider', 'fallout', 'memory', 'skills', 'agents', 'tts', 'email', 'integrations', 'websearch', 'events', 'cron', 'usage', 'logs', 'dash', 'limits', 'sec']) {
+  for (const p of ['provider', 'fallout', 'memory', 'skills', 'agents', 'tts', 'email', 'integrations', 'websearch', 'events', 'cron', 'usage', 'logs', 'dash', 'limits', 'sec', 'update']) {
     $('#tab-' + p).hidden = p !== name;
   }
   if (name === 'cron') openCron();
@@ -526,6 +527,7 @@ function switchTab(name) {
   if (name === 'dash') renderDashboardPane();
   if (name === 'limits') renderLimitsPane();
   if (name === 'sec') renderSecurityPane();
+  if (name === 'update') renderUpdatePane();
   if (name === 'agents') refreshAgentsPane();
   if (name === 'websearch') renderWebSearchPane();
   /* Fallout: her açılışta güncel provider zincirini çek */
@@ -1542,8 +1544,83 @@ async function renderSecurityPane() {
   }
 }
 
-/* Sohbete onay kartı düşürür — Onayla / Her zaman / Reddet */
-function showApprovalCard(ev) {
+/* ---------------- Update: sürüm kontrol + otomatik güncelleme ---------------- */
+
+let updatePaneTimer = null;
+
+function renderUpdateStateHtml(st) {
+  let status;
+  if (st.npm) status = _t('up_npm_mode');
+  else if (st.error) status = '⚠ ' + st.error;
+  else if (st.downloaded) status = _t('up_downloaded') + ' (v' + (st.version || '?') + ')';
+  else if (st.progress) status = _t('up_downloading') + ' %' + st.progress.percent;
+  else if (st.checking) status = _t('up_checking');
+  else if (st.available) status = _t('up_available') + ' (v' + (st.version || '?') + ')';
+  else if (st.available === false) status = _t('up_uptodate');
+  else status = '—';
+
+  return `<div class="usage-stat" style="margin-top:10px"><div class="us-label">${_t('up_status')}</div><div class="us-value" style="font-size:14px">${escapeHtml(status)}</div></div>`;
+}
+
+async function renderUpdatePane() {
+  const pane = $('#tab-update');
+  if (!pane) return;
+  const st = await beast.updateStatus().catch(() => null);
+  if (!st) return;
+  clearInterval(updatePaneTimer);
+
+  pane.innerHTML =
+    '<h2>' + _t('up_h2') + '</h2>' +
+    '<div class="sub">' + _t('up_sub') + '</div>' +
+    '<div class="usage-cards">' +
+    `<div class="usage-stat"><div class="us-label">${_t('up_current')}</div><div class="us-value">v${escapeHtml(st.current)}</div></div>` +
+    `<div class="usage-stat"><div class="us-label">${_t('up_latest')}</div><div class="us-value">${st.version ? 'v' + escapeHtml(st.version) : '—'}</div></div>` +
+    '</div>' +
+    renderUpdateStateHtml(st) +
+    `<div class="fo-toggles" style="margin-top:12px">
+      <label class="lock-row"><input type="checkbox" id="upAutoCheck" ${st.autoCheck ? 'checked' : ''}/><span>${_t('up_auto_check')}</span></label>
+      <label class="lock-row"><input type="checkbox" id="upAutoDl" ${st.autoDownload ? 'checked' : ''}/><span>${_t('up_auto_dl')}</span></label>
+    </div>` +
+    (st.npm
+      ? `<div class="codeblock npm" style="margin-top:10px"><pre>npm update -g beast-agent</pre></div>`
+      : `<div class="form-grid" style="grid-template-columns:auto auto;gap:8px;margin-top:12px">
+          <button id="upCheck" class="btn ghost">${_t('up_check_now')}</button>
+          <button id="upInstall" class="btn ghost" ${st.downloaded ? '' : 'disabled style="opacity:.45;cursor:default"'}>${_t('up_install_now')}</button>
+        </div>
+        <div class="sub" style="margin-top:8px">${_t('up_note')}</div>`);
+
+  const chk = pane.querySelector('#upAutoCheck');
+  if (chk) chk.addEventListener('change', async (e) => { await beast.updateSetAuto({ autoCheck: e.target.checked }); });
+  const dl = pane.querySelector('#upAutoDl');
+  if (dl) dl.addEventListener('change', async (e) => { await beast.updateSetAuto({ autoDownload: e.target.checked }); });
+
+  const btnCheck = pane.querySelector('#upCheck');
+  if (btnCheck) btnCheck.addEventListener('click', async () => {
+    btnCheck.disabled = true;
+    const r = await beast.updateCheck().catch(() => ({ ok: false, error: 'ipc' }));
+    if (!r.ok && r.error) toast(r.error);
+  });
+  const btnInstall = pane.querySelector('#upInstall');
+  if (btnInstall) btnInstall.addEventListener('click', async () => {
+    const r = await beast.updateInstall().catch(() => ({ ok: false, error: 'ipc' }));
+    if (!r.ok && r.error) toast(r.error);
+  });
+
+  /* indirme ilerlemesi için sekme açıkken canlı tazele */
+  updatePaneTimer = setInterval(() => {
+    if ($('#tab-update').hidden || els.settingsOverlay.hidden) { clearInterval(updatePaneTimer); return; }
+    beast.updateStatus().then((s) => {
+      if (!s) return;
+      const box = pane.querySelector('.us-value');
+      if (box) {
+        const wrap = pane.querySelector('.usage-stat');
+        if (wrap) wrap.outerHTML = renderUpdateStateHtml(s);
+      }
+    }).catch(() => {});
+  }, 1000);
+}
+
+/* Sohbete onay kartı düşürür — Onayla / Her zaman / Reddet */function showApprovalCard(ev) {
   streamEl = null;
   const card = document.createElement('div');
   card.className = 'tool-card';
@@ -2112,6 +2189,11 @@ function onEvent(ev) {
   if (ev.type === 'approval') {
     if (ev.sessionId && ev.sessionId !== activeId) return;
     showApprovalCard(ev);
+    return;
+  }
+  if (ev.type === 'update') {
+    if (ev.downloaded) toast(_t('up_downloaded') + ' (v' + (ev.version || '?') + ') — /update now');
+    if (!els.settingsOverlay.hidden && setTab === 'update') renderUpdatePane();
     return;
   }
   if (ev.type === 'agents') {

@@ -83,6 +83,16 @@ const PERM_TOOL_SETS = {
 };
 const PERM_LEVELS = ['all', 'web', 'read', 'chat'];
 
+/* İzin değerini normalize eder: 'all' → ['all'], 'web' → ['web'],
+   'web,read' / ['web','read'] → ['web','read'] (sıra PERM_LEVELS'e göre dizilir).
+   Geçersiz değerler atılır; hiçbiri kalmazsa boş dizi döner. */
+function normalizePerms(p) {
+  const arr = Array.isArray(p) ? p.map(String) : String(p == null ? '' : p).split(',');
+  const picked = arr.map((s) => s.trim()).filter((s) => PERM_LEVELS.includes(s));
+  if (picked.includes('all')) return ['all'];
+  return PERM_LEVELS.filter((k) => picked.includes(k));
+}
+
 /* CEO modu: ana (konuşma) oturumunun KULLANAMAYACAĞI uygulayıcı araçlar.
    Bunların hepsi run_background ile paralel ajana devredilir — CEO sadece
    konuşur, planlar, emir verir ve takip eder. */
@@ -190,7 +200,7 @@ class Engine {
     this.sel = this._resolve(opts.modelOverride) || this.cfg.defaultSelection || null;
     this.roleModels = opts.roleModels || {}; // { vision?, terminal?, coding?, subagent? } // providerId::model string
     this.lockdown = !!opts.lockdown; // varsayılan kısıt (oturum bazlı override edilmezse)
-    this.sessionPerm = new Map(); // sessionId -> 'web'|'read'|'chat' (kişi bazlı izin)
+    this.sessionPerm = new Map(); // sessionId -> ['web'] | ['web','read'] | ['chat'] (kişi/bot bazlı izin)
     this.sessionTools = new Map(); // sessionId -> Set(araç adları) — bot skill kısıtı
     this.resolveBot = opts.resolveBot || null; // botId -> bot bilgisi (main enjekte eder)
     /* bot oturumu hafıza köprüsü: botun kendi SOUL/USER/MEMORY dosyaları */
@@ -285,12 +295,13 @@ class Engine {
     this.lockdown = !!v;
   }
 
-  /* Kişi bazlı granül izin — WhatsApp oturumları için. 'all' kaydı siler. */
+  /* Kişi/bot bazlı granül izin — WhatsApp oturumları için.
+     Tek seviye ('web') ya da çoklu (['web','read']) verilebilir; 'all' kaydı siler. */
   setSessionPerm(sessionId, perm) {
     const id = String(sessionId || '');
     if (!id) return;
-    const p = PERM_LEVELS.includes(perm) ? perm : null;
-    if (p && p !== 'all') this.sessionPerm.set(id, p);
+    const arr = normalizePerms(perm);
+    if (arr.length && !arr.includes('all')) this.sessionPerm.set(id, arr);
     else this.sessionPerm.delete(id);
   }
 
@@ -347,8 +358,8 @@ class Engine {
 
   sessionPermFor(sessionId) {
     const p = this.sessionPerm.get(String(sessionId || ''));
-    if (p) return p;
-    return this.lockdown ? 'chat' : 'all';
+    if (p && p.length) return p;
+    return this.lockdown ? ['chat'] : ['all'];
   }
 
   setRoleModels(map) {
@@ -929,7 +940,7 @@ class Engine {
     for (const v of this.listSessions()) {
       const s = this._load(v.id);
       if (s && s.notes && String(s.notes).trim()) {
-        out.push({ id: s.id, code: s.code || '', title: v.title, updatedAt: v.updatedAt, count: v.count, notes: String(s.notes) });
+        out.push({ id: s.id, code: s.code || '', title: v.title, updatedAt: v.updatedAt, count: v.count, notes: String(s.notes), botId: s.botId || '' });
       }
     }
     return out;
@@ -2063,9 +2074,14 @@ class Engine {
       : session.bcCode
         ? this.buildBcSystem(session)
         : this.buildSystem(promptText, session);
-    // Granül izin: oturumun yetki seviyesine göre araç seti daraltılır
-    const perm = this.sessionPermFor(session.id);
-    const allowedSet = PERM_TOOL_SETS[perm] || null;
+    // Granül izin: oturumun yetki seviyesine göre araç seti daraltılır.
+    // Çoklu izin (ör. web+read) seçiliyse kümeler BİRLEŞİR — hepsinin araçları açık olur.
+    const perms = this.sessionPermFor(session.id);
+    let allowedSet = null;
+    if (!perms.includes('all')) {
+      allowedSet = new Set();
+      for (const p of perms) for (const t of PERM_TOOL_SETS[p] || []) allowedSet.add(t);
+    }
     let activeTools = allowedSet ? toolsList.filter((t) => allowedSet.has(t.function.name)) : toolsList;
     /* bot skill kısıtı: bota verilen yetkiye göre araç seti daraltılır */
     const toolLimit = this.sessionTools.get(String(session.id));
@@ -2077,17 +2093,16 @@ class Engine {
       /* CEO: uygulayıcı araçlar kapalı — her şey paralel ajana devredilir */
       activeTools = activeTools.filter((t) => !CEO_EXEC_TOOLS.has(t.function.name));
     }
-    if (perm === 'chat') {
+    if (perms.length === 1 && perms[0] === 'chat') {
       system +=
         '\n\n# KISITLI MOD\nTüm araçların (komut, dosya, web, tarayıcı, hafıza) kapalı. Sadece yazarak cevap ver. ' +
         'Bilgisayarla ilgili bir işlem istenirse bu modda yapamayacağını kibarca söyle.';
-    } else if (perm === 'web') {
+    } else if (!perms.includes('all')) {
+      const bits = [];
+      if (perms.includes('web')) bits.push('web ve tarayıcı araçlarına erişimin var');
+      if (perms.includes('read')) bits.push('bilgisayarı SADECE OKUYABİLİRSİN (klasör listeleme, dosya okuma) + web/tarayıcı');
       system +=
-        '\n\n# SINIRLI YETKİ (web)\nSadece web ve tarayıcı araçlarına erişimin var; dosya okuma/yazma ve komut çalıştırma YOK. ' +
-        'Böyle bir istek gelirse yetkin olmadığını söyle.';
-    } else if (perm === 'read') {
-      system +=
-        '\n\n# SINIRLI YETKİ (salt-okunur)\nBilgisayarı SADECE OKUYABİLİRSİN (klasör listeleme, dosya okuma) + web/tarayıcı. ' +
+        '\n\n# SINIRLI YETKİ\n' + bits.join('; ') + '. ' +
         'Dosya yazma, silme ve komut çalıştırma YOK; istenirse yapamayacağını söyle.';
     }
     /* bot kimliği: bota bağlı oturumlarda kişilik + izolasyon kuralları */
@@ -3484,3 +3499,6 @@ module.exports.sanitizeTodoItems = sanitizeTodoItems;
 module.exports.parseReflectionJson = parseReflectionJson;
 module.exports.CEO_EXEC_TOOLS = CEO_EXEC_TOOLS;
 module.exports.BG_HIDDEN_TOOLS = BG_HIDDEN_TOOLS;
+module.exports.PERM_TOOL_SETS = PERM_TOOL_SETS;
+module.exports.PERM_LEVELS = PERM_LEVELS;
+module.exports.normalizePerms = normalizePerms;

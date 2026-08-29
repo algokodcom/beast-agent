@@ -1719,7 +1719,8 @@ async function renderUpdatePane(autoCheck) {
   const btnInstall = pane.querySelector('#upInstall');
   if (btnInstall) btnInstall.addEventListener('click', async () => {
     const r = await beast.updateInstall().catch(() => ({ ok: false, error: 'ipc' }));
-    if (!r.ok && r.error) toast(r.error);
+    if (r.ok && r.npm) toast(_t('up_npm_started'));
+    else if (!r.ok && r.error) toast(r.error);
   });
 
   /* indirme ilerlemesi için sekme açıkken canlı tazele — YALNIZ durum kutusu */
@@ -2224,7 +2225,42 @@ function renderBotPage() {
   else if (tab === 'log') renderBotLog(pane, b);
   else if (tab === 'watcher') renderBotWatcher(pane, b);
   else if (tab === 'stats') renderBotStats(pane, b);
+  else if (tab === 'notes') renderBotNotes(pane, b);
   renderBotChats(b);
+}
+
+/* --- Notlar sekmesi: oturum notları — konuşma kodu, başlık, tarih ve özet metni.
+    Admin bot (beast) tüm oturumları görür; müşteri botu yalnız kendi oturumlarını. --- */
+async function renderBotNotes(pane, b) {
+  pane.innerHTML = `<h2>${_t('notes_h2')}</h2><div class="sub">${_t('notes_sub')}</div>`;
+  let all = [];
+  try { all = await beast.listNotes(); } catch {}
+  const list = (b.admin ? all : all.filter((n) => (n.botId || 'beast') === b.id))
+    .slice()
+    .sort((x, y) => String(y.updatedAt).localeCompare(String(x.updatedAt)));
+  if (!list.length) {
+    pane.insertAdjacentHTML('beforeend', `<div class="mini-empty">${_t('notes_empty')}</div>`);
+    return;
+  }
+  const f = document.createElement('div');
+  f.className = 'bot-form';
+  for (const n of list) {
+    const when = n.updatedAt ? new Date(n.updatedAt).toLocaleString('tr-TR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '';
+    const card = document.createElement('div');
+    card.className = 'notes-card';
+    card.innerHTML =
+      `<div class="notes-head"><div class="skill-name">${escapeHtml((b.icon || '') + ' ' + (n.code || '?'))} — ${escapeHtml(n.title || '')}</div>` +
+      `<div class="notes-meta">${escapeHtml(when)} · ${n.count || 0} ${_t('bot_stat_msgs')}</div></div>` +
+      `<div class="notes-body">${escapeHtml(String(n.notes || '').slice(0, 4000))}</div>` +
+      `<div style="margin-top:8px"><button class="btn ghost notes-del">${_t('notes_del')}</button></div>`;
+    card.querySelector('.notes-del').addEventListener('click', async () => {
+      await beast.clearNotes(n.id).catch(() => {});
+      toast(_t('deleted'));
+      renderBotNotes(pane, b);
+    });
+    f.appendChild(card);
+  }
+  pane.appendChild(f);
 }
 
 function renderBotOverview(pane) {
@@ -2313,6 +2349,12 @@ function renderBotSettings(pane, b) {
   const skillChecks = BOT_SKILLS
     .map(([k, lbl]) => `<label><input type="checkbox" data-skill="${k}" ${(b.skills || {})[k] ? 'checked' : ''}/> ${lbl}</label>`)
     .join('');
+  /* Yetki: 'all' tek başına tüm araçları verir (özel); web/read/chat çoklu seçilebilir */
+  const PERM_OPTS = [['all', _t('wa_perm_all')], ['web', 'Web'], ['read', _t('wa_perm_read')], ['chat', _t('wa_perm_chat')]];
+  const curPerms = Array.isArray(b.perm) ? b.perm : [b.perm || 'all'];
+  const permChecks = PERM_OPTS
+    .map(([k, lbl]) => `<label><input type="checkbox" data-perm="${k}" ${curPerms.includes(k) ? 'checked' : ''}/> ${lbl}</label>`)
+    .join('');
   const numRows = (b.numbers || [])
     .map((n) => `<div class="bot-num-row" data-num="${n.num}"><span class="n">+${escapeHtml(n.num)}${n.name ? ' · ' + escapeHtml(n.name) : ''}</span><span class="x" title="${_t('bot_num_del')}">×</span></div>`)
     .join('');
@@ -2334,12 +2376,8 @@ function renderBotSettings(pane, b) {
     <div class="bot-checks" id="bSee">${seeChecks}</div>
     ${b.admin ? '' : `
     <label class="mem-label">${_t('bot_perm')}</label>
-    <select id="bPerm" class="inp">
-      <option value="all" ${b.perm === 'all' ? 'selected' : ''}>${_t('wa_perm_all')}</option>
-      <option value="web" ${b.perm === 'web' ? 'selected' : ''}>web</option>
-      <option value="read" ${b.perm === 'read' ? 'selected' : ''}>${_t('wa_perm_read')}</option>
-      <option value="chat" ${b.perm === 'chat' ? 'selected' : ''}>${_t('wa_perm_chat')}</option>
-    </select>
+    <div class="bot-checks" id="bPerm">${permChecks}</div>
+    <div class="sub" style="margin-top:4px">${_t('bot_perm_note')}</div>
     <label class="mem-label">${_t('bot_skills')}</label>
     <div class="bot-checks" id="bSkills">${skillChecks}</div>`}
     <label class="mem-label">${_t('bot_browser')}</label>
@@ -2387,6 +2425,18 @@ function renderBotSettings(pane, b) {
       if (bb) renderBotSettings(pane, bb);
     })
   );
+  /* 'all' hariç diğer izinler çoklu seçilebilir; 'all' işaretlenince diğerleri kapanır */
+  f.querySelectorAll('#bPerm input').forEach((c) =>
+    c.addEventListener('change', () => {
+      if (c.dataset.perm === 'all' && c.checked) {
+        f.querySelectorAll('#bPerm input').forEach((x) => { if (x !== c) x.checked = false; });
+      } else if (c.checked) {
+        const all = f.querySelector('#bPerm input[data-perm="all"]');
+        if (all) all.checked = false;
+      }
+      if (![...f.querySelectorAll('#bPerm input')].some((x) => x.checked)) c.checked = true; // en az biri seçili kalsın
+    })
+  );
   $('#bSave').addEventListener('click', async () => {
     const patch = {
       name: $('#bName').value.trim(),
@@ -2399,7 +2449,8 @@ function renderBotSettings(pane, b) {
       numbers: (b.numbers || []).map((n) => n.num),
     };
     if (!b.admin) {
-      patch.perm = $('#bPerm').value;
+      const selPerms = [...f.querySelectorAll('#bPerm input:checked')].map((c) => c.dataset.perm);
+      patch.perm = selPerms.includes('all') ? 'all' : selPerms;
       const sk = {};
       f.querySelectorAll('#bSkills input').forEach((c) => { sk[c.dataset.skill] = c.checked; });
       patch.skills = sk;

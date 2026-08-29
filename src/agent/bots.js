@@ -239,9 +239,23 @@ function update(id, patch) {
       changes.push('prompt güncellendi');
       b.prompt = String(patch.prompt).slice(0, 4000);
     }
-    if (['all', 'web', 'read', 'chat'].includes(patch.perm) && patch.perm !== b.perm) {
-      changes.push(`perm: ${b.perm} → ${patch.perm}`);
-      b.perm = patch.perm;
+    if (patch.perm !== undefined) {
+      /* 'all' tek başına tüm araçları verir; web/read/chat çoklu seçilebilir
+         (['web','read'] gibi dizi ya da 'web,read' gibi string kabul edilir) */
+      const PERMS_ALL = ['all', 'web', 'read', 'chat'];
+      let nextPerm = null;
+      if (Array.isArray(patch.perm)) {
+        const picked = [...new Set(patch.perm.map((x) => String(x).trim()).filter((x) => PERMS_ALL.includes(x)))];
+        nextPerm = picked.includes('all') ? 'all' : (picked.length ? picked : 'chat');
+      } else if (typeof patch.perm === 'string') {
+        const arr = patch.perm.split(',').map((x) => x.trim()).filter((x) => PERMS_ALL.includes(x));
+        if (arr.length) nextPerm = arr.includes('all') ? 'all' : (arr.length === 1 ? arr[0] : arr);
+      }
+      if (nextPerm !== null && JSON.stringify(nextPerm) !== JSON.stringify(b.perm)) {
+        const fp = (p) => (Array.isArray(p) ? '[' + p.join('+') + ']' : String(p));
+        changes.push(`perm: ${fp(b.perm)} → ${fp(nextPerm)}`);
+        b.perm = nextPerm;
+      }
     }
     if (patch.skills && typeof patch.skills === 'object') {
       const merged = { ...DEFAULT_SKILLS, ...(b.skills || {}) };

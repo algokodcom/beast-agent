@@ -193,6 +193,7 @@ const BUILTIN_PROVIDERS = [
   { id: 'gemini', name: 'Google Gemini', baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai', hint: 'aistudio.google.com/apikey' },
   { id: 'zhipu', name: 'Zhipu AI', baseUrl: 'https://api.z.ai/api/paas/v4', hint: 'z.ai model konsolu' },
   { id: 'groq', name: 'Groq', baseUrl: 'https://api.groq.com/openai/v1', hint: 'console.groq.com/keys' },
+  { id: 'nvidia', name: 'NVIDIA NIM', baseUrl: 'https://integrate.api.nvidia.com/v1', hint: 'build.nvidia.com — ücretsiz kredi veriyor, talep yüksek' },
 ];
 const SESSIONS_DIR = path.join(APP_DIR, 'sessions');
 const SETTINGS_FILE = path.join(APP_DIR, 'settings.json');
@@ -1333,13 +1334,37 @@ function scheduleReminder({ when, message, sessionId, repeat }) {
 /* ---------------- BOT SİSTEMİ yardımcıları ----------------
    Bot eşleştirme, izolasyon, whitelist.json aynası ve bot istatistikleri. */
 
-const PERM_RANK = { all: 3, web: 2, read: 1, chat: 0 }; // küçük = kısıtlı
+/* İzin değerini araç kümesine çevirir; null = tüm araçlar ('all').
+   'web' / ['web','read'] / 'web,read' biçimlerini kabul eder. */
+function permToToolSet(p) {
+  const { PERM_TOOL_SETS } = require('./agent/engine');
+  const set = new Set();
+  for (const raw of Array.isArray(p) ? p : String(p == null ? 'all' : p).split(',')) {
+    const k = String(raw).trim() || 'all';
+    if (k === 'all' || !PERM_TOOL_SETS[k]) return null;
+    for (const t of PERM_TOOL_SETS[k]) set.add(t);
+  }
+  return set;
+}
 
+/* Hangi izin daha kısıtlıysa o kazanır. Dizi (çoklu bot izni) destekler:
+   araç kümesi diğerinin alt kümesiyse o geçer; ikisi de alt küme değilse
+   daha küçük küme kazanır (eşitse kişi yetkisi). */
 function moreRestrictivePerm(a, b) {
-  const ra = PERM_RANK[a] ?? 3;
-  const rb = PERM_RANK[b] ?? 3;
-  const keys = Object.keys(PERM_RANK);
-  return keys.find((k) => PERM_RANK[k] === Math.min(ra, rb)) || 'all';
+  const sa = permToToolSet(a);
+  const sb = permToToolSet(b);
+  if (sa === null && sb === null) return 'all';
+  if (sa === null) return b; // b kısıtlı
+  if (sb === null) return a; // a kısıtlı
+  const aSubB = [...sa].every((t) => sb.has(t));
+  const bSubA = [...sb].every((t) => sa.has(t));
+  if (aSubB && !bSubA) return a;
+  if (bSubA && !aSubB) return b;
+  return sa.size <= sb.size ? a : b;
+}
+
+function fmtPerm(p) {
+  return Array.isArray(p) ? '[' + p.join('+') + ']' : String(p);
 }
 
 /* Bot skill checkbox'ları → oturumun görebileceği araç adları.
@@ -1623,7 +1648,7 @@ async function processWaMessage(jid, payload, senderNum, requeues = 0) {
   } else {
     engine.setSessionTools(sid, null);
   }
-  waLog(`perm=${perm} bot=${botId} sid=${sid}`);
+  waLog(`perm=${fmtPerm(perm)} bot=${botId} sid=${sid}`);
 
   const participantName = payload.participant ? '+' + String(payload.participant).split('@')[0].split(':')[0] : '';
   /* #v13.1 rol: SAHİP vs MİSAFİR — ajan kime konuştuğunu net bilsin */
@@ -3585,24 +3610,82 @@ ipcMain.handle('update:check', async () => {
 });
 
 /* npm kurulumunda KENDİ KENDİNİ GÜNCELLEME:
-   detached helper bırakır (uygulama çıkınca npm install + yeniden başlatma), sonra app.quit() */
+   helper script %APPDATA%\beast'a yazılır (paket dizini değişse de yaşar) ve
+   detached çalışır: 1) uygulama PID'i tamamen çıkana kadar bekler (en çok 30 sn,
+   sonra zorla kapatır — EBUSY dosya kilidinin numarası), 2) npm install -g
+   beast-agent@latest — kilide karşı 5 deneme, 3) tüm çıktı update.log'a yazılır,
+   4) beast-agent komut shim'i üzerinden yeniden başlatır (electron sürümü
+   değişse de yol bozulmaz). Sonra app.quit(). */
 function npmSelfUpdate() {
   try {
-    const electronExe = process.execPath;
-    const appPath = app.getAppPath();
+    fs.mkdirSync(APP_DIR, { recursive: true });
+    const pid = String(process.pid);
     if (process.platform === 'win32') {
-      const ps =
-        'Start-Sleep -Seconds 3;' +
-        'npm install -g beast-agent@latest;' +
-        'Start-Sleep -Seconds 1;' +
-        `Start-Process -FilePath '${electronExe}' -ArgumentList '\"${appPath}\"'`;
-      spawn('powershell.exe', ['-NoProfile', '-Command', ps], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
+      const ps = [
+        "param([int]$ProcId = 0)",
+        "$ErrorActionPreference = 'Continue'",
+        "$Log = Join-Path $env:APPDATA 'beast\\update.log'",
+        "function L([string]$m) { try { Add-Content -LiteralPath $Log -Value (\"[\" + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + \"] \" + $m) } catch {} }",
+        "L \"=== self-update basladi (app pid: $ProcId) ===\"",
+        "if ($ProcId -gt 0) {",
+        "  $deadline = (Get-Date).AddSeconds(30)",
+        "  while ((Get-Date) -lt $deadline) {",
+        "    if (-not (Get-Process -Id $ProcId -ErrorAction SilentlyContinue)) { break }",
+        "    Start-Sleep -Milliseconds 500",
+        "  }",
+        "  if (Get-Process -Id $ProcId -ErrorAction SilentlyContinue) {",
+        "    L 'uygulama hala acik - zorla kapatiliyor'",
+        "    try { Stop-Process -Id $ProcId -Force } catch {}",
+        "    Start-Sleep -Seconds 2",
+        "  }",
+        "}",
+        "L 'uygulama kapandi, npm install basliyor'",
+        "$npmCmd = (Get-Command 'npm.cmd' -ErrorAction SilentlyContinue).Source",
+        "if (-not $npmCmd) { $npmCmd = Join-Path $env:APPDATA 'npm\\npm.cmd' }",
+        "$ok = $false",
+        "for ($i = 1; $i -le 5; $i++) {",
+        "  if ($ok) { break }",
+        "  L \"npm install -g beast-agent@latest (deneme $i)\"",
+        "  $out = & $npmCmd install -g beast-agent@latest 2>&1",
+        "  $code = $LASTEXITCODE",
+        "  foreach ($line in @($out)) { L \"  npm: $line\" }",
+        "  if ($code -eq 0) { $ok = $true } else { Start-Sleep -Seconds 3 }",
+        "}",
+        "if (-not $ok) {",
+        "  L 'HATA: npm install 5 denemede basarisiz - uygulama yeniden baslatilmiyor'",
+        "  exit 1",
+        "}",
+        "L 'npm install tamam, yeniden baslatma'",
+        "$shim = Get-Command 'beast-agent.cmd' -ErrorAction SilentlyContinue",
+        "if ($shim) {",
+        "  L \"shim uzerinden: $($shim.Source)\"",
+        "  Start-Process -FilePath $shim.Source -WindowStyle Hidden",
+        "} else {",
+        "  $prefix = (& $npmCmd prefix -g 2>$null)",
+        "  if (-not $prefix) { $prefix = Join-Path $env:APPDATA 'npm' }",
+        "  $exe = Join-Path $prefix 'node_modules\\electron\\dist\\electron.exe'",
+        "  if (-not (Test-Path $exe)) { $exe = Join-Path $prefix 'node_modules\\beast-agent\\node_modules\\electron\\dist\\electron.exe' }",
+        "  $appDir = Join-Path $prefix 'node_modules\\beast-agent'",
+        "  L \"shim bulunamadi - dogrudan: $exe\"",
+        "  Start-Process -FilePath $exe -ArgumentList \"`\"$appDir`\"\" -WindowStyle Hidden",
+        "}",
+        "L '=== self-update bitti ==='",
+      ].join('\r\n');
+      const psFile = path.join(APP_DIR, 'update-helper.ps1');
+      fs.writeFileSync(psFile, ps, 'utf8');
+      spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', psFile, '-ProcId', pid],
+        { detached: true, stdio: 'ignore', windowsHide: true }).unref();
     } else {
-      const sh = `sleep 3; npm install -g beast-agent@latest; sleep 1; '${electronExe}' '${appPath}' &`;
+      const sh =
+        `i=0; while [ $i -lt 60 ] && kill -0 ${pid} 2>/dev/null; do i=$((i+1)); sleep 0.5; done; ` +
+        'ok=0; for n in 1 2 3 4 5; do npm install -g beast-agent@latest && ok=1 && break; sleep 3; done; ' +
+        'if [ $ok -eq 1 ]; then nohup beast-agent >/dev/null 2>&1 & fi';
       spawn('sh', ['-c', sh], { detached: true, stdio: 'ignore' }).unref();
     }
     log.info('main', 'npm self-update: helper bırakıldı, uygulama kapatılıyor');
-  } catch {}
+  } catch (e) {
+    log.error('main', 'npm self-update hatası: ' + String((e && e.message) || e));
+  }
   setTimeout(() => { try { app.quit(); } catch {} }, 400);
 }
 

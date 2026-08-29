@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 'use strict';
 
-/* Beast Agent global npm başlatıcısı:
-   `beast-agent`            → uygulamayı detached başlatır, terminali hemen serbest bırakır
-   `beast-agent update`     → npm'den en son sürümü yükler (uygulama kapalıyken çalıştır) */
+/* Beast Agent global npm başlatıcısı (`beast` kısa adı da aynı scripte bağlı):
+   `beast` / `beast-agent`          → uygulamayı detached başlatır, terminali hemen serbest bırakır
+   `beast update`                   → npm'den en son sürümü yükler (uygulama kapalıyken çalıştır) */
 
 const { spawn, spawnSync } = require('child_process');
 const path = require('path');
@@ -62,10 +62,20 @@ if (process.argv[2] === 'update') {
   } else {
     try { spawnSync('pkill', ['-f', 'node_modules/beast-agent'], { stdio: 'ignore' }); } catch {}
   }
-  const r = spawnSync('npm', ['install', '-g', 'beast-agent@latest'], { stdio: 'inherit', shell: isWin });
-  if (r.status !== 0) {
+  /* dosya kilidi (EBUSY) bazen ilk denemede patlar — 5 deneme hakkı */
+  let ok = false;
+  for (let i = 1; i <= 5 && !ok; i++) {
+    const r = spawnSync('npm', ['install', '-g', 'beast-agent@latest'], { stdio: 'inherit', shell: isWin });
+    ok = r.status === 0;
+    if (!ok && i < 5) {
+      console.log(`  \u2022 deneme ${i}/5 ba\u015Far\u0131s\u0131z (dosya kilidi olabilir) \u2014 3 sn sonra tekrar\u2026`);
+      if (isWin) spawnSync('powershell.exe', ['-NoProfile', '-Command', 'Start-Sleep -Seconds 3'], { stdio: 'ignore' });
+      else spawnSync('sleep', ['3']);
+    }
+  }
+  if (!ok) {
     console.log('\n\u2717 g\u00FCncelleme ba\u015Far\u0131s\u0131z \u2014 elle: npm install -g beast-agent@latest');
-    process.exit(r.status || 1);
+    process.exit(1);
   }
   console.log('\n\u2713 beast-agent g\u00FCncellendi \u2014 uygulama ba\u015Flat\u0131l\u0131yor\u2026');
   try {

@@ -37,7 +37,7 @@ Then start it:
 beast-agent
 ```
 
-That's it — the app window opens. On first launch Beast also creates a **desktop shortcut** and registers itself to **start with Windows** (lives in the tray). Later updates: close the app and run `beast-agent update`.
+That's it — the app window opens. On first launch Beast also creates a **desktop shortcut** and registers itself to **start with Windows** (lives in the tray). Later updates: close the app and run `beast update` (or `beast-agent update`).
 
 ## ⚙️ Configuration
 

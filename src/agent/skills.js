@@ -84,6 +84,7 @@ Tüm veri tek kökte: \`%APPDATA%\\beast\\\` (test/taşınabilir için \`BEAST_D
 | \`watchers.json\` | Web/batarya izleyicileri |
 | \`wa-auth\\\` | WhatsApp Baileys eşleme auth'u — SİLME |
 | \`wa-chats.json\`, \`wa.log\` | WA sohbet eşlemesi ve log |
+| \`bots.json\`, \`bots/<id>/\`, \`whitelist.json\` | Bot sistemi: bot kaydı (max 5, \`beast\` admin silinemez), her botun izole klasörü (config.json, memory.md, yetkiler.json, logs/), numara→bot eşlemesi. Bağlı olmayan numara beast'e düşer |
 | \`logs\\\`, \`scripts\\\` | Çalışma logları / kullanıcı scriptleri |
 
 ## Sağlık Kontrolleri

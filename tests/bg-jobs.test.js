@@ -21,13 +21,13 @@ function tmpEngine() {
   return { eng, events, dir };
 }
 
-test('CEO modu varsayılan açık; setCeoMode çalışır', () => {
+test('CEO modu varsayılan KAPALI; setCeoMode çalışır', () => {
   const { eng } = tmpEngine();
-  assert.strictEqual(eng.ceoMode, true);
-  eng.setCeoMode(false);
   assert.strictEqual(eng.ceoMode, false);
   eng.setCeoMode(true);
   assert.strictEqual(eng.ceoMode, true);
+  eng.setCeoMode(false);
+  assert.strictEqual(eng.ceoMode, false);
 });
 
 test('CEO yasaklı araç seti uygulayıcıları kapsar, yönetici araçlarını değil', () => {
@@ -44,6 +44,7 @@ test('CEO yasaklı araç seti uygulayıcıları kapsar, yönetici araçlarını 
 
 test('buildSystem CEO modunda CEO bloğu içerir; kapalıyken içermez', () => {
   const { eng } = tmpEngine();
+  eng.setCeoMode(true);
   const onSys = eng.buildSystem('merhaba');
   assert.ok(onSys.includes('# CEO MODU'), 'ceo bloğu');
   assert.ok(onSys.includes('PARALEL ajana devret'));

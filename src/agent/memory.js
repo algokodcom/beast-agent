@@ -84,6 +84,41 @@ function append(text) {
   }
 }
 
+/* USER.md: kullanıcının PROİL dosyası (ad, hitap, tercihler, projeler).
+   append'in satır-satıır dedup'ı burada da geçerli; kayıt sayısı sınırlı tutulur. */
+const USER_CAP = 60;
+
+function appendUser(text) {
+  try {
+    ensure();
+    const t = String(text || '').replace(/\s+/g, ' ').trim().slice(0, 300);
+    if (!t) return { ok: false, error: 'empty' };
+    const lines = read('USER.md')
+      .split('\n')
+      .map((l) => l.replace(/^[-*]\s*/, '').trim())
+      .filter(Boolean);
+    /* profil anahtarı: "Konu: ..." satırlarında Konu — "Hitap: kanka" sonra
+       "Hitap: Batuhan" gelirse satır eklenmez, eskisi GÜNCELLENİR */
+    const topicOf = (s) => {
+      const c = fold(s).indexOf(':');
+      return (c > 0 ? fold(s).slice(0, c) : fold(s)).replace(/[^a-z0-9]+/g, ' ').trim();
+    };
+    const topic = topicOf(t);
+    const idx = lines.findIndex((l) => topicOf(l) === topic);
+    if (idx >= 0) {
+      if (lines[idx] === t) return { ok: true, duplicate: true };
+      lines[idx] = t;
+    } else {
+      lines.push(t);
+    }
+    while (lines.length > USER_CAP) lines.shift();
+    fs.writeFileSync(path.join(memDir(), 'USER.md'), lines.map((l) => '- ' + l).join('\n') + '\n');
+    return { ok: true, updated: idx >= 0 };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+}
+
 const ALLOWED_FILES = ['SOUL.md', 'MEMORY.md', 'USER.md'];
 
 function save(file, content) {
@@ -368,6 +403,7 @@ module.exports = {
   memDir,
   loadAll,
   append,
+  appendUser,
   save,
   entries,
   relevantFor,

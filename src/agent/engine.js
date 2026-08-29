@@ -6,7 +6,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { chatStream } = require('./llm');
+const { chatStream, chatOnce } = require('./llm');
 const { chatCompletionsUrl } = require('./config');
 const tools = require('./tools');
 const memory = require('./memory');
@@ -191,6 +191,14 @@ class Engine {
     this.roleModels = opts.roleModels || {}; // { vision?, terminal?, coding?, subagent? } // providerId::model string
     this.lockdown = !!opts.lockdown; // varsayılan kısıt (oturum bazlı override edilmezse)
     this.sessionPerm = new Map(); // sessionId -> 'web'|'read'|'chat' (kişi bazlı izin)
+    this.sessionTools = new Map(); // sessionId -> Set(araç adları) — bot skill kısıtı
+    this.resolveBot = opts.resolveBot || null; // botId -> bot bilgisi (main enjekte eder)
+    /* bot oturumu hafıza köprüsü: botun kendi SOUL/USER/MEMORY dosyaları */
+    this.botMemory = opts.botMemory || null;
+    /* ANA KOD KİLİDİ: agent kendi kaynak koduna dokunamaz (yazma/silme yok, okuma serbest) */
+    this.protectedDirs = (opts.protectedDirs || [])
+      .map((d) => String(d).replace(/[\\/]+$/, '').toLowerCase().replace(/\//g, '\\'))
+      .filter(Boolean);
     this.deletedModels = new Set(opts.deletedModels || []); // kullanıcı tarafından listeden silinenler
     this.fallout = this._normalizeFallout(opts.fallout); // FALLOUT: yedek provider/model/key zinciri
     this.limits = this._normalizeLimits(opts.limits); // provider bazlı max input limiti + bağlam sıkıştırma
@@ -220,8 +228,8 @@ class Engine {
     /* dahili OCR köprüsü: { ocr({image, lang}) } — görsel desteklemeyen modeller için */
     this.ocr = opts.ocr || null;
     this.email = opts.email || null; // e-posta kancaları {list, read, send}
-    /* CEO modu: konuşan ana ajan iş YAPMAZ — paralel ajana devreder (varsayılan açık) */
-    this.ceoMode = opts.ceoMode !== false;
+    /* CEO modu: konuşan ana ajan iş YAPMAZ — paralel ajana devreder (varsayılan KAPALI) */
+    this.ceoMode = opts.ceoMode === true;
     /* Düşünme (reasoning) seviyesi: 0=Kapalı .. 5=Max (/think veya üst bardan seçilir) */
     this.thinkLevel = Math.min(5, Math.max(0, Math.round(Number(opts.thinkLevel) || 0)));
     /* paralel arka plan ajanları kaydı: bgSessionId -> job */
@@ -284,6 +292,57 @@ class Engine {
     const p = PERM_LEVELS.includes(perm) ? perm : null;
     if (p && p !== 'all') this.sessionPerm.set(id, p);
     else this.sessionPerm.delete(id);
+  }
+
+  /* BOT SİSTEMİ: oturumu bir bota bağla (kalıcı — session dosyasına yazılır) */
+  setSessionBot(sessionId, botId) {
+    const id = String(sessionId || '');
+    if (!id) return;
+    let s;
+    try { s = this._load(id); } catch { return; }
+    const bid = botId ? String(botId) : null;
+    if ((s.botId || null) === bid) {
+      if (bid) this.cache.get(id).botId = bid;
+      return;
+    }
+    s.botId = bid;
+    try {
+      fs.appendFileSync(this._file(id), JSON.stringify({ t: 'bot', botId: bid, at: new Date().toISOString() }) + '\n');
+    } catch {}
+  }
+
+  /* BOT SİSTEMİ: oturumun görabileceği araç seti (bot skill yetkileri) */
+  setSessionTools(sessionId, names) {
+    const id = String(sessionId || '');
+    if (!id) return;
+    if (names && names.size) this.sessionTools.set(id, new Set(names));
+    else this.sessionTools.delete(id);
+  }
+
+  /* Oturumun bağlı olduğu MÜŞTERİ botu (admin/seasız → null → global hafıza) */
+  _sessionBotCtx(session) {
+    if (!session || !session.botId || typeof this.resolveBot !== 'function') return null;
+    const b = this.resolveBot(session.botId);
+    return b && !b.admin ? b : null;
+  }
+
+  /* Botun sistem promptuna eklenen kimlik/kişilik bloğu (yalnız kendi hafızası) */
+  _botSystemBlock(session) {
+    if (!session || !session.botId || typeof this.resolveBot !== 'function') return '';
+    const bot = this.resolveBot(session.botId);
+    if (!bot) return '';
+    const isAdmin = !!bot.admin;
+    if (isAdmin && !bot.prompt && !(bot.numbers || []).length) return ''; // admin + kişiselleştirme yoksa token harcama
+    const lines = [];
+    lines.push(`# BOT KİMLİĞİ`);
+    lines.push(`Sen "${bot.name}" adlı bağımsız bir botsun (kimlik: ${bot.id})${isAdmin ? ' — yönetici bottasın' : ' — müşteri bottasın'}.`);
+    if (bot.prompt) lines.push(`ROL VE GÖREV:\n${bot.prompt}`);
+    if (bot.numbers && bot.numbers.length) {
+      lines.push(`Sana bağlı WhatsApp numaraları: ${bot.numbers.join(', ')}`);
+    }
+    lines.push(`Diğer botların hafıza/log/veri/araçlarına erişimin yok; istemek de çalışmaz. Sadece kendi görev alanına odaklan.`);
+    lines.push(`Dış tarayıcı yetkin: ${bot.extBrowser ? 'VAR (kullanıcı açıkça isterse kullanabilirsin)' : 'YOK (kullanıcı dış tarayıcı isterse kibarca reddet ve sonucu DAHİLİ tarayıcıda göster)'}.`);
+    return lines.join('\n');
   }
 
   sessionPermFor(sessionId) {
@@ -674,6 +733,9 @@ class Engine {
             /* #17 paralel ajan oturumu: temiz başlık + işaret */
             session.bgTitle = String(rec.title || '');
             session.bgOf = String(rec.bgOf || '');
+          } else if (rec.t === 'bot') {
+            /* bot sistemi: oturum hangi bota bağlı */
+            session.botId = rec.botId || null;
           } else if (rec.t === 'todo') {
             session.todos = sanitizeTodoItems(rec.items);
           } else if (rec.t === 'notes') {
@@ -739,7 +801,7 @@ class Engine {
         let r;
         try { r = JSON.parse(l); } catch { continue; }
         if (r.t === 'meta') out.push(JSON.stringify({ t: 'meta', id: s.id, code: s.code, createdAt: s.createdAt }));
-        else if (r.t === 'todo') out.push(l);
+        else if (r.t === 'meta2' || r.t === 'bot' || r.t === 'todo') out.push(l);
       }
       if (lastNotesLine) out.push(lastNotesLine);
       /* korunan pencere: son N mesaj */
@@ -792,6 +854,7 @@ class Engine {
     return {
       id: s.id,
       code: s.code || '',
+      botId: s.botId || null,
       title: (isBg ? s.bgTitle : (firstUser ? String(firstUser.content).slice(0, 48) : '')) || 'Yeni Sohbet',
       createdAt: s.createdAt,
       updatedAt: s.updatedAt,
@@ -845,7 +908,7 @@ class Engine {
       const kept = lines.filter((l) => {
         try {
           const r = JSON.parse(l);
-          return r.t === 'meta' || r.t === 'meta2' || r.t === 'todo';
+          return r.t === 'meta' || r.t === 'meta2' || r.t === 'bot' || r.t === 'todo';
         } catch { return false; }
       });
       const tmp = file + '.tmp';
@@ -924,6 +987,7 @@ class Engine {
     this.cache.delete(String(id));
     this.todos.delete(String(id));
     this.sessionPerm.delete(String(id));
+    this.sessionTools.delete(String(id));
     this._errCount && this._errCount.delete(String(id));
     /* paralel ajan oturumuysa iş kaydını da düşür — hayalet kayıt kalmasın */
     if (this._bgJobs.has(String(id))) {
@@ -937,10 +1001,24 @@ class Engine {
 
   /* ---------- prompt assembly (the frugal part) ---------- */
 
-  buildSystem(queryText) {
-    const mem = memory.loadAll();
-    const relevantMemory = memory.relevantFor(String(queryText || ''), {});
-    const rules = memory.listRules();
+  buildSystem(queryText, session) {
+    /* BOT OTURUMU: non-admin bota bağlıysa global Beast hafızası HIÇ girmez —
+       o botun kendi SOUL/USER/MEMORY dosyaları kullanılır (tam izolasyon) */
+    const bctx = this._sessionBotCtx(session);
+    let mem, relevantMemory, rules;
+    if (bctx && this.botMemory) {
+      mem = {
+        soul: this.botMemory.read(bctx.id, 'SOUL.md'),
+        user: this.botMemory.read(bctx.id, 'USER.md'),
+        memory: this.botMemory.read(bctx.id, 'MEMORY.md'),
+      };
+      relevantMemory = this.botMemory.relevant(bctx.id, String(queryText || ''));
+      rules = []; // global kurallar Beast'e özeldir — müşteri botuna karışmaz
+    } else {
+      mem = memory.loadAll();
+      relevantMemory = memory.relevantFor(String(queryText || ''), {});
+      rules = memory.listRules();
+    }
     const sk = skills.scan().map((s) => `- ${s.name}: ${s.description} [${s.path}]`);
     const parts = [mem.soul, FORMAT_RULES];
     if (mem.user) parts.push('# USER\n' + mem.user);
@@ -948,12 +1026,13 @@ class Engine {
     if (relevantMemory) parts.push('# İLGİLİ HAFIZA\n' + relevantMemory);
     /* #v13.2 tanışma modu: hafıza tamamen boşsa ajan sahibini tanımaya çalışır;
        ilk bilgiler geldikçe soru sormayı bırakır (yazmaya devam eder) */
-    const sparse = !mem.soul.includes('SAHİBİ') && memory.entries().length < 1 && !mem.user;
+    const sparse = !bctx && !mem.soul.includes('SAHİBİ') && memory.entries().length < 1 && !mem.user;
     if (sparse) {
       parts.push(
         '# TANIŞMA MODU (hafıza henüz boş)\n' +
           'Bu kullanıcıyı henüz tanımıyorsun. Sohbette doğal bir anda KISA sorarak ' +
-          'adını/hitap şeklini öğren ve öğrendiğin an HEMEN memory_write ile kaydet. ' +
+          'adını/hitap şeklini öğren ve öğrendiğin an HEMEN user_write ile USER.md\u2019ye, ' +
+          'diğer kalıcı bilgileri memory_write ile kaydet. ' +
           'İlk kayıt düştükten sonra soru sormayı bırak; sonraki bilgiler sohbet akışında kendiliğinden not edilir.'
       );
     }
@@ -974,7 +1053,17 @@ class Engine {
         `Yerel tarih: ${localDate} (${['Pazar','Pazartesi','Salı','Çarşamba','Perşembe','Cuma','Cumartesi'][nowD.getDay()]})\n` +
         `Yerel saat: ${localTime}${tz ? ` (saat dilimi: ${tz})` : ''}\n` +
         'Tarih/saat gerektiren her işte bu YEREL zamanı esas al; UTC varsayma, kendin dönüşüm yapma. Bu satırlar her mesajda güncellenir.\n' +
-        'Kısa ve net cevap ver. Konuşmaya özgü geçici detayları hafızaya yazma — oturum kayıtları zaten saklar. Sadece kalıcı/genel bilgileri memory_write ile kaydet.'
+        'Kısa ve net cevap ver. Konuşmaya özgü geçici detayları hafızaya yazma — oturum kayıtları zaten saklar. Sadece kalıcı/genel bilgileri kaydet.'
+    );
+    parts.push(
+      '# KULLANICI TAKİBİ (SIKI — zorunlu disiplin)\n' +
+        [
+          'Kullanıcı hakkında KALICI bir şey öğrendiğin AN (ad, lakap/hitap, meslek, dil, beğeni/nefret, çalışma saatleri, devam eden proje, aile/arkadaş isimleri) hemen ilgili aracı çağır, sohbet bitmesini BEKLEME.',
+          'Kullanıcı profili bilgisi (ad, hitap, tercih, proje) → user_write (USER.md). Genel kalıcı olgu/tercih/düzeltme → memory_write (MEMORY.md). İkisi de tek kısa satır yazar; aynı konuyu tekrar yazarsan eski satır güncellenir.',
+          'ÖRNEK: kullanıcı "beni Batuhan diye bil, soyadım Bozoklu" dedi → user_write: "Adı: Batuhan Bozoklu. Hitap: Batuhan/kanka".',
+          '"Kaydettim" demeden ÖNCE aracın {"ok":true} döndüğünü gör; araç çağrısı yapmadan asla kayıt iddiasında bulunma. Araç duplicate döndüyse "zaten kayıtlıydı" de.',
+          'Kullanıcı hafıza sorarsa ("beni tanıyor musun", "ne biliyorsun benden") USER.md içeriğini ve memory_search sonuçlarını esas al; uydurma.',
+        ].join('\n')
     );
     parts.push(
       '# ARAÇ KURALLARI\n' +
@@ -988,9 +1077,10 @@ class Engine {
           this.ceoMode
             ? 'Bağımsız alt-işleri run_background ile PARALEL ajana devret; işi KENDİN YÜRÜTME — emri ver, takip et, raporla.'
             : 'Bağımsız alt-işleri delegate_task ile devret; kendi başına halledebileceğin işleri devretme.',
-          'Güncel/dış bilgi gerekiyorsa web_search kullan (Python çoklu-motor paralel — hızlı, anahtarsız); bir sayfayı okumak için http_fetch kullan.',
+          'Güncel/dış bilgi gerekiyorsa web_search kullan (zincir DAHİLİ tarayıcıyla başlar — gerçek Chromium ile Google); hızlı ham metin okuması için http_fetch kullan.',
           'ARAMA-DİSİPLİN: bir bilgiyi 2-3 denemede bulamazsan TAKILMA — farklı bir açıya/sorguya geç, yine yoksa bulabildiğin kısmi bilgiyle cevap ver ve neyi bulamadığını açıkça söyle. Kapalı/gizli içerik (private profil, login arkası veri) peşinde KOŞMA — bulunamayacağı belliyse hemen vazgeç.',
-          'Beast\u2019in DAHİLİ TARAYICISI VARDIR: ekranın sağındaki panelde açılır ve kullanıcı da görebilir. Etkileşimli/görüntülü siteler için onu kullan: browser_open ile aç, önce browser_snapshot al; ref numaralarıyla browser_click/browser_type/browser_select ile hareket et, browser_read ile metin oku. Sadece görsel yerleşim/grafik gerekiyorsa browser_screenshot çek.' +
+          'TARAYICI VARSAYILANI (ZORUNLU): kullanıcı "şu siteyi aç", "bunu ara / google\u2019da ara", "şu sayfaya git" gibi bir web isteği verdiğinde HEP DAHİLİ TARAYICIYI KULLAN (browser_open ile aç → browser_snapshot al → ref numaralarıyla browser_click/browser_type/browser_select ile hareket et, browser_read ile metin oku; sadece görsel yerleşim/grafik gerekiyorsa browser_screenshot çek). Panel ekranın sağında açılır ve kullanıcı da sayfayı anında görür; JS/login/SPA/dinamik içerik için idealdir. Bu kural TÜM oturumları kapsar — masaüstü sohbeti ve çok kullanıcılı botlar (WhatsApp vb.) dahil.' +
+            ' DIŞ TARAYICI İSTİSNASI: kullanıcı AÇIKÇA "chrome\u2019da aç", "firefox\u2019ta aç", "başka tarayıcıda aç", "normal tarayıcıda aç", "kendi tarayıcımda aç" derse O ZAMAN run_command ile `start "" <url>` çalıştır — sistem varsayılan (dış) tarayıcısında açılır. Kullanıcı dış tarayıcı istemedikçe ASLA dış tarayıcı açma.' +
             ' Görselleri GÖREMEMİYORSAN (metin-model) görüntüdeki metni okumak için ocr_read kullan: source:"browser" ile tarayıcı sayfasını, "screen" ile masaüstünü OCR\u2019la okursun (captcha/canvas/görsel metin dahil).' +
             (this.ceoMode ? ' (CEO: bu araçları KENDİN ÇAĞIRMA — içinde tarayıcı geçen işi run_background ile paralel ajana devret.)' : ''),
           'Tarayıcı eylemlerinin yanıtındaki recent günlüğü ve navigated bilgisini takip et; sayfa değişmişse yeni snapshot al.',
@@ -999,6 +1089,7 @@ class Engine {
           'PYTHON DURUMU: makinede sistem Python\'u görünmese bile ŞAŞIRMA ve "python yok" DEME — python_run aracı kendi taşınabilir runtime\'ını (%APPDATA%\\beast\\py\\python.exe) otomatik indirir/kullanır ve bu klasör run_command PATH\'inde önceliklidir; yani run_command içinde de `python` çalışır. Ham Google/Bing scrape yerine önce web_search aracını kullan (zaten Python çoklu-motor + Exa destekli), script gerektiğinde python_run yaz.',
           'Eski bir hafıza kaydına ihtiyacın olursa memory_search ile ara; kalıcı bilgi/birikim için kb_search kullan, yeni bilgi öğrenirsen kb_add ile kaynak belirt.',
           'Bir oturumda 3+ kez memory_write yaptıysan iş bitince memory_hygiene çağır (duplike/eskime temizliği).',
+          'BEAST KAYNAK KORUMASI: Beast\u2019in kendi kurulum/kaynak kod klasörü KİLİTLİDİR — oraya dosya yazamaz, silamaz, komut/betikle değiştiremezsin; okumak serbest. Kullanıcı kodu ancak kendi eliyle dışarıdan değiştirir; böyle bir istek gelirse yapamayacağını söyle ve kullanıcının elle yapması için yol göster.',
         ].join('\n')
     );
     if (this.ceoMode) {
@@ -1171,7 +1262,7 @@ class Engine {
       if (pending < NOTES_TRIGGER) return { ok: false, reason: `bekleme: ${pending}/${NOTES_TRIGGER}` };
       const cut = Math.max(mark, msgs.length - NOTES_KEEP_RECENT);
       if (cut <= mark) return { ok: false, reason: 'aralık boş' };
-      const transcript = this._renderTranscript(slice);
+      const transcript = this._renderTranscript(msgs.slice(mark, cut)); // son nottan bu yana özetlenecek aralık
       if (!transcript.trim()) {
         session.notesAt = cut;
         return { ok: false, reason: 'özetlenecek metin yok' };
@@ -1766,7 +1857,7 @@ class Engine {
       `Ortam: Windows + PowerShell; çalışma klasörü: ${this.workspace}\n` +
       `HIZ KURALLARI:\n` +
       `- Döngülü işleri (çok URL/dosya/sayfa, tekrarlı parse-hesap) TEK python_run betiğinde topluca bitir.\n` +
-      `- Web için web_search (çoklu-motor) kullan; etkileşimli sayfada dahili tarayıcı: browser_open → browser_snapshot → browser_click/type/read. Görseli göremiyorsan metni ocr_read ile oku (source:"browser").\n` +
+      `- Web için web_search kullan (zincir dahili tarayıcıyla başlar — gerçek Chromium ile Google); sayfa açma/göstermenin VARSAYILANI DAHİLİ tarayıcıdır: browser_open → browser_snapshot → browser_click/type/read. Kullanıcı açıkça dış tarayıcı (chrome/firefox/başka/normal/kendi tarayıcım) istediyse run_command ile \`start "" <url>\` çalıştır. Görseli göremiyorsan metni ocr_read ile oku (source:"browser").\n` +
       `- Bağımsız araç çağrılarını aynı turda PARALEL ver.\n` +
       `- ARAŞTIRMA SINIRI: 3-5 kaynak yeter; süre hedefi ~3 dakika. 2-3 denemede bulunamayan bilgiyi BIRAK — bulabildiğin kısmi sonucu raporla ve neyi bulamadığını yaz. Kapalı/gizli içerik peşinde koşma.\n` +
       FORMAT_RULES + '\n' +
@@ -1790,11 +1881,14 @@ class Engine {
 
   async _chatTurn(session, signal, onDelta, toolsList = TOOLS) {
     const promptText = this._lastUserText(session);
-    let system = session.bgJob ? this.buildBgSystem(session) : this.buildSystem(promptText);
+    let system = session.bgJob ? this.buildBgSystem(session) : this.buildSystem(promptText, session);
     // Granül izin: oturumun yetki seviyesine göre araç seti daraltılır
     const perm = this.sessionPermFor(session.id);
     const allowedSet = PERM_TOOL_SETS[perm] || null;
     let activeTools = allowedSet ? toolsList.filter((t) => allowedSet.has(t.function.name)) : toolsList;
+    /* bot skill kısıtı: bota verilen yetkiye göre araç seti daraltılır */
+    const toolLimit = this.sessionTools.get(String(session.id));
+    if (toolLimit) activeTools = activeTools.filter((t) => toolLimit.has(t.function.name));
     if (session.bgJob) {
       /* arka plan ajanı: yönetim araçlarını görmez — işini bitirsin */
       activeTools = activeTools.filter((t) => !BG_HIDDEN_TOOLS.has(t.function.name));
@@ -1815,6 +1909,9 @@ class Engine {
         '\n\n# SINIRLI YETKİ (salt-okunur)\nBilgisayarı SADECE OKUYABİLİRSİN (klasör listeleme, dosya okuma) + web/tarayıcı. ' +
         'Dosya yazma, silme ve komut çalıştırma YOK; istenirse yapamayacağını söyle.';
     }
+    /* bot kimliği: bota bağlı oturumlarda kişilik + izolasyon kuralları */
+    const botBlock = this._botSystemBlock(session);
+    if (botBlock) system += '\n\n' + botBlock;
     if (session.notes) {
       system +=
         `\n\n# OTURUM NOTLARI (oturum ${session.code || '?'} — bu oturumun önceki konuşma özeti; birebir geçmişi buradan hatırla)\n` +
@@ -2211,7 +2308,10 @@ class Engine {
 
   async _subExecTool(name, args, signal) {
     try {
+      const blocked = this._guardTool(name, args);
+      if (blocked) return blocked;
       if (name === 'memory_write') return JSON.stringify(memory.append(args.text));
+      if (name === 'user_write') return JSON.stringify(memory.appendUser(args.text));
       if (name === 'memory_search') {
         return JSON.stringify({
           ok: true,
@@ -2235,8 +2335,50 @@ class Engine {
   /* Onay gerektiren araçlar — tepkiyle onay kapısına takılır */
   static RISKY_TOOLS = new Set(['run_command', 'write_file', 'python_run', 'email_send', 'watcher_add']);
 
+  /* ANA KOD KİLİDİ: yıkıcı işlem desenleri (korumalı yol + bu desen = engel) */
+  static DESTRUCTIVE_RE =
+    /(remove-item|\bri\s|\bdel\s|\bdel\b|\brd\b|\brmdir\b|\berase\b|set-content|out-file|add-content|new-item|clear-content|move-item|rename-item|\bren\s|\bcopy-item|\bmove\b|\bmv\s|\bcp\s|>>|[^|]>\s|\bicacls|\btakeown|\bformat\b|\bfsutil|\breg\s+(add|delete)|schtasks|stop-process|\btaskkill|\bkill\b|\brm\s|\bunlink|shutil|os\.remove|os\.unlink|open\([^)]*['"][wa]['"]\)|write_text|to_csv\(|savefig\(|\.write\()/i;
+
+  _isProtectedPath(p) {
+    try {
+      if (!p || !this.protectedDirs.length) return false;
+      const raw = String(p).trim();
+      const abs = path.isAbsolute(raw) ? path.resolve(raw) : path.resolve(this.workspace, raw);
+      const norm = abs.replace(/[\\/]+$/, '').toLowerCase().replace(/\//g, '\\');
+      return this.protectedDirs.some((d) => norm === d || norm.startsWith(d + '\\'));
+    } catch {
+      return false;
+    }
+  }
+
+  /* Komut metni korumalı bölgeye değiyorsa VE yıkıcı bir desen varsa true */
+  _cmdTouchesProtected(cmd) {
+    if (!cmd || !this.protectedDirs.length) return false;
+    const c = String(cmd).toLowerCase().replace(/\//g, '\\');
+    return this.protectedDirs.some((d) => c.includes(d)) && Engine.DESTRUCTIVE_RE.test(c);
+  }
+
+  /* Engelleyici: korumalı bölgeye müdahaleyi kırar; null = serbest */
+  _guardTool(name, args) {
+    if (!args || !this.protectedDirs.length) return null;
+    const deny = (what) =>
+      JSON.stringify({
+        ok: false,
+        error:
+          `ANA KOD KİLİDİ: Beast kendi kaynak koduna ${what} izni yok (korumalı bölge). ` +
+          'Okumak serbesttir; kod yalnızca kullanıcının kendi eliyle, dışarıdan değiştirilebilir.',
+      });
+    if (name === 'write_file' && this._isProtectedPath(args.path)) return deny('yazma');
+    if (name === 'run_command' && this._cmdTouchesProtected(String(args.command || ''))) return deny('komutla değiştirme');
+    if (name === 'python_run' && this._cmdTouchesProtected(String(args.code || ''))) return deny('betikle değiştirme');
+    return null;
+  }
+
   async _execTool(name, args, signal, sessionId) {
     try {
+      /* ANA KOD KİLİDİ: korumalı bölgeye yazma/silme girişimi daha kapıdan geçmez */
+      const blocked = this._guardTool(name, args);
+      if (blocked) return blocked;
       /* onay kapısı: riskli araçta dış onay bekle; reddedilirse araç çalışmaz.
          "always" onaylı araçlar doğrudan geçer. */
       if (
@@ -2258,9 +2400,32 @@ class Engine {
         }
       }
       if (name === 'memory_write') {
-        return JSON.stringify(memory.append(args.text));
+        /* bot oturumu → botun KENDİ MEMORY.md'sine yaz (global Beast hafızasına değil) */
+        const bctx = this._sessionBotCtx(sessionId ? this.cache.get(String(sessionId)) : null);
+        const r =
+          bctx && this.botMemory
+            ? this.botMemory.append(bctx.id, args.text)
+            : memory.append(args.text);
+        return JSON.stringify(r);
+      }
+      if (name === 'user_write') {
+        /* kullanıcı profili (ad/hitap/tercih) → USER.md (bot oturumunda botun kendi USER.md'si) */
+        const bctx = this._sessionBotCtx(sessionId ? this.cache.get(String(sessionId)) : null);
+        const r =
+          bctx && this.botMemory && this.botMemory.appendUser
+            ? this.botMemory.appendUser(bctx.id, args.text)
+            : memory.appendUser(args.text);
+        return JSON.stringify(r);
       }
       if (name === 'memory_search') {
+        const bctx = this._sessionBotCtx(sessionId ? this.cache.get(String(sessionId)) : null);
+        if (bctx && this.botMemory) {
+          return JSON.stringify({
+            ok: true,
+            query: String(args.query || ''),
+            results: this.botMemory.search(bctx.id, String(args.query || ''), clamp(Number(args.limit) || 5, 1, 15)),
+          });
+        }
         return JSON.stringify({
           ok: true,
           query: String(args.query || ''),
@@ -2383,6 +2548,11 @@ class Engine {
         });
       }
       if (name === 'memory_hygiene') {
+        /* bot hafızası admin tarafından yönetilir — global hijyen dokunmaz */
+        const bctx = this._sessionBotCtx(sessionId ? this.cache.get(String(sessionId)) : null);
+        if (bctx) {
+          return JSON.stringify({ ok: true, removed: 0, remaining: 0, note: 'bot hafızası izoledir — hijyen admin sekmesinden yapılır' });
+        }
         const r = memory.hygiene({ maxAgeDays: Number(args.maxAgeDays) || undefined });
         return JSON.stringify(r);
       }
@@ -2574,6 +2744,21 @@ const TOOLS = [
         type: 'object',
         properties: {
           text: { type: 'string', description: 'One concise line to remember forever' },
+        },
+        required: ['text'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'user_write',
+      description:
+        'Save or update a fact about the USER in USER.md (name, nickname, language, preferences, ongoing projects, relationships). Call it the moment you learn something durable about the user — even mid-conversation. One concise line per call; same topic overwrites the old line.',
+      parameters: {
+        type: 'object',
+        properties: {
+          text: { type: 'string', description: 'One concise line about the user, e.g. "Adı: Batuhan Bozoklu. Hitap: kanka"' },
         },
         required: ['text'],
       },
@@ -2975,7 +3160,7 @@ const TOOLS = [
     function: {
       name: 'browser_open',
       description:
-        'Open a URL in the built-in visible browser panel (JS-rendered pages work). Use for pages that need JavaScript or when showing the user a page is useful; prefer http_fetch for plain reading.',
+        'Open a URL in the built-in visible browser panel (JS-rendered pages work). This is the DEFAULT for every "open this site / search this / go to page" request — the user watches the page live in the side panel; ideal for login, SPA and dynamic content. Always follow with browser_snapshot, then act via refs (browser_click/browser_type/browser_select) and read via browser_read. Open the OS default (external) browser ONLY when the user explicitly asks for chrome/firefox/another/normal/my-own browser — in that case use run_command with `start "" <url>` instead of this tool.',
       parameters: {
         type: 'object',
         properties: {

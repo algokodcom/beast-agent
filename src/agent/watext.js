@@ -49,6 +49,7 @@ const TOOL_LABELS = {
   email_read: (a) => `E-posta oku: ${a.uid ?? ''}`,
   email_send: () => 'E-posta gönder',
   memory_write: (a) => `Hafıza: ${String(a.text || '').slice(0, 60)}`,
+  user_write: (a) => `Kullanıcı bilgisi: ${String(a.text || '').slice(0, 60)}`,
   memory_search: (a) => `Hafıza ara: ${String(a.query || '').slice(0, 60)}`,
   todo_write: (a) => `Görev listesi (${(a.todos || []).length})`,
   delegate_task: (a) => `Alt görev: ${String(a.task || '').slice(0, 80)}`,

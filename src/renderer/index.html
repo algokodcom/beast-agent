@@ -13,15 +13,27 @@
       <div id="brand"><span class="brand-beast">BEAST</span><span class="brand-sub">Agent</span></div>
       <button id="newChat" title="Yeni sohbet" data-i18n="newChat">+ Yeni Sohbet</button>
       <div id="sessList"></div>
+      <div id="botBar">
+        <div id="botBarHead">
+          <span id="botBarTitle" data-i18n="bot_head">BOTLAR</span>
+          <span class="bot-bar-btns">
+            <button id="botOverviewBtn" title="Tüm Botlar" data-i18n-title="bot_overview">&#x2261;</button>
+            <button id="botAddBtn" title="Yeni Bot" data-i18n-title="bot_add">+</button>
+          </span>
+        </div>
+        <div id="botList"></div>
+      </div>
       <div id="sideFoot">
         <button id="gearBtn" title="Ayarlar" data-i18n-title="tipGear">&#x2699;&#xFE0E;</button>
         <button id="themeBtn" title="Koyu tema">&#x263E;</button>
         <button id="langBtn" title="Dil değiştir / Switch language" data-i18n-title="tipLang"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3c2.6 2.6 2.6 15.4 0 18M12 3c-2.6 2.6-2.6 15.4 0 18"/></svg></button>
+        <button id="storeBtn" title="Skills Store" data-i18n-title="tipStore"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16l-1.3 12.1a2 2 0 0 1-2 1.9H7.3a2 2 0 0 1-2-1.9L4 7z"/><path d="M8 10V6a4 4 0 0 1 8 0v4"/></svg></button>
       </div>
     </aside>
 
     <main id="main">
       <header id="topbar">
+        <span id="botChip" title="Aktif bot">🦁 Beast</span>
         <div id="modelDD" class="dd">
           <button id="modelBtn" class="dd-btn" title="Model seç" data-i18n-title="tipModel"><span id="modelBtnLabel">Model</span><span class="dd-caret">▾</span></button>
           <div id="modelMenu" class="dd-menu" hidden>
@@ -96,7 +108,6 @@
         <nav class="set-tabs-list">
         <button class="tab active" data-tab="provider" data-i18n="tab_provider">Provider</button>
         <button class="tab" data-tab="fallout" data-i18n="tab_fallout">Fallout</button>
-        <button class="tab" data-tab="memory" data-i18n="tab_memory">Memory</button>
         <button class="tab" data-tab="skills" data-i18n="tab_skills">Skills</button>
         <button class="tab" data-tab="agents" data-i18n="tab_agents">Paralel Ajanlar</button>
         <button class="tab" data-tab="tts" data-i18n="tab_tts">Sesli Yanıt</button>
@@ -125,7 +136,6 @@
       <section id="setContent">
         <div id="tab-provider" class="pane"></div>
         <div id="tab-fallout" class="pane" hidden></div>
-        <div id="tab-memory" class="pane" hidden></div>
         <div id="tab-skills" class="pane" hidden></div>
         <div id="tab-agents" class="pane" hidden></div>
         <div id="tab-tts" class="pane" hidden></div>
@@ -165,7 +175,54 @@
     </div>
   </div>
 
+  <div id="botOverlay" hidden>
+    <div id="botDialog">
+      <div id="botHead">
+        <span id="botHeadIcon">🦁</span>
+        <span id="botHeadName">Beast</span>
+        <span id="botHeadTag" class="bot-tag"></span>
+        <span class="bot-head-spacer"></span>
+        <button id="botOverviewBack" class="btn ghost" hidden data-i18n="bot_overview">Tüm Botlar</button>
+        <button id="botClose" class="mini-close" title="Kapat" data-i18n-title="btn_close">&#x00D7;</button>
+      </div>
+      <div id="botBody">
+        <div id="botChatsCol">
+          <div id="botChatsTitle" data-i18n="bot_chats">Sohbet Geçmişi</div>
+          <div id="botChatList"></div>
+          <div id="botChatMsgs"></div>
+        </div>
+        <div id="botManageCol">
+          <nav id="botTabs">
+            <button class="btab active" data-btab="settings" data-i18n="bot_tab_settings">Ayarlar</button>
+            <button class="btab" data-btab="memory" data-i18n="bot_tab_memory">Memory</button>
+            <button class="btab" data-btab="log" data-i18n="bot_tab_log">Log</button>
+            <button class="btab" data-btab="watcher" data-i18n="bot_tab_watcher">Watcher</button>
+            <button class="btab" data-btab="stats" data-i18n="bot_tab_stats">İstatistik</button>
+          </nav>
+          <div id="botPane"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div id="bbResize" hidden title="Sürükleyerek boyutlandır"></div>
+
+  <div id="storeOverlay" hidden>
+    <div id="storeDialog">
+      <div id="storeHead">
+        <span id="storeTitle" data-i18n="store_title">SKILLS STORE</span>
+        <span id="storeBeastId" title="Beast kimliği (parmak izi)"></span>
+        <span class="store-spacer"></span>
+        <button id="storeClose" class="mini-close" title="Kapat" data-i18n-title="btn_close">&#x00D7;</button>
+      </div>
+      <nav id="storeTabs">
+        <button class="stab active" data-stab="trending" data-i18n="store_tab_trending">Trending</button>
+        <button class="stab" data-stab="stars" data-i18n="store_tab_stars">Stars</button>
+        <button class="stab" data-stab="upload" data-i18n="store_tab_upload">Upload</button>
+      </nav>
+      <div id="storePane"></div>
+    </div>
+  </div>
 
   <div id="watchOverlay" class="mini-overlay" hidden>
     <div class="mini-dialog">

@@ -304,7 +304,7 @@ function argSummary(name, args) {
     if (name === 'run_command') return String(args.command || '');
     if (name === 'read_file' || name === 'write_file') return String(args.path || '');
     if (name === 'list_dir') return String(args.path || '.');
-    if (name === 'memory_write') return String(args.text || '').slice(0, 80);
+    if (name === 'memory_write' || name === 'user_write') return String(args.text || '').slice(0, 80);
     return JSON.stringify(args).slice(0, 100);
   } catch {
     return '';
@@ -355,7 +355,9 @@ async function renderSessions(list) {
     waSet = new Set(await beast.waListSessions());
   } catch {}
   els.sessList.innerHTML = '';
+  /* aktif botun oturumları — botlar arası geçişte liste de o bota göre değişir */
   for (const s of list) {
+    if ((s.botId || 'beast') !== activeBotId) continue;
     const row = document.createElement('div');
     row.className = 'sess' + (s.id === activeId ? ' active' : '');
     row.innerHTML =
@@ -382,6 +384,7 @@ async function renderSessions(list) {
 
 async function refreshSessions() {
   await renderSessions(await beast.listSessions());
+  renderBotCards(); // bot kartlarındaki numara/sayı etiketleri de tazelensin
 }
 
 async function openSession(id) {
@@ -476,7 +479,6 @@ async function openSettings() {
     if (els.beastCode) els.beastCode.textContent = s.beastCode || '—';
   } catch {}
   await renderProviderPane();
-  renderMemoryPane();
   renderSkillsPane();
   renderTtsPane();
   renderEmailPane();
@@ -494,7 +496,6 @@ async function renderActiveSettingsTab() {
   switch (setTab) {
     case 'provider': await renderProviderPane(); break;
     case 'fallout': await refreshFalloutPane(); break;
-    case 'memory': renderMemoryPane(); break;
     case 'skills': await renderSkillsPane(); break;
     case 'tts': await renderTtsPane(); break;
     case 'email': await renderEmailPane(); break;
@@ -517,8 +518,9 @@ function switchTab(name) {
   document.querySelectorAll('#setTabs .tab').forEach((b) =>
     b.classList.toggle('active', b.dataset.tab === name)
   );
-  for (const p of ['provider', 'fallout', 'memory', 'skills', 'agents', 'tts', 'email', 'integrations', 'websearch', 'events', 'cron', 'usage', 'logs', 'dash', 'limits', 'sec', 'update']) {
-    $('#tab-' + p).hidden = p !== name;
+  for (const p of ['provider', 'fallout', 'skills', 'agents', 'tts', 'email', 'integrations', 'websearch', 'events', 'cron', 'usage', 'logs', 'dash', 'limits', 'sec', 'update']) {
+    const el = $('#tab-' + p);
+    if (el) el.hidden = p !== name; // guard: eksik pane tüm sekmeleri kilitlemesin
   }
   if (name === 'cron') openCron();
   if (name === 'usage') renderUsagePane();
@@ -806,6 +808,8 @@ async function renderProviderPane() {
   /* --- özel providerlar --- */
   const settings = await beast.getSettings();
   const customs = settings.customProviders || [];
+  let presets = [];
+  try { presets = (await beast.builtinProviders()) || []; } catch {}
 
   pane.insertAdjacentHTML('beforeend', '<div class="divider"></div>');
   pane.insertAdjacentHTML(
@@ -831,7 +835,18 @@ async function renderProviderPane() {
 
   const form = document.createElement('div');
   form.innerHTML =
-    `<label class="mem-label">${_t('p_name_opt')}</label><input id="cpName" class="inp" placeholder="Örn: OrcaRouter">` +
+    /* TEK TİKLA MODEL (OpenCode Zen Free) */
+    `<div class="zen-hero">` +
+    `<button id="zenOneClick" class="btn">⚡ ${_t('p_zen_btn')}</button>` +
+    `<div class="sub" style="margin-top:6px">${_t('p_zen_hint')}</div>` +
+    `</div>` +
+    `<label class="mem-label">${_t('p_preset')}</label>` +
+    `<select id="cpPreset" class="inp">` +
+    `<option value="-1">${_t('p_preset_custom')}</option>` +
+    presets.map((p, i) => `<option value="${i}">${escapeHtml(p.name)}</option>`).join('') +
+    `</select>` +
+    `<div id="cpPresetHint" class="sub" style="margin-top:4px">${_t('p_preset_hint')}</div>` +
+    `<label class="mem-label" style="margin-top:8px">${_t('p_name_opt')}</label><input id="cpName" class="inp" placeholder="Örn: OrcaRouter">` +
     `<div class="form-grid">` +
     `<div><label class="mem-label">${_t('p_api_url')}</label><input id="cpUrl" class="inp" placeholder="https://api.ornek.com/v1"></div>` +
     `<div><label class="mem-label">${_t('p_api_key')}</label><input id="cpKey" class="inp" type="password" placeholder="sk-..."></div>` +
@@ -846,6 +861,50 @@ async function renderProviderPane() {
   pane.appendChild(form);
 
   let discovered = [];
+  let presetSel = -1;
+
+  /* Hazır sağlayıcı seçilince URL otomatik dolar (endpoint bilmeye gerek yok) */
+  const syncPreset = () => {
+    presetSel = Number($('#cpPreset').value);
+    const urlInp = $('#cpUrl');
+    const hint = $('#cpPresetHint');
+    if (presetSel >= 0 && presets[presetSel]) {
+      const p = presets[presetSel];
+      urlInp.value = p.baseUrl;
+      urlInp.readOnly = true;
+      urlInp.style.opacity = '0.75';
+      $('#cpName').placeholder = p.name;
+      hint.textContent = p.hint ? `${p.name} — ${p.hint} · sadece API key gir, modelleri çek` : `${p.name} — sadece API key gir, modelleri çek`;
+    } else {
+      urlInp.readOnly = false;
+      urlInp.style.opacity = '';
+      $('#cpName').placeholder = 'Örn: OrcaRouter';
+      hint.textContent = _t('p_preset_hint');
+    }
+  };
+  $('#cpPreset').addEventListener('change', syncPreset);
+
+  /* TEK TİKLA MODEL: OpenCode Zen free kurulumu */
+  $('#zenOneClick').addEventListener('click', async () => {
+    const btn = $('#zenOneClick');
+    const old = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = _t('p_zen_busy');
+    let r;
+    try { r = await beast.zenOneClick(); } catch (e) { r = { ok: false, error: String((e && e.message) || e) }; }
+    btn.disabled = false;
+    btn.textContent = old;
+    if (r && r.ok) {
+      let msg = _ti('p_zen_ok', (r.models || []).length) + ' (OpenCode Zen)';
+      if (r.failed && r.failed.length) msg += ' — ' + _ti('p_zen_skipped', r.failed.length);
+      toast(msg);
+      state = await beast.getState();
+      applyState();
+      renderProviderPane();
+    } else {
+      toast(_t('p_zen_fail') + (r && r.error ? ' — ' + r.error : ''));
+    }
+  });
 
   const collectedModels = () => {
     const picked = [...document.querySelectorAll('#cpPicks input:checked')].map((c) => c.value);
@@ -894,16 +953,22 @@ async function renderProviderPane() {
     const url = $('#cpUrl').value.trim();
     if (!/^https?:\/\//i.test(url)) { toast('Geçerli API adresi gir'); return; }
     if (!models.length) { toast('En az bir model gir ya da seç'); return; }
+    const preset = presetSel >= 0 ? presets[presetSel] : null;
     let name = $('#cpName').value.trim();
-    try { name = name || new URL(url).hostname; } catch { name = 'Custom'; }
+    if (!name) {
+      try { name = preset ? preset.name : new URL(url).hostname; } catch { name = preset ? 'Preset' : 'Custom'; }
+    }
+    /* hazır sağlayıcıda sabit id — tekrar kaydetmek üzerine yazar (kopya yok) */
     const entry = {
-      id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+      id: preset ? 'preset-' + preset.id : Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
       name,
       baseUrl: url,
       key: $('#cpKey').value.trim(),
       models,
     };
-    state = await beast.setCustomProviders([...customs, entry]);
+    const existingIdx = customs.findIndex((x) => x.id === entry.id);
+    const next = existingIdx >= 0 ? customs.map((x, i) => (i === existingIdx ? entry : x)) : [...customs, entry];
+    state = await beast.setCustomProviders(next);
     applyState();
     renderProviderPane();
     toast(entry.name + ': ' + models.length + ' model kaydedildi');
@@ -1067,27 +1132,6 @@ async function renderFalloutPane() {
     'beforeend',
     '<div class="sub" style="margin-top:10px">' + _t('fo_note') + '</div>'
   );
-}
-
-function renderMemoryPane() {
-  const pane = $('#tab-memory');
-  beast.getMemory().then((mem) => {
-    pane.innerHTML =
-      '<h2>' + _t('mem_h2') + '</h2><div class="sub">' + _t('mem_sub') + '</div>' +
-      `<label class="mem-label">${_t('mem_soul')}</label><textarea id="soulTa" class="mem-area soul-area"></textarea>` +
-      `<label class="mem-label">${_t('mem_mem')}</label><textarea id="memTa" class="mem-area"></textarea>` +
-      `<label class="mem-label">${_t('mem_user')}</label><textarea id="userTa" class="mem-area"></textarea>` +
-      `<button id="memSave" class="btn">${_t('mem_save')}</button>`;
-    $('#soulTa').value = mem.soul || '';
-    $('#memTa').value = mem.memory || '';
-    $('#userTa').value = mem.user || '';
-    $('#memSave').addEventListener('click', async () => {
-      await beast.saveMemory('SOUL.md', $('#soulTa').value);
-      await beast.saveMemory('MEMORY.md', $('#memTa').value);
-      await beast.saveMemory('USER.md', $('#userTa').value);
-      toast('Memory kaydedildi — SOUL.md dahil');
-    });
-  });
 }
 
 async function renderSkillsPane() {
@@ -1268,6 +1312,12 @@ function onWaEvent(ev) {
     if (!els.settingsOverlay.hidden && setTab === 'integrations') renderIntegrationsPane();
     return;
   }
+  if (ev.type === 'queue') {
+    /* FEATURE 2: offline kuyruk bildirimi — toast + paneldeki sayaç */
+    if (ev.text) toast(ev.text);
+    updateQueueInfo(ev);
+    return;
+  }
   if (ev.type !== 'status') return;
   waUI.status = ev.status;
   if (ev.qr) waUI.qr = ev.qr;
@@ -1299,6 +1349,7 @@ async function renderIntegrationsPane() {
         </div>
       </div>
       <div class="wa-status"><span id="waDot" class="wa-dot"></span><span id="waStatText">—</span></div>
+      <div id="waQueueInfo" class="sub" style="margin-top:6px" hidden></div>
       <div id="waUser" class="wa-user" hidden></div>
       <div id="waQr" hidden>
         <img id="waQrImg" width="220" height="220" alt="QR">
@@ -1315,9 +1366,10 @@ async function renderIntegrationsPane() {
       <div class="divider"></div>
       <label class="mem-label" style="margin-top:0">${_t('it_allow_label')}</label>
       <div id="waAllowChips" class="chips-inline"></div>
-      <div class="form-grid" style="grid-template-columns:2fr 1fr auto;align-items:center">
+      <div class="form-grid" style="grid-template-columns:1.2fr 1fr 1fr auto;align-items:center">
         <input id="waAllowNameInp" class="inp" style="margin:6px 0 0" placeholder="${_t('it_name_ph')}" autocomplete="off" />
         <input id="waAllowInp" class="inp" style="margin:6px 0 0" placeholder="${_t('it_num_ph')}" autocomplete="off" />
+        <select id="waAllowBotSel" class="perm-select" style="margin:6px 0 0;min-width:105px" title="${_t('bot_bind_title')}"></select>
         <button id="waAllowAdd" class="btn ghost" style="margin-top:6px">${_t('it_add')}</button>
       </div>
       <div class="sub" style="margin-top:8px">${_t('it_allow_note')}</div>
@@ -1347,6 +1399,12 @@ async function renderIntegrationsPane() {
     await beast.waReset();
     toast('Eşleme sıfırlandı');
   });
+
+  /* FEATURE 2: offline kuyruk durumu */
+  try {
+    const st = await beast.waQueueGet();
+    updateQueueInfo(st);
+  } catch {}
 
   await renderWaAllow();
 
@@ -1736,6 +1794,15 @@ async function renderWaAllow() {
   const wrap = $('#waAllowChips');
   if (!wrap) return;
   const list = await beast.waGetAllow();
+  let botChoices = [];
+  try { botChoices = (await beast.botsList()) || []; } catch {}
+  const multiBot = botChoices.length >= 2;
+  const botSelHtml = (cur) =>
+    `<select class="perm-select" title="${_t('bot_bind_title')}">` +
+    botChoices
+      .map((bb) => `<option value="${bb.id}" ${(cur || 'beast') === bb.id ? 'selected' : ''}>${bb.icon} ${escapeHtml(bb.name)}</option>`)
+      .join('') +
+    `</select>`;
   wrap.innerHTML = '';
   if (!list.length) {
     wrap.innerHTML = '<span class="sub">— boş —</span>';
@@ -1746,7 +1813,9 @@ async function renderWaAllow() {
     const num = String((e && e.num) || '');
     const name = String((e && e.name) || '').trim();
     const ownerTag = e && e.owner ? ' 👑' : '';
-    return (name ? name + ' ' : '') + (num ? '+' + num : '') + ownerTag;
+    const bot = botChoices.find((bb) => bb.id === (e && e.bot_id));
+    const botTag = multiBot && bot && !bot.admin ? ' [' + bot.name + ']' : '';
+    return (name ? name + ' ' : '') + (num ? '+' + num : '') + ownerTag + botTag;
   };
   const waNeedsName = (e) => e !== '*' && String((e && e.name) || '').trim() === '';
 
@@ -1780,7 +1849,9 @@ async function renderWaAllow() {
     chipEl.append(nInp, uInp, ok, done, cancel);
     const save = async () => {
       const nextAll = (await beast.waGetAllow()).map((e, i) =>
-        i === idx ? { num: uInp.value.trim(), name: nInp.value.trim().slice(0, 40), lockdown: lock0 } : e
+        i === idx
+          ? { ...(typeof e === 'object' && e ? e : {}), num: uInp.value.trim(), name: nInp.value.trim().slice(0, 40), lockdown: lock0 }
+          : e
       );
       await beast.waSetAllow(nextAll);
       renderWaAllow();
@@ -1839,6 +1910,26 @@ async function renderWaAllow() {
       });
       c.appendChild(selP);
 
+      /* BOT SİSTEMİ: 2+ bot varsa numarayı hangi botun karşılayacağını seç */
+      if (multiBot) {
+        const selB = document.createElement('span');
+        selB.innerHTML = botSelHtml(typeof entry === 'object' ? entry.bot_id : undefined);
+        const sel = selB.firstChild;
+        sel.addEventListener('change', async () => {
+          const cur = await beast.waGetAllow();
+          const next = cur.map((e, i) => {
+            if (i !== idx) return e;
+            const base = typeof e === 'object' && e ? e : { num: String(e).replace(/\D/g, ''), name: '' };
+            return { ...base, bot_id: sel.value || undefined };
+          });
+          await beast.waSetAllow(next);
+          renderWaAllow();
+          const bt = botChoices.find((bb) => bb.id === sel.value);
+          toast(waLabel(entry) + ' → ' + (bt ? bt.name : '?'));
+        });
+        c.appendChild(sel);
+      }
+
       /* #v13.1: SAHİP rolü — yalnız biri olabilir */
       const ownerBtn = document.createElement('span');
       ownerBtn.className = 'lk';
@@ -1882,6 +1973,17 @@ async function renderWaAllow() {
   const inp = $('#waAllowInp');
   const nameInp = $('#waAllowNameInp');
   const add = $('#waAllowAdd');
+  /* BOT SİSTEMİ: ekleme formundaki bot seçici — boş seçenek = botsuz (beast'e düşer) */
+  const botSel = $('#waAllowBotSel');
+  if (botSel) {
+    const prev = botSel.value;
+    botSel.innerHTML =
+      `<option value="">${_t('bot_sel_empty')}</option>` +
+      botChoices
+        .map((bb) => `<option value="${bb.id}">${bb.icon} ${escapeHtml(bb.name)}${bb.admin ? ' (admin)' : ''}</option>`)
+        .join('');
+    if (prev) botSel.value = prev; // render'lar arası seçim korunur
+  }
   if (!add.dataset.bound) {
     add.dataset.bound = '1';
     const addNum = async () => {
@@ -1889,7 +1991,8 @@ async function renderWaAllow() {
       if (!v) return;
       const name = nameInp.value.trim().slice(0, 40);
       if (!name) { toast('İsim zorunlu — kimin yazdığını bilmek için'); nameInp.focus(); return; }
-      await beast.waSetAllow([...(await beast.waGetAllow()), { num: v, name }]);
+      const botId = botSel && botSel.value ? { bot_id: botSel.value } : {};
+      await beast.waSetAllow([...(await beast.waGetAllow()), { num: v, name, ...botId }]);
       inp.value = '';
       nameInp.value = '';
       renderWaAllow();
@@ -1903,6 +2006,21 @@ async function renderWaAllow() {
       if (e.key === 'Enter') { e.preventDefault(); addNum(); }
     });
   }
+}
+
+/* FEATURE 2: kuyruk satırını güncelle (pending/failed sayısı) */
+function updateQueueInfo(st) {
+  const el = $('#waQueueInfo');
+  if (!el) return;
+  const pending = Number(st && st.pending) || 0;
+  const failed = Number(st && st.failed) || 0;
+  if (!pending && !failed) {
+    el.hidden = true;
+    el.textContent = '';
+    return;
+  }
+  el.hidden = false;
+  el.textContent = _ti('wa_queue_info', pending) + (failed ? ' · ' + _ti('wa_queue_failed', failed) : '');
 }
 
 function updateWaPane() {
@@ -1924,6 +2042,468 @@ function updateWaPane() {
   const u = pane.querySelector('#waUser');
   u.hidden = !(waUI.status === 'connected' && waUI.user);
   u.textContent = waUI.user ? '👤 ' + waUI.user : '';
+}
+
+/* ---------------- BOT SİSTEMİ (BÖLÜM 2-3-4) ----------------
+   Sol panel altında bot kartları; her bot için sohbet geçmişi + sekmeli yönetim.
+   İlk bot hep Beast (admin, silinemez). Max 5 bot. */
+
+const BOT_ICONS = ['🦁', '🚀', '💎', '⭐', '🔥', '🧮', '📊', '🤖', '🦊', '🐼', '🎯', '🛠️'];
+const BOT_SKILLS = [
+  ['email', 'E-posta'],
+  ['browser', 'Dahili tarayıcı'],
+  ['web_search', 'Web arama'],
+  ['run_command', 'Terminal/dosya'],
+  ['memory', 'Kendi hafızası'],
+  ['kb', 'Bilgi bankası'],
+];
+const BOT_PROMPT_TEMPLATES = [
+  ['', 'bot_tpl_none'],
+  ['Sen bir Muhasebe Botusun. Fatura, ödeme, borç-alacak ve tahsilat konularında yardımcı olursun. Cevaplarında tutar, tarih ve vade bilgisini net verirsin. Hassas finansal veriyi kimseyle paylaşmazsın.', 'bot_tpl_acc'],
+  ['Sen bir Satış Botusun. Ürün fiyatı, kampanya, sipariş durumu sorularını yanıtlarsın; sıcak ve ikna edici ama abartısız bir dille konuşursun. Fiyat dışında indirim vaadi vermezsin.', 'bot_tpl_sales'],
+  ['Sen bir Destek Botusun. Teknik sorunları adım adım çözersin; sabırlı, anlaşılır ve çözüm odaklısın. Çözemezsen sorunu kayıt altına alıp yönetime bildirirsin.', 'bot_tpl_support'],
+  ['Sen bir Proje Yönetimi Botusun. Görev takibi, teslim tarihleri ve ekip koordinasyonu konusunda yardımcı olursun; kısa durum özetleri ve net aksiyonlar verirsin.', 'bot_tpl_pm'],
+];
+
+let botsCache = [];
+let botPageId = null; // null = genel bakış (Tüm Botlar)
+let botPageStats = [];
+let activeBotId = 'beast'; // masaüstü UI'ının şu an hangi botta olduğu (varsayılan: ilk bot/Beast)
+
+async function refreshBots() {
+  try {
+    botsCache = (await beast.botsList()) || [];
+  } catch { botsCache = []; }
+  try { botPageStats = (await beast.botsStats()) || []; } catch { botPageStats = []; }
+  renderBotCards();
+  if (!$('#botOverlay').hidden) renderBotPage();
+}
+
+/* sol panel altındaki bot kartları */
+function renderBotCards() {
+  const wrap = $('#botList');
+  if (!wrap) return;
+  wrap.innerHTML = '';
+  for (const b of botsCache) {
+    const row = document.createElement('div');
+    row.className = 'bot-card' + (b.id === activeBotId ? ' active' : '');
+    row.title = _t('bot_switch_hint');
+    row.innerHTML =
+      `<span class="bot-ico">${b.icon || '🤖'}</span>` +
+      `<span class="bot-nm">${escapeHtml(b.name)}</span>` +
+      `<span class="bot-gear" title="${_t('bot_manage')}">⚙</span>` +
+      `<span class="bot-tag">${b.admin ? 'ADMIN' : 'BOT'}</span>`;
+    /* tıkla → UI o bota geçer; ⚙ → yönetim sayfası */
+    row.addEventListener('click', () => switchBot(b.id));
+    row.querySelector('.bot-gear').addEventListener('click', (e) => {
+      e.stopPropagation();
+      openBotPage(b.id);
+    });
+    wrap.appendChild(row);
+  }
+}
+
+/* üst bardaki aktif bot rozeti */
+function updateBotChip() {
+  const chip = $('#botChip');
+  if (!chip) return;
+  const b = botsCache.find((x) => x.id === activeBotId) || { icon: '🦁', name: 'Beast' };
+  chip.textContent = (b.icon || '🤖') + ' ' + b.name;
+}
+
+/* BOTLAR ARASI GEÇİŞ: kart tıklaması SADECE aktif botu değiştirir —
+   yönetim sayfası (Ayarlar/Memory/Log/Watcher/İstatistik) bot satırındaki ⚙
+   butonundan veya üstteki bot rozetinden (botChip) açılır. */
+async function switchBot(id) {
+  const b = botsCache.find((x) => x.id === id);
+  if (!b) return;
+  if (id === activeBotId) return;
+  activeBotId = id;
+  try { await beast.botsActivate(id); } catch {}
+  try { localStorage.setItem('beast.activeBot', id); } catch {}
+  updateBotChip();
+  renderBotCards();
+  /* o botun en son oturumuna geç; hiç yoksa o bot için yeni sohbet aç */
+  try {
+    const list = (await beast.listSessions()).filter((s) => (s.botId || 'beast') === id);
+    if (list.length) await openSession(list[0].id);
+    else { const v = await beast.createSession(); await openSession(v.id); }
+  } catch {}
+  toast((b.icon || '🤖') + ' ' + b.name + (b.admin ? '' : ' — ' + _t('bot_switched')));
+}
+
+function botOverlaySetOpen(open) {
+  $('#botOverlay').hidden = !open;
+  if (!open) botPageId = null;
+}
+
+async function openBotPage(id) {
+  botPageId = id || null;
+  $('#botOverlay').hidden = false;
+  $('#botOverviewBack').hidden = !id; // bot sayfasındaysa "Tüm Botlar"a dönüş görünür
+  document.querySelectorAll('.btab').forEach((b) => b.classList.toggle('active', id ? b.dataset.btab === 'settings' : false));
+  await refreshBots();
+  renderBotPage();
+}
+
+function renderBotPage() {
+  const head = $('#botHead');
+  const pane = $('#botPane');
+  const chatsCol = $('#botChatsCol');
+  const tabs = $('#botTabs');
+  if (botPageId === '__add') {
+    /* --- YENİ BOT ekleme formu (Electron'da prompt() çalışmadığı için sayfa) --- */
+    head.querySelector('#botHeadIcon').textContent = '＋';
+    head.querySelector('#botHeadName').textContent = _t('bot_add');
+    $('#botHeadTag').textContent = '';
+    chatsCol.style.display = 'none';
+    tabs.style.display = 'none';
+    renderBotAdd(pane);
+    return;
+  }
+  chatsCol.style.display = '';
+  tabs.style.display = '';
+  if (!botPageId) {
+    /* --- TÜM BOTLAR genel bakışı --- */
+    head.querySelector('#botHeadIcon').textContent = '≡';
+    head.querySelector('#botHeadName').textContent = _t('bot_overview');
+    $('#botHeadTag').textContent = '';
+    renderBotOverview(pane);
+    return;
+  }
+  const b = botsCache.find((x) => x.id === botPageId);
+  if (!b) { botPageId = null; renderBotPage(); return; }
+  head.querySelector('#botHeadIcon').textContent = b.icon || '🤖';
+  head.querySelector('#botHeadName').textContent = b.name;
+  $('#botHeadTag').textContent = b.admin ? 'ADMIN' : 'BOT';
+  const active = document.querySelector('.btab.active');
+  const tab = active ? active.dataset.btab : 'settings';
+  if (tab === 'settings') renderBotSettings(pane, b);
+  else if (tab === 'memory') renderBotMemory(pane, b);
+  else if (tab === 'log') renderBotLog(pane, b);
+  else if (tab === 'watcher') renderBotWatcher(pane, b);
+  else if (tab === 'stats') renderBotStats(pane, b);
+  renderBotChats(b);
+}
+
+function renderBotOverview(pane) {
+  pane.innerHTML = `<h2>${_t('bot_overview')}</h2><div class="sub">${_t('bot_overview_sub')}</div>`;
+  const totals = { numbers: 0, sessions: 0, msgs: 0 };
+  for (const s of botPageStats) { totals.numbers += s.numbers || 0; totals.sessions += s.sessions || 0; totals.msgs += s.msgs || 0; }
+  for (const b of botsCache) {
+    const st = botPageStats.find((s) => s.id === b.id) || {};
+    const row = document.createElement('div');
+    row.className = 'bot-ov-row';
+    row.innerHTML =
+      `<span class="ico">${b.icon || '🤖'}</span>` +
+      `<span class="nm">${escapeHtml(b.name)}${b.admin ? ' <span class="bot-tag">ADMIN</span>' : ''}</span>` +
+      `<span class="m">${_t('bot_stat_numbers')}: ${st.numbers || 0}</span>` +
+      `<span class="m">${_t('bot_stat_sessions')}: ${st.sessions || 0}</span>` +
+      `<span class="m">${_t('bot_stat_msgs')}: ${st.msgs || 0}</span>`;
+    row.addEventListener('click', () => openBotPage(b.id));
+    pane.appendChild(row);
+  }
+  pane.insertAdjacentHTML('beforeend',
+    `<div class="bot-ov-total"><span><b>${_t('bot_total')}</b></span><span>${_t('bot_stat_numbers')}: ${totals.numbers}</span><span>${_t('bot_stat_sessions')}: ${totals.sessions}</span><span>${_t('bot_stat_msgs')}: ${totals.msgs}</span></div>`);
+}
+
+/* --- sol yarı: o botun WhatsApp sohbetleri (salt-okunur admin görünümü) --- */
+async function renderBotChats(b) {
+  const list = $('#botChatList');
+  const box = $('#botChatMsgs');
+  box.innerHTML = '';
+  let waSet = new Set();
+  try { waSet = new Set(await beast.waListSessions()); } catch {}
+  const sessions = [];
+  try {
+    for (const s of await beast.listSessions()) {
+      if ((s.botId || 'beast') === b.id) sessions.push(s);
+    }
+  } catch {}
+  sessions.sort((x, y) => String(y.updatedAt).localeCompare(String(x.updatedAt)));
+  list.innerHTML = '';
+  if (!sessions.length) {
+    list.innerHTML = `<div class="mini-empty">${_t('bot_no_chats')}</div>`;
+    return;
+  }
+  let selected = null;
+  for (const s of sessions) {
+    const row = document.createElement('div');
+    row.className = 'bot-chat-row';
+    row.innerHTML =
+      (waSet.has(s.id) ? '<span class="sess-wa" title="WhatsApp">W</span>' : '<span class="sess-wa" style="opacity:.35">D</span>') +
+      `<span class="bt">${escapeHtml(s.title || 'Yeni Sohbet')}</span>` +
+      `<span class="sess-code">${escapeHtml(s.code || '')}</span>`;
+    row.addEventListener('click', async () => {
+      list.querySelectorAll('.bot-chat-row').forEach((r) => r.classList.remove('active'));
+      row.classList.add('active');
+      selected = s.id;
+      try {
+        const full = await beast.openSession(s.id);
+        box.innerHTML = '';
+        for (const m of full.messages || []) {
+          if (m.role !== 'user' && m.role !== 'assistant') continue;
+          if (m.tool_calls) continue;
+          const div = document.createElement('div');
+          div.className = 'bot-msg ' + (m.role === 'user' ? 'user' : 'asst');
+          const who = m.role === 'user' ? _t('bot_msg_user') : b.name;
+          const when = m.at ? new Date(m.at).toLocaleString('tr-TR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '';
+          div.innerHTML = `<span class="who">${escapeHtml(who)}${when ? ' · ' + when : ''}</span>`;
+          div.appendChild(document.createTextNode(typeof m.content === 'string' ? m.content.slice(0, 2000) : '(ek)'));
+          box.appendChild(div);
+        }
+        box.scrollTop = box.scrollHeight;
+      } catch {}
+    });
+    list.appendChild(row);
+  }
+}
+
+/* --- Ayarlar sekmesi --- */
+function renderBotSettings(pane, b) {
+  pane.innerHTML = '';
+  const f = document.createElement('div');
+  f.className = 'bot-form';
+  const iconBtns = BOT_ICONS.map((ic) => `<button type="button" data-ic="${ic}" class="${ic === b.icon ? 'on' : ''}">${ic}</button>`).join('');
+  const otherBots = botsCache.filter((x) => x.id !== b.id);
+  const seeChecks = otherBots
+    .map((x) => `<label><input type="checkbox" data-see="${x.id}" ${((b.seeBots || []).includes(x.id)) ? 'checked' : ''}/> ${x.icon} ${escapeHtml(x.name)}</label>`)
+    .join('') || `<span class="sub">${_t('bot_no_other')}</span>`;
+  const skillChecks = BOT_SKILLS
+    .map(([k, lbl]) => `<label><input type="checkbox" data-skill="${k}" ${(b.skills || {})[k] ? 'checked' : ''}/> ${lbl}</label>`)
+    .join('');
+  const numRows = (b.numbers || [])
+    .map((n) => `<div class="bot-num-row" data-num="${n.num}"><span class="n">+${escapeHtml(n.num)}${n.name ? ' · ' + escapeHtml(n.name) : ''}</span><span class="x" title="${_t('bot_num_del')}">×</span></div>`)
+    .join('');
+  /* Numara ekleme KALDIRILDI — girişler yalnız Ayarlar → Entegrasyonlar (WhatsApp
+     izin listesi) üzerinden yapılır. Bu bölüm salt-okunur bağlı-numara listesidir. */
+  f.innerHTML = `
+    <div class="form-grid">
+      <div><label class="mem-label">${_t('bot_name')}</label><input id="bName" class="inp" value="${escapeHtml(b.name)}" maxlength="40"/></div>
+      <div><label class="mem-label">${_t('bot_icon')}</label><div class="icon-pick" id="bIconPick">${iconBtns}</div></div>
+    </div>
+    <label class="mem-label">${_t('bot_prompt')}</label>
+    <textarea id="bPrompt" class="mem-area" rows="5" placeholder="${_t('bot_prompt_ph')}">${escapeHtml(b.prompt || '')}</textarea>
+    <div class="sub" style="margin-top:4px">${_t('bot_tpl_hint')}</div>
+    <select id="bTpl" class="inp" style="margin-top:6px">${BOT_PROMPT_TEMPLATES.map((t, i) => `<option value="${i}">${escapeHtml(_t(t[1]))}</option>`).join('')}</select>
+    <label class="mem-label">${_t('bot_numbers')}</label>
+    <div id="bNums">${numRows || `<div class="sub">${_t('bot_no_numbers')}</div>`}</div>
+    <div class="sub" style="margin-top:4px">${_t('bot_num_ro_hint')}</div>
+    <label class="mem-label">${_t('bot_see')}</label>
+    <div class="bot-checks" id="bSee">${seeChecks}</div>
+    ${b.admin ? '' : `
+    <label class="mem-label">${_t('bot_perm')}</label>
+    <select id="bPerm" class="inp">
+      <option value="all" ${b.perm === 'all' ? 'selected' : ''}>${_t('wa_perm_all')}</option>
+      <option value="web" ${b.perm === 'web' ? 'selected' : ''}>web</option>
+      <option value="read" ${b.perm === 'read' ? 'selected' : ''}>${_t('wa_perm_read')}</option>
+      <option value="chat" ${b.perm === 'chat' ? 'selected' : ''}>${_t('wa_perm_chat')}</option>
+    </select>
+    <label class="mem-label">${_t('bot_skills')}</label>
+    <div class="bot-checks" id="bSkills">${skillChecks}</div>`}
+    <label class="mem-label">${_t('bot_browser')}</label>
+    <div class="bot-checks" style="margin-bottom:6px">
+      <label><input type="checkbox" id="bExtBrowser" ${b.extBrowser ? 'checked' : ''}/> ${_t('bot_ext_browser')}</label>
+    </div>
+    <div class="form-grid">
+      <div>
+        <label class="mem-label" style="margin-top:0">${_t('bot_def_browser')}</label>
+        <select id="bBrDef" class="inp">
+          <option value="dahili" ${b.browserDefault !== 'dis' ? 'selected' : ''}>${_t('bot_br_dahili')}</option>
+          <option value="dis" ${b.browserDefault === 'dis' ? 'selected' : ''}>${_t('bot_br_dis')}</option>
+        </select>
+      </div>
+      <div>
+        <label class="mem-label" style="margin-top:0">${_t('bot_ext_cmd')}</label>
+        <input id="bBrCmd" class="inp" value="${escapeHtml(b.extCommand || '')}" placeholder="chrome / msedge / firefox"/>
+      </div>
+    </div>
+    <div class="sub" style="margin-top:6px">${_t('bot_browser_note')}</div>
+    <div style="display:flex;gap:8px;margin-top:14px">
+      <button id="bSave" class="btn">${_t('bot_save')}</button>
+      ${b.admin ? '' : `<button id="bDel" class="btn ghost">${_t('bot_delete')}</button>`}
+    </div>`;
+  pane.appendChild(f);
+
+  f.querySelectorAll('#bIconPick button').forEach((btn) =>
+    btn.addEventListener('click', () => {
+      f.querySelectorAll('#bIconPick button').forEach((x) => x.classList.remove('on'));
+      btn.classList.add('on');
+    })
+  );
+  $('#bTpl').addEventListener('change', () => {
+    const t = BOT_PROMPT_TEMPLATES[Number($('#bTpl').value) || 0];
+    if (t && t[0]) { $('#bPrompt').value = t[0]; toast(_t('bot_tpl_applied')); }
+  });
+  f.querySelectorAll('#bNums .x').forEach((x) =>
+    x.addEventListener('click', async () => {
+      const num = x.parentElement.dataset.num;
+      const cur = await beast.waGetAllow();
+      await beast.waSetAllow(cur.filter((e) => e === '*' || !e || String(e.num) !== String(num)));
+      toast(_t('bot_num_removed'));
+      await refreshBots();
+      const bb = botsCache.find((x2) => x2.id === b.id);
+      if (bb) renderBotSettings(pane, bb);
+    })
+  );
+  $('#bSave').addEventListener('click', async () => {
+    const patch = {
+      name: $('#bName').value.trim(),
+      icon: (f.querySelector('#bIconPick button.on') || {}).dataset?.ic || b.icon,
+      prompt: $('#bPrompt').value,
+      seeBots: [...f.querySelectorAll('#bSee input:checked')].map((c) => c.dataset.see),
+      extBrowser: $('#bExtBrowser').checked,
+      browserDefault: $('#bBrDef').value,
+      extCommand: $('#bBrCmd').value.trim(),
+      numbers: (b.numbers || []).map((n) => n.num),
+    };
+    if (!b.admin) {
+      patch.perm = $('#bPerm').value;
+      const sk = {};
+      f.querySelectorAll('#bSkills input').forEach((c) => { sk[c.dataset.skill] = c.checked; });
+      patch.skills = sk;
+    }
+    const r = await beast.botsUpdate(b.id, patch);
+    if (r.ok) { toast(_t('bot_saved')); await refreshBots(); renderBotPage(); }
+    else toast(r.error || _t('bot_save_fail'));
+  });
+  const delBtn = $('#bDel');
+  if (delBtn) delBtn.addEventListener('click', async () => {
+    if (!confirm(_ti('bot_confirm_del', b.name))) return;
+    const r = await beast.botsRemove(b.id);
+    if (r.ok) { toast(_t('bot_deleted')); botPageId = null; await refreshBots(); renderBotPage(); }
+    else toast(r.error || _t('bot_save_fail'));
+  });
+  /* (numara ekleme alanı kaldırıldı — Entegrasyonlar üzerinden yapılır) */
+}
+
+/* --- Memory sekmesi: botun KENDİ hafızası — ayarlardaki SOUL/USER/MEMORY mantığı, bot izole.
+   Beast (admin) için GLOBAL hafıza gösterilir: agent tam bu dosyalara yazıyor. --- */
+async function renderBotMemory(pane, b) {
+  const subKey = b.admin ? 'bot_mem_admin_sub' : 'bot_mem_sub';
+  pane.innerHTML = `<h2>${_t('bot_tab_memory')}</h2><div class="sub">${_t(subKey)}</div>`;
+  const f = document.createElement('div');
+  f.className = 'bot-form';
+  f.innerHTML = `
+    <label class="mem-label">${_t('mem_soul')}</label><textarea id="bSoulTa" class="mem-area soul-area"></textarea>
+    <label class="mem-label">${_t('mem_mem')}</label><textarea id="bMemTa" class="mem-area"></textarea>
+    <label class="mem-label">${_t('mem_user')}</label><textarea id="bUserTa" class="mem-area"></textarea>
+    <button id="bMemSave" class="btn" style="margin-top:8px">${_t('mem_save')}</button>`;
+  pane.appendChild(f);
+  try {
+    const r = await beast.botsMemGet(b.id);
+    $('#bSoulTa').value = (r && r.soul) || '';
+    $('#bMemTa').value = (r && r.memory) || '';
+    $('#bUserTa').value = (r && r.user) || '';
+  } catch {}
+  $('#bMemSave').addEventListener('click', async () => {
+    await beast.botsMemSet(b.id, 'SOUL.md', $('#bSoulTa').value);
+    await beast.botsMemSet(b.id, 'MEMORY.md', $('#bMemTa').value);
+    await beast.botsMemSet(b.id, 'USER.md', $('#bUserTa').value);
+    toast(_t('bot_mem_saved'));
+  });
+}
+
+/* --- Log sekmesi: yetki/ayar değişiklik günlüğü --- */
+async function renderBotLog(pane, b) {
+  pane.innerHTML = `<h2>${_t('bot_tab_log')}</h2><div class="sub">${_t('bot_log_sub')}</div>`;
+  let txt = '';
+  try { txt = (await beast.botsLogGet(b.id)).content || ''; } catch {}
+  pane.insertAdjacentHTML('beforeend', `<div class="bot-log">${escapeHtml(txt || '—')}</div>`);
+}
+
+/* --- Watcher sekmesi: bu botun oturumlarına bağlı izleyiciler --- */
+async function renderBotWatcher(pane, b) {
+  pane.innerHTML = `<h2>${_t('bot_tab_watcher')}</h2><div class="sub">${_t('bot_watcher_sub')}</div>`;
+  let items = [];
+  try { items = (await beast.watchersList()) || []; } catch {}
+  let botSessions = new Set();
+  try {
+    for (const s of await beast.listSessions()) if ((s.botId || 'beast') === b.id) botSessions.add(s.id);
+  } catch {}
+  const mine = items.filter((w) => botSessions.has(w.sessionId));
+  if (!mine.length) {
+    pane.insertAdjacentHTML('beforeend', `<div class="mini-empty">${_t('bot_no_watchers')}</div>`);
+    return;
+  }
+  for (const w of mine) {
+    pane.insertAdjacentHTML('beforeend',
+      `<div class="bot-ov-row" style="cursor:default"><span class="nm">${escapeHtml(w.name || w.id)}</span><span class="m">${escapeHtml(w.kind || '')} ${w.enabled ? '' : '· ' + _t('bot_paused')}</span></div>`);
+  }
+}
+
+/* --- İstatistik sekmesi --- */
+function renderBotStats(pane, b) {
+  const st = botPageStats.find((s) => s.id === b.id) || {};
+  pane.innerHTML = `<h2>${_t('bot_tab_stats')}</h2><div class="sub">${_t('bot_stats_sub')}</div>`;
+  const when = st.lastAt ? new Date(st.lastAt).toLocaleString('tr-TR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '—';
+  pane.insertAdjacentHTML('beforeend',
+    `<div class="bot-stat-grid">
+      <div class="bot-stat"><div class="v">${st.numbers || 0}</div><div class="k">${_t('bot_stat_numbers')}</div></div>
+      <div class="bot-stat"><div class="v">${st.sessions || 0}</div><div class="k">${_t('bot_stat_sessions')}</div></div>
+      <div class="bot-stat"><div class="v">${st.msgs || 0}</div><div class="k">${_t('bot_stat_msgs')}</div></div>
+      <div class="bot-stat"><div class="v" style="font-size:13px;padding-top:6px">${when}</div><div class="k">${_t('bot_stat_last')}</div></div>
+    </div>`);
+}
+
+/* --- Yeni Bot akışı: overlay içinde ekleme sayfası aç (prompt() Electron'ta çalışmaz) --- */
+function botAddClick() {
+  if (botsCache.length >= 5) { toast(_ti('bot_max_toast', 5)); return; }
+  botPageId = '__add';
+  $('#botOverlay').hidden = false;
+  $('#botOverviewBack').hidden = false;
+  document.querySelectorAll('.btab').forEach((b) => b.classList.remove('active'));
+  refreshBots().then(() => renderBotPage());
+}
+
+/* --- Yeni Bot ekleme formu (overlay içinde — prompt() Electron'ta yok) --- */
+function renderBotAdd(pane) {
+  pane.innerHTML = '';
+  const f = document.createElement('div');
+  f.className = 'bot-form';
+  const iconBtns = BOT_ICONS.map((ic, i) => `<button type="button" data-ic="${ic}" class="${i === 7 ? 'on' : ''}">${ic}</button>`).join('');
+  f.innerHTML = `
+    <label class="mem-label">${_t('bot_name')}</label>
+    <input id="bAddName" class="inp" placeholder="${_t('bot_name_ph')}" maxlength="40"/>
+    <label class="mem-label">${_t('bot_icon')}</label>
+    <div class="icon-pick" id="bAddIconPick">${iconBtns}</div>
+    <label class="mem-label">${_t('bot_prompt')}</label>
+    <textarea id="bAddPrompt" class="mem-area" rows="6" placeholder="${_t('bot_prompt_ph')}"></textarea>
+    <div class="sub" style="margin-top:4px">${_t('bot_tpl_hint')}</div>
+    <select id="bAddTpl" class="inp" style="margin-top:6px">
+      ${BOT_PROMPT_TEMPLATES.map((t, i) => `<option value="${i}">${escapeHtml(_t(t[1]))}</option>`).join('')}
+    </select>
+    <div class="sub" style="margin-top:10px">${_t('bot_add_note')}</div>
+    <div style="display:flex;gap:8px;margin-top:14px;justify-content:center">
+      <button id="bAddCreate" class="btn">${_t('bot_create')}</button>
+      <button id="bAddCancel" class="btn ghost">${_t('bot_cancel')}</button>
+    </div>`;
+  pane.appendChild(f);
+
+  f.querySelectorAll('#bAddIconPick button').forEach((btn) =>
+    btn.addEventListener('click', () => {
+      f.querySelectorAll('#bAddIconPick button').forEach((x) => x.classList.remove('on'));
+      btn.classList.add('on');
+    })
+  );
+  $('#bAddTpl').addEventListener('change', () => {
+    const t = BOT_PROMPT_TEMPLATES[Number($('#bAddTpl').value) || 0];
+    if (t && t[0]) { $('#bAddPrompt').value = t[0]; toast(_t('bot_tpl_applied')); }
+  });
+  $('#bAddCancel').addEventListener('click', () => openBotPage(null));
+  $('#bAddCreate').addEventListener('click', async () => {
+    const name = $('#bAddName').value.trim();
+    if (!name) { toast(_t('bot_name_req')); $('#bAddName').focus(); return; }
+    const icon = (f.querySelector('#bAddIconPick button.on') || {}).dataset?.ic || '🤖';
+    const r = await beast.botsAdd({ name, icon, prompt: $('#bAddPrompt').value });
+    if (r.ok) {
+      toast(_t('bot_created') + ' ' + r.bot.name);
+      await refreshBots();
+      openBotPage(r.bot.id);
+    } else {
+      toast(r.error || _t('bot_save_fail'));
+    }
+  });
 }
 
 /* ---------------- paralel ajanlar (#14 CEO) ---------------- */
@@ -3310,6 +3890,7 @@ async function init() {
   );
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
+      if ($('#botOverlay') && !$('#botOverlay').hidden) { botOverlaySetOpen(false); return; }
       if (els.watchOverlay && !els.watchOverlay.hidden) { toggleMini(els.watchOverlay, true); return; }
       if (els.cronOverlay && !els.cronOverlay.hidden) { toggleMini(els.cronOverlay, true); return; }
       if (!els.settingsOverlay.hidden) closeSettings();
@@ -3326,6 +3907,25 @@ async function init() {
     if (a) { e.preventDefault(); beast.openExternal(a.dataset.url); }
   });
 
+  /* BOT SİSTEMİ bağlama */
+  if ($('#botAddBtn')) $('#botAddBtn').addEventListener('click', botAddClick);
+  if ($('#botOverviewBtn')) $('#botOverviewBtn').addEventListener('click', () => openBotPage(null));
+  if ($('#botClose')) $('#botClose').addEventListener('click', () => botOverlaySetOpen(false));
+  if ($('#botOverviewBack')) $('#botOverviewBack').addEventListener('click', () => openBotPage(null));
+  if ($('#botChip')) $('#botChip').addEventListener('click', () => openBotPage(activeBotId));
+  /* kalıcı aktif bot: restart sonrası aynı botun UI'ı açılır */
+  beast.botsActiveGet().then((r) => { activeBotId = (r && r.id) || 'beast'; updateBotChip(); renderBotCards(); }).catch(() => {});
+  document.querySelectorAll('.btab').forEach((b) =>
+    b.addEventListener('click', () => {
+      document.querySelectorAll('.btab').forEach((x) => x.classList.remove('active'));
+      b.classList.add('active');
+      renderBotPage();
+    })
+  );
+  $('#botOverlay').addEventListener('click', (e) => {
+    if (e.target === $('#botOverlay')) botOverlaySetOpen(false);
+  });
+  refreshBots().catch(() => {});
   els.input.focus();
 }
 
@@ -3354,3 +3954,364 @@ async function captureScreenShot() {
 }
 
 init();
+
+/* ================= SKILLS STORE =================
+   Sol alt buton → %70 modal · 3 sekme (Trending / Stars / Upload).
+   Trending: kurulum+beğeni hareketi / yaş (yükselenler).
+   Stars: uzun süre popülerler (14+ gün yaş, tüm zaman toplamı).
+   Upload: kimlik (benzersiz kullanıcı adı + avatar) + KARE kapak resmi (zorunlu,
+   otomatik kırpma) + SKILL.md içeren klasör. Yüklemeler yerel listelenir. */
+
+const storeState = {
+  tab: 'trending',
+  entries: [],
+  installed: new Set(),
+  beastId: '',
+  identity: { username: '', avatar: '' },
+  editIdentity: false, // kayıtlı ad varken "Değiştir" ile açılır
+  picked: null,      // store:pick önizlemesi
+  pendingImage: '',  // kare kırpılmış dataURL
+  offline: false,
+};
+
+function storeAgeDays(iso) {
+  const t = new Date(iso || 0).getTime();
+  return Number.isFinite(t) ? Math.max(0, (Date.now() - t) / 86400000) : 0;
+}
+
+function storeTrendingScore(e) {
+  const heat = (e.installs || 0) + (e.likes || 0) * 2;
+  return heat / Math.pow(1 + storeAgeDays(e.updatedAt || e.createdAt), 0.5);
+}
+
+function storeStarsScore(e) {
+  const total = (e.installs || 0) + (e.likes || 0) * 3;
+  return storeAgeDays(e.createdAt) >= 14 ? total : total * 0.2;
+}
+
+async function openStore() {
+  $('#storeOverlay').hidden = false;
+  storeState.tab = 'trending';
+  document.querySelectorAll('.stab').forEach((b) => b.classList.toggle('active', b.dataset.stab === 'trending'));
+  $('#storePane').innerHTML = `<div class="store-empty">…</div>`;
+  await loadStore();
+  renderStorePane();
+}
+
+async function loadStore() {
+  try {
+    const r = await beast.storeList();
+    storeState.entries = (r && r.entries) || [];
+    storeState.installed = new Set((r && r.installed) || []);
+    storeState.beastId = (r && r.beastId) || '';
+    storeState.identity = (r && r.identity) || { username: '', avatar: '' };
+    storeState.offline = false;
+  } catch {
+    storeState.entries = [];
+    storeState.offline = true;
+  }
+}
+
+function closeStore() {
+  $('#storeOverlay').hidden = true;
+}
+
+function storeCard(e, opts = {}) {
+  const installed = storeState.installed.has(e.id);
+  const hasUpdate = installed && e.updatedAt && e.installedAt && String(e.updatedAt) > String(e.installedAt);
+  const img = e.image
+    ? `<span class="store-avatar"><img src="${e.image}" alt="" style="width:100%;height:100%;object-fit:cover;border-radius:8px"/></span>`
+    : `<span class="store-avatar">${e.author && e.author.avatar ? escapeHtml(e.author.avatar) : '🧩'}</span>`;
+  const author = e.author || {};
+  const btnLabel = !installed ? _t('store_install') : hasUpdate ? _t('store_update') : _t('store_installed');
+  const btnDone = installed && !hasUpdate;
+  return `
+    <div class="store-card" data-id="${escapeHtml(e.id)}">
+      <div class="store-card-top">
+        ${img}
+        <div style="min-width:0;flex:1">
+          <div class="store-name" title="${escapeHtml(e.name)}">${escapeHtml(e.name)} <span class="store-ver">v${escapeHtml(e.version || '1.0.0')}</span></div>
+          <div class="store-author">
+            <span class="sa-avatar">${author.avatar ? escapeHtml(author.avatar) : '👤'}</span>
+            <span class="sa-name">${escapeHtml(author.username || '—')}</span>
+            ${author.beastId ? `<span class="sa-beast">${escapeHtml(author.beastId)}</span>` : ''}
+          </div>
+        </div>
+      </div>
+      <div class="store-desc">${escapeHtml(e.description || '')}</div>
+      ${(e.tags || []).length ? `<div class="store-tags">${e.tags.map((t) => `<span class="store-tag">${escapeHtml(t)}</span>`).join('')}</div>` : ''}
+      <div class="store-card-foot">
+        <span class="store-stats"><span>⬇ ${e.installs || 0} ${_t('store_installs')}</span><span>♥ ${e.likes || 0} ${_t('store_likes')}</span></span>
+        <button class="store-like ${e.liked ? 'liked' : ''}" data-like="${escapeHtml(e.id)}">♥</button>
+        <button class="store-install ${btnDone ? 'done' : ''}" data-install="${escapeHtml(e.id)}">${btnLabel}</button>
+      </div>
+    </div>`;
+}
+
+function bindStoreCardActions(pane) {
+  pane.querySelectorAll('[data-install]').forEach((btn) =>
+    btn.addEventListener('click', async () => {
+      const id = btn.dataset.install;
+      btn.disabled = true;
+      const r = await beast.storeInstall(id).catch(() => null);
+      if (r && r.ok) {
+        storeState.installed.add(id);
+        toast(_t('store_install_ok'));
+      } else {
+        toast((r && r.error) || _t('store_install_fail'));
+      }
+      renderStorePane();
+    })
+  );
+  pane.querySelectorAll('[data-like]').forEach((btn) =>
+    btn.addEventListener('click', async () => {
+      const r = await beast.storeLike(btn.dataset.like).catch(() => null);
+      if (r && r.ok) {
+        const e = storeState.entries.find((x) => x.id === btn.dataset.like);
+        if (e) { e.liked = r.liked; e.likes = Math.max(0, (e.likes || 0) + (r.liked ? 1 : -1)); }
+        toast(_t('store_like_ok'));
+        renderStorePane();
+      }
+    })
+  );
+}
+
+function renderStoreList(mode) {
+  const pane = $('#storePane');
+  const list = storeState.entries
+    .filter((e) => (mode === 'stars' ? storeAgeDays(e.createdAt) >= 14 && storeStarsScore(e) > 0 : true))
+    .sort((a, b) => (mode === 'stars' ? storeStarsScore(b) - storeStarsScore(a) : storeTrendingScore(b) - storeTrendingScore(a)))
+    .slice(0, 30);
+  pane.innerHTML =
+    (storeState.offline ? `<div class="store-sub">${_t('store_offline')}</div>` : '') +
+    (list.length
+      ? `<div class="store-grid">${list.map((e) => storeCard(e)).join('')}</div>`
+      : `<div class="store-empty">${_t(mode === 'stars' ? 'store_empty_stars' : 'store_empty_trending')}</div>`);
+  bindStoreCardActions(pane);
+}
+
+/* resim → kare kırpma (256×256, merkez) → dataURL */
+function storeCropSquare(dataUrl) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      try {
+        const size = Math.min(img.naturalWidth, img.naturalHeight);
+        const sx = (img.naturalWidth - size) / 2;
+        const sy = (img.naturalHeight - size) / 2;
+        const c = document.createElement('canvas');
+        c.width = 256;
+        c.height = 256;
+        c.getContext('2d').drawImage(img, sx, sy, size, size, 0, 0, 256, 256);
+        resolve(c.toDataURL('image/jpeg', 0.85));
+      } catch (e) {
+        reject(e);
+      }
+    };
+    img.onerror = () => reject(new Error('resim okunamadı'));
+    img.src = dataUrl;
+  });
+}
+
+function renderStoreUpload() {
+  const pane = $('#storePane');
+  const id = storeState.identity;
+  const p = storeState.picked;
+  /* kullanıcı adı bir kez kaydedilir → sonra hep otomatik kullanılır;
+     yalnız "Değiştir"e basılınca düzenleme açılır */
+  const editingIdentity = storeState.editIdentity || !id.username;
+  const mine = storeState.entries
+    .filter((e) => e.author && e.author.beastId === storeState.beastId)
+    .sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')));
+  pane.innerHTML = `
+    <div class="store-sub">${_t('store_sub_upload')}</div>
+    <div class="store-form">
+      <div class="store-box">
+        <h3>${_t('store_id_label')} — <span id="stBeastId">${escapeHtml(storeState.beastId || '—')}</span></h3>
+        ${editingIdentity ? `
+        <div class="store-row">
+          <input id="stUser" class="store-input" placeholder="${_t('store_user_ph')}" value="${escapeHtml(id.username || '')}" maxlength="20"/>
+          <button id="stIdSave" class="store-btn">${_t('store_id_save')}</button>
+        </div>` : `
+        <div class="store-row">
+          <span class="store-saved-user">✓ @${escapeHtml(id.username)}</span>
+          <button id="stIdEdit" class="store-btn">${_t('store_user_change')}</button>
+        </div>
+        <div class="sub" style="margin:0">${_t('store_user_saved_note')}</div>`}
+        ${editingIdentity ? `<div class="sub" style="margin:0">${_t('store_login_note')}</div>` : ''}
+      </div>
+      <div class="store-box">
+        <h3>${_t('store_img_label')}</h3>
+        <div class="store-row">
+          <span class="store-avatar" id="stImgPrev" style="width:56px;height:56px;font-size:26px">${storeState.pendingImage ? `<img src="${storeState.pendingImage}" style="width:100%;height:100%;object-fit:cover;border-radius:8px"/>` : '🖼️'}</span>
+          <button id="stImgBtn" class="store-btn">${storeState.pendingImage ? _t('store_img_change') : _t('store_img_pick')}</button>
+        </div>
+        <div class="sub" style="margin:0">${_t('store_img_auto')}</div>
+      </div>
+      <div class="store-box">
+        <h3>${_t('store_skill_folder')}</h3>
+        <button id="stPick" class="store-btn">${_t('store_pick_btn')}</button>
+        <div class="store-picked" id="stPickInfo">${p
+          ? `${escapeHtml(p.name)} — ${p.files.length} ${_t('store_files_label').toLowerCase()} · v${escapeHtml(p.version || '1.0.0')}`
+          : _t('store_none_picked')}</div>
+        ${p ? `
+        <label class="mem-label" style="margin:0">${_t('store_name_label')}</label>
+        <input id="stName" class="store-input" value="${escapeHtml(p.name || '')}" maxlength="60"/>
+        <label class="mem-label" style="margin:0">${_t('store_desc_label')}</label>
+        <textarea id="stDesc" class="store-input" rows="2" maxlength="200">${escapeHtml(p.description || '')}</textarea>
+        <label class="mem-label" style="margin:0">${_t('store_tags_label')}</label>
+        <input id="stTags" class="store-input" placeholder="${_t('store_tags_ph')}" maxlength="80"/>
+        <button id="stCommit" class="store-btn primary">${_t('store_commit')}</button>` : ''}
+      </div>
+      <div class="store-box">
+        <h3>${_t('store_mine')}</h3>
+        <div class="store-mine">${mine.length
+          ? mine.map((e) => `
+            <div class="store-mine-row" data-mine="${escapeHtml(e.id)}">
+              <span class="store-avatar" style="width:26px;height:26px;font-size:14px">${e.image ? `<img src="${e.image}" style="width:100%;height:100%;object-fit:cover;border-radius:6px"/>` : '🧩'}</span>
+              <span class="sm-n">${escapeHtml(e.name)}</span>
+              <span class="sm-m">⬇ ${e.installs || 0} · ♥ ${e.likes || 0}</span>
+              <button data-share="${escapeHtml(e.id)}">${_t('store_share')}</button>
+              <button class="sm-del" data-del="${escapeHtml(e.id)}">${_t('store_remove')}</button>
+            </div>`).join('')
+          : `<div class="sub" style="margin:0">${_t('store_mine_empty')}</div>`}</div>
+      </div>
+    </div>`;
+
+  /* kimlik (kullanıcı adı yeterli — avatar yok) */
+  const editBtn = $('#stIdEdit');
+  if (editBtn)
+    editBtn.addEventListener('click', () => {
+      storeState.editIdentity = true;
+      renderStorePane();
+    });
+  const saveBtn = $('#stIdSave');
+  if (saveBtn)
+    saveBtn.addEventListener('click', async () => {
+      const username = $('#stUser').value.trim();
+      const r = await beast.storeSetIdentity({ username });
+      if (r && r.ok) {
+        storeState.identity = { username, avatar: '🧩' };
+        storeState.editIdentity = false; // kaydedildi → kilitli moda dön
+        toast(_t('store_identity_saved'));
+        renderStorePane();
+      } else {
+        toast((r && r.error) || 'hata');
+      }
+    });
+
+  /* kapak resmi: dosya seç → kare kırp */
+  $('#stImgBtn').addEventListener('click', () => {
+    const inp = document.createElement('input');
+    inp.type = 'file';
+    inp.accept = 'image/*';
+    inp.addEventListener('change', async () => {
+      const f = inp.files && inp.files[0];
+      if (!f) return;
+      try {
+        const raw = await new Promise((res, rej) => {
+          const fr = new FileReader();
+          fr.onload = () => res(fr.result);
+          fr.onerror = () => rej(new Error('okunamadı'));
+          fr.readAsDataURL(f);
+        });
+        storeState.pendingImage = await storeCropSquare(raw);
+        renderStorePane();
+      } catch (e) {
+        toast(String((e && e.message) || e));
+      }
+    });
+    inp.click();
+  });
+
+  /* klasör seç */
+  $('#stPick').addEventListener('click', async () => {
+    const r = await beast.storePick().catch(() => null);
+    if (r && r.ok) {
+      storeState.picked = r;
+      renderStorePane();
+    } else if (r && !r.canceled && r.error) {
+      toast(r.error);
+    }
+  });
+
+  /* yükle */
+  const commitBtn = $('#stCommit');
+  if (commitBtn)
+    commitBtn.addEventListener('click', async () => {
+      if (!storeState.identity.username) {
+        toast(_t('store_identity_first'));
+        return;
+      }
+      if (!storeState.pendingImage) {
+        toast(_t('store_img_required'));
+        return;
+      }
+      if (!storeState.picked) {
+        toast(_t('store_pick_first'));
+        return;
+      }
+      const r = await beast.storeCommit({
+        path: storeState.picked.path,
+        name: $('#stName').value.trim(),
+        description: $('#stDesc').value.trim(),
+        tags: $('#stTags').value.split(',').map((t) => t.trim()).filter(Boolean),
+        image: storeState.pendingImage,
+      }).catch(() => null);
+      if (r && r.ok) {
+        toast(_t('store_commit_ok'));
+        storeState.picked = null;
+        storeState.pendingImage = '';
+        await loadStore();
+        renderStorePane();
+      } else {
+        toast((r && r.error) || 'hata');
+      }
+    });
+
+  /* kendi yüklemeleri: paylaş / kaldır */
+  pane.querySelectorAll('[data-share]').forEach((b) =>
+    b.addEventListener('click', async () => {
+      const r = await beast.storeExport(b.dataset.share).catch(() => null);
+      if (r && r.ok) {
+        try {
+          await navigator.clipboard.writeText(r.json);
+          beast.openExternal('https://github.com/algokodcom/beast-agent/issues/new?title=Skills%20Store%20g%C3%B6nderisi&body=' + encodeURIComponent('Aşağıya kopyalanan JSON\u2019u yapıştır:\n'));
+          toast(_t('store_share_ok'));
+        } catch {}
+      }
+    })
+  );
+  pane.querySelectorAll('[data-del]').forEach((b) =>
+    b.addEventListener('click', async () => {
+      const r = await beast.storeRemove(b.dataset.del).catch(() => null);
+      if (r && r.ok) {
+        toast(_t('store_removed'));
+        await loadStore();
+        renderStorePane();
+      } else if (r && r.error) {
+        toast(r.error);
+      }
+    })
+  );
+}
+
+function renderStorePane() {
+  if (storeState.tab === 'upload') renderStoreUpload();
+  else renderStoreList(storeState.tab);
+  const bid = $('#storeBeastId');
+  if (bid) bid.textContent = storeState.beastId || '';
+}
+
+$('#storeBtn').addEventListener('click', openStore);
+$('#storeClose').addEventListener('click', closeStore);
+$('#storeOverlay').addEventListener('click', (e) => {
+  if (e.target === $('#storeOverlay')) closeStore();
+});
+document.querySelectorAll('.stab').forEach((b) =>
+  b.addEventListener('click', () => {
+    storeState.tab = b.dataset.stab;
+    document.querySelectorAll('.stab').forEach((x) => x.classList.toggle('active', x === b));
+    renderStorePane();
+  })
+);

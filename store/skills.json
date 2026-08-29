@@ -1,0 +1,5 @@
+{
+  "version": 1,
+  "_doc": "Skills Store topluluk indeksi. Her kayıt: { id, name, description, version, tags[], author{username,avatar,beastId}, image(dataURL), files{'SKILL.md': ...}, installs, likes, createdAt, updatedAt }. Yüklemeler buraya PR ile eklenir; app raw URL'den çeker.",
+  "skills": []
+}

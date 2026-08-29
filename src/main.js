@@ -7,9 +7,12 @@ const http = require('http');
 const crypto = require('crypto');
 const { spawn } = require('child_process');
 const Engine = require('./agent/engine');
-const { loadBeastConfig } = require('./agent/config');
+const { loadBeastConfig, beastDir } = require('./agent/config');
+const bots = require('./agent/bots');
+const mqueue = require('./agent/mqueue');
 const memory = require('./agent/memory');
 const skillsMod = require('./agent/skills');
+const storeMod = require('./agent/store');
 const { WhatsAppBridge } = require('./agent/whatsapp');
 const cron = require('./cron');
 const watchers = require('./agent/watchers');
@@ -178,6 +181,19 @@ try { ImapFlow = require('imapflow'); } catch {}
 try { nodemailer = require('nodemailer'); } catch {}
 
 const APP_DIR = path.join(app.getPath('appData'), 'beast');
+
+/* ÖNCÜ SAĞLAYICILAR (BÖLÜM 9): endpoint bilmeye gerek yok — picker'dan seç,
+   sadece API key gir, modeller otomatik çekilir. Hepsi OpenAI-uyumlu. */
+const BUILTIN_PROVIDERS = [
+  { id: 'opencode-zen', name: 'OpenCode Zen', baseUrl: 'https://opencode.ai/zen/v1', hint: 'Ücretsiz modeller var — anahtar: opencode.ai/auth' },
+  { id: 'opencode-go', name: 'OpenCode Go', baseUrl: 'https://opencode.ai/zen/go/v1', hint: 'Abonelik anahtarı' },
+  { id: 'openrouter', name: 'OpenRouter', baseUrl: 'https://openrouter.ai/api/v1', hint: 'openrouter.ai/keys' },
+  { id: 'openai', name: 'OpenAI', baseUrl: 'https://api.openai.com/v1', hint: 'platform.openai.com/api-keys' },
+  { id: 'anthropic', name: 'Anthropic', baseUrl: 'https://api.anthropic.com/v1', hint: 'console.anthropic.com' },
+  { id: 'gemini', name: 'Google Gemini', baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai', hint: 'aistudio.google.com/apikey' },
+  { id: 'zhipu', name: 'Zhipu AI', baseUrl: 'https://api.z.ai/api/paas/v4', hint: 'z.ai model konsolu' },
+  { id: 'groq', name: 'Groq', baseUrl: 'https://api.groq.com/openai/v1', hint: 'console.groq.com/keys' },
+];
 const SESSIONS_DIR = path.join(APP_DIR, 'sessions');
 const SETTINGS_FILE = path.join(APP_DIR, 'settings.json');
 const SETTINGS_BACKUP_FILE = path.join(APP_DIR, 'settings.backup.json');
@@ -1072,7 +1088,7 @@ async function tryWaSlash(jid, rawText, senderNum) {
   } catch (e) {
     out = 'Komut hatası: ' + String((e && e.message) || e);
   }
-  if (out) await wa.send(jid, out).catch(() => {});
+  if (out) await sendWaSafe(jid, out).catch(() => {});
   return true;
 }
 
@@ -1314,6 +1330,116 @@ function scheduleReminder({ when, message, sessionId, repeat }) {
 /* Giriş kapısı: slash komutlar hemen işlenir; DM allowlist'e bakar;
    grup sohbetleri mention-gated ayara göre kabul edilir. Uygun her mesaj
    anti-spam kuyruğuna düşürülür (WA_DEBOUNCE_MS birleştirme). */
+/* ---------------- BOT SİSTEMİ yardımcıları ----------------
+   Bot eşleştirme, izolasyon, whitelist.json aynası ve bot istatistikleri. */
+
+const PERM_RANK = { all: 3, web: 2, read: 1, chat: 0 }; // küçük = kısıtlı
+
+function moreRestrictivePerm(a, b) {
+  const ra = PERM_RANK[a] ?? 3;
+  const rb = PERM_RANK[b] ?? 3;
+  const keys = Object.keys(PERM_RANK);
+  return keys.find((k) => PERM_RANK[k] === Math.min(ra, rb)) || 'all';
+}
+
+/* Bot skill checkbox'ları → oturumun görebileceği araç adları.
+   null = kısıt yok (admin bot). */
+function botToolSet(cfg) {
+  const s = cfg && cfg.skills ? cfg.skills : {};
+  const set = new Set([
+    /* çekirdek: her botta konuşma + plan + hatırlatıcı */
+    'todo_write', 'set_reminder', 'send_file',
+    'tasks_list', 'task_status', 'task_cancel',
+    'run_background', 'run_background_many', 'delegate_task',
+    'event_list', 'event_subscribe', 'event_unsubscribe',
+    'watcher_add', 'watcher_list', 'watcher_remove',
+  ]);
+  if (s.web_search) { set.add('web_search'); set.add('http_fetch'); }
+  if (s.browser) {
+    for (const t of ['browser_open', 'browser_read', 'browser_screenshot', 'browser_snapshot', 'browser_click', 'browser_type', 'browser_press', 'browser_scroll', 'browser_select', 'ocr_read']) set.add(t);
+  }
+  if (s.email) { set.add('email_list'); set.add('email_read'); set.add('email_send'); }
+  if (s.run_command) {
+    for (const t of ['run_command', 'python_run', 'read_file', 'write_file', 'list_dir', 'computer_look', 'computer_act']) set.add(t);
+  }
+  if (s.memory) { set.add('memory_write'); set.add('user_write'); set.add('memory_search'); set.add('memory_hygiene'); }
+  if (s.kb) { set.add('kb_search'); set.add('kb_add'); }
+  return set;
+}
+
+/* Engine'a enjekte edilen çözümleyici: botId → persona bloğu verisi.
+   Hafıza artık buildSystem içinde botun kendi SOUL/USER/MEMORY'sinden gelir. */
+function botResolve(botId) {
+  const b = bots.get(botId);
+  if (!b) return null;
+  const numbers = (settings.waAllow || [])
+    .filter((e) => e && e !== '*' && e.bot_id === botId)
+    .map((e) => '+' + e.num);
+  return { ...b, numbers };
+}
+
+/* İzinli numaraların bot_id'sini düzelt + whitelist.json aynasını yaz */
+function syncWhitelist() {
+  try {
+    let dirty = false;
+    for (const e of settings.waAllow || []) {
+      if (!e || e === '*') continue;
+      if (e.bot_id && !bots.get(e.bot_id)) { delete e.bot_id; dirty = true; } // silinen bota bağlıysa botsuz yap
+    }
+    if (dirty) saveSettings();
+    const map = {};
+    for (const e of settings.waAllow || []) {
+      if (e === '*') { map['*'] = { name: 'herkes', bot_id: 'beast', status: 'allowed' }; continue; }
+      if (!e || !e.num) continue;
+      map['+' + e.num] = {
+        name: e.name || '',
+        bot_id: bots.get(e.bot_id) ? e.bot_id : 'beast',
+        status: e.owner ? 'admin' : 'allowed',
+        perm: e.perm || 'all',
+      };
+    }
+    fs.writeFileSync(path.join(beastDir(), 'whitelist.json'), JSON.stringify(map, null, 2));
+  } catch {}
+}
+
+/* numara listesi → bot_id yeniden atama (bir numara tek bota bağlanır) */
+function reassignBotNumbers(botId, numbers) {
+  const wanted = new Set((Array.isArray(numbers) ? numbers : []).map((n) => String(n).replace(/\D/g, '')).filter((n) => n.length >= 6));
+  for (const e of settings.waAllow || []) {
+    if (!e || e === '*') continue;
+    if (wanted.has(String(e.num))) e.bot_id = botId;
+    else if (e.bot_id === botId) delete e.bot_id;
+  }
+  saveSettings();
+}
+
+function botListWithNumbers() {
+  return bots.list().map((b) => ({
+    ...b,
+    numbers: (settings.waAllow || []).filter((e) => e && e !== '*' && e.bot_id === b.id).map((e) => ({ num: e.num, name: e.name || '' })),
+  }));
+}
+
+function botStats() {
+  const stats = {};
+  for (const b of bots.list()) stats[b.id] = { id: b.id, name: b.name, icon: b.icon, admin: !!b.admin, numbers: 0, sessions: 0, msgs: 0, lastAt: null };
+  try {
+    for (const e of settings.waAllow || []) {
+      if (e && e !== '*' && stats[e.bot_id || 'beast']) stats[e.bot_id || 'beast'].numbers++;
+    }
+  } catch {}
+  try {
+    for (const v of engine.listSessions()) {
+      const bid = v.botId || 'beast';
+      if (!stats[bid]) stats[bid] = { id: bid, name: bid, icon: '🤖', admin: false, numbers: 0, sessions: 0, msgs: 0, lastAt: null };
+      stats[bid].sessions++;
+      stats[bid].msgs += v.count || 0;
+      if (!stats[bid].lastAt || String(v.updatedAt) > String(stats[bid].lastAt)) stats[bid].lastAt = v.updatedAt;
+    }
+  } catch {}
+  return Object.values(stats);
+}
+
 async function handleWaIncoming(jid, payload, senderNum) {
   try {
     if (!engine) return;
@@ -1357,7 +1483,8 @@ async function handleWaIncoming(jid, payload, senderNum) {
 }
 
 /* Güvenli WA gönderimi: hedef adrese dener, LID gibi adresler patlarsa
-   bilinen gerçek numaraya (@s.whatsapp.net) tek kez düşer. Sonucu loglar. */
+   bilinen gerçek numaraya (@s.whatsapp.net) tek kez düşer. Hâlâ başarısızsa
+   OFFLINE KUYRUĞA alınır — bağlantı gelince arka plan işçisi otomatik gönderir. */
 async function sendWaSafe(jid, text) {
   let r = null;
   try {
@@ -1375,8 +1502,67 @@ async function sendWaSafe(jid, text) {
       return true;
     }
   }
-  waLog(`out BAŞARISIZ jid=${jid} — send-error loguna bak`);
+  /* FEATURE 2: ağ yok / bağlantı koptu — mesajı kaybetme, kuyruğa al */
+  if (wa) {
+    const item = mqueue.add({ to: jid, body: String(text || '') });
+    waLog(`out BAŞARISIZ jid=${jid} — mesaj kuyruğa alındı (id=${item.id}, bekleyen: ${mqueue.pendingCount()})`);
+    mqueueEmit('Mesaj kuyruğa alındı — bağlantı gelince gönderilecek');
+    return false;
+  }
+  waLog(`out BAŞARISIZ jid=${jid} — WhatsApp kurulu değil, kuyruğa alınmadı`);
   return false;
+}
+
+/* Kuyruk durumunu renderer'a bildir (toast + Entegrasyonlar'daki sayaç) */
+function mqueueEmit(text) {
+  try {
+    if (win && !win.isDestroyed()) {
+      win.webContents.send('wa:event', { type: 'queue', ...mqueue.stats(), text: text || '' });
+    }
+  } catch {}
+}
+
+/* FEATURE 2 arka plan işçisi: bağlantı varsa kuyruğu sırayla boşalt.
+   30 sn'de bir çağrılır; ayrıca WhatsApp 'connected' olduğunda anında tetiklenir. */
+let mqueueBusy = false;
+async function mqueueTick() {
+  if (mqueueBusy) return;
+  if (!wa || !wa.connected) return; // bağlantı yok — dosyada beklesin
+  const dueItems = mqueue.due();
+  if (!dueItems.length) return;
+  mqueueBusy = true;
+  try {
+    let sent = 0;
+    for (const m of dueItems) {
+      let ok = false;
+      try {
+        ok = !!(await wa.send(m.to, m.body));
+      } catch {}
+      if (!ok) {
+        /* LID fallback: doğrudan numara adresiyle tekrar dene */
+        const pn = waJidPn.get(m.to);
+        const pnJid = pn ? `${pn}@s.whatsapp.net` : '';
+        if (pnJid && pnJid !== m.to) {
+          try {
+            ok = !!(await wa.send(pnJid, m.body));
+          } catch {}
+        }
+      }
+      if (ok) {
+        mqueue.markSent(m.id);
+        sent++;
+      } else {
+        mqueue.bumpRetry(m.id); // 30sn→1dk→5dk→15dk→30dk backoff; 5. denemeden sonra failed
+      }
+    }
+    if (sent) {
+      const st = mqueue.stats();
+      waLog(`kuyruk: ${sent} mesaj gönderildi (kalan bekleyen: ${st.pending}, başarısız: ${st.failed})`);
+      mqueueEmit(`${sent} mesaj gönderildi`);
+    }
+  } finally {
+    mqueueBusy = false;
+  }
 }
 
 /* Kuyruktan tek paket halinde gelir: asıl işleme burada */
@@ -1415,9 +1601,29 @@ async function processWaMessage(jid, payload, senderNum, requeues = 0) {
   // Cevap verilecek — karşı telefonda "yazıyor…" göstergesi (medya işlenene dek sürer)
   wa.setComposing(jid, true);
   // Kişi bazlı granül izin: all/web/read/chat
-  const perm = isGroup ? 'all' : hit.perm || (hit.lockdown ? 'chat' : 'all');
+  let perm = isGroup ? 'all' : hit.perm || (hit.lockdown ? 'chat' : 'all');
   engine.setSessionPerm(sid, perm);
-  waLog(`perm=${perm} sid=${sid}`);
+
+  /* BOT SİSTEMİ: numara → bot eşleştirme (izinli kayıtta bot_id yoksa beast'e düşer) */
+  let botId = !isGroup && hit && hit.bot_id ? String(hit.bot_id) : 'beast';
+  if (!bots.get(botId)) {
+    if (botId !== 'beast') waLog(`bot="${botId}" yok — numara botsuz, beast (admin) botuna yönlendirildi`);
+    botId = 'beast';
+  }
+  engine.setSessionBot(sid, botId);
+  const botCfg = bots.get(botId);
+  if (botCfg && !botCfg.admin) {
+    /* bot yetkisi kişi yetkisinden daha kısıtlıysa o geçerli olur */
+    const eff = moreRestrictivePerm(perm, botCfg.perm || 'all');
+    if (eff !== perm) {
+      perm = eff;
+      engine.setSessionPerm(sid, eff);
+    }
+    engine.setSessionTools(sid, botToolSet(botCfg));
+  } else {
+    engine.setSessionTools(sid, null);
+  }
+  waLog(`perm=${perm} bot=${botId} sid=${sid}`);
 
   const participantName = payload.participant ? '+' + String(payload.participant).split('@')[0].split(':')[0] : '';
   /* #v13.1 rol: SAHİP vs MİSAFİR — ajan kime konuştuğunu net bilsin */
@@ -1503,6 +1709,10 @@ function ensureWa() {
               app.exit(0);    // before-quit tetiklenmeden temiz çıkış
             }, 3000);
           }
+          /* FEATURE 2: bağlantı geri geldi → bekleyen kuyruk mesajlarını hemen boşalt */
+          if (ev.status === 'connected') {
+            setTimeout(() => { mqueueTick().catch(() => {}); }, 2500);
+          }
         } else if (ev.type === 'send') {
           waLog(`out → ${waPrettyJid(ev.jid)} "${ev.preview || ''}"`);
         } else if (ev.type === 'tick') {
@@ -1534,10 +1744,21 @@ function reloadBackend() {
     workspace: settings.workspace || app.getPath('home'),
     modelOverride: settings.modelOverride || null,
     customProviders: settings.customProviders || [],
+    /* ANA KOD KİLİDİ: agent kaynak kod klasörüne dokunamaz (okuma serbest) */
+    protectedDirs: [...new Set([app.getAppPath(), app.isPackaged ? path.dirname(process.execPath) : ''].filter(Boolean))],
+    resolveBot: (botId) => botResolve(botId),
+    /* bot oturumu hafızası: botun KENDİ SOUL/USER/MEMORY dosyaları */
+    botMemory: {
+      read: (id, f) => bots.readMem(id, f),
+      append: (id, t) => bots.appendMem(id, t),
+      appendUser: (id, t) => bots.appendUserMem(id, t),
+      search: (id, q, l) => bots.searchMem(id, q, l),
+      relevant: (id, q) => bots.relevantMem(id, q),
+    },
     roleModels: settings.roleModels || {},
     deletedModels: settings.deletedModels || [],
     lockdown: !!settings.waLockdown,
-    ceoMode: settings.ceoMode !== false,
+    ceoMode: settings.ceoMode === true, // default KAPALI — ayarlardan açılır
     thinkLevel: settings.thinkLevel || 0,
     fallout: settings.fallout || null,
     limits: settings.limits || null,
@@ -1782,6 +2003,7 @@ app.whenReady().then(() => {
       ensureDesktopShortcut();
     }
     reloadBackend();
+    syncWhitelist(); // bot sistemi: whitelist.json aynası ilk açılışta garanti
     createSplash();
     createWindow();
     log.info('main', 'Beast Agent başlatıldı');
@@ -1793,6 +2015,8 @@ app.whenReady().then(() => {
     falloutResume();
     startAutoUpdater(); // #3 sessiz güncelleme
     startNpmUpdateWatch(); // npm kurulumunda registry üzerinden otomatik sürüm kontrolü
+    /* FEATURE 2: offline kuyruk işçisi — 30 sn'de bir bağlantı kontrolü + kuyruk boşaltma */
+    setInterval(() => { mqueueTick().catch(() => {}); }, 30000).unref();
 
     // #12 STT prefetch: whisper modelini arka planda hazırla (ilk sesli mesajda bekleme olmasın)
     if (settings.sttPrefetch !== false) {
@@ -2496,7 +2720,7 @@ function createSplash() {
     const muted = dark ? '#9a9aa2' : '#707078';
     splash = new BrowserWindow({
       width: 420,
-      height: 250,
+      height: 330,
       frame: false,
       resizable: false,
       alwaysOnTop: true,
@@ -2510,6 +2734,9 @@ function createSplash() {
       .logo{width:84px;height:84px;border-radius:20px;background:${fg};color:${bg};display:flex;align-items:center;justify-content:center;font-weight:900;font-size:44px}
       .t{margin-top:16px;font-size:20px;color:${fg}}.t b{font-weight:900}
       .s{margin-top:6px;font-size:12px;color:${muted}}
+      .cmds{margin-top:14px;display:flex;flex-wrap:wrap;gap:6px;justify-content:center;max-width:360px}
+      .cmds b{font-size:11.5px;font-weight:800;color:${fg};background:${muted}22;padding:2px 9px;border-radius:6px;letter-spacing:.3px}
+      .cmds span{font-size:11.5px;color:${muted};align-self:center}
       .bar{margin-top:18px;width:180px;height:3px;background:${muted}44;border-radius:2px;overflow:hidden}
       .bar>i{display:block;height:100%;width:40%;background:${fg};border-radius:2px;animation:sw 1.1s ease-in-out infinite}
       @keyframes sw{0%{transform:translateX(-100%)}100%{transform:translateX(260%)}}
@@ -2517,6 +2744,9 @@ function createSplash() {
       <div class="logo">B</div>
       <div class="t"><b>BEAST</b> Agent</div>
       <div class="s">hızlı · hafif · becerikli — v${app.getVersion()}</div>
+      <div class="cmds">
+        <b>/help</b><b>/restart</b><b>/change</b><b>/think</b><b>/clear</b><b>/stop</b><b>/usage</b><b>/backup</b><b>/status</b><span>…</span>
+      </div>
       <div class="bar"><i></i></div>
     </body></html>`;
     splash.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
@@ -2597,19 +2827,112 @@ ipcMain.handle('logs:clear', () => {
 });
 
 ipcMain.handle('sessions:list', () => engine.listSessions());
-ipcMain.handle('sessions:create', () => engine.createSession());
+ipcMain.handle('sessions:create', () => {
+  const v = engine.createSession();
+  /* aktif bota bağla — masaüstü UI'ı hangi bottaysa yeni sohbet o bota açılır */
+  const bid = settings.activeBotId && bots.get(settings.activeBotId) ? settings.activeBotId : 'beast';
+  engine.setSessionBot(v.id, bid);
+  const b = bots.get(bid);
+  if (b && !b.admin) {
+    engine.setSessionPerm(v.id, b.perm || 'all');
+    engine.setSessionTools(v.id, botToolSet(b));
+  } else {
+    engine.setSessionTools(v.id, null);
+  }
+  return v;
+});
 ipcMain.handle('sessions:open', (_e, id) => engine.openSession(id));
 ipcMain.handle('sessions:delete', (_e, id) => engine.deleteSession(id));
 
 ipcMain.handle('agent:send', (_e, { sessionId, text }) => {
   const raw = text && typeof text === 'object' ? String(text.text || '') : String(text ?? '');
   const t = raw.trim();
+  /* BOT HAFIZA GARANTİSİ: aktif bot bir MÜŞTERİ botuysa, botId'siz (eskiden
+     kalma) oturumlar bu bota bağlanır — bot konuşması asla Beast'in global
+     hafızasıyla (SOUL/USER/MEMORY) yürümez. Var olan botId asla üstüne yazılmaz. */
+  try {
+    const sid = String(sessionId || '');
+    const actBot = settings.activeBotId ? bots.get(settings.activeBotId) : null;
+    if (sid && actBot && !actBot.admin) {
+      let sess = engine.cache.get(sid);
+      if (!sess) {
+        try { sess = engine._load(sid); } catch {}
+      }
+      if (sess && !sess.botId) engine.setSessionBot(sid, actBot.id);
+    }
+  } catch {}
   if (t === '/stop' || t === '/start') {
     handleGlobalStopStart(sessionId, t);
     return true;
   }
   if (t === '/restart') {
     handleRestart(sessionId);
+    return true;
+  }
+  if (t === '/help') {
+    desktopEcho(sessionId, '/help', desktopSlashHelp());
+    return true;
+  }
+  if (t === '/rules') {
+    const rs = memory.listRules();
+    desktopEcho(sessionId, t, rs.length ? '**Kalıcı kurallar:**\n' + rs.map((r0, i) => `${i + 1}. ${r0}`).join('\n') : 'Kalıcı kural yok — ekle: **/rule <metin>**');
+    return true;
+  }
+  if (t === '/rule' || t.startsWith('/rule ')) {
+    const arg = t.slice(5).trim();
+    if (!arg) {
+      desktopEcho(sessionId, t, 'Kullanım: **/rule <metin>** — kalıcı kural ekler');
+    } else {
+      memory.addRule(arg);
+      desktopEcho(sessionId, t, '**Kural eklendi:** ' + arg);
+    }
+    return true;
+  }
+  if (t === '/model' || t.startsWith('/model ')) {
+    const arg = t.slice(6).trim();
+    const st = engine.publicState();
+    if (arg) {
+      const hit = st.models.find(
+        (m) => m.sel === arg || m.model.toLowerCase().includes(arg.toLowerCase()) || m.providerName.toLowerCase().includes(arg.toLowerCase())
+      );
+      if (hit) {
+        settings.modelOverride = hit.sel;
+        saveSettings();
+        engine.setModelOverride(hit.sel);
+        const st2 = engine.publicState();
+        desktopEcho(sessionId, t, st2.activeModel ? `**Model değişti:** ${st2.activeModel.providerName} · ${st2.activeModel.model}` : '**Model değişti.**');
+        if (win && !win.isDestroyed()) win.webContents.send('agent:event', { type: 'modelChanged', sessionId: String(sessionId || '') });
+      } else {
+        desktopEcho(sessionId, t, 'Eşleşen model yok — **/change** ile listeye bak.');
+      }
+    } else {
+      desktopEcho(sessionId, t, st.activeModel ? `**Aktif model:** ${st.activeModel.providerName} · ${st.activeModel.model}\nDeğiştirmek için: **/model <isim-parçası>**` : 'Model seçilmemiş.');
+    }
+    return true;
+  }
+  if (t === '/usage') {
+    const rep = usageMod.report();
+    const f = (r) => `${r.calls} çağrı · ${fmtNum(r.pin)}+${fmtNum(r.pout)} token${r.cost ? ' · ~$' + r.cost.toFixed(4) : ''}`;
+    desktopEcho(sessionId, t, `**Bugün:** ${f(rep.today.total)}\n**Bu ay:** ${f(rep.month.total)}\n\nDetay: Ayarlar → Maliyet`);
+    return true;
+  }
+  if (t === '/backup') {
+    desktopEcho(sessionId, t, '**Yedek alınıyor…** (şifreli .beastbak — Masaüstü\\Beast-Backups)');
+    createBackup().then((r) => {
+      desktopEcho(
+        sessionId,
+        '/backup',
+        r.ok
+          ? `**Şifreli yedek alındı**\n${r.path}\n(${Math.round(r.size / 1024)} KB)\nBeast Kodu: \`${r.code}\``
+          : 'Yedek hata: ' + (r.error || '?')
+      );
+    });
+    return true;
+  }
+  if (t === '/status') {
+    const wst = wa ? wa.snapshot() : { status: 'disconnected' };
+    const jobs = cron.list().filter((j) => j.enabled).length;
+    desktopEcho(sessionId, t, `**WA:** ${wst.status}${wst.user ? ' (' + wst.user + ')' : ''}\n**İzleyici:** ${watchers.list().length} adet\n**Cron:** ${jobs} aktif görev`);
     return true;
   }
   if (t === '/think' || t.startsWith('/think ')) {
@@ -2694,6 +3017,32 @@ function notesText(sessionId) {
     }
   } catch {}
   return 'Bu oturumda henüz not yok — her 14 mesajda otomatik oluşur/güncellenir.';
+}
+
+/* Masaüstü /help: komut adları **kalın** işaretlidir — renderer md() bunları
+   kalın (light temada siyah) basar. */
+function desktopSlashHelp() {
+  return [
+    '**Beast komutları**',
+    '**/help** – bu liste',
+    '**/restart** – uygulamayı yeniden başlat',
+    '**/stop** – koşan işleri durdur · **/start** – devam ettir',
+    '**/change [n]** – modelleri listele · n. modele geç',
+    '**/model [isim]** – aktif modeli göster / değiştir',
+    '**/think 0-5** – düşünme seviyesi (0 kapalı · 5 max)',
+    '**/clear** – oturum geçmişini gerçekten sil (kod korunur)',
+    '**/notes** – bu oturumun notlarını göster',
+    '**/rule <metin>** – kalıcı kural ekle · **/rules** – listele',
+    '**/notify on|off** – hata mail bildirimini aç/kapa',
+    '**/screenshot** – masaüstü ekran görüntüsünü sohbete ekle',
+    '**/approve** – bekleyen riskli işlemi onayla (always: bir daha sorma) · **/deny** – reddet',
+    '**/update** – yeni sürüm kontrolü · **/update now** – indirileni kur',
+    '**/usage** – bugünkü kullanım',
+    '**/backup** – tüm veriyi ŞİFRELİ yedekle (Masaüstü\\Beast-Backups)',
+    '**/status** – bağlantı ve servis durumu',
+    '',
+    'Komutsuz her mesaj doğrudan agent\u2019a gider — normal konuşur gibi istek yaz.',
+  ].join('\n');
 }
 
 /* masaüstünde komut → kullanıcı+asistan balonu olarak yansıt */
@@ -3694,6 +4043,73 @@ ipcMain.handle('tinyfish:clear', () => {
   return { ok: true, set: false, masked: '' };
 });
 
+/* ---------- SKILLS STORE (sol alt 🧩 butonu → topluluk mağazası) ---------- */
+
+function storeIdentity() {
+  return settings.storeUser || { username: '', avatar: '' };
+}
+
+ipcMain.handle('store:list', () => {
+  const r = storeIdentity();
+  return storeMod.list(settings.beastCode || '').then((out) => ({
+    ...out,
+    identity: { username: r.username || '', avatar: r.avatar || '' },
+  }));
+});
+
+ipcMain.handle('store:identity:set', (_e, p) => {
+  const username = String((p && p.username) || '').trim();
+  if (!/^[a-zA-Z0-9_-]{3,20}$/.test(username)) {
+    return { ok: false, error: 'kullanıcı adı 3-20 karakter (harf/rakam/_/-) olmalı' };
+  }
+  const beastId = storeMod.beastFingerprint(settings.beastCode || '');
+  if (storeMod.usernameTaken(username, beastId)) {
+    return { ok: false, error: `"${username}" başka bir Beast tarafından alınmış — başka ad seç` };
+  }
+  /* avatar kaldırıldı — sabit varsayılan (kartlarda kapak resmi/🧩 gösterilir) */
+  settings.storeUser = { username, avatar: (settings.storeUser && settings.storeUser.avatar) || '🧩' };
+  saveSettings();
+  return { ok: true, identity: { username, avatar: settings.storeUser.avatar, beastId } };
+});
+
+ipcMain.handle('store:pick', async () => {
+  try {
+    const r = await dialog.showOpenDialog({
+      title: 'Skill klasörü seç (SKILL.md içermeli)',
+      properties: ['openDirectory'],
+    });
+    if (r.canceled || !r.filePaths || !r.filePaths[0]) return { ok: false, canceled: true };
+    return storeMod.preview(r.filePaths[0]);
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+});
+
+ipcMain.handle('store:commit', (_e, p) => {
+  return storeMod.commit({
+    dirPath: p && p.path,
+    name: p && p.name,
+    description: p && p.description,
+    tags: p && p.tags,
+    author: {
+      username: storeIdentity().username,
+      avatar: storeIdentity().avatar,
+      beastId: storeMod.beastFingerprint(settings.beastCode || ''),
+      image: (p && p.image) || '',
+    },
+  });
+});
+
+ipcMain.handle('store:install', (_e, id) => storeMod.install(id));
+
+ipcMain.handle('store:like', (_e, id) => storeMod.toggleLike(id));
+
+ipcMain.handle('store:remove', (_e, id) =>
+  storeMod.removeMine(id, storeMod.beastFingerprint(settings.beastCode || ''))
+);
+
+ipcMain.handle('store:export', (_e, id) => storeMod.exportEntry(id));
+
 ipcMain.handle('custom:set', (_e, list) => {
   settings.customProviders = Array.isArray(list) ? list : [];
   saveSettings();
@@ -3717,8 +4133,15 @@ ipcMain.handle('models:refresh', async () => {
     try {
       const b = String(p.baseUrl).trim().replace(/\/+$/, '');
       const url = /\/v\d+$/.test(b) ? b + '/models' : b + '/v1/models';
+      const h = { Authorization: 'Bearer ' + p.key };
+      try {
+        if (new URL(url).hostname === 'api.anthropic.com') {
+          h['x-api-key'] = p.key;
+          h['anthropic-version'] = '2023-06-01';
+        }
+      } catch {}
       const res = await fetch(url, {
-        headers: { Authorization: 'Bearer ' + p.key },
+        headers: h,
         signal: AbortSignal.timeout(15000),
       });
       if (!res.ok) continue;
@@ -3742,15 +4165,274 @@ ipcMain.handle('models:refresh', async () => {
   return engine.publicState();
 });
 
+ipcMain.handle('providers:builtin', () => BUILTIN_PROVIDERS);
+
+/* ---------------- FEATURE 1: TEK TIKLA MODEL (OpenCode Zen Free) ----------------
+   Akış: token var mı (env / opencode auth.json) → yoksa CLI kur (npm) →
+   auth login penceresi aç → token çıkana dek bekle → free modelleri çek →
+   customProviders'a işle → .env'e de yaz. Hata olursa anlaşılır mesaj döner. */
+
+const ZEN_BASE = 'https://opencode.ai/zen/v1';
+const ZEN_ENV_KEY = 'OPENCODE_API_KEY';
+const ZEN_PRESET_ID = 'preset-opencode-zen';
+
+function opencodeAuthCandidates() {
+  const h = app.getPath('home');
+  const appdata = process.env.APPDATA || path.join(h, 'AppData', 'Roaming');
+  const local = process.env.LOCALAPPDATA || path.join(h, 'AppData', 'Local');
+  return [
+    process.env.OPENCODE_API_KEY || '',
+    path.join(h, '.local', 'share', 'opencode', 'auth.json'),
+    path.join(h, '.config', 'opencode', 'auth.json'),
+    path.join(appdata, 'opencode', 'auth.json'),
+    path.join(local, 'opencode', 'auth.json'),
+  ];
+}
+
+/* auth.json'daki { key: "..." } girdilerini derin tara; opencode/zen girdisini yeğle */
+function findZenKeyDeep(node, prefer) {
+  const found = [];
+  const walk = (n, parentKey) => {
+    if (!n || typeof n !== 'object') return;
+    if (typeof n.key === 'string' && n.key.length > 8) found.push({ parentKey, key: n.key });
+    for (const [k, v] of Object.entries(n)) {
+      if (v && typeof v === 'object') walk(v, typeof k === 'string' ? k : parentKey);
+    }
+  };
+  walk(node, '');
+  if (prefer) {
+    const hit = found.find((f) => prefer.test(f.parentKey));
+    if (hit) return hit.key;
+  }
+  return found.length ? found[0].key : '';
+}
+
+function findZenToken() {
+  for (const c of opencodeAuthCandidates()) {
+    if (!c) continue;
+    if (!c.toLowerCase().endsWith('auth.json')) {
+      if (String(c).length > 8) return String(c); // env değeri
+      continue;
+    }
+    try {
+      const j = JSON.parse(fs.readFileSync(c, 'utf8'));
+      const key = findZenKeyDeep(j, /opencode|zen/i);
+      if (key) {
+        log.info('main', 'zen token bulundu: ' + c);
+        return key;
+      }
+    } catch {}
+  }
+  return '';
+}
+
+async function fetchZenFreeModels() {
+  try {
+    const res = await fetch(ZEN_BASE + '/models', { signal: AbortSignal.timeout(15000) });
+    if (res.ok) {
+      const j = await res.json();
+      const ids = (j.data || []).map((m) => (typeof m === 'string' ? m : m.id)).filter(Boolean);
+      /* Zen'de ücretsizler: "-free" ekli modeller + big-pickle (gizli model, sınırlı süre ücretsiz) */
+      const free = ids.filter((id) => /-free$/.test(id) || id === 'big-pickle');
+      if (free.length) return free;
+    }
+  } catch {}
+  /* API cevap vermezse bilinen free liste */
+  return ['big-pickle', 'deepseek-v4-flash-free', 'mimo-v2.5-free', 'hy3-free', 'nemotron-3-ultra-free', 'nemotron-3.5-lightning-free', 'laguna-s-2.1-free'];
+}
+
+function upsertZenEnv(token) {
+  try {
+    const envPath = path.join(beastDir(), '.env');
+    let text = '';
+    try { text = fs.readFileSync(envPath, 'utf8'); } catch {}
+    const line = ZEN_ENV_KEY + '=' + token;
+    const re = new RegExp('^' + ZEN_ENV_KEY + '=.*$', 'm');
+    if (re.test(text)) text = text.replace(re, line);
+    else text = (text.trim() ? text.trimEnd() + '\n' : '') + line + '\n';
+    fs.writeFileSync(envPath, text);
+  } catch {}
+}
+
+function applyZenProvider(key, models) {
+  const entry = { id: ZEN_PRESET_ID, name: 'OpenCode Zen', baseUrl: ZEN_BASE, key, models };
+  const list = Array.isArray(settings.customProviders)
+    ? settings.customProviders.filter((p) => p.id !== ZEN_PRESET_ID)
+    : [];
+  list.unshift(entry);
+  settings.customProviders = list;
+  saveSettings();
+  upsertZenEnv(key); // token beast config'e (.env) kaydedilir — her açılışta kullanılır
+  if (engine) engine.setCustomProviders(settings.customProviders);
+  return entry;
+}
+
+async function hasOpencodeCli() {
+  return new Promise((resolve) => {
+    try {
+      const { execFile } = require('child_process');
+      execFile('where.exe', ['opencode'], { windowsHide: true }, (err) => resolve(!err));
+    } catch {
+      resolve(false);
+    }
+  });
+}
+
+function runNpmGlobalInstall() {
+  return new Promise((resolve) => {
+    try {
+      const { execFile } = require('child_process');
+      execFile('cmd.exe', ['/c', 'npm install -g opencode-ai'], { windowsHide: true, timeout: 300000 }, (err) => {
+        resolve(err ? { ok: false, error: String((err && err.message) || err) } : { ok: true });
+      });
+    } catch (e) {
+      resolve({ ok: false, error: String((e && e.message) || e) });
+    }
+  });
+}
+
+/* auth login etkileşimlidir (tarayıcı açar) — kullanıcı görsün diye ayrı pencere */
+function openZenAuthWindow() {
+  try {
+    spawn(
+      'cmd.exe',
+      ['/c', 'start', '', 'powershell.exe', '-NoExit', '-Command', 'opencode auth login'],
+      { detached: true, windowsHide: false, stdio: 'ignore' }
+    ).unref();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/* auth.json belirleyene dek bekle (kullanıcı tarayıcıda giriş yapıyor) */
+function pollZenToken(ms = 180000) {
+  const step = 3000;
+  return new Promise((resolve) => {
+    const t0 = Date.now();
+    const tick = () => {
+      const key = findZenToken();
+      if (key) return resolve(key);
+      if (Date.now() - t0 >= ms) return resolve('');
+      setTimeout(tick, step);
+    };
+    tick();
+  });
+}
+
+/* TEK MODEL CANLILIK TESTİ: minik chat isteği — 200 + choices dönerse model çalışıyor */
+async function testZenModel(key, model) {
+  try {
+    const res = await fetch(ZEN_BASE + '/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + key },
+      body: JSON.stringify({
+        model,
+        messages: [{ role: 'user', content: 'ping' }],
+        max_tokens: 8,
+        stream: false,
+      }),
+      signal: AbortSignal.timeout(25000),
+    });
+    if (!res.ok) return { model, ok: false, status: res.status };
+    const j = await res.json().catch(() => null);
+    const ch = j && j.choices && j.choices[0];
+    const ok = !!(ch && ch.message && typeof ch.message.content === 'string');
+    return { model, ok, status: res.status };
+  } catch (e) {
+    return { model, ok: false, status: 0, error: String((e && e.message) || e) };
+  }
+}
+
+/* Modelleri 4'lü gruplar halinde paralel test et (hesap geneli hız limitini zorlamamak için) */
+async function testZenModels(key, models) {
+  const results = [];
+  const BATCH = 4;
+  for (let i = 0; i < models.length; i += BATCH) {
+    const slice = models.slice(i, i + BATCH);
+    const rs = await Promise.all(slice.map((m) => testZenModel(key, m)));
+    results.push(...rs);
+  }
+  return results;
+}
+
+ipcMain.handle('zen:oneClick', async () => {
+  try {
+    /* 1) token zaten var mı? (env / auth.json) */
+    let key = findZenToken();
+    if (!key) {
+      /* 2) OpenCode CLI yoksa npm'den kur */
+      if (!(await hasOpencodeCli())) {
+        log.info('main', 'OpenCode CLI yok — npm install -g opencode-ai');
+        const ins = await runNpmGlobalInstall();
+        if (!ins.ok) {
+          return { ok: false, error: 'OpenCode CLI kurulamadı (' + (ins.error || '?') + ') — npm kurulu mu?' };
+        }
+      }
+      /* 3) giriş penceresi aç, auth.json çıkana dek bekle */
+      if (!openZenAuthWindow()) return { ok: false, error: 'giriş penceresi açılamadı — Provider sekmesinden anahtarı elle girebilirsin' };
+      key = await pollZenToken(180000);
+      if (!key) {
+        return { ok: false, error: 'giriş tamamlanmadı (3 dk) — açılan pencerede giriş yapıp tekrar bas' };
+      }
+    }
+    /* 4) free adayları çek → HER MODELİ CANLI TEST ET → sadece çalışanları ekle */
+    const candidates = await fetchZenFreeModels();
+    const results = await testZenModels(key, candidates);
+    const models = results.filter((r) => r.ok).map((r) => r.model);
+    const failed = results.filter((r) => !r.ok);
+    if (failed.length) {
+      log.info('main', 'zen test: yanıt vermeyenler → ' + failed.map((f) => f.model + (f.status ? ' (' + f.status + ')' : '')).join(', '));
+    }
+    if (!models.length) {
+      const authFail = failed.some((f) => f.status === 401 || f.status === 403);
+      return {
+        ok: false,
+        error: authFail
+          ? 'API anahtarı geçersiz ya da yetkisiz (HTTP 401/403)'
+          : 'hiçbir free model şu an yanıt vermedi (' +
+            failed.map((f) => f.model + (f.status ? ' · ' + f.status : '')).join(', ') +
+            ')',
+      };
+    }
+    const entry = applyZenProvider(key, models);
+    /* hiç model seçili değilse ilk ÇALIŞAN modeli varsayılan yap */
+    try {
+      if (!engine.publicState().activeModel) {
+        const sel = 'custom:' + ZEN_PRESET_ID + '::' + models[0];
+        settings.modelOverride = sel;
+        saveSettings();
+        engine.setModelOverride(sel);
+      }
+    } catch {}
+    log.info('main', `OpenCode Zen tek tık kurulum: ${models.length}/${candidates.length} model testi geçti, eklendi (${entry.name})`);
+    return {
+      ok: true,
+      models,
+      tested: candidates.length,
+      failed: failed.map((f) => f.model + (f.status ? ' (' + f.status + ')' : '')),
+      provider: entry.name,
+    };
+  } catch (e) {
+    log.error('main', 'zen oneClick hata: ' + String((e && e.message) || e));
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+});
+
 ipcMain.handle('custom:fetchModels', async (_e, { baseUrl, key }) => {
   try {
     let b = String(baseUrl || '').trim().replace(/\/+$/, '');
     if (!/^https?:\/\//i.test(b)) return { ok: false, error: 'URL http(s) ile başlamalı' };
     const url = /\/v\d+$/.test(b) ? b + '/models' : b + '/v1/models';
-    const res = await fetch(url, {
-      headers: key ? { Authorization: 'Bearer ' + key } : {},
-      signal: AbortSignal.timeout(15000),
-    });
+    const headers = key ? { Authorization: 'Bearer ' + key } : {};
+    /* Anthropic: /v1/models yerel API — x-api-key + versiyon başlığı ister */
+    try {
+      if (new URL(url).hostname === 'api.anthropic.com') {
+        if (key) headers['x-api-key'] = key;
+        headers['anthropic-version'] = '2023-06-01';
+      }
+    } catch {}
+    const res = await fetch(url, { headers, signal: AbortSignal.timeout(15000) });
     if (!res.ok) return { ok: false, error: 'HTTP ' + res.status };
     const json = await res.json();
     const models = (json.data || json.models || [])
@@ -3783,6 +4465,9 @@ ipcMain.handle('wa:reset', async () => {
 ipcMain.handle('wa:status', () => (wa ? wa.snapshot() : { status: 'disconnected', available: true }));
 
 ipcMain.handle('wa:allow:get', () => settings.waAllow || []);
+
+/* FEATURE 2: kuyruk durumu (Entegrasyonlar panelinde gösterilir) */
+ipcMain.handle('wa:queue:get', () => mqueue.stats());
 
 ipcMain.handle('wa:sessions', () => [...waChats.values()]);
 
@@ -3915,7 +4600,14 @@ ipcMain.handle('wa:allow:set', (_e, list) => {
     if (d.length >= 6) {
       const isOwner = wantsOwner && ownerCount === 0;
       if (isOwner) ownerCount++;
-      out.push({ num: d, name, lockdown: perm === 'chat', perm, owner: isOwner });
+      out.push({
+        num: d,
+        name,
+        lockdown: perm === 'chat',
+        perm,
+        owner: isOwner,
+        bot_id: typeof item === 'object' && item.bot_id && bots.get(item.bot_id) ? item.bot_id : undefined,
+      });
     }
   }
   /* tek izinli kişi varsa MECBURİ sahip (kimseye seçtirmeden) */
@@ -3925,6 +4617,7 @@ ipcMain.handle('wa:allow:set', (_e, list) => {
   }
   settings.waAllow = out;
   saveSettings();
+  syncWhitelist(); // whitelist.json aynası + silinen bota bağlı numaraları temizle
   /* sahibi MEMORY.md + USER.md'ye işle (ajan kiminle konuştuğunu bilsin) */
   try {
     const owner = out.find((o) => o !== '*' && o.owner);
@@ -3949,3 +4642,78 @@ ipcMain.handle('wa:allow:set', (_e, list) => {
   }
   return settings.waAllow;
 });
+
+/* ---------------- BOT SİSTEMİ IPC ---------------- */
+
+ipcMain.handle('bots:list', () => botListWithNumbers());
+
+ipcMain.handle('bots:add', (_e, input) => {
+  const r = bots.add(input || {});
+  if (r.ok) log.info('main', `yeni bot: ${r.bot.name} (${r.bot.id})`);
+  return { ...r, list: r.ok ? botListWithNumbers() : null };
+});
+
+ipcMain.handle('bots:update', (_e, { id, patch }) => {
+  const p = patch || {};
+  if (Array.isArray(p.numbers)) reassignBotNumbers(String(id || ''), p.numbers);
+  const r = bots.update(String(id || ''), p);
+  syncWhitelist();
+  if (engine) {
+    /* yetki değişen botun aktif oturumlarını tazele (araç seti + persona) */
+    try {
+      for (const v of engine.listSessions()) {
+        if ((v.botId || 'beast') === String(id || '')) {
+          const cfg = bots.get(String(id));
+          engine.setSessionTools(v.id, cfg && !cfg.admin ? botToolSet(cfg) : null);
+        }
+      }
+    } catch {}
+  }
+  return { ...r, list: r.ok ? botListWithNumbers() : null };
+});
+
+ipcMain.handle('bots:remove', (_e, id) => {
+  const r = bots.remove(String(id || ''));
+  if (r.ok) {
+    /* bağlı numaraları botsuz yap (beast'e düşer) */
+    for (const e of settings.waAllow || []) {
+      if (e && e !== '*' && e.bot_id === String(id || '')) delete e.bot_id;
+    }
+    saveSettings();
+    syncWhitelist();
+    log.info('main', `bot silindi: ${id} — bağlı numaralar botsuz (beast'e düşer)`);
+  }
+  return { ...r, list: r.ok ? botListWithNumbers() : null };
+});
+
+ipcMain.handle('bots:stats', () => botStats());
+
+/* Botlar arası geçiş: masaüstü UI'ı hangi botun kimliğiyle çalışsın */
+ipcMain.handle('bots:active:get', () => ({
+  id: settings.activeBotId && bots.get(settings.activeBotId) ? settings.activeBotId : 'beast',
+}));
+
+ipcMain.handle('bots:activate', (_e, id) => {
+  const b = bots.get(String(id || ''));
+  settings.activeBotId = b ? b.id : 'beast';
+  saveSettings();
+  log.info('main', `aktif bot: ${settings.activeBotId}`);
+  return { ok: true, activeBotId: settings.activeBotId };
+});
+
+/* BEAST (admin) botun "kendi" hafızası = GLOBAL Beast hafızasıdır.
+   Agent konuşmalarda GLOBAL memories/ klasörüne yazar; bot sekmesi de orayı
+   gösterir ki "kaydettim" dediği kayıtları kullanıcı GERÇEKTEN görsün. */
+ipcMain.handle('bots:memory:get', (_e, id) => {
+  const bid = String(id || '');
+  if (bid === 'beast') return { ok: true, ...memory.loadAll() };
+  return { ok: true, ...bots.readMemoryFiles(bid) };
+});
+
+ipcMain.handle('bots:memory:set', (_e, { id, file, content }) => {
+  const bid = String(id || '');
+  if (bid === 'beast') return memory.save(String(file || ''), content);
+  return bots.writeMemoryFile(bid, file, content);
+});
+
+ipcMain.handle('bots:log:get', (_e, id) => ({ ok: true, content: bots.readLog(String(id || '')) }));

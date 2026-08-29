@@ -2193,9 +2193,9 @@ function setBrowserOpen(v, forceVisible) {
   }
 
   // AÇMA — görünürlük: kullanıcı kendi açtıysa (forceVisible) MUTLAKA görünür;
-  // ajan açtıysa göz ikonu tercihine bak (varsayılan: GİZLİ/headless)
+  // ajan açtıysa DA VARSAYILAN GÖRÜNÜR (göz ikonuyla gizli mod seçilmedikçe)
   browser.open = true;
-  browser.visible = forceVisible === true ? true : settings.browserHeadless === false;
+  browser.visible = forceVisible === true ? true : settings.browserHeadless !== true;
   ensureBrowser();
   if (!browser.started) {
     browser.started = true;
@@ -2770,7 +2770,8 @@ function createWindow() {
     icon: path.join(__dirname, '..', 'assets', 'app.ico'),
     titleBarStyle: 'hidden',
     titleBarOverlay: {
-      color: 'transparent',
+      /* transparent Windows'ta beyaz buton arka planı veriyor — tema rengiyle başlat */
+      color: dark ? '#0d0d0f' : '#f7f7f8',
       symbolColor: dark ? '#9a9aa2' : '#707078',
       height: 46,
     },
@@ -3993,6 +3994,74 @@ ipcMain.handle('terminal:stop', () => {
   return { ok: true };
 });
 
+/* ---------------- Beast Code paneli (IDE modu ortası) ----------------
+   IDE modunda ortadaki sohbet yerine Beast'in KENDİ ajanı çalışır:
+   varsayılan model zinciri + soldaki dosya panelindeki klasör.
+   Yazışma SOLDAKİ KLASÖRE BAĞLIDIR: her klasörün kendi gizli engine
+   oturumu vardır (klasör değişince sohbet de değişir); sohbet geçmişi
+   listesine karışmaz. Olayları renderer zaten agent:event ile alır,
+   panele orada akıtılır. */
+const bcSessions = new Map(); /* klasör yolu → sessionId */
+
+function bcGetSession(folder) {
+  let sid = bcSessions.get(folder);
+  if (sid) {
+    try {
+      const s = engine.cache.get(sid);
+      if (s) return s;
+    } catch {}
+    bcSessions.delete(folder);
+  }
+  const s = engine._load(engine.createSession().id);
+  s.messages = s.messages || [];
+  s.bgTitle = 'Beast Code'; /* _view.isBg → sohbet geçmişi listesinde gizli */
+  s.bcCode = true; /* engine: her işte todo planı çıkar (BEAST CODE MODU bloğu) */
+  try {
+    fs.appendFileSync(
+      engine._file(s.id),
+      JSON.stringify({ t: 'meta2', bgOf: '', title: 'Beast Code', at: new Date().toISOString() }) + '\n'
+    );
+  } catch {}
+  engine.cache.set(s.id, s);
+  bcSessions.set(folder, s.id);
+  return s;
+}
+
+ipcMain.handle('beastcode:send', (_e, payload) => {
+  const text = String((payload && payload.msg) || '').trim();
+  if (!text) return { ok: false, error: 'boş mesaj' };
+  if (!engine) return { ok: false, error: 'ajan hazır değil' };
+  if (!engine.publicState().hasModel) return { ok: false, error: 'model yok — Ayarlar → Provider sekmesinden ekle' };
+  const ws = ideRoot();
+  if (engine.isBusy(bcSessions.get(ws))) return { ok: false, busy: true, error: 'önceki mesaj sürüyor — ■ ile durdurabilirsin' };
+  const s = bcGetSession(ws);
+  s.workspace = ws; /* soldaki klasörde çalış */
+  s.bcCode = true; /* todo disiplini + iş sonu hızlı kapanış (engine) */
+  engine.cache.set(s.id, s);
+  const ok = engine.send(s.id, text);
+  if (!ok) return { ok: false, error: 'mesaj gönderilemedi' };
+  return { ok: true, sessionId: s.id };
+});
+
+ipcMain.handle('beastcode:stop', () => {
+  const sid = bcSessions.get(ideRoot());
+  if (!sid) return { ok: false };
+  let r = false;
+  try { r = engine.interrupt(sid); } catch {}
+  return { ok: !!r };
+});
+
+ipcMain.handle('beastcode:new', () => {
+  const ws = ideRoot();
+  const sid = bcSessions.get(ws);
+  if (sid && engine.isBusy(sid)) return { ok: false, error: 'mesaj sürüyor — önce ■ ile durdur' };
+  if (sid) {
+    try { engine.deleteSession(sid); } catch {}
+    bcSessions.delete(ws);
+  }
+  return { ok: true };
+});
+
 /* düşünme (reasoning) seviyesi */
 ipcMain.handle('think:set', (_e, v) => {
   setThinkLevel(v);
@@ -4109,6 +4178,166 @@ ipcMain.handle('store:remove', (_e, id) =>
 );
 
 ipcMain.handle('store:export', (_e, id) => storeMod.exportEntry(id));
+
+/* ---------- IDE MODU (sol: dosya gezgini · orta: chat · sağ: preview) ---------- */
+
+const IDE_TEXT_EXT = new Set([
+  '.html', '.htm', '.css', '.js', '.mjs', '.cjs', '.ts', '.jsx', '.tsx', '.json',
+  '.md', '.txt', '.csv', '.py', '.ps1', '.bat', '.cmd', '.sh', '.yaml', '.yml',
+  '.xml', '.ini', '.svg', '.gitignore',
+]);
+const IDE_MAX_BYTES = 400 * 1024;
+
+function ideRoot() {
+  /* kullanıcı panelde başka klasör seçtiyse o kök alınır; yoksa agent workspace'i */
+  return path.resolve(settings.ideRoot || settings.workspace || app.getPath('home'));
+}
+
+ipcMain.handle('ide:setroot', async () => {
+  try {
+    const r = await dialog.showOpenDialog({
+      title: 'Klasör seç — dosya paneli ve preview bu klasörü kullanır',
+      defaultPath: ideRoot(),
+      properties: ['openDirectory'],
+    });
+    if (r.canceled || !r.filePaths || !r.filePaths[0]) return { ok: false, canceled: true };
+    settings.ideRoot = r.filePaths[0];
+    saveSettings();
+    return { ok: true, root: settings.ideRoot };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+});
+
+/* rel yol → workspace içinde kal (path traversal kilidi) */
+function ideSafe(rel) {
+  const root = ideRoot();
+  const p = path.resolve(root, String(rel || ''));
+  if (p !== root && !p.startsWith(root + path.sep)) return null;
+  return p;
+}
+
+ipcMain.handle('ide:tree', (_e, rel) => {
+  const p = ideSafe(rel);
+  if (!p) return { ok: false, error: 'geçersiz yol' };
+  try {
+    const entries = fs.readdirSync(p, { withFileTypes: true })
+      .filter((e) => e.name !== 'node_modules' && e.name !== '.git')
+      .map((e) => {
+        let size = 0;
+        try { if (e.isFile()) size = fs.statSync(path.join(p, e.name)).size; } catch {}
+        return { name: e.name, dir: e.isDirectory(), size };
+      })
+      .sort((a, b) => (a.dir === b.dir ? a.name.localeCompare(b.name) : a.dir ? -1 : 1));
+    return { ok: true, workspace: ideRoot(), entries };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+});
+
+ipcMain.handle('ide:read', (_e, rel) => {
+  const p = ideSafe(rel);
+  if (!p) return { ok: false, error: 'geçersiz yol' };
+  const ext = path.extname(p).toLowerCase();
+  if (ext && !IDE_TEXT_EXT.has(ext)) return { ok: false, error: 'metin dosyası değil — düzenlenemez' };
+  try {
+    const st = fs.statSync(p);
+    if (st.isDirectory()) return { ok: false, error: 'klasör' };
+    if (st.size > IDE_MAX_BYTES) return { ok: false, error: 'dosya çok büyük (max 400KB)' };
+    const buf = fs.readFileSync(p);
+    if (buf.slice(0, 4096).includes(0)) return { ok: false, error: 'ikili (binary) dosya' };
+    return { ok: true, content: buf.toString('utf8') };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+});
+
+ipcMain.handle('ide:write', (_e, p) => {
+  const target = ideSafe(p && p.rel);
+  if (!target) return { ok: false, error: 'geçersiz yol' };
+  const ext = path.extname(target).toLowerCase();
+  if (ext && !IDE_TEXT_EXT.has(ext)) return { ok: false, error: 'metin dosyası değil — yazılamaz' };
+  try {
+    const body = String((p && p.content) ?? '');
+    if (Buffer.byteLength(body, 'utf8') > IDE_MAX_BYTES) return { ok: false, error: 'içerik çok büyük (max 400KB)' };
+    fs.writeFileSync(target, body, 'utf8');
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+});
+
+/* Sağ tık menüsü: dosya/klasör sil (onay diyaloglu) */
+ipcMain.handle('ide:delete', async (_e, rel) => {
+  const p = ideSafe(rel);
+  if (!p || p === ideRoot()) return { ok: false, error: 'geçersiz yol' };
+  try {
+    const st = fs.statSync(p);
+    const isDir = st.isDirectory();
+    const owner = win && !win.isDestroyed() ? win : undefined;
+    const r = owner
+      ? await dialog.showMessageBox(owner, {
+          type: 'warning',
+          title: 'Sil',
+          message: `"${rel}" ${isDir ? 'klasörünü (içi dahil)' : 'dosyasını'} silmek istiyor musun?`,
+          buttons: ['Sil', 'Vazgeç'],
+          defaultId: 1,
+          cancelId: 1,
+        })
+      : { response: 1 };
+    if (r.response !== 0) return { ok: false, canceled: true };
+    fs.rmSync(p, { recursive: true, force: true });
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+});
+
+/* Sağ tık menüsü: HTML dosyasını dahili tarayıcıda GÖRÜNÜR aç */
+ipcMain.handle('ide:previewFile', (_e, rel) => {
+  try {
+    const p = ideSafe(rel);
+    if (!p) return { ok: false, error: 'geçersiz yol' };
+    if (!/\.html?$/i.test(p)) return { ok: false, error: 'önizleme yalnız .html/.htm dosyaları için' };
+    setBrowserOpen(true, true);
+    const url = 'file:///' + p.replace(/\\/g, '/');
+    browser.view.webContents.loadURL(url).catch(() => {});
+    browserEmit({ open: true, width: browser.width, url });
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+});
+
+/* PREVIEW: workspace kökündeki entry sayfayı (index.html → ilk *.html) sağdaki
+   dahili tarayıcıda aç. file:// yükleme browserNavigate'i BYPASS eder — o https
+   olmayan adresi aramaya çevirir. */
+ipcMain.handle('ide:preview', () => {  try {
+    const root = ideRoot();
+    const pick = (name) => {
+      const p = path.join(root, name);
+      try { return fs.existsSync(p) ? p : null; } catch { return null; }
+    };
+    let entry = pick('index.html');
+    if (!entry) {
+      const htmls = fs
+        .readdirSync(root, { withFileTypes: true })
+        .filter((e) => e.isFile() && /\.html?$/i.test(e.name))
+        .map((e) => e.name);
+      entry = htmls.length ? path.join(root, htmls.sort()[0]) : null;
+    }
+    if (!entry) return { ok: false, error: 'workspace kökünde index.html yok — önce agent\'a siteyi yazdır' };
+    /* forceVisible: preview'a basınca tarayıcı ikonuna basmaya gerek kalmasın —
+       dahili tarayıcı otomatik ve GÖRÜNÜR açılır */
+    setBrowserOpen(true, true);
+    const url = 'file:///' + entry.replace(/\\/g, '/');
+    browser.view.webContents.loadURL(url).catch(() => {});
+    browserEmit({ open: true, width: browser.width, url });
+    return { ok: true, url };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+});
 
 ipcMain.handle('custom:set', (_e, list) => {
   settings.customProviders = Array.isArray(list) ? list : [];

@@ -70,6 +70,21 @@ const els = {
   termClear: $('#termClear'),
   termClose: $('#termClose'),
   termResize: $('#termResize'),
+  bcOut: $('#bcOut'),
+  bcCwd: $('#bcCwd'),
+  bcInput: $('#bcInput'),
+  bcStop: $('#bcStop'),
+  bcClear: $('#bcClear'),
+  bcNew: $('#bcNew'),
+  bcTodoWrap: $('#bcTodoWrap'),
+  codeTabs: $('#codeTabs'),
+  codeTa: $('#codeTa'),
+  codePath: $('#codePath'),
+  codeSave: $('#codeSave'),
+  ideRow: $('#ideRow'),
+  ideSplit: $('#ideSplit'),
+  bcPanel: $('#bcPanel'),
+  fileCtxMenu: $('#fileCtxMenu'),
   cronName: $('#cronName'),
   cronPreset: $('#cronPreset'),
   cronSchedule: $('#cronSchedule'),
@@ -298,6 +313,15 @@ function addErrorBubble(text) {
 }
 
 /* ---------------- tool cards ---------------- */
+/* Ard arda gelen araç kartları TEK kutuda toplanır (.tool-box): çalışırken
+   lacivert outline döner, gövde max 420px scroll'lu. Grup; tool_calls İÇEREN
+   iş turlarında açık kalır, saf metin cevapta (normal mesaj) kapanır. */
+let chatToolGroup = null; /* { box, body } */
+
+function closeChatToolGroup() {
+  if (chatToolGroup) chatToolGroup.box.classList.remove('running');
+  chatToolGroup = null;
+}
 
 function argSummary(name, args) {
   try {
@@ -314,6 +338,18 @@ function argSummary(name, args) {
 function addToolCard(callId, name, args) {
   streamEl = null;
   showEmpty(false);
+  /* grup yoksa / DOM temizlenmişse yeni kutu aç */
+  if (!chatToolGroup || !els.msgs.contains(chatToolGroup.box)) {
+    const box = document.createElement('div');
+    box.className = 'tool-box running';
+    const body = document.createElement('div');
+    body.className = 'tool-boxbody';
+    box.appendChild(body);
+    els.msgs.appendChild(box);
+    chatToolGroup = { box, body };
+  } else {
+    chatToolGroup.box.classList.add('running');
+  }
   const card = document.createElement('div');
   card.className = 'tool-card';
   card.dataset.callId = callId || '';
@@ -327,7 +363,8 @@ function addToolCard(callId, name, args) {
   card.querySelector('.tool-head').addEventListener('click', () => {
     card.querySelector('.tool-body').classList.toggle('open');
   });
-  els.msgs.appendChild(card);
+  chatToolGroup.body.appendChild(card);
+  chatToolGroup.body.scrollTop = chatToolGroup.body.scrollHeight;
   scrollDown(true);
   return card;
 }
@@ -345,6 +382,10 @@ function finishToolCard(callId, ok, result) {
   const body = card.querySelector('.tool-body');
   body.textContent = String(result || '(çıktı yok)').slice(0, 4000);
   if (String(result || '').length <= 300) body.classList.add('open');
+  /* ring burada söndürülmez — iş bitene kadar (closeChatToolGroup) döner */
+  if (chatToolGroup && chatToolGroup.body.contains(card)) {
+    chatToolGroup.body.scrollTop = chatToolGroup.body.scrollHeight;
+  }
 }
 
 /* ---------------- sessions sidebar ---------------- */
@@ -2784,6 +2825,12 @@ function renderAgentsPane() {
 function onEvent(ev) {
   if (ev.type === 'sessions') { refreshSessions(); return; }
   if (ev.type === 'approval') {
+    /* Beast Code oturumunun onayı: panelde ipucu + kart sohbete düşer */
+    if (bcSessionId && ev.sessionId === bcSessionId) {
+      showApprovalCard(ev);
+      bcLine('t-dim', '⏳ onay bekleniyor: ' + (ev.tool || '?') + ' — IDE modundan çıkıp sohbetteki kartı onayla');
+      return;
+    }
     if (ev.sessionId && ev.sessionId !== activeId) return;
     showApprovalCard(ev);
     return;
@@ -2800,6 +2847,13 @@ function onEvent(ev) {
     scheduleAgentsRender();
     return;
   }
+  /* Beast Code oturumu (IDE modu ortasındaki panel): olayları panele akıt,
+     ana sohbeti kirletme */
+  if (bcSessionId && ev.sessionId === bcSessionId) {
+    bcIngest(ev);
+    return;
+  }
+
   if (ev.sessionId && ev.sessionId !== activeId) {
     /* paralel ajan canlı akışı: sohbeti kirletme, sekmede göster */
     if (agentState.runningIds.has(ev.sessionId)) {
@@ -2816,6 +2870,7 @@ function onEvent(ev) {
       els.msgs.innerHTML = '';
       streamEl = null;
       streamRaw = '';
+      closeChatToolGroup();
       showEmpty(true);
       refreshSessions();
       break;
@@ -2825,7 +2880,12 @@ function onEvent(ev) {
       break;
     case 'message':
       if (ev.message.role === 'user') addUserBubble(ev.message.content);
-      else if (ev.message.role === 'assistant') finalizeAssistant(ev.message.content);
+      else if (ev.message.role === 'assistant') {
+        finalizeAssistant(ev.message.content);
+        /* tool_calls'lı iş turu grupları açık tutar; saf metin (normal cevap) kapatır */
+        const hasTools = Array.isArray(ev.message.tool_calls) && ev.message.tool_calls.length > 0;
+        if (!hasTools) closeChatToolGroup();
+      }
       break;
     case 'token':
       ensureStreamBubble();
@@ -2869,6 +2929,9 @@ function onEvent(ev) {
       } else {
         toggleRail(!railPrefBeforeBrowser);
       }
+      /* IDE modunda tarayıcı açılır/kapanır/genişlik değişirse row yeniden bölünür —
+         editör + Beast Code ORTAK kırpılıp ORTAK açılır (kullanıcı payı korunur) */
+      if (ideModeOn()) ideSplitApplyFrac();
       if (shown) {
         els.browserBtn.classList.add('on');
         if (ev.url && document.activeElement !== els.bbUrl) {
@@ -2894,11 +2957,13 @@ function onEvent(ev) {
       applyState();
       break;
     case 'done':
+      closeChatToolGroup();
       setBusy(false);
       refreshSessions();
       els.input.focus();
       break;
     case 'error':
+      closeChatToolGroup();
       setBusy(false);
       addErrorBubble(ev.error);
       refreshSessions();
@@ -4315,3 +4380,732 @@ document.querySelectorAll('.stab').forEach((b) =>
     renderStorePane();
   })
 );
+
+
+/* ================= IDE MODU =================
+   Tek tuş (#ideBtn): sol → dosya gezgini, orta → chat, sağ → dahili tarayıcı (preview).
+   Preview: workspace kökündeki index.html (yoksa ilk *.html) sağdaki tarayıcıda açılır.
+   Dosyaya tıkla → editör; klasöre tıkla → aç/kapa. */
+
+const IDE_ICONS = {
+  '.html': '🌐', '.htm': '🌐', '.css': '🎨', '.js': '📜', '.mjs': '📜', '.cjs': '📜',
+  '.ts': '📜', '.jsx': '📜', '.tsx': '📜', '.json': '🧾', '.md': '📝', '.txt': '📄',
+  '.py': '🐍', '.ps1': '⚙️', '.bat': '⚙️', '.cmd': '⚙️', '.sh': '⚙️', '.yaml': '🧾',
+  '.yml': '🧾', '.png': '🖼️', '.jpg': '🖼️', '.jpeg': '🖼️', '.gif': '🖼️', '.svg': '🖼️',
+  '.pdf': '📕',
+};
+
+const ideState = {
+  cache: new Map(), // rel -> entries[]
+  open: new Set(['']),
+  path: '',
+};
+
+function ideModeOn() {
+  return document.body.classList.contains('ide-mode');
+}
+
+async function setIdeMode(on) {
+  document.body.classList.toggle('ide-mode', !!on);
+  /* IDE modu oturumluk: uygulama HER AÇILIŞTA agent (chat) modunda başlar */
+  toggleRail(!!on);
+  /* IDE'den çıkış: açık tarayıcı da kapansın — her şey default haline dönsün */
+  if (!on && document.body.classList.contains('browser-open')) {
+    try { beast.toggleBrowser(); } catch {}
+  }
+  if (on) {
+    ideSplitRestore();
+    await loadIdeTree();
+    bcBanner();
+  }
+}
+
+/* ---------- editor/chat ayırıcı (VS Code gibi sürükle-bırak) ----------
+   Orantılı model: kaydedilen, Beast Code'un ideRow içindeki PAYI'dır (0-1).
+   Tarayıcı açılınca/kapanınca/genişlik değişince row yeniden bölünür — editör
+   ve Beast Code ORTAK kırpılıp ORTAK açılır (oranlar korunur).
+   Kayıt yoksa default: tarayıcı açıkken 3 eşit parça, kapalıyken 2 eşit parça. */
+let ideSplitFrac = 0; /* 0 = kayıt yok → 0.5 default */
+
+function ideSplitApplyFrac() {
+  if (!ideSplitFrac) ideSplitFrac = 0.5;
+  ideSplitFrac = Math.max(0.2, Math.min(ideSplitFrac, 0.8));
+  const rowW = els.ideRow && els.ideRow.clientWidth ? els.ideRow.clientWidth : window.innerWidth - 250;
+  const w = Math.max(280, Math.min(Math.round(rowW * ideSplitFrac), Math.max(320, rowW - 300)));
+  document.body.style.setProperty('--ideSplit', w + 'px');
+}
+
+function ideSplitSave() {
+  try { localStorage.setItem('beast.ideSplit', String(ideSplitFrac)); } catch {}
+}
+
+function ideSplitRestore() {
+  let saved = 0;
+  try { saved = parseFloat(localStorage.getItem('beast.ideSplit')) || 0; } catch {}
+  const hasUserSetting = saved > 0.05 && saved < 0.95;
+  ideSplitFrac = hasUserSetting ? saved : 0;
+  ideSplitApplyFrac();
+  /* tarayıcı açıksa ve kullanıcı hiç ayar yapmadıysa üç parçayı eşitle */
+  const browserOpen = document.body.classList.contains('browser-open');
+  if (browserOpen && !hasUserSetting) {
+    beast.browserSetWidth(Math.round((window.innerWidth - 250) / 3)).catch(() => {});
+  }
+}
+
+if (els.ideSplit) {
+  els.ideSplit.addEventListener('mousedown', (e) => {
+    e.preventDefault();
+    els.ideSplit.classList.add('dragging');
+    /* tarayıcı dock'u drag sırasında sabit — sağ kenar referansı mousedown anında */
+    const rightEdge = els.bcPanel ? els.bcPanel.getBoundingClientRect().right : window.innerWidth;
+    const rowW = Math.max(600, els.ideRow && els.ideRow.clientWidth ? els.ideRow.clientWidth : window.innerWidth - 250);
+    const move = (ev) => {
+      const w = Math.max(280, Math.min(rightEdge - ev.clientX, rowW - 300));
+      ideSplitFrac = Math.max(0.2, Math.min(w / rowW, 0.8));
+      document.body.style.setProperty('--ideSplit', Math.round(w) + 'px');
+    };
+    const up = () => {
+      document.removeEventListener('mousemove', move);
+      document.removeEventListener('mouseup', up);
+      els.ideSplit.classList.remove('dragging');
+      ideSplitSave();
+    };
+    document.addEventListener('mousemove', move);
+    document.addEventListener('mouseup', up);
+  });
+  window.addEventListener('resize', () => {
+    if (ideModeOn()) ideSplitApplyFrac();
+  });
+}
+
+async function loadIdeTree() {
+  ideState.cache.clear();
+  await renderFileTree();
+}
+
+function fmtFileSize(n) {
+  n = Number(n) || 0;
+  if (n >= 1048576) return (n / 1048576).toFixed(1) + 'M';
+  if (n >= 1024) return Math.round(n / 1024) + 'K';
+  return n ? n + 'B' : '';
+}
+
+async function renderFileTree() {
+  const tree = $('#fileTree');
+  if (!tree) return;
+  tree.innerHTML = '';
+  const wsLabel = $('#filePanelPath');
+  const build = async (rel, depth, container) => {
+    let entries = ideState.cache.get(rel);
+    if (!entries) {
+      const r = await beast.ideTree(rel).catch(() => null);
+      if (!r || !r.ok) {
+        if (!rel) container.innerHTML = `<div class="file-empty">${escapeHtml((r && r.error) || 'okunamadı')}</div>`;
+        return;
+      }
+      entries = r.entries;
+      ideState.cache.set(rel, entries);
+      if (r.workspace) {
+        ideState.path = r.workspace;
+        if (wsLabel) { wsLabel.textContent = r.workspace; wsLabel.title = r.workspace; }
+        if (els.bcCwd) { els.bcCwd.textContent = r.workspace; els.bcCwd.title = r.workspace; }
+        bcOnFolderChanged(r.workspace);
+      }
+    }
+    for (const e of entries) {
+      const child = rel ? rel + '/' + e.name : e.name;
+      const row = document.createElement('div');
+      row.className = 'file-row';
+      row.style.paddingLeft = 6 + depth * 14 + 'px';
+      const ico = e.dir ? (ideState.open.has(child) ? '📂' : '📁') : IDE_ICONS[e.name.slice(e.name.lastIndexOf('.')).toLowerCase()] || '📄';
+      row.innerHTML =
+        `<span class="f-ico">${ico}</span>` +
+        `<span class="f-nm" title="${escapeHtml(e.name)}">${escapeHtml(e.name)}</span>` +
+        (e.dir ? '' : `<span class="f-sz">${fmtFileSize(e.size)}</span>`);
+      row.addEventListener('click', () => {
+        if (e.dir) {
+          if (ideState.open.has(child)) ideState.open.delete(child);
+          else ideState.open.add(child);
+          renderFileTree();
+        } else {
+          codeOpen(child);
+        }
+      });
+      row.dataset.rel = child;
+      row.dataset.dir = e.dir ? '1' : '0';
+      container.appendChild(row);
+      if (e.dir && ideState.open.has(child)) {
+        const box = document.createElement('div');
+        container.appendChild(box);
+        await build(child, depth + 1, box);
+      }
+    }
+  };
+  await build('', 0, tree);
+}
+
+/* ---------- sekmeli kod editörü (VS Code düzeni) ----------
+   Dosya tıklaması MODAL değil, codePane içinde SEKME açar.
+   Yanında Beast Code chat'i, onun sağındaki preview tarayıcı durur. */
+
+const codeTabs = []; /* { rel, content, dirty } */
+let codeActive = -1;
+
+function codeRenderTabs() {
+  const bar = els.codeTabs;
+  if (!bar) return;
+  bar.innerHTML = '';
+  codeTabs.forEach((t, i) => {
+    const el = document.createElement('div');
+    el.className = 'code-tab' + (i === codeActive ? ' active' : '') + (t.dirty ? ' dirty' : '');
+    el.title = t.rel;
+    el.innerHTML =
+      '<span class="code-tab-name"></span>' +
+      '<button class="code-tab-x" title="Sekmeyi kapat">\u00D7</button>';
+    el.querySelector('.code-tab-name').textContent = t.rel;
+    el.addEventListener('click', () => codeActivate(i));
+    el.querySelector('.code-tab-x').addEventListener('click', (e) => {
+      e.stopPropagation();
+      codeClose(i);
+    });
+    bar.appendChild(el);
+  });
+}
+
+function codeFlushActive() {
+  if (codeActive >= 0 && codeTabs[codeActive]) {
+    codeTabs[codeActive].content = els.codeTa.value;
+  }
+}
+
+function codeActivate(i) {
+  codeFlushActive();
+  if (i < 0 || i >= codeTabs.length) {
+    codeActive = -1;
+    els.codeTa.value = '';
+    els.codePath.textContent = '\u2014';
+    codeRenderTabs();
+    return;
+  }
+  codeActive = i;
+  const t = codeTabs[i];
+  els.codeTa.value = t.content;
+  els.codePath.textContent = t.rel;
+  els.codePath.title = (ideState.path || '') + '\\' + t.rel.replace(/\//g, '\\');
+  codeRenderTabs();
+}
+
+async function codeOpen(rel) {
+  const idx = codeTabs.findIndex((t) => t.rel === rel);
+  if (idx >= 0) {
+    codeActivate(idx);
+    return;
+  }
+  const r = await beast.ideRead(rel).catch(() => null);
+  if (!r || !r.ok) {
+    toast((r && r.error) || 'okunamad\u0131');
+    return;
+  }
+  codeTabs.push({ rel, content: r.content || '', dirty: false });
+  codeActivate(codeTabs.length - 1);
+  els.codeTa.focus();
+}
+
+function codeClose(i) {
+  if (i < 0 || i >= codeTabs.length) return;
+  codeFlushActive();
+  const oldActive = codeActive;
+  const wasActive = i === oldActive;
+  codeTabs.splice(i, 1);
+  if (codeTabs.length === 0) {
+    codeActive = -1;
+    els.codeTa.value = '';
+    els.codePath.textContent = '\u2014';
+    codeRenderTabs();
+    return;
+  }
+  let next = oldActive;
+  if (wasActive) next = Math.min(i, codeTabs.length - 1);
+  else if (i < oldActive) next = oldActive - 1;
+  codeActive = -1; /* activate içindeki flush, eski içerikle yeni sekmeyi ezmesin */
+  codeActivate(next);
+}
+
+async function codeSave() {
+  if (codeActive < 0 || !codeTabs[codeActive]) return;
+  codeFlushActive();
+  const t = codeTabs[codeActive];
+  const r = await beast.ideWrite(t.rel, t.content).catch(() => null);
+  if (r && r.ok) {
+    t.dirty = false;
+    codeRenderTabs();
+    toast(_t('ide_saved'));
+  } else {
+    toast((r && r.error) || 'kaydedilemedi');
+  }
+}
+
+$('#ideBtn').addEventListener('click', () => setIdeMode(!ideModeOn()));
+$('#filePick').addEventListener('click', async () => {
+  const r = await beast.ideSetRoot().catch(() => null);
+  if (r && r.ok) {
+    ideState.open = new Set(['']);
+    await loadIdeTree();
+  } else if (r && !r.canceled && r.error) {
+    toast(r.error);
+  }
+});
+$('#fileRefresh').addEventListener('click', () => loadIdeTree());
+$('#filePreview').addEventListener('click', async () => {
+  const r = await beast.idePreview().catch(() => null);
+  if (r && r.ok) {
+    if (ideModeOn() === false) setIdeMode(true);
+  } else {
+    toast((r && r.error) || 'preview açılamadı');
+  }
+});
+if (els.codeSave) els.codeSave.addEventListener('click', codeSave);
+if (els.codeTa) {
+  els.codeTa.addEventListener('input', () => {
+    if (codeActive < 0) return;
+    codeTabs[codeActive].dirty = true;
+    const el = els.codeTabs.children[codeActive];
+    if (el) el.classList.add('dirty');
+  });
+  els.codeTa.addEventListener('keydown', (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+      e.preventDefault();
+      codeSave();
+    }
+  });
+}
+
+/* ---------- dosya ağacı sağ tık menüsü (Sil / Aç / Preview) ---------- */
+
+function fileCtxHide() {
+  if (els.fileCtxMenu) els.fileCtxMenu.hidden = true;
+}
+
+function fileCtxShow(e, rel, isDir) {
+  const menu = els.fileCtxMenu;
+  if (!menu || !rel) return;
+  e.preventDefault();
+  const isHtml = /\.html?$/i.test(rel);
+  const items = [];
+  if (isDir) {
+    items.push({
+      label: ideState.open.has(rel) ? 'Kapat' : 'Aç',
+      fn: () => {
+        if (ideState.open.has(rel)) ideState.open.delete(rel);
+        else ideState.open.add(rel);
+        renderFileTree();
+      },
+    });
+  } else {
+    items.push({ label: 'Aç', fn: () => codeOpen(rel) });
+    if (isHtml) {
+      items.push({
+        label: 'Preview',
+        fn: async () => {
+          const r = await beast.idePreviewFile(rel).catch(() => null);
+          if (!r || !r.ok) toast((r && r.error) || 'preview açılamadı');
+        },
+      });
+    }
+  }
+  items.push({
+    label: 'Sil',
+    danger: true,
+    fn: async () => {
+      const r = await beast.ideDelete(rel).catch(() => null);
+      if (r && r.ok) {
+        /* silinen dosya/klasörün açık sekmelerini kapat */
+        for (let i = codeTabs.length - 1; i >= 0; i--) {
+          if (codeTabs[i].rel === rel || codeTabs[i].rel.startsWith(rel + '/')) codeClose(i);
+        }
+        await loadIdeTree();
+      } else if (r && !r.canceled && r.error) {
+        toast(r.error);
+      }
+    },
+  });
+
+  menu.innerHTML = '';
+  for (const it of items) {
+    const el = document.createElement('div');
+    el.className = 'ctx-item' + (it.danger ? ' danger' : '');
+    el.textContent = it.label;
+    el.addEventListener('click', () => {
+      fileCtxHide();
+      it.fn();
+    });
+    menu.appendChild(el);
+  }
+  menu.hidden = false;
+  const mh = items.length * 33 + 8;
+  menu.style.left = Math.max(4, Math.min(e.clientX, window.innerWidth - 170)) + 'px';
+  menu.style.top = Math.max(4, Math.min(e.clientY, window.innerHeight - mh)) + 'px';
+}
+
+if (els.fileCtxMenu) {
+  document.addEventListener('click', fileCtxHide);
+  window.addEventListener('blur', fileCtxHide);
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') fileCtxHide();
+  });
+}
+$('#fileTree').addEventListener('contextmenu', (e) => {
+  const row = e.target.closest('.file-row');
+  if (!row || !row.dataset.rel) {
+    fileCtxHide();
+    return;
+  }
+  fileCtxShow(e, row.dataset.rel, row.dataset.dir === '1');
+});
+
+/* ---------- IDE modu ortası: BEAST CODE paneli ----------
+   Sohbet yerine Beast'in kendi ajanı (varsayılan model) çalışır;
+   soldaki dosya panelindeki klasörü workspace olarak kullanır.
+   Gizli engine oturumu → olaylar onEvent içinde panele yönlendirilir. */
+
+const BC_MAX_LINES = 1200;
+let bcSessionId = null;
+let bcRunning = false;
+let bcBannerDone = false;
+let bcStreamEl = null;
+let bcStreamRaw = '';
+
+function bcScroll(force) {
+  const b = els.bcOut;
+  if (!b) return;
+  /* her yeni içerikte son mesaja doğru otomatik kaydır */
+  b.scrollTop = b.scrollHeight;
+}
+
+/* kutu içi gövdeyi (bc-toolbody) de son bölüme kaydır */
+function bcBodyScroll(el) {
+  const b = el && el.closest ? el.closest('.bc-toolbody') : null;
+  if (b) b.scrollTop = b.scrollHeight;
+}
+
+function bcLine(cls, text, time = false) {
+  if (!els.bcOut) return;
+  const el = document.createElement('div');
+  el.className = 't-line ' + (cls || '');
+  const ts = time ? '<span class="t-time">' + new Date().toTimeString().slice(0, 8) + '</span> ' : '';
+  el.innerHTML = ts + escapeHtml(String(text ?? ''));
+  els.bcOut.appendChild(el);
+  while (els.bcOut.childElementCount > BC_MAX_LINES) els.bcOut.removeChild(els.bcOut.firstChild);
+  bcScroll();
+}
+
+function bcBanner() {
+  if (bcBannerDone) return;
+  bcBannerDone = true;
+  const cwd = ideState.path || '';
+  if (els.bcCwd && cwd) { els.bcCwd.textContent = cwd; els.bcCwd.title = cwd; }
+  bcLine('t-sys', 'BEAST CODE — çalışma klasörü: ' + (cwd || '?'));
+  bcLine('t-dim', 'Beast\u2019in varsayılan modeliyle kod yazar; yazışma bu klasöre bağlıdır. ＋ yeni oturum · Temizle çıktıyı siler.', false);
+}
+
+/* Klasör değişimi (Klasör seç / kök değişti) → panel taze başlar;
+   oturumlar main tarafında klasör bazlı tutulur (klasöre dönüşte aynı sohbet sürer).
+   bcSessionId kasıtlı sıfırlanmaz: klasör değişse bile çalışan işin done/idle
+   sinyali panele ulaşıp kilidi açar. */
+let bcWsPath = '';
+
+function bcOnFolderChanged(p) {
+  if (!p || bcWsPath === p) return;
+  const first = !bcWsPath;
+  bcWsPath = p;
+  if (first) return; /* ilk yükleme — panel zaten boş, banner setIdeMode'da basılır */
+  if (els.bcOut) els.bcOut.innerHTML = '';
+  bcTools.clear();
+  bcCloseToolGroup();
+  bcHideTodos();
+  bcStreamEl = null;
+  bcStreamRaw = '';
+  bcBannerDone = false;
+  bcBanner();
+}
+
+function bcSetBusy(v) {
+  bcRunning = !!v;
+  if (els.bcStop) els.bcStop.hidden = !v;
+}
+
+function bcFlushStream() {
+  bcStreamEl = null;
+  bcStreamRaw = '';
+}
+
+function bcStreamDelta(delta) {
+  if (!bcStreamEl) {
+    bcStreamEl = document.createElement('div');
+    bcStreamEl.className = 't-line t-out';
+    els.bcOut.appendChild(bcStreamEl);
+  }
+  bcStreamRaw += String(delta || '');
+  bcStreamEl.textContent = bcStreamRaw.slice(-4000);
+  bcScroll(true);
+}
+
+/* İş bitti → preview açık ve IDE modundaysa workspace sayfasını otomatik yenile */
+let bcPrevAt = 0;
+
+function bcRefreshPreview() {
+  const now = Date.now();
+  if (now - bcPrevAt < 1500) return; /* done + idle çift tetiklemesin */
+  bcPrevAt = now;
+  if (!ideModeOn() || !document.body.classList.contains('browser-open')) return;
+  beast.idePreview().catch(() => {});
+}
+
+/* ---------- Beast Code araç kutuları ----------
+   Ard arda gelen araç çağrıları TEK kutuda toplanır. Kural: engine mesajı
+   tool_calls İÇERİYORSA (iş turu) grup AÇIK kalır — aradaki ara yazılar kutu
+   içine not olarak akar; tool_calls İÇERMEYEN saf metin (normal mesaj) gelirse
+   grup kapanır, sonraki çağrılar YENİ kutu açar.
+   Kutu çalışırken etrafında fosforlu açık mavi outline döner; her çağrı kutu
+   içinde bir bölüm, çıktı max 180px scroll'lu. */
+const bcTools = new Map(); /* callId → { box, sec } */
+let bcCurBox = null;       /* açık araç grubu — ard arda çağrılar buraya eklenir */
+let bcNoteEl = null;       /* grup içindeki ara yazı notu */
+let bcNoteRaw = '';
+
+function bcNoteDetach() {
+  bcNoteEl = null;
+  bcNoteRaw = '';
+}
+
+function bcCloseToolGroup() {
+  /* grup kapanınca (normal mesaj / iş bitti) ring durur */
+  if (bcCurBox) bcCurBox.classList.remove('running');
+  bcCurBox = null;
+  bcNoteDetach();
+}
+
+function bcToolGroupNew() {
+  const box = document.createElement('div');
+  box.className = 'bc-toolbox';
+  const body = document.createElement('div');
+  body.className = 'bc-toolbody';
+  box.appendChild(body);
+  els.bcOut.appendChild(box);
+  while (els.bcOut.childElementCount > BC_MAX_LINES) els.bcOut.removeChild(els.bcOut.firstChild);
+  return box;
+}
+
+function bcToolBoxStart(callId, name, args) {
+  bcFlushStream();
+  if (!bcCurBox) bcCurBox = bcToolGroupNew();
+  const sec = document.createElement('div');
+  sec.className = 'bc-toolsection';
+  const short = termShortTool(name, args);
+  sec.innerHTML =
+    '<div class="bc-toolhead">' +
+      '<span class="bc-toolspin"></span>' +
+      '<span class="bc-toolname">▸ ' + escapeHtml(String(name || 'araç')) + '</span>' +
+      (short ? '<span class="bc-toolar" title="' + escapeHtml(short) + '">' + escapeHtml(short) + '</span>' : '') +
+    '</div>' +
+    '<div class="bc-toolout" hidden></div>';
+  /* ring: iş bitene / grup kapanana kadar bu kutuda dönmeye devam eder */
+  bcCurBox.classList.add('running');
+  const body = bcCurBox.querySelector('.bc-toolbody') || bcCurBox;
+  body.appendChild(sec);
+  if (callId) bcTools.set(callId, { box: bcCurBox, sec });
+  bcScroll();
+  bcBodyScroll(body);
+}
+
+function bcToolBoxEnd(callId, ok, result) {
+  bcFlushStream();
+  const t = (callId && bcTools.get(callId)) || null;
+  if (callId) bcTools.delete(callId);
+  const out = String(result || '').replace(/\s+$/, '');
+  if (t) {
+    const { sec } = t;
+    /* ring burada SÖNDÜRÜLMEZ — iş bitene kadar (bcCloseToolGroup) döner */
+    sec.classList.add('done');
+    if (!ok) sec.classList.add('failed');
+    const pre = sec.querySelector('.bc-toolout');
+    if (out) {
+      pre.hidden = false;
+      pre.textContent = out.length > 4000 ? out.slice(0, 4000) + '\n… (kesildi)' : out;
+    } else {
+      pre.remove();
+    }
+    bcBodyScroll(sec);
+  } else if (out || !ok) {
+    /* başlangıcı kaçmış çağrı — düz satır olarak düş */
+    bcLine(ok ? 't-out' : 't-err', out ? (out.length > 400 ? out.slice(0, 400) + ' …(kesildi)' : out) : '(hata)');
+  }
+  bcScroll();
+}
+
+/* ---------- Beast Code todo kartı ----------
+   Inputun (chat) hemen üstünde ortalı kompakt kutu; #bcTodoWrap içinde yaşar,
+   scroll'lu çıktı akışını kirletmez. */
+function bcRenderTodos(todos) {
+  const list = Array.isArray(todos) ? todos : [];
+  if (!els.bcTodoWrap) return;
+  bcFlushStream();
+  if (!list.length) {
+    bcHideTodos();
+    return;
+  }
+  els.bcTodoWrap.hidden = false;
+  els.bcTodoWrap.innerHTML =
+    '<div class="bc-todobox">' +
+      '<div class="bc-todotitle"><span>GÖREVLER</span><span class="bc-todocount"></span></div>' +
+      '<div class="bc-todoitems"></div>';
+  const done = list.filter((t) => t.status === 'done').length;
+  els.bcTodoWrap.querySelector('.bc-todocount').textContent = done + '/' + list.length;
+  const wrap = els.bcTodoWrap.querySelector('.bc-todoitems');
+  wrap.innerHTML = '';
+  for (const t of list) {
+    const st = TODO_GLYPH[t.status] ? t.status : 'pending';
+    const row = document.createElement('div');
+    row.className = 'bc-todoitem ' + st;
+    row.innerHTML =
+      '<span class="bc-todocheck">' + TODO_GLYPH[st] + '</span>' +
+      '<span class="bc-todotext"></span>';
+    row.querySelector('.bc-todotext').textContent = String(t.title || '');
+    wrap.appendChild(row);
+  }
+}
+
+function bcHideTodos() {
+  if (els.bcTodoWrap) {
+    els.bcTodoWrap.hidden = true;
+    els.bcTodoWrap.innerHTML = '';
+  }
+}
+
+/* Ara yazı → açık grup varsa kutu İÇİNE not olarak akar (kronoloji korunur) */
+function bcNoteStream(delta) {
+  if (!bcCurBox) return false;
+  if (!bcNoteEl) {
+    bcNoteEl = document.createElement('div');
+    bcNoteEl.className = 'bc-toolnote';
+    const body = bcCurBox.querySelector('.bc-toolbody') || bcCurBox;
+    body.appendChild(bcNoteEl);
+  }
+  bcNoteRaw += String(delta || '');
+  bcNoteEl.textContent = bcNoteRaw.slice(-2000);
+  bcScroll(true);
+  bcBodyScroll(bcNoteEl);
+  return true;
+}
+
+/* Beast Code oturumunun engine olayları → panel çıktısı */
+function bcIngest(ev) {
+  switch (ev.type) {
+    case 'token':
+      /* grup açıksa ara not (kutu içi); değilse normal akış */
+      if (bcNoteStream(ev.delta)) break;
+      bcStreamDelta(ev.delta);
+      break;
+    case 'message':
+      if (ev.message && ev.message.role === 'assistant') {
+        const content = typeof ev.message.content === 'string' ? ev.message.content : '';
+        const hasTools = Array.isArray(ev.message.tool_calls) && ev.message.tool_calls.length > 0;
+        if (hasTools) {
+          /* iş turu: grup AÇIK kalır — ard arda araçlar aynı kutuda sürer.
+             Kutu içine akmış ara not kalıcı olur, işaretçileri bırak */
+          bcNoteDetach();
+          bcFlushStream();
+          break;
+        }
+        /* NORMAL MESAJ: kutu içine düşen taslak notu çıkar, cevabı düz metin bas */
+        if (bcNoteEl) { bcNoteEl.remove(); bcNoteDetach(); }
+        if (content && !bcStreamRaw.trim()) bcLine('t-out', content);
+        bcCloseToolGroup();
+        bcFlushStream();
+      }
+      break;
+    case 'todos':
+      bcRenderTodos(ev.todos);
+      break;
+    case 'tool-start':
+      bcToolBoxStart(ev.callId, ev.name, ev.args);
+      break;
+    case 'tool-end':
+      bcToolBoxEnd(ev.callId, ev.ok, ev.result);
+      break;
+    case 'done':
+      bcFlushStream();
+      bcCloseToolGroup();
+      bcSetBusy(false);
+      bcLine('t-dim', '(tamamlandı)');
+      bcRefreshPreview();
+      if (ideModeOn() && els.bcInput) els.bcInput.focus();
+      break;
+    case 'error':
+      bcFlushStream();
+      bcCloseToolGroup();
+      bcSetBusy(false);
+      bcLine('t-err', '[hata] ' + (ev.error || ''));
+      break;
+    case 'status':
+      /* 'idle' = engine oturumu GERÇEKTEN bıraktı (finally bloğu, her yolda gelir) —
+         done kaçsa bile panel kilitli kalmaz, ■ otomatik kalkar, ring durur */
+      if (ev.status === 'idle') {
+        bcCloseToolGroup();
+        bcSetBusy(false);
+        bcRefreshPreview();
+      }
+      break;
+  }
+}
+
+function bcRunCurrent() {
+  const msg = els.bcInput.value.trim();
+  if (!msg) return;
+  els.bcInput.value = '';
+  bcLine('t-cmd', 'code> ' + msg);
+  bcHideTodos(); /* yeni sorgu = eski todo list temizlenir; agent yeniden basacak */
+  bcSetBusy(true);
+  /* sürüyor/serbest kararını main'deki gerçek engine.isBusy verir —
+     panel bayat kilitli kaldıysa ilk mesajla kendini düzeltir */
+  beast.beastcodeSend(msg).then((r) => {
+    if (r && r.ok) {
+      bcSessionId = r.sessionId;
+    } else if (r && r.busy) {
+      /* iş gerçekten sürüyor — kilit açılmaz, bilgi satırı düşer */
+      bcLine('t-dim', (r && r.error) || 'mesaj sürüyor');
+    } else {
+      bcSetBusy(false);
+      bcLine('t-err', (r && r.error) || 'gönderilemedi');
+    }
+  }).catch((e) => {
+    bcSetBusy(false);
+    bcLine('t-err', String((e && e.message) || e));
+  });
+}
+
+if (els.bcInput) els.bcInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); bcRunCurrent(); }
+});
+if (els.bcStop) els.bcStop.addEventListener('click', () => beast.beastcodeStop().catch(() => {}));
+if (els.bcClear) els.bcClear.addEventListener('click', () => {
+  els.bcOut.innerHTML = '';
+  bcTools.clear();
+  bcCloseToolGroup();
+  bcHideTodos();
+  bcFlushStream();
+});
+if (els.bcNew) els.bcNew.addEventListener('click', async () => {
+  if (bcRunning) { toast('Mesaj sürüyor — önce ■ ile durdur'); return; }
+  const r = await beast.beastcodeNew().catch(() => null);
+  if (r && r.ok) {
+    bcSessionId = null;
+    bcTools.clear();
+    bcCloseToolGroup();
+    bcHideTodos();
+    bcFlushStream();
+    bcLine('t-sys', 'yeni oturum — sonraki mesaj taze başlar');
+  }
+});
+/* Uygulama her açılışta agent (chat) modunda başlar — IDE modu yalnız
+   kullanıcı butona basınca girilir (oturumluk). */

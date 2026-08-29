@@ -413,32 +413,66 @@ class Engine {
     return per || this.limits.default || 0;
   }
 
-  /* Payload limiti aşıyorsa sıkıştır: system korunur, sondan geriye sığanlar
-     alınır, kopuk tool zinciri hizalanır, araya kısa sıkıştırma notu girer.
-     withNote=false ise sessiz kırpım yapılır. */
+  /* Tek mesajı token bütçesine göre kes: string/array içerik kırpılır,
+     tool_calls korunur (araç zinciri bozulmasın) */
+  _truncateMsgTokens(m, tokenBudget) {
+    if (!m) return m;
+    const cap = (txt) =>
+      String(txt).slice(0, Math.max(200, tokenBudget * 4)) + '\n…[girdi limiti için kırpıldı]';
+    if (typeof m.content === 'string') return { ...m, content: cap(m.content) };
+    if (Array.isArray(m.content)) {
+      return {
+        ...m,
+        content: m.content.map((p) =>
+          p && p.type === 'text' ? { ...p, text: cap(p.text) } : p
+        ),
+      };
+    }
+    return m;
+  }
+
+  /* Payload limiti aşıyorsa SERT şekilde sıkıştır: system korunur, sondan
+     bağlantı pencere alınır, en yeni mesaj tek başına bile taşarsa İÇERİĞİ
+     kırpılarak tutulur, hâlâ taşarsa en eskiler atılır. Kullanıcının son
+     mesajı asla sessizce düşürülmez. */
   _compressPayload(payload, maxTokens, withNote) {
     if (!Array.isArray(payload) || payload.length < 2) return payload;
     const sys = payload[0];
     const rest = payload.slice(1);
-    const sysCost = Math.ceil(estMsgTokens(sys) * this.tokRatio);
-    const budget = maxTokens - sysCost - 48;
-    if (budget <= 0) return [sys, rest[rest.length - 1]].filter(Boolean);
+    const cost = (m) => Math.ceil(estMsgTokens(m) * this.tokRatio);
+    const sysCost = cost(sys);
+    const over = (arr) => arr.reduce((a, m) => a + cost(m), 0) + sysCost > maxTokens;
+    if (!over(rest)) return payload;
+
+    const budget = Math.max(0, maxTokens - sysCost - 48);
+
+    /* 1) sondan geriye bağlantı pencere (kesintisiz — kronoloji korunur) */
     const picked = [];
     let used = 0;
     for (let i = rest.length - 1; i >= 0; i--) {
-      const cost = Math.ceil(estMsgTokens(rest[i]) * this.tokRatio);
-      if (used + cost > budget) {
-        if (picked.length) break; // sığmayan eski mesajlar atılır
-        continue; // en yeni mesaj bile sığmıyorsa onu da at (aşağıda min. 1 tutulur)
-      }
+      const c = cost(rest[i]);
+      if (used + c > budget) break;
       picked.unshift(rest[i]);
-      used += cost;
+      used += c;
     }
-    if (!picked.length) picked.push(rest[rest.length - 1]);
-    /* kopuk tool yanıtıyla başlama — assistant/tool_calls grubu bozulmasın */
+
+    /* 2) hiçbir mesaj sığmadıysa: EN YENİ mesajı keserek tut */
+    if (!picked.length && rest.length) {
+      picked.push(this._truncateMsgTokens(rest[rest.length - 1], budget));
+    }
+
+    /* 3) kopuk tool yanıtıyla başlama — assistant/tool_calls grubu bozulmasın */
     while (picked.length && picked[0].role === 'tool') picked.shift();
-    if (!picked.length) picked.push(rest[rest.length - 1]);
-    if (picked.length >= rest.length) return payload; // zaten sığıyordu
+    if (!picked.length) picked.push(this._truncateMsgTokens(rest[rest.length - 1], budget));
+
+    /* 4) hâlâ limite taşıyorsa en eskilerini at */
+    while (picked.length > 1) {
+      const t = picked.reduce((a, m) => a + cost(m), 0) + sysCost + 48;
+      if (t <= maxTokens) break;
+      picked.shift();
+    }
+
+    if (picked.length >= rest.length && !over(rest)) return payload; // zaten sığıyordu
     if (withNote) {
       const dropped = rest.length - picked.length;
       picked.unshift({
@@ -516,32 +550,53 @@ class Engine {
     return list;
   }
 
-  /* Adayları sırayla dene. Hata olursa durumu kaydet, zincirdeki sonrakine geç. */
+  /* Adayları sırayla dene. Hata olursa durumu kaydet, zincirdeki sonrakine geç.
+     413/TPM "Requested N" hatası → gerçek token sayısı öğrenilir, tahmin
+     kalibre edilir ve aynı model BİR KEZ daha sıkı sıkıştırmayla denenir. */
   async _streamWithFallbacks(session, payload, activeTools, signal, onDelta, sel, wasVision) {
     const cands = this._chatCandidates(sel, wasVision);
     let lastErr = null;
     for (let i = 0; i < cands.length; i++) {
       const c = cands[i];
+      let retried413 = false;
       try {
-        /* provider bazlı girdi limiti: payload aşıyorsa sıkıştırılıp öyle gönderilir */
+        /* provider bazlı girdi limiti: payload aşıyorsa sıkıştırılıp öyle gönderilir.
+           Tahmin: mesajlar + TOOLS şemaları (sağlayıcı onları da sayar) + %30 pay.
+           Hedef %15 tamponlu — katı sağlayıcılar (TPM/413) için limit aşılmasın */
         let msgs = payload;
         const lim = this._inputLimitFor(c);
+        const toolsCost =
+          activeTools && activeTools.length
+            ? Math.ceil(estTokens(JSON.stringify(activeTools)) * 1.1)
+            : 0;
+        const rawNow = payload.reduce((a, m) => a + estMsgTokens(m), 0) + toolsCost;
         if (lim > 0) {
-          const est = Math.ceil(payload.reduce((a, m) => a + estMsgTokens(m), 0) * this.tokRatio);
+          const est = Math.ceil(rawNow * this.tokRatio * 1.3);
           if (est > lim) {
             const before = msgs.length;
-            msgs = this._compressPayload(payload, lim, this.limits.compress);
+            const target = Math.max(600, Math.round(lim * 0.85) - toolsCost);
+            msgs = this._compressPayload(payload, target, this.limits.compress);
             if (i === 0) {
               emitSafe(this, session.id, {
                 type: 'status',
                 status: `bağlam sıkıştırıldı: ~${est} token → limit ${lim} (${c.providerName}, ${before}→${msgs.length} mesaj)`,
               });
             }
+            /* system + araçlar tek başına limiti aşıyorsa kullanıcıya net söyle */
+            const floor = Math.ceil(
+              (estMsgTokens(msgs[0]) + toolsCost) * this.tokRatio
+            );
+            if (floor > lim) {
+              emitSafe(this, session.id, {
+                type: 'status',
+                status: `⚠ girdi limiti (${lim}) çok düşük: system + araç tanımları tek başına ~${floor} token — limiti en az ${Math.ceil(floor * 1.15)} yap`,
+              });
+            }
           }
         }
         const res = await chatStream(
           c,
-          { messages: msgs, tools: activeTools, reasoningEffort: this._thinkEffort() },
+          { messages: msgs, tools: activeTools, reasoningEffort: this._thinkEffortFor(session) },
           {
             signal,
             onDelta,
@@ -571,6 +626,23 @@ class Engine {
         if (e && (e.name === 'AbortError' || (signal && signal.aborted))) throw e;
         lastErr = e;
         const msgStr = String((e && e.message) || '');
+        /* 413 TPM: sağlayıcı gerçek istek boyutunu söylüyor → kalibre et,
+           aynı modeli yeniden sıkıştırıp BİR KEZ daha dene */
+        const m413 = /Requested\s+([\d,]+)/i.exec(msgStr) || (e && e.status === 413 ? [, 0] : null);
+        if (m413 && !retried413) {
+          retried413 = true;
+          const real = Number(String(m413[1] || '0').replace(/,/g, ''));
+          if (real > 0) {
+            const r = clamp(real / Math.max(1, rawNow), 0.75, 3);
+            if (r > this.tokRatio) this.tokRatio = r; /* tahmin yukarı kilitlenir */
+            emitSafe(this, session.id, {
+              type: 'status',
+              status: `⇩ 413 kalibrasyonu: gerçek ${real} token — daha sıkı sıkıştırıp yeniden deneniyor`,
+            });
+          }
+          i--; /* aynı adayı tekrar dene */
+          continue;
+        }
         const imgIssue =
           wasVision &&
           ([400, 404, 422].includes(e.status) ||
@@ -658,6 +730,13 @@ class Engine {
     this.workspace = dir;
   }
 
+  /* Oturum bazlı çalışma klasörü — Beast Code gibi özel oturumlar sol paneldeki
+     klasörde çalışabilsin diye (sess.workspace yoksa global workspace) */
+  _sessionWorkspace(sessionId) {
+    const s = sessionId ? this.cache.get(String(sessionId)) : null;
+    return (s && s.workspace) || this.workspace;
+  }
+
   setThinkLevel(v) {
     this.thinkLevel = Math.min(5, Math.max(0, Math.round(Number(v) || 0)));
     return this.thinkLevel;
@@ -666,6 +745,13 @@ class Engine {
   _thinkEffort() {
     const lv = THINK_LEVELS[this.thinkLevel] || THINK_LEVELS[0];
     return lv.effort || null;
+  }
+
+  /* Oturum bazlı düşünme çabası: Beast Code hız modunda en fazla 'low' */
+  _thinkEffortFor(session) {
+    const e = this._thinkEffort();
+    if (!session || !session.bcCode) return e;
+    return e ? 'low' : null;
   }
 
   _thinkLabel() {
@@ -714,6 +800,27 @@ class Engine {
     fs.appendFileSync(this._file(session.id), JSON.stringify({ t: 'msg', ...msg }) + '\n');
     session.updatedAt = nowIso();
     if (session.code) this._codeIndex.set(session.code, session.id);
+  }
+
+  /* Oturum dosyasındaki son 'msg' satırını (user) güncel içerikle değiştir —
+     yanıtsız kalmış user mesajıyla yeni mesaj birleştirildiğinde kullanılır */
+  _rewriteLastMsg(id, content) {
+    try {
+      const file = this._file(String(id));
+      const lines = fs.readFileSync(file, 'utf8').split('\n');
+      for (let i = lines.length - 1; i >= 0; i--) {
+        if (!lines[i].trim()) continue;
+        let r;
+        try { r = JSON.parse(lines[i]); } catch { continue; }
+        if (r.t === 'msg' && r.role === 'user') {
+          lines[i] = JSON.stringify({ t: 'msg', role: 'user', content: String(content || '') });
+          break;
+        }
+      }
+      const tmp = file + '.tmp';
+      fs.writeFileSync(tmp, lines.join('\n'));
+      fs.renameSync(tmp, file);
+    } catch {}
   }
 
   _load(id) {
@@ -1001,6 +1108,28 @@ class Engine {
 
   /* ---------- prompt assembly (the frugal part) ---------- */
 
+  /* Beast Code (IDE paneli): VS Code hızında çalışsın diye SECMET prompt.
+     Hafıza embedding araması, skills taraması, kişilik/kural blokları YOK —
+     prompt kısa kalır → ilk token hızlı, tur maliyeti düşük. */
+  buildBcSystem(session) {
+    const nowD = new Date();
+    const localDate = nowD.toLocaleDateString('tr-TR');
+    const localTime = nowD.toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' });
+    return (
+      'Sen BEAST CODE\u2019sun — IDE panelinde çalışan hızlı bir kodlama ajanı. VS Code gibi çevik ol.\n' +
+      `Çalışma klasörü: ${(session && session.workspace) || this.workspace}\n` +
+      `Yerel zaman: ${localDate} ${localTime}\n` +
+      'HIZ KURALLARI:\n' +
+      '- İLK EYLEMİN daima todo_write olsun: işi 2-6 maddelik plana böl; her adım bitince status:"done" ile güncelle.\n' +
+      '- Kodu ve dosyaları DOĞRUDAN write_file ile yaz/güncelle. Basit dosya oluşturma/düzenleme için asla Python scripti yazma; python_run yalnız gerçek hesap/veri işleme gerekiyorsa.\n' +
+      '- Kurulum, test, build, git gibi işler için run_command kullan (Windows PowerShell ortamı).\n' +
+      '- Bağımsız araç çağrılarını AYNI TURDA paralel ver.\n' +
+      '- Dosyayı kullanıcı söylememişse list_dir ile yapıyı görüp kendin karar ver.\n' +
+      '- Uzun açıklama yok: doğrudan çalış, bitince 1-3 satırlık kısa özet ver. Soru sorma, sohbet etme.\n' +
+      FORMAT_RULES
+    );
+  }
+
   buildSystem(queryText, session) {
     /* BOT OTURUMU: non-admin bota bağlıysa global Beast hafızası HIÇ girmez —
        o botun kendi SOUL/USER/MEMORY dosyaları kullanılır (tam izolasyon) */
@@ -1041,6 +1170,7 @@ class Engine {
         '# SKILLS\nKullanmadan önce ilgili SKILL.md dosyasını read_file ile oku.\n' + sk.join('\n')
       );
     }
+    /* Beast Code (bcCode) oturumları buildBcSystem kullanır — buraya düşmez */
     const nowD = new Date();
     const localDate = nowD.toLocaleDateString('tr-TR');
     const localTime = nowD.toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' });
@@ -1049,7 +1179,7 @@ class Engine {
       tz = Intl.DateTimeFormat().resolvedOptions().timeZone || '';
     } catch {}
     parts.push(
-      `# ORTAM\nWindows + PowerShell. Çalışma klasörü: ${this.workspace}\n` +
+      `# ORTAM\nWindows + PowerShell. Çalışma klasörü: ${(session && session.workspace) || this.workspace}\n` +
         `Yerel tarih: ${localDate} (${['Pazar','Pazartesi','Salı','Çarşamba','Perşembe','Cuma','Cumartesi'][nowD.getDay()]})\n` +
         `Yerel saat: ${localTime}${tz ? ` (saat dilimi: ${tz})` : ''}\n` +
         'Tarih/saat gerektiren her işte bu YEREL zamanı esas al; UTC varsayma, kendin dönüşüm yapma. Bu satırlar her mesajda güncellenir.\n' +
@@ -1327,12 +1457,29 @@ class Engine {
     }
 
     if (!String(typeof msg.content === 'string' ? msg.content : msg.content[0].text || '').trim()) return false;
-    /* #12 kişilik kalibrasyonu: kullanıcı cümlelerini örnek havuzuna düşür */
-    try { memory.addStyleSample(this._plainText(msg)); } catch {}
-    s.messages.push(msg);
-    try {
-      this._append(s, msg);
-    } catch {}
+    /* #12 kişilik kalibrasyonu: kullanıcı cümlelerini örnek havuzuna düşür (Beast Code hariç — hız) */
+    if (!s.bcCode) {
+      try { memory.addStyleSample(this._plainText(msg)); } catch {}
+    }
+
+    /* Önceki tur yanıtlanmadan kaldıysa (hata/durdurma sonrası artık user mesajı)
+       katı sağlayıcılar art arda user mesajını reddeder: "messages illegal" (400).
+       Yeni metni o mesajla BİRLEŞTİR — dosyadaki son satır da güncellenir. */
+    const lastMsg = s.messages[s.messages.length - 1];
+    if (
+      lastMsg && lastMsg.role === 'user' &&
+      typeof lastMsg.content === 'string' &&
+      typeof msg.content === 'string'
+    ) {
+      lastMsg.content = lastMsg.content + '\n' + msg.content;
+      msg = lastMsg;
+      this._rewriteLastMsg(s.id, lastMsg.content);
+    } else {
+      s.messages.push(msg);
+      try {
+        this._append(s, msg);
+      } catch {}
+    }
     this.emit({ type: 'message', sessionId: s.id, message: msg });
     this.emit({ type: 'sessions' });
     this._run(s).catch(() => {});
@@ -1871,17 +2018,51 @@ class Engine {
   _bgTrim(session) {
     const max = Engine.BG_KEEP_MSGS;
     const msgs = session.messages;
-    if (!session.bgJob || msgs.length <= max) return;
-    const keep = msgs.slice(-max);
-    while (keep.length && keep[0].role === 'tool') keep.shift();
+    /* bg işleri + Beast Code: uzun geçmiş payload'ı şişirip yavaşlatır */
+    if ((!session.bgJob && !session.bcCode) || msgs.length <= max) return;
+    let keep = msgs.slice(-max);
+    /* GÜVENLİ SINIR: kesim bir assistant(tool_calls) + tool sonuç çiftini BÖLMESİN.
+       Yetim 'tool' mesajı ya da sonuçları pencere dışında kalan tool_calls'lı
+       asistan mesajı sağlayıcıda "messages parameter is illegal" (HTTP 400) verir. */
+    while (keep.length) {
+      const f = keep[0];
+      if (f.role === 'tool') { keep.shift(); continue; }
+      if (f.role === 'assistant' && Array.isArray(f.tool_calls) && f.tool_calls.length) {
+        const need = f.tool_calls.length;
+        let got = 0;
+        for (let i = 1; i < keep.length && keep[i].role === 'tool' && got < need; i++) got++;
+        if (got < need) { keep.shift(); continue; }
+      }
+      break;
+    }
     const firstUser = msgs.find((m) => m.role === 'user');
     if (firstUser && !keep.includes(firstUser)) keep.unshift(firstUser);
     session.messages = keep;
   }
 
   async _chatTurn(session, signal, onDelta, toolsList = TOOLS) {
+    /* Beast Code: todo_write açıklaması "3+ adım" kısıtı içerir ve model küçük
+       işlerde atlar — bcCode oturumunda HER işte İLK araç olacak şekilde değiştir */
+    if (session && session.bcCode) {
+      toolsList = toolsList.map((t) =>
+        t && t.function && t.function.name === 'todo_write'
+          ? {
+              ...t,
+              function: {
+                ...t.function,
+                description:
+                  'Replace the visible task checklist for this chat. Beast Code session: ALWAYS call this tool as your VERY FIRST action for EVERY job (even tiny 1-step jobs) BEFORE any text or other tool, then update statuses (status:"done") as you complete each step. Keep titles short, verb-first.',
+              },
+            }
+          : t
+      );
+    }
     const promptText = this._lastUserText(session);
-    let system = session.bgJob ? this.buildBgSystem(session) : this.buildSystem(promptText, session);
+    let system = session.bgJob
+      ? this.buildBgSystem(session)
+      : session.bcCode
+        ? this.buildBcSystem(session)
+        : this.buildSystem(promptText, session);
     // Granül izin: oturumun yetki seviyesine göre araç seti daraltılır
     const perm = this.sessionPermFor(session.id);
     const allowedSet = PERM_TOOL_SETS[perm] || null;
@@ -1943,8 +2124,8 @@ class Engine {
     if (actual > 0) {
       const predicted = this._payloadTokens(payload);
       if (predicted > 50) {
-        const r = clamp(actual / predicted, 0.4, 3);
-        this.tokRatio = clamp(this.tokRatio * 0.7 + r * 0.3, 0.4, 3);
+        const r = clamp(actual / predicted, 0.75, 3);
+        this.tokRatio = clamp(this.tokRatio * 0.7 + r * 0.3, 0.75, 3);
       }
     }
     return res;
@@ -1975,8 +2156,10 @@ class Engine {
 
         if (!res.toolCalls || !res.toolCalls.length) {
           // cevap tamam — pencereden düşecek kısmın oturum notlarını güncelle
-          /* #21 bg ajanı: görev sonu ekstra LLM çağrıları YOK — hızlı kapansın */
-          if (!session.bgJob) {
+          /* #21 bg ajanı: görev sonu ekstra LLM çağrıları YOK — hızlı kapansın.
+             Beast Code (bcCode) oturumları da aynı şekilde ANINDA kapansın:
+             not/hafıza/skill yansıtma çağrıları yapılmaz → done hemen gelir */
+          if (!session.bgJob && !session.bcCode) {
             const r = await this._updateSessionNotes(session, ctrl.signal);
             if (r && r.ok) {
               emitSafe(this, sid, { type: 'status', status: `oturum notları güncellendi (${session.code || ''})` });
@@ -1985,13 +2168,13 @@ class Engine {
             }
           }
           /* otomatik memory döngüsü: kalıcı değerli bilgiyi MEMORY.md'ye düşür */
-          if (!ctrl.signal.aborted && !session.bgJob) {
+          if (!ctrl.signal.aborted && !session.bgJob && !session.bcCode) {
             try {
               await this._autoMemory(session, ctrl.signal);
             } catch {}
           }
           /* deneyimden skill doğurma (#2): 5+ yeni araç çağrısı biriktiyse yansıt */
-          if (this.reflection.enabled && !ctrl.signal.aborted && !session.bgJob) {
+          if (this.reflection.enabled && !ctrl.signal.aborted && !session.bgJob && !session.bcCode) {
             try {
               const made = await this._maybeReflectSkill(session);
               if (made) emitSafe(this, sid, { type: 'status', status: `skill taslağı doğdu: ${made}` });
@@ -2625,7 +2808,7 @@ class Engine {
         }
         if (!r || !r.ok || !(r.results || []).length) {
           try {
-            r = JSON.parse(await tools.exec('web_search', args, { cwd: this.workspace, signal }));
+            r = JSON.parse(await tools.exec('web_search', args, { cwd: this._sessionWorkspace(sessionId), signal }));
           } catch {}
         }
         return JSON.stringify(r || { ok: false, error: 'web arama başarısız — tüm motorlar boş döndü' });
@@ -2672,7 +2855,7 @@ class Engine {
             name === 'web_search' || name === 'http_fetch' || name === 'python_run')) {
         return JSON.stringify({ ok: false, error: `unknown tool ${name}` });
       }
-      return await tools.exec(name, args, { cwd: this.workspace, signal });
+      return await tools.exec(name, args, { cwd: this._sessionWorkspace(sessionId), signal });
     } catch (e) {
       return JSON.stringify({ ok: false, error: String((e && e.message) || e) });
     }

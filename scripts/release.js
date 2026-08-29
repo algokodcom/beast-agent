@@ -28,7 +28,8 @@ const warn = (msg) => console.log('  \x1b[33m!\x1b[0m ' + msg);
 const fail = (msg) => { console.error('  \x1b[31m✗ ' + msg + '\x1b[0m'); process.exit(1); };
 
 function run(cmd, opts = {}) {
-  return execSync(cmd, { cwd: ROOT, stdio: opts.inherit ? 'inherit' : 'pipe', encoding: 'utf8', ...opts }).trim();
+  /* stdio:'inherit' iken execSync null döner — trim patlamasın */
+  return String(execSync(cmd, { cwd: ROOT, stdio: opts.inherit ? 'inherit' : 'pipe', encoding: 'utf8', ...opts }) ?? '').trim();
 }
 
 function bump(version, kind) {

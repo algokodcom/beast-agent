@@ -1,18 +1,17 @@
 'use strict';
 
 /* Beast Agent — Dağıtım / Senkron Sistemi
-   Tek komutla tam sürüm akışı:
-     npm run release            → otomatik patch bump (0.15.0 → 0.15.1)
-     npm run release -- minor   → 0.16.0
-     npm release -- 0.17.0      → belirli sürüm
+   Tek komutla tam sürüm akışı (EXE/INSTALLER YOK — npm + kaynak dağıtımı):
+     npm run release            → otomatik patch bump (0.20.0 → 0.20.1)
+     npm run release -- minor   → 0.21.0
+     npm run release -- 0.22.0  → belirli sürüm
 
    Adımlar:
      1) package.json sürümü yükselt
      2) commit + tag + push (main + tag)
-     3) npm run dist (NSIS setup + portable)
-     4) GitHub Release + exe upload (gh CLI)
-     5) npm publish (NPM_TOKEN env var ise; yoksa atlar ve uyarır)
-     6) OneDrive yedek klasörüne kaynak kopyası (beast-v< sürüm >)
+     3) GitHub Release (yalnız kaynak — exe/asset yüklenmez)
+     4) npm publish (NPM_TOKEN env var ise; yoksa atlar ve uyarır)
+     5) OneDrive yedek klasörüne kaynak kopyası (beast-v< sürüm >)
 */
 
 const fs = require('fs');
@@ -51,13 +50,13 @@ const tag = 'v' + next;
 console.log(`\x1b[1mBeast Agent release: ${current} → ${next}\x1b[0m`);
 
 /* ---------- 1) sürüm bump ---------- */
-step('1/6 sürüm yükselt: ' + current + ' → ' + next);
+step('1/5 sürüm yükselt: ' + current + ' → ' + next);
 pkg.version = next;
 fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 4) + '\n');
 ok('package.json → ' + next);
 
 /* ---------- 2) commit + push ---------- */
-step('2/6 git: commit + tag + push');
+step('2/5 git: commit + tag + push');
 try {
   run('git add -A');
   run(`git commit -m "v${next}"`);
@@ -67,43 +66,30 @@ run('git push origin main');
 run(`git push origin ${tag}`);
 ok('pushed: main + ' + tag);
 
-/* ---------- 3) build ---------- */
-step('3/6 build: npm run dist (birkaç dakika)');
-run('npm run dist', { inherit: true });
-const setupExe = path.join(ROOT, 'dist', `BeastAgent-Setup-${next}.exe`);
-const portableExe = path.join(ROOT, 'dist', 'BeastAgent.exe');
-if (!fs.existsSync(setupExe)) fail('setup exe bulunamadı: ' + setupExe);
-if (!fs.existsSync(portableExe)) fail('portable exe bulunamadı: ' + portableExe);
-ok('dist hazır: Setup + Portable');
-
-/* ---------- 4) GitHub release ---------- */
-step('4/6 GitHub Release ' + tag);
+/* ---------- 3) GitHub Release (kaynak — exe yok) ---------- */
+step('3/5 GitHub Release ' + tag);
 const gh = process.env.GH || 'gh';
 try {
   const notes = [
     `## Beast Agent ${tag}`,
     '',
-    '- `BeastAgent-Setup-${next}.exe` — kurulumlu (önerilen)',
-    '- \`BeastAgent.exe\` — portable',
-    '- \`npm i -g beast-agent\` — npm üzerinden',
+    '- \`npm i -g beast-agent@\`' + next,
     '',
+    'Dağıtım npm üzerinden yapılır — exe/installer sürümü kaldırıldı.',
     'Tam değişiklik listesi: commit geçmişi.',
   ].join('\n');
   const notesFile = path.join(ROOT, 'dist', 'release-notes.md');
+  fs.mkdirSync(path.dirname(notesFile), { recursive: true });
   fs.writeFileSync(notesFile, notes);
-  const assets = [setupExe, setupExe + '.blockmap', portableExe, path.join(ROOT, 'dist', 'latest.yml')]
-    .filter((f) => fs.existsSync(f))
-    .map((f) => `"${f}"`)
-    .join(' ');
   try { run(`${gh} release delete ${tag} --yes --cleanup-tag`); } catch {}
-  run(`${gh} release create ${tag} ${assets} --title "Beast Agent ${tag}" --notes-file "${notesFile}"`, { inherit: true });
+  run(`${gh} release create ${tag} --title "Beast Agent ${tag}" --notes-file "${notesFile}"`, { inherit: true });
   ok('release yayında: https://github.com/algokodcom/beast-agent/releases/tag/' + tag);
 } catch (e) {
   fail('GitHub release: ' + String(e));
 }
 
-/* ---------- 5) npm publish ---------- */
-step('5/6 npm publish');
+/* ---------- 4) npm publish ---------- */
+step('4/5 npm publish');
 if (process.env.NPM_TOKEN) {
   try {
     run(`npm publish --//registry.npmjs.org/:_authToken=${process.env.NPM_TOKEN}`, { inherit: true });
@@ -116,8 +102,8 @@ if (process.env.NPM_TOKEN) {
   warn('Elle: set NPM_TOKEN=<token> && npm publish');
 }
 
-/* ---------- 6) OneDrive kaynak yedeği ---------- */
-step('6/6 OneDrive yedek (beast-v' + next + ')');
+/* ---------- 5) OneDrive kaynak yedeği ---------- */
+step('5/5 OneDrive yedek (beast-v' + next + ')');
 try {
   const dest = path.join(ONE_DRIVE_DIR, 'beast-v' + next);
   fs.mkdirSync(dest, { recursive: true });

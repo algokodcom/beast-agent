@@ -1962,11 +1962,11 @@ async function renderWaAllow() {
   const list = await beast.waGetAllow();
   let botChoices = [];
   try { botChoices = (await beast.botsList()) || []; } catch {}
-  const multiBot = botChoices.length >= 2;
   const botSelHtml = (cur) =>
     `<select class="perm-select" title="${_t('bot_bind_title')}">` +
+    `<option value="">${_t('bot_sel_empty')}</option>` +
     botChoices
-      .map((bb) => `<option value="${bb.id}" ${(cur || 'beast') === bb.id ? 'selected' : ''}>${bb.icon} ${escapeHtml(bb.name)}</option>`)
+      .map((bb) => `<option value="${bb.id}" ${cur === bb.id ? 'selected' : ''}>${bb.icon} ${escapeHtml(bb.name)}</option>`)
       .join('') +
     `</select>`;
   wrap.innerHTML = '';
@@ -1980,7 +1980,8 @@ async function renderWaAllow() {
     const name = String((e && e.name) || '').trim();
     const ownerTag = e && e.owner ? ' 👑' : '';
     const bot = botChoices.find((bb) => bb.id === (e && e.bot_id));
-    const botTag = multiBot && bot && !bot.admin ? ' [' + bot.name + ']' : '';
+    /* bağlı olduğu bot her koşulda etikette görünsün */
+    const botTag = bot && e && e.bot_id ? ' → ' + bot.name : '';
     return (name ? name + ' ' : '') + (num ? '+' + num : '') + ownerTag + botTag;
   };
   const waNeedsName = (e) => e !== '*' && String((e && e.name) || '').trim() === '';
@@ -2076,8 +2077,8 @@ async function renderWaAllow() {
       });
       c.appendChild(selP);
 
-      /* BOT SİSTEMİ: 2+ bot varsa numarayı hangi botun karşılayacağını seç */
-      if (multiBot) {
+      /* BOT SİSTEMİ: bağlı olduğu bot chip'te seçili gelir — buradan değiştirilebilir */
+      if (botChoices.length) {
         const selB = document.createElement('span');
         selB.innerHTML = botSelHtml(typeof entry === 'object' ? entry.bot_id : undefined);
         const sel = selB.firstChild;
@@ -2246,13 +2247,14 @@ async function renderTgAllow() {
   const list = await beast.tgGetAllow();
   let botChoices = [];
   try { botChoices = (await beast.botsList()) || []; } catch {}
-  const multiBot = botChoices.length >= 2;
   const tgLabel = (e) => {
     if (e === '*') return '* herkes';
     if (typeof e === 'string') return e;
     const name = String((e && e.name) || '').trim();
     const id = String((e && e.id) || '');
-    return (name ? name + ' ' : '') + id;
+    /* bağlı olduğu bot her koşulda etikette görünsün */
+    const bot = e && e.bot_id ? botChoices.find((bb) => bb.id === e.bot_id) : null;
+    return (name ? name + ' ' : '') + id + (bot ? ' → ' + bot.name : '');
   };
   wrap.innerHTML = '';
   if (!list.length) wrap.innerHTML = '<span class="sub">— boş —</span>';
@@ -2298,11 +2300,15 @@ async function renderTgAllow() {
       });
       c.appendChild(selP);
 
-      /* BOT SİSTEMİ: 2+ bot varsa kaydı hangi botun karşılayacağını seç */
-      if (multiBot) {
+      /* BOT SİSTEMİ: bağlı olduğu bot chip'te seçili gelir — buradan değiştirilebilir */
+      if (botChoices.length) {
         const sel = document.createElement('select');
         sel.className = 'perm-select';
         sel.title = _t('bot_bind_title');
+        const empty = document.createElement('option');
+        empty.value = '';
+        empty.textContent = _t('bot_sel_empty');
+        sel.appendChild(empty);
         for (const bb of botChoices) {
           const o = document.createElement('option');
           o.value = bb.id;

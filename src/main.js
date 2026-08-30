@@ -179,7 +179,12 @@ let waAwaitingRestart = false;
 
 let ImapFlow = null;
 let nodemailer = null;
-try { ImapFlow = require('imapflow'); } catch {}
+/* imapflow yeni sürümlerde named export ({ ImapFlow }) verir, eskisi direkt
+   class'tı — her iki şekli de (ve ESM default'unu) kapsayacak şekilde çöz */
+try {
+  const _if = require('imapflow');
+  ImapFlow = (_if && (_if.ImapFlow || _if.default)) || (typeof _if === 'function' ? _if : null);
+} catch {}
 try { nodemailer = require('nodemailer'); } catch {}
 
 const APP_DIR = path.join(app.getPath('appData'), 'beast');

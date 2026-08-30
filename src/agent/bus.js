@@ -170,8 +170,13 @@ async function startMailIdle(getCfg) {
     while (running.mailIdle) {
       let ImapFlow = null;
       try {
-        ImapFlow = require('imapflow');
+        /* imapflow yeni sürümlerde named export ({ ImapFlow }) — her şekli çöz */
+        const _if = require('imapflow');
+        ImapFlow = (_if && (_if.ImapFlow || _if.default)) || (typeof _if === 'function' ? _if : null);
       } catch {
+        ImapFlow = null;
+      }
+      if (!ImapFlow) {
         log('imapflow yok — mail:new kapalı');
         return;
       }

@@ -1227,10 +1227,15 @@ async function emailList(opts = {}) {
     await client.connect();
     const lock = await client.getMailboxLock(opts.folder || 'INBOX');
     try {
-      let uids = opts.unread ? await client.search({ seen: false }) : await client.search({ all: true });
+      /* uid:true OPTIONS'ta (2. argüman değil) — UID SEARCH gerçek UID'leri döndürür */
+      let uids = opts.unread
+        ? await client.search({ seen: false }, { uid: true })
+        : await client.search({ all: true }, { uid: true });
       uids = Array.isArray(uids) ? uids.slice(-limit) : [];
+      if (!uids.length) return { ok: true, messages: [] };
       const messages = [];
-      for await (const m of client.fetch(uids, { uid: true, envelope: true })) {
+      /* fetch'te de uid opsiyonu 3. argümanda — UID FETCH */
+      for await (const m of client.fetch(uids.map(String).join(','), { envelope: true }, { uid: true })) {
         const from = (m.envelope.from || [])
           .map((a) => (a.name ? `${a.name} <${a.address}>` : a.address))
           .join(', ');
@@ -1251,6 +1256,11 @@ async function emailRead(uid) {
   const cfg = emailCfg();
   if (!cfg.host || !cfg.user || !cfg.pass) return { ok: false, error: 'e-posta ayarlanmamış' };
   if (!ImapFlow) return { ok: false, error: 'imap modülü yok' };
+  /* engine aracı args OBJESİ geçirir ({ uid: 12 }), düz değer çağıranlar da var — ikisini de kabul et.
+     (Bug: obje Number()'a çevrilince NaN → "Invalid sequence set value") */
+  const u0 = uid && typeof uid === 'object' ? uid.uid : uid;
+  const u = Math.floor(Number(u0));
+  if (!Number.isSafeInteger(u) || u <= 0) return { ok: false, error: 'geçersiz uid: ' + JSON.stringify(u0) };
   const client = new ImapFlow({
     host: cfg.host,
     port: Number(cfg.port) || 993,
@@ -1262,11 +1272,12 @@ async function emailRead(uid) {
     await client.connect();
     const lock = await client.getMailboxLock('INBOX');
     try {
-      for await (const m of client.fetch([Number(uid)], { uid: true, source: true })) {
+      /* uid opsiyonu 3. argümanda — 'UID FETCH <u>' (yoksa seq number fetch edilir, yanlış mail gelir) */
+      for await (const m of client.fetch(String(u), { source: true }, { uid: true })) {
         const raw = m.source.toString('utf8');
         const bodyPart = raw.split(/\r?\n\r?\n/).slice(1).join('\n\n') || raw;
         const text = htmlToText(bodyPart);
-        return { ok: true, uid: Number(uid), content: String(text || '').slice(0, 8000) };
+        return { ok: true, uid: u, content: String(text || '').slice(0, 8000) };
       }
       return { ok: false, error: 'mail bulunamadı' };
     } finally {

@@ -2325,6 +2325,32 @@ async function renderTgAllow() {
         });
         c.appendChild(sel);
       }
+
+      /* SAHİP rolü — yalnız biri olabilir (WA ile aynı): tıkla → sahiplik devret */
+      const isOwnerEntry = typeof entry === 'object' && !!entry.owner;
+      const ownerBtn = document.createElement('span');
+      ownerBtn.className = 'lk';
+      ownerBtn.style.cssText = 'font-size:11px;padding:1px 6px;' + (isOwnerEntry ? 'color:#c9a227;font-weight:800' : '');
+      ownerBtn.title = isOwnerEntry ? _t('wa_owner_title_on') : _t('wa_owner_title_off');
+      ownerBtn.textContent = isOwnerEntry ? _t('wa_owner_on') : _t('wa_owner_off');
+      ownerBtn.addEventListener('click', async () => {
+        if (isOwnerEntry) return; // sahibi tekrar tıklamayla alma; önce başkasına devret
+        const cur = await beast.tgGetAllow();
+        const next = cur.map((e, i) => {
+          if (typeof e === 'object' && e && e.owner) return { ...e, owner: false };
+          if (i === idx) {
+            const obj = typeof e === 'string' ? { id: e, name: '' } : { ...e };
+            obj.owner = true;
+            return obj;
+          }
+          return e;
+        });
+        const tgt = next[idx];
+        await beast.tgSetAllow(next);
+        renderTgAllow();
+        toast('Sahip: ' + tgLabel(tgt));
+      });
+      c.appendChild(ownerBtn);
     }
     const x = document.createElement('span');
     x.className = 'x';
@@ -2364,7 +2390,13 @@ async function renderTgAllow() {
       v = v.startsWith('@') ? '@' + v.slice(1).replace(/[^\w]/g, '') : v.replace(/[^\d]/g, '');
       if (!v) { toast(_t('it_tg_id_ph')); return; }
       const botId = botSel && botSel.value ? { bot_id: botSel.value } : {};
-      await beast.tgSetAllow([...(await beast.tgGetAllow()), { id: v, name, ...botId }]);
+      const next = [...(await beast.tgGetAllow()), { id: v, name, ...botId }];
+      /* İLK EKLENEN KİŞİ OTOMATİK SAHİP — listede sahip yoksa en eski kayıt atanır
+         (sahiplik sonradan chip'teki 'sahip yap' butonundan devredilebilir) */
+      if (!next.some((e) => e && typeof e === 'object' && e.owner)) {
+        if (next.length && typeof next[0] === 'object') next[0].owner = true;
+      }
+      await beast.tgSetAllow(next);
       inp.value = '';
       nameInp.value = '';
       renderTgAllow();

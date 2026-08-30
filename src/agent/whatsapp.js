@@ -58,6 +58,7 @@ class WhatsAppBridge {
     this.reconnectTimer = null;
     this._tracked = new Map(); // msgId -> { jid, preview, ts, status, receiptDetail }
     this._watchJids = new Set(); // presence aboneliği tutulacak sohbetler
+    this._seenIds = new Set(); // işlenen mesaj id'leri — offline replay + notify çift işlemeyi önler
   }
 
   /* main tarafı waChats anahtarlarını bildirir; bağlantı varsa anında abone olunur */
@@ -126,7 +127,10 @@ class WhatsAppBridge {
       printQRInTerminal: false,
       browser: ['Beast Agent', 'Chrome', '1.0.0'],
       syncFullHistory: false,
-      markOnlineOnConnect: true, // telefonda ajan çevrimiçi görünsün
+      /* false OLMALI: bot "çevrimiçi" işaretlenirse WhatsApp sunucusu kesintide
+         gelen mesajları bu cihaz için kuyruklamayı aksatıyor. false ile kesintideki
+         mesajlar sunucuda bekler, bağlantı dönünce 'append' upsert'iyle iletilir. */
+      markOnlineOnConnect: false,
     });
 
     this.sock.ev.on('creds.update', saveCreds);
@@ -263,13 +267,37 @@ class WhatsAppBridge {
   }
 
   _handleMessages(m) {
-    if (m.type !== 'notify') return;
+    /* 'notify'  = canlı mesaj akışı
+       'append' = bağlantı kesintisinde KAÇIRILMIŞ mesajlar — bağlantı dönünce
+                  sunucu bunları oynatır; FALLOUT sorunu tam olarak burasıydı:
+                  yalnızca 'notify' işlendiği için kesintideki mesajlar sessizce
+                  düşüyor ve cevapsız kalıyordu. 'append' içindeki eski history
+                  kayıtlarını elemek için son 15 dk tazelik filtresi kullanılır. */
+    if (m.type !== 'notify' && m.type !== 'append') return;
+    const nowMs = Date.now();
     for (const msg of m.messages || []) {
+      /* aynı mesaj hem 'append' hem 'notify' ile gelebilir — ID dedup */
+      const mid = msg.key && msg.key.id;
+      if (mid) {
+        if (this._seenIds.has(mid)) continue;
+        this._seenIds.add(mid);
+        if (this._seenIds.size > 600) {
+          for (const k of [...this._seenIds].slice(0, 300)) this._seenIds.delete(k);
+        }
+      }
       /* tepkiler ayrı kanal: onay kapısı bunları dinler */
       const rm = msg.message && msg.message.reactionMessage;
       if (rm) {
         this._handleReaction(msg, rm);
         continue;
+      }
+      if (m.type === 'append') {
+        const ts = Number(msg.messageTimestamp) || 0;
+        const tsMs = ts > 1e12 ? ts : ts * 1000; // saniye/ms normalizasyonu
+        if (!tsMs || nowMs - tsMs > 15 * 60 * 1000) continue; // eski history — işleme
+        try {
+          waLogSafe(`offline/append mesaj işleniyor (kesintiden kalan, ${new Date(tsMs).toISOString()})`);
+        } catch {}
       }
       this._processIncoming(msg).catch(() => {});
     }

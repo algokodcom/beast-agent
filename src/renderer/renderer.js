@@ -193,6 +193,72 @@ function setStatus(text) {
   els.statusPill.textContent = text;
 }
 
+/* ---------------- OFFLINE MESAJ KUYRUĞU (chat) ----------------
+   İnternet yokken gönderilen mesajlar main'deki diske yazılan kuyruğa düşer;
+   burada ⏳ "kuyrukta" balonu gösterilir. Bağlantı gelince kuyruk otomatik
+   boşaltılır ('netQueue flushed') ve balonlar gerçek mesajla değişir. */
+let netOnline = true;
+let netQueueCount = 0;
+const netPending = []; // { key, el } — bekleyen mesaj balonları
+
+function setNetBadge(el, text) {
+  if (!el || !el.isConnected) return;
+  let badge = el.querySelector('.q-badge');
+  if (!badge) {
+    badge = document.createElement('span');
+    badge.className = 'q-badge';
+    el.appendChild(badge);
+  }
+  badge.textContent = '⏳ ' + text;
+}
+
+function updateNetQueueUi() {
+  if (busy) return;
+  if (!netOnline) {
+    setStatus(netQueueCount > 0 ? _ti('net_pill_offline', netQueueCount) : _t('net_pill_online'));
+  } else if (!netQueueCount) {
+    setStatus('');
+  }
+}
+
+function onNetEvent(ev) {
+  if (ev.type === 'net') {
+    const was = netOnline;
+    netOnline = ev.online !== false;
+    if (was !== netOnline) {
+      if (netOnline) {
+        toast(_t('net_online'));
+        if (!netQueueCount) setStatus('');
+      } else {
+        toast(_t('net_offline'));
+        updateNetQueueUi();
+      }
+    }
+    return;
+  }
+  if (ev.type === 'netQueue') {
+    netQueueCount = typeof ev.count === 'number' ? ev.count : netQueueCount;
+    if (ev.queued) {
+      if (ev.sessionId === activeId) {
+        addUserBubble(ev.text || (ev.attCount ? `[${ev.attCount} ek]` : ''));
+        const el = els.msgs.querySelector('.msg-user:last-of-type');
+        if (el && ev.key) {
+          setNetBadge(el, _t('q_pending'));
+          netPending.push({ key: ev.key, el });
+        }
+      }
+    } else if (ev.flushed) {
+      /* kuyruk boşaltılıyor: ⏳ balonlarını kaldır — gerçek mesaj echo ile gelir */
+      for (const p of netPending) {
+        if (p.el && p.el.isConnected) p.el.remove();
+      }
+      netPending.length = 0;
+      toast(_ti('q_flushed', ev.flushed));
+    }
+    updateNetQueueUi();
+  }
+}
+
 const TODO_GLYPH = { done: '✓', active: '▸', pending: '○' };
 
 function renderTodos(items) {
@@ -878,7 +944,7 @@ async function renderProviderPane() {
   form.innerHTML =
     /* TEK TİKLA MODEL (OpenCode Zen Free) */
     `<div class="zen-hero">` +
-    `<button id="zenOneClick" class="btn">⚡ ${_t('p_zen_btn')}</button>` +
+    `<button id="zenOneClick" class="btn"><span class="zen-load" hidden></span><span class="zen-label">⚡ ${_t('p_zen_btn')}</span></button>` +
     `<div class="sub" style="margin-top:6px">${_t('p_zen_hint')}</div>` +
     `</div>` +
     `<label class="mem-label">${_t('p_preset')}</label>` +
@@ -928,13 +994,19 @@ async function renderProviderPane() {
   /* TEK TİKLA MODEL: OpenCode Zen free kurulumu */
   $('#zenOneClick').addEventListener('click', async () => {
     const btn = $('#zenOneClick');
-    const old = btn.textContent;
+    const label = btn.querySelector('.zen-label');
+    const spinner = btn.querySelector('.zen-load');
+    const old = label.textContent;
     btn.disabled = true;
-    btn.textContent = _t('p_zen_busy');
+    btn.classList.add('loading');
+    spinner.hidden = false;
+    label.textContent = _t('p_zen_busy');
     let r;
     try { r = await beast.zenOneClick(); } catch (e) { r = { ok: false, error: String((e && e.message) || e) }; }
     btn.disabled = false;
-    btn.textContent = old;
+    btn.classList.remove('loading');
+    spinner.hidden = true;
+    label.textContent = old;
     if (r && r.ok) {
       let msg = _ti('p_zen_ok', (r.models || []).length) + ' (OpenCode Zen)';
       if (r.failed && r.failed.length) msg += ' — ' + _ti('p_zen_skipped', r.failed.length);
@@ -1414,6 +1486,35 @@ async function renderIntegrationsPane() {
         <button id="waAllowAdd" class="btn ghost" style="margin-top:6px">${_t('it_add')}</button>
       </div>
       <div class="sub" style="margin-top:8px">${_t('it_allow_note')}</div>
+    </div>
+
+    <div class="wa-card" style="margin-top:14px">
+      <div class="wa-head">
+        <div class="wa-logo tg">T</div>
+        <div>
+          <div class="wa-title">Telegram</div>
+          <div class="wa-sub">${_t('it_tg_sub')}</div>
+        </div>
+      </div>
+      <div class="wa-status"><span id="tgDot" class="wa-dot"></span><span id="tgStatText">—</span></div>
+      <div id="tgUser" class="wa-user" hidden></div>
+      <div class="form-grid" style="grid-template-columns:1fr auto;align-items:center">
+        <input id="tgTokenInp" class="inp" type="password" style="margin:6px 0 0" placeholder="${_t('it_tg_token_ph')}" autocomplete="off" />
+        <button id="tgSaveBtn" class="btn" style="margin-top:6px">${_t('it_tg_save')}</button>
+      </div>
+      <div class="wa-actions" style="margin-top:6px">
+        <button id="tgStopBtn" class="btn ghost">${_t('it_disconnect')}</button>
+      </div>
+      <div class="divider"></div>
+      <label class="mem-label" style="margin-top:0">${_t('it_allow_label')} — Telegram</label>
+      <div id="tgAllowChips" class="chips-inline"></div>
+      <div class="form-grid" style="grid-template-columns:1.2fr 1fr 1fr auto;align-items:center">
+        <input id="tgAllowNameInp" class="inp" style="margin:6px 0 0" placeholder="${_t('it_name_ph')}" autocomplete="off" />
+        <input id="tgAllowIdInp" class="inp" style="margin:6px 0 0" placeholder="${_t('it_tg_id_ph')}" autocomplete="off" />
+        <select id="tgAllowBotSel" class="perm-select" style="margin:6px 0 0;min-width:105px" title="${_t('bot_bind_title')}"></select>
+        <button id="tgAllowAdd" class="btn ghost" style="margin-top:6px">${_t('it_add')}</button>
+      </div>
+      <div class="sub" style="margin-top:8px">${_t('it_tg_note')}</div>
     </div>`;
 
   const waGroupsOn = $('#waGroupsOn');
@@ -1453,6 +1554,29 @@ async function renderIntegrationsPane() {
   waUI.status = snap.status || 'disconnected';
   if (snap.user) waUI.user = snap.user;
   updateWaPane();
+
+  /* TELEGRAM (FEATURE 3): token + allow list + durum */
+  $('#tgSaveBtn').addEventListener('click', async () => {
+    const tok = $('#tgTokenInp').value.trim();
+    if (!tok) { toast(_t('it_tg_token_ph')); return; }
+    toast(_t('it_tg_connecting'));
+    const r = await beast.tgSetToken(tok).catch((e) => ({ status: 'error', error: String(e) }));
+    $('#tgTokenInp').value = '';
+    updateTgPane();
+    toast(r.status === 'connected' ? 'Telegram bağlı: ' + (r.user || '') : r.status === 'error' ? _t('it_tg_token_bad') : _t('it_tg_connecting'));
+  });
+  $('#tgStopBtn').addEventListener('click', async () => {
+    await beast.tgStop().catch(() => {});
+    updateTgPane();
+    toast('Kesildi');
+  });
+  await renderTgAllow();
+  try {
+    const ts = await beast.tgGetStatus();
+    tgUI.status = ts.status || 'disconnected';
+    tgUI.user = ts.user || null;
+    updateTgPane();
+  } catch {}
 }
 
 /* ---------------- Olay Merkezi (ayrı sekme) ---------------- */
@@ -2086,6 +2210,172 @@ function updateWaPane() {
   u.textContent = waUI.user ? '👤 ' + waUI.user : '';
 }
 
+/* ---------------- integrations (Telegram — FEATURE 3) ---------------- */
+
+const tgUI = { status: 'disconnected', user: null };
+const TG_STATUS_TEXT = {
+  disconnected: 'Bağlı değil',
+  connecting: 'Bağlanıyor…',
+  connected: 'Bağlı',
+  error: 'Hata — tokenı kontrol et',
+};
+
+function onTgEvent(ev) {
+  if (ev.type !== 'status') return;
+  tgUI.status = ev.status;
+  if (ev.user) tgUI.user = ev.user;
+  updateTgPane();
+}
+
+function updateTgPane() {
+  const pane = $('#tab-integrations');
+  const dot = pane && pane.querySelector('#tgDot');
+  if (!dot) return;
+  dot.className = 'wa-dot' + (tgUI.status === 'connected' ? ' on' : tgUI.status === 'error' ? ' qr' : '');
+  pane.querySelector('#tgStatText').textContent = TG_STATUS_TEXT[tgUI.status] || tgUI.status;
+  const u = pane.querySelector('#tgUser');
+  u.hidden = !(tgUI.status === 'connected' && tgUI.user);
+  u.textContent = tgUI.user ? '🤖 ' + tgUI.user : '';
+}
+
+/* Telegram izin listesi — WA ile aynı mantık: isim zorunlu, kişi bazlı izin,
+   bot eşleme. Chip × ile silinir; düzenlemek için silip yeniden ekle. */
+async function renderTgAllow() {
+  const wrap = $('#tgAllowChips');
+  if (!wrap) return;
+  const list = await beast.tgGetAllow();
+  let botChoices = [];
+  try { botChoices = (await beast.botsList()) || []; } catch {}
+  const multiBot = botChoices.length >= 2;
+  const tgLabel = (e) => {
+    if (e === '*') return '* herkes';
+    if (typeof e === 'string') return e;
+    const name = String((e && e.name) || '').trim();
+    const id = String((e && e.id) || '');
+    return (name ? name + ' ' : '') + id;
+  };
+  wrap.innerHTML = '';
+  if (!list.length) wrap.innerHTML = '<span class="sub">— boş —</span>';
+  list.forEach((entry, idx) => {
+    const curPerm = (typeof entry === 'object' && entry.perm) || (entry && entry.lockdown ? 'chat' : 'all');
+    const c = document.createElement('span');
+    c.className = 'chip';
+    c.style.margin = '0 6px 6px 0';
+    const txt = document.createElement('span');
+    txt.className = 'chip-txt';
+    txt.textContent = tgLabel(entry);
+    c.appendChild(txt);
+    if (entry !== '*') {
+      /* kişi bazlı granül izin: serbest/web/okuma/kısıtlı (WA ile aynı) */
+      const selP = document.createElement('select');
+      selP.className = 'perm-select';
+      selP.title = _t('wa_perm_title');
+      const PERMS = [
+        ['all', _t('wa_perm_all')],
+        ['web', 'web'],
+        ['read', _t('wa_perm_read')],
+        ['chat', _t('wa_perm_chat')],
+      ];
+      for (const [v, lbl] of PERMS) {
+        const o = document.createElement('option');
+        o.value = v;
+        o.textContent = lbl;
+        if (curPerm === v) o.selected = true;
+        selP.appendChild(o);
+      }
+      selP.addEventListener('change', async () => {
+        const cur = await beast.tgGetAllow();
+        const next = cur.map((e, i) => {
+          if (i !== idx) return e;
+          const base = typeof e === 'string' ? { id: e, name: '' } : { ...e };
+          base.lockdown = selP.value === 'chat';
+          base.perm = selP.value;
+          return base;
+        });
+        await beast.tgSetAllow(next);
+        renderTgAllow();
+        toast(tgLabel(entry) + ': ' + selP.selectedOptions[0].textContent);
+      });
+      c.appendChild(selP);
+
+      /* BOT SİSTEMİ: 2+ bot varsa kaydı hangi botun karşılayacağını seç */
+      if (multiBot) {
+        const sel = document.createElement('select');
+        sel.className = 'perm-select';
+        sel.title = _t('bot_bind_title');
+        for (const bb of botChoices) {
+          const o = document.createElement('option');
+          o.value = bb.id;
+          o.textContent = `${bb.icon} ${bb.name}`;
+          if ((typeof entry === 'object' && entry.bot_id) === bb.id) o.selected = true;
+          sel.appendChild(o);
+        }
+        sel.addEventListener('change', async () => {
+          const cur = await beast.tgGetAllow();
+          const next = cur.map((e, i) => {
+            if (i !== idx) return e;
+            const base = typeof e === 'string' ? { id: e, name: '' } : { ...e };
+            base.bot_id = sel.value || undefined;
+            return base;
+          });
+          await beast.tgSetAllow(next);
+          renderTgAllow();
+          const bt = botChoices.find((bb) => bb.id === sel.value);
+          toast(tgLabel(entry) + ' → ' + (bt ? bt.name : '?'));
+        });
+        c.appendChild(sel);
+      }
+    }
+    const x = document.createElement('span');
+    x.className = 'x';
+    x.textContent = '×';
+    x.addEventListener('click', async () => {
+      const next = (await beast.tgGetAllow()).filter((_v, i) => i !== idx);
+      await beast.tgSetAllow(next);
+      renderTgAllow();
+      toast('Kaldırıldı: ' + tgLabel(entry));
+    });
+    c.appendChild(x);
+    wrap.appendChild(c);
+  });
+
+  /* ekleme formu: isim + (ID veya @username) + bot seçici */
+  const inp = $('#tgAllowIdInp');
+  const nameInp = $('#tgAllowNameInp');
+  const add = $('#tgAllowAdd');
+  const botSel = $('#tgAllowBotSel');
+  if (botSel) {
+    const prev = botSel.value;
+    botSel.innerHTML =
+      `<option value="">${_t('bot_sel_empty')}</option>` +
+      botChoices
+        .map((bb) => `<option value="${bb.id}">${bb.icon} ${escapeHtml(bb.name)}${bb.admin ? ' (admin)' : ''}</option>`)
+        .join('');
+    if (prev) botSel.value = prev;
+  }
+  if (!add.dataset.bound) {
+    add.dataset.bound = '1';
+    const addEntry = async () => {
+      let v = inp.value.trim();
+      if (!v) return;
+      const name = nameInp.value.trim().slice(0, 40);
+      if (!name) { toast('İsim zorunlu — kimin yazdığını bilmek için'); nameInp.focus(); return; }
+      /* @username olduğu gibi; sayısal ID'den boşluk/nokta temizle */
+      v = v.startsWith('@') ? '@' + v.slice(1).replace(/[^\w]/g, '') : v.replace(/[^\d]/g, '');
+      if (!v) { toast(_t('it_tg_id_ph')); return; }
+      const botId = botSel && botSel.value ? { bot_id: botSel.value } : {};
+      await beast.tgSetAllow([...(await beast.tgGetAllow()), { id: v, name, ...botId }]);
+      inp.value = '';
+      nameInp.value = '';
+      renderTgAllow();
+      toast('Eklendi: ' + name);
+    };
+    add.addEventListener('click', addEntry);
+    inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); addEntry(); } });
+    nameInp.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); addEntry(); } });
+  }
+}
+
 /* ---------------- BOT SİSTEMİ (BÖLÜM 2-3-4) ----------------
    Sol panel altında bot kartları; her bot için sohbet geçmişi + sekmeli yönetim.
    İlk bot hep Beast (admin, silinemez). Max 5 bot. */
@@ -2118,6 +2408,9 @@ async function refreshBots() {
   } catch { botsCache = []; }
   try { botPageStats = (await beast.botsStats()) || []; } catch { botPageStats = []; }
   renderBotCards();
+  /* BOT PICKER SENKRONU: liste her yenilendiğinde üstteki rozet de aktif bota
+     ayarlanır — startup yarışında (liste boşken çizilen) eski rozet düzelir */
+  updateBotChip();
   if (!$('#botOverlay').hidden) renderBotPage();
 }
 
@@ -2160,11 +2453,20 @@ async function switchBot(id) {
   const b = botsCache.find((x) => x.id === id);
   if (!b) return;
   if (id === activeBotId) return;
+  /* UI hemen dönsün: rozet + kartlar IPC beklemeden aktif bota geçer */
   activeBotId = id;
-  try { await beast.botsActivate(id); } catch {}
-  try { localStorage.setItem('beast.activeBot', id); } catch {}
   updateBotChip();
   renderBotCards();
+  try {
+    const r = await beast.botsActivate(id);
+    /* main'inkiyle eşleş: normalizasyon ('beast' fallback) varsa düzelt */
+    if (r && r.activeBotId && r.activeBotId !== activeBotId) {
+      activeBotId = r.activeBotId;
+      updateBotChip();
+      renderBotCards();
+    }
+  } catch {}
+  try { localStorage.setItem('beast.activeBot', id); } catch {}
   /* o botun en son oturumuna geç; hiç yoksa o bot için yeni sohbet aç */
   try {
     const list = (await beast.listSessions()).filter((s) => (s.botId || 'beast') === id);
@@ -2898,6 +3200,8 @@ function onEvent(ev) {
     scheduleAgentsRender();
     return;
   }
+  /* OFFLINE MESAJ KUYRUĞU: bağlantı + kuyruk olayları (sessionId filtresinden önce) */
+  if (ev.type === 'net' || ev.type === 'netQueue') { onNetEvent(ev); return; }
   /* Beast Code oturumu (IDE modu ortasındaki panel): olayları panele akıt,
      ana sohbeti kirletme */
   if (bcSessionId && ev.sessionId === bcSessionId) {
@@ -3826,6 +4130,7 @@ async function init() {
   }
 
   beast.onWaEvent(onWaEvent);
+  beast.onTgEvent(onTgEvent);
 
   els.gearBtn.addEventListener('click', openSettings);
   els.setClose.addEventListener('click', closeSettings);

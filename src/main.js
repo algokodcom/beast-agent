@@ -4,6 +4,7 @@ const { app, BrowserWindow, WebContentsView, ipcMain, shell, dialog, Tray, Menu,
 const path = require('path');
 const fs = require('fs');
 const http = require('http');
+const dns = require('dns');
 const crypto = require('crypto');
 const { spawn } = require('child_process');
 const Engine = require('./agent/engine');
@@ -14,6 +15,7 @@ const memory = require('./agent/memory');
 const skillsMod = require('./agent/skills');
 const storeMod = require('./agent/store');
 const { WhatsAppBridge } = require('./agent/whatsapp');
+const { TelegramBridge } = require('./agent/telegram');
 const cron = require('./cron');
 const watchers = require('./agent/watchers');
 const usageMod = require('./agent/usage');
@@ -201,6 +203,8 @@ const SETTINGS_BACKUP_FILE = path.join(APP_DIR, 'settings.backup.json');
 const WA_AUTH_DIR = path.join(APP_DIR, 'wa-auth');
 const WA_CHATS_FILE = path.join(APP_DIR, 'wa-chats.json');
 const FALLOUT_CRASH_FILE = path.join(APP_DIR, 'fallout-crash.json');
+const CHAT_QUEUE_FILE = path.join(APP_DIR, 'chat_queue.json');
+const TG_CHATS_FILE = path.join(APP_DIR, 'tg-chats.json');
 
 for (const d of [APP_DIR, SESSIONS_DIR]) fs.mkdirSync(d, { recursive: true });
 
@@ -216,6 +220,10 @@ let waChats = new Map(); // jid -> aktif session id
 let waHistory = new Map(); // jid -> [sid,...] bu sohbete ait tüm oturumlar
 let waJidPn = new Map(); // jid -> gerçek telefon numarası (LID fallback için)
 const WA_HISTORY_CAP = 20;
+let tg = null;
+let tgChats = new Map(); // telegram chatId -> aktif session id
+let tgHistory = new Map(); // chatId -> [sid,...]
+const TG_HISTORY_CAP = 20;
 let tray = null;
 app.isQuitting = false;
 
@@ -448,6 +456,34 @@ function waFind(senderNum) {
 
 function isWaAllowed(senderNum) {
   return !!waFind(senderNum);
+}
+
+/* ---------- TELEGRAM (FEATURE 3): allow list — WA ile aynı mantık ----------
+   Liste formatı: [{ id:'123456789' | '@kullanici_adi', name, perm, bot_id }, '*']
+   Eşleşme: sayısal ID birebir, @username büyük/küçük harf duyarsız. */
+function tgLog(line) {
+  try { log.info('telegram', line); } catch {}
+}
+
+function tgFind(senderId, username) {
+  const list = settings.tgAllow || [];
+  if (!list.length) return null; // boş liste = kimseye cevap yok
+  const id = String(senderId || '').trim();
+  const uname = String(username || '').replace(/^@/, '').toLowerCase();
+  for (const e of list) {
+    if (e === '*') return { id: '*', name: '' };
+    const eid = typeof e === 'string' ? e.trim() : String((e && e.id) || '').trim();
+    if (!eid) continue;
+    if (eid === '*') return { id: '*', name: '' };
+    if (eid.startsWith('@')) {
+      if (uname && eid.slice(1).toLowerCase() === uname) {
+        return typeof e === 'string' ? { id: eid, name: '' } : e;
+      }
+    } else if (id && eid === id) {
+      return typeof e === 'string' ? { id: eid, name: '' } : e;
+    }
+  }
+  return null;
 }
 
 /* Sahip: owner işaretli kayıt; yoksa listedeki ilk kişi. /allow ve /block
@@ -1759,6 +1795,206 @@ function ensureWa() {
   return wa;
 }
 
+/* ---------- TELEGRAM ENTEGRASYONU (FEATURE 3) ----------
+   WhatsApp ile aynı akış: gelen mesaj → allow list kontrolü → oturuma bağla
+   (bot eşleme + granül izin) → engine.send; cevap done/error olayında geri
+   gider. Anti-spam: 4.5 sn birleştirme penceresi (WA ile aynı). */
+
+(function tgChatsLoad() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(TG_CHATS_FILE, 'utf8'));
+    if (raw && typeof raw.chats === 'object') {
+      for (const [c, s] of Object.entries(raw.chats)) {
+        if (typeof s === 'string') tgChats.set(c, s);
+      }
+    }
+    if (raw && typeof raw.history === 'object') {
+      for (const [c, arr] of Object.entries(raw.history)) {
+        if (Array.isArray(arr)) tgHistory.set(c, arr.filter((x) => typeof x === 'string').slice(-TG_HISTORY_CAP));
+      }
+    }
+    for (const [c, s] of tgChats.entries()) {
+      const h = tgHistory.get(c) || [];
+      if (!h.includes(s)) h.push(s);
+      tgHistory.set(c, h.slice(-TG_HISTORY_CAP));
+    }
+  } catch {}
+})();
+
+function saveTgChats() {
+  try {
+    fs.writeFileSync(
+      TG_CHATS_FILE,
+      JSON.stringify({
+        chats: Object.fromEntries(tgChats),
+        history: Object.fromEntries([...tgHistory.entries()].map(([c, a]) => [c, a.slice(-TG_HISTORY_CAP)])),
+      })
+    );
+  } catch {}
+}
+
+function tgRememberSession(chatId, sid) {
+  const h = tgHistory.get(chatId) || [];
+  if (!h.includes(sid)) h.push(sid);
+  tgHistory.set(chatId, h.slice(-TG_HISTORY_CAP));
+}
+
+const TG_DEBOUNCE_MS = 4500;
+const tgQueue = new Map(); // chatId -> { timer, payloads[] }
+
+function tgQueuePush(chatId, payload) {
+  let q = tgQueue.get(chatId);
+  if (!q) {
+    q = { payloads: [] };
+    tgQueue.set(chatId, q);
+  }
+  q.payloads.push(payload);
+  clearTimeout(q.timer);
+  tgLog(`queue: mesaj kuyruğa girdi chat=${chatId} toplam=${q.payloads.length} (4.5 sn birleştirme)`);
+  q.timer = setTimeout(() => {
+    tgFlush(chatId).catch((e) => tgLog(`flush KRASİ: ${String((e && e.stack) || e)}`));
+  }, TG_DEBOUNCE_MS);
+}
+
+async function tgFlush(chatId) {
+  const q = tgQueue.get(chatId);
+  if (!q) return;
+  tgQueue.delete(chatId);
+  const merged = { text: '', senderId: '', username: '', senderName: '' };
+  for (const p of q.payloads) {
+    if (p.text) merged.text += (merged.text ? '\n' : '') + p.text;
+    if (!merged.senderId && p.senderId) { merged.senderId = p.senderId; merged.username = p.username; merged.senderName = p.senderName; }
+  }
+  await processTgMessage(chatId, merged);
+}
+
+async function handleTgIncoming(chatId, payload) {
+  try {
+    if (!engine) return;
+    /* v1: yalnız birebir sohbetler — grup davranışı WA'daki gibi ayrı toggle ile gelir */
+    if (payload.isGroup) {
+      tgLog(`skip: grup mesajı chat=${chatId} (grup desteği kapalı)`);
+      return;
+    }
+    const hit = tgFind(payload.senderId, payload.username);
+    tgLog(
+      `incoming chat=${chatId} sender=${payload.senderId || '?'} user=${payload.username || '-'} allowed=${!!hit}` +
+        (hit && hit.name ? ' name=' + hit.name : '')
+    );
+    if (!hit) return; // allowlist dışı yoksay
+    /* İsimsiz kayıt: güvenlik için cevap verme — kullanıcıyı ayarlara yönlendir */
+    if (hit.id !== '*' && !hit.name) {
+      tgLog(`skip: isimsiz kayıt (${hit.id}) — cevap verilmedi, Entegrasyonlar'da isim ekle`);
+      return;
+    }
+    resumeServices(); // pause durumunda gelen mesaj servisleri canlandırır
+    tgQueuePush(String(chatId), payload);
+  } catch (e) {
+    tgLog(`handleTgIncoming KRASİ: ${String((e && e.stack) || e)}`);
+  }
+}
+
+async function processTgMessage(chatId, payload, requeues = 0) {
+  const hit = tgFind(payload.senderId, payload.username);
+  if (!hit) {
+    tgLog(`skip flush: izinli eşleşme yok (sender=${payload.senderId || '?'})`);
+    return;
+  }
+  let sid = tgChats.get(chatId);
+  if (sid && engine.isBusy(sid)) {
+    /* oturum meşgul — WA ile aynı: kaybetme, iş bitene dek yeniden dene */
+    await new Promise((r) => setTimeout(r, TG_DEBOUNCE_MS));
+    return processTgMessage(chatId, payload, requeues + 1);
+  }
+  if (!sid) {
+    const v = engine.createSession();
+    sid = v.id;
+    tgChats.set(chatId, sid);
+    tgRememberSession(chatId, sid);
+    saveTgChats();
+  } else {
+    tgRememberSession(chatId, sid);
+  }
+  /* Kişi bazlı granül izin: all/web/read/chat */
+  let perm = hit.perm || (hit.lockdown ? 'chat' : 'all');
+  engine.setSessionPerm(sid, perm);
+
+  /* BOT SİSTEMİ: izinli kayıtta bot_id yoksa beast'e düşer (WA ile aynı) */
+  let botId = hit && hit.bot_id ? String(hit.bot_id) : 'beast';
+  if (!bots.get(botId)) {
+    if (botId !== 'beast') tgLog(`bot="${botId}" yok — kayıt botsuz, beast (admin) botuna yönlendirildi`);
+    botId = 'beast';
+  }
+  engine.setSessionBot(sid, botId);
+  const botCfg = bots.get(botId);
+  if (botCfg && !botCfg.admin) {
+    const eff = moreRestrictivePerm(perm, botCfg.perm || 'all');
+    if (eff !== perm) {
+      perm = eff;
+      engine.setSessionPerm(sid, eff);
+    }
+    engine.setSessionTools(sid, botToolSet(botCfg));
+  } else {
+    engine.setSessionTools(sid, null);
+  }
+  tgLog(`perm=${fmtPerm(perm)} bot=${botId} sid=${sid}`);
+
+  /* #v13.1 rol: SAHİP vs MİSAFİR — ajan kime konuştuğunu net bilsin */
+  const isOwner = !!hit.owner;
+  const roleTag = isOwner
+    ? 'SAHİBİN (talepleri önceliklidir)'
+    : 'MİSAFİR (izinli ama sahibin sözü önceliklidir)';
+  const label =
+    (hit.name || payload.senderName || '?') +
+    (payload.username ? ` (@${payload.username})` : '') +
+    ` — ${roleTag}`;
+  let text = `[Telegram — gönderen: ${label}]`;
+  if (!isOwner) {
+    text += `\n[NOT: Bu kişi SAHİP DEĞİL, misafirdir. Sahibin ayarlarını/verilerini değiştirme; kalıcı hafızaya misafire özel bilgi yazma.]`;
+  }
+  text += `\n${String(payload.text || '').slice(0, 6000)}`;
+  engine.send(sid, { text: text.slice(0, 8000), attachments: [] });
+}
+
+async function sendTgSafe(chatId, text) {
+  if (!tg) return false;
+  try {
+    return !!(await tg.send(chatId, text));
+  } catch (e) {
+    tgLog(`send hata chat=${chatId}: ${String((e && e.message) || e)}`);
+    return false;
+  }
+}
+
+function ensureTg() {
+  if (!tg) {
+    tg = new TelegramBridge({
+      token: settings.tgToken || '',
+      emit: (ev) => {
+        if (ev.type === 'status') tgLog(`status=${ev.status}${ev.user ? ' user=' + ev.user : ''}`);
+        if (win && !win.isDestroyed()) win.webContents.send('tg:event', ev);
+      },
+      onIncoming: handleTgIncoming,
+    });
+  }
+  return tg;
+}
+
+/* token değişimi / yeniden başlatma: eski köprüyü kapat, yenisini aç */
+async function restartTg() {
+  if (tg) {
+    try { await tg.stop(); } catch {}
+    tg = null;
+  }
+  if (!settings.tgToken) return;
+  const b = ensureTg();
+  try {
+    await b.start();
+  } catch (e) {
+    tgLog(`start başarısız: ${String((e && e.message) || e)}`);
+  }
+}
+
 function reloadBackend() {
   if (engine && typeof engine.dispose === 'function') {
     try { engine.dispose(); } catch {}
@@ -1883,6 +2119,27 @@ function reloadBackend() {
             finally {
               try { await wa.setComposing(wajid, false); } catch {} // "yazıyor…" kapansın
             }
+          })();
+        }
+      }
+      // Telegram oturumlarının son cevabını geri gönder (WA ile aynı akış)
+      if ((ev.type === 'done' || ev.type === 'error') && tg && tg.connected) {
+        const hitT = [...tgChats.entries()].find(([, s]) => s === ev.sessionId);
+        if (hitT) {
+          const tgid = hitT[0];
+          (async () => {
+            try {
+              if (ev.type === 'error') {
+                await sendTgSafe(tgid, 'Bir aksilik oldu: ' + String(ev.error || '').slice(0, 200));
+                return;
+              }
+              if (!ev.aborted) {
+                const s = engine.openSession(ev.sessionId);
+                const lastA = [...s.messages].reverse().find((m) => m.role === 'assistant' && m.content);
+                const txt = typeof (lastA && lastA.content) === 'string' ? lastA.content : '';
+                if (txt.trim()) await sendTgSafe(tgid, txt);
+              }
+            } catch {}
           })();
         }
       }
@@ -2042,6 +2299,10 @@ app.whenReady().then(() => {
     startNpmUpdateWatch(); // npm kurulumunda registry üzerinden otomatik sürüm kontrolü
     /* FEATURE 2: offline kuyruk işçisi — 30 sn'de bir bağlantı kontrolü + kuyruk boşaltma */
     setInterval(() => { mqueueTick().catch(() => {}); }, 30000).unref();
+    /* OFFLINE MESAJ KUYRUĞU: gerçek bağlantı yoklaması — 8 sn'de bir DNS probe.
+       Bağlantı dönünce kuyruktaki chat mesajları otomatik gönderilir. */
+    netCheck().catch(() => {});
+    setInterval(() => { netCheck().catch(() => {}); }, NET_CHECK_MS).unref();
 
     // #12 STT prefetch: whisper modelini arka planda hazırla (ilk sesli mesajda bekleme olmasın)
     if (settings.sttPrefetch !== false) {
@@ -2054,6 +2315,11 @@ app.whenReady().then(() => {
 
     // WhatsApp köprüsünü otomatik başlat (eşleme varsa direkt bağlanır)
     ensureWa().start().catch((e) => waLog('autostart failed: ' + (e && e.message)));
+
+    // Telegram köprüsünü otomatik başlat (token kayıtlıysa)
+    if (settings.tgToken) {
+      ensureTg().start().catch((e) => tgLog('autostart failed: ' + String((e && e.message) || e)));
+    }
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow();
@@ -3223,6 +3489,12 @@ function queueDesktopMessage(sessionId, text) {
   const t = isObj ? String((text && text.text) || '') : String(text ?? '');
   const hasAtts = isObj && Array.isArray(text.attachments) && text.attachments.length > 0;
   if (!sid || (!t.trim() && !hasAtts)) return; // boş içerik kuyruğa girmez
+  /* FEATURE: OFFLINE MESAJ KUYRUĞU — internet yokken gelen mesaj diskte bekler,
+     bağlantı geri gelince otomatik gönderilir */
+  if (!netOnline) {
+    chatQueueOfflineAdd(sid, { text: t, attachments: hasAtts ? text.attachments : undefined });
+    return;
+  }
   let q = desktopQueue.get(sid);
   if (!q) {
     q = { timer: null, msgs: [] };
@@ -3250,6 +3522,13 @@ async function flushDesktop(sessionId) {
     return;
   }
   if (engine.isBusy(sid)) return; // hâlâ çalışıyor — done eventini bekle
+  /* debounce penceresinde internet koptuysa mesajlar offline kuyruğa düşer */
+  if (!netOnline) {
+    desktopQueue.delete(sid);
+    clearTimeout(q.timer);
+    for (const m of q.msgs) chatQueueOfflineAdd(sid, { text: m.text, attachments: m.attachments });
+    return;
+  }
   desktopQueue.delete(sid);
   clearTimeout(q.timer);
 
@@ -3273,6 +3552,144 @@ function flushDesktopOnDone(ev) {
     if (q && q.msgs.length) {
       setTimeout(() => flushDesktop(ev.sessionId).catch(() => {}), 150);
     }
+  }
+}
+
+/* ---------- OFFLINE MESAJ KUYRUĞU (masaüstü sohbet) ----------
+   İnternet yokken/kopukken gönderilen chat mesajları kaybolmasın:
+   - Mesaj diskteki kuyruğa yazılır (chat_queue.json — elektrik kesintisine dayanıklı)
+   - Bağlantı geri gelince (DNS kontrolü) sırayla otomatik gönderilir
+   - Renderer'a 'net' / 'netQueue' olayları gider: ⏳ kuyruk balonu + toast */
+const NET_CHECK_HOSTS = ['one.one.one.one', 'dns.google'];
+const NET_CHECK_MS = 8000;
+const NET_CHECK_TIMEOUT = 4000;
+const CHAT_QUEUE_MAX = 50; // kuyruk üst sınırı — taşarsa en eski düşer
+
+let netOnline = true; // son bilinen bağlantı durumu (başlangıçta iyimser)
+let netCheckedOnce = false;
+let netCheckBusy = false;
+let chatQueueFlushing = false;
+const chatOfflineQueue = []; // { key, sessionId, text, attachments, at }
+
+/* diskten yükle (app restart sonrası kuyruk korunur) */
+(function chatQueueLoad() {
+  try {
+    const j = JSON.parse(fs.readFileSync(CHAT_QUEUE_FILE, 'utf8'));
+    const items = Array.isArray(j.items) ? j.items : [];
+    for (const it of items) {
+      if (it && typeof it === 'object' && it.sessionId && (String(it.text || '').trim() || (Array.isArray(it.attachments) && it.attachments.length))) {
+        chatOfflineQueue.push(it);
+      }
+    }
+  } catch {}
+})();
+
+function chatQueueSave() {
+  try {
+    const tmp = CHAT_QUEUE_FILE + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify({ items: chatOfflineQueue }, null, 2));
+    fs.renameSync(tmp, CHAT_QUEUE_FILE); // atomik yazım — yarı kalmış dosya olmaz
+  } catch {}
+}
+
+function chatQueueEmit(extra = {}) {
+  try {
+    if (win && !win.isDestroyed()) {
+      win.webContents.send('agent:event', {
+        type: 'netQueue',
+        online: netOnline,
+        count: chatOfflineQueue.length,
+        ...extra,
+      });
+    }
+  } catch {}
+}
+
+/* gönderilemeyen mesajı kuyruğa al */
+function chatQueueOfflineAdd(sessionId, { text, attachments }) {
+  const item = {
+    key: 'oq' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+    sessionId: String(sessionId || ''),
+    text: String(text || '').slice(0, 100000),
+    attachments: Array.isArray(attachments) ? attachments.slice(0, 5) : undefined,
+    at: new Date().toISOString(),
+  };
+  chatOfflineQueue.push(item);
+  while (chatOfflineQueue.length > CHAT_QUEUE_MAX) chatOfflineQueue.shift();
+  chatQueueSave();
+  log.info('main', `offline kuyruk: mesaj eklendi (${chatOfflineQueue.length} bekliyor) sid=${item.sessionId}`);
+  chatQueueEmit({
+    queued: true,
+    key: item.key,
+    sessionId: item.sessionId,
+    text: item.text,
+    attCount: item.attachments ? item.attachments.length : 0,
+  });
+}
+
+/* kuyruğu normal akışa (debounce → engine) verir */
+async function flushChatQueue() {
+  if (chatQueueFlushing) return;
+  if (!chatOfflineQueue.length) return;
+  if (!netOnline) return;
+  chatQueueFlushing = true;
+  try {
+    const keys = [];
+    while (chatOfflineQueue.length) {
+      const it = chatOfflineQueue.shift();
+      keys.push(it.key);
+      const payload = it.attachments && it.attachments.length ? { text: it.text, attachments: it.attachments } : it.text;
+      queueDesktopMessage(it.sessionId, payload);
+    }
+    chatQueueSave();
+    if (keys.length) {
+      log.info('main', `offline kuyruk boşaltıldı: ${keys.length} mesaj gönderiliyor`);
+      chatQueueEmit({ flushed: keys.length, keys });
+    }
+  } finally {
+    chatQueueFlushing = false;
+  }
+}
+
+/* gerçek internet kontrolü: DNS çözümlemesi (sadece ağ arayüzü değil,
+   paket gerçekten çıkıyor mu test eder). Adaylar sırayla denenir. */
+function dnsProbe(host) {
+  return new Promise((resolve) => {
+    const t = setTimeout(() => resolve(false), NET_CHECK_TIMEOUT);
+    dns.resolve(host, 'A', (err) => {
+      clearTimeout(t);
+      resolve(!err);
+    });
+  });
+}
+
+async function netCheck() {
+  if (netCheckBusy) return;
+  netCheckBusy = true;
+  try {
+    let ok = false;
+    for (const h of NET_CHECK_HOSTS) {
+      if (await dnsProbe(h)) { ok = true; break; }
+    }
+    const first = !netCheckedOnce;
+    const was = netOnline;
+    netOnline = ok;
+    netCheckedOnce = true;
+    if (was !== ok || first) {
+      try {
+        if (win && !win.isDestroyed()) win.webContents.send('agent:event', { type: 'net', online: ok });
+      } catch {}
+      if (ok) {
+        log.info('main', 'bağlantı geri geldi — offline kuyruk kontrol ediliyor');
+        chatQueueEmit(); // renderer: pill/toast güncellensin
+        flushChatQueue().catch(() => {});
+      } else {
+        log.info('main', 'internet bağlantısı yok — mesajlar kuyruğa alınacak');
+        chatQueueEmit();
+      }
+    }
+  } catch {} finally {
+    netCheckBusy = false;
   }
 }
 
@@ -4795,6 +5212,43 @@ ipcMain.handle('wa:tts:set', (_e, cfg) => {
   saveSettings();
   return settings.waTts;
 });
+
+/* ---------- Telegram IPC (FEATURE 3) ---------- */
+
+ipcMain.handle('tg:status:get', () => {
+  if (!tg) return { configured: !!settings.tgToken, status: 'disconnected', user: null, connected: false };
+  return { configured: true, ...tg.snapshot() };
+});
+
+/* token kaydet + köprüyü (yeniden) başlat */
+ipcMain.handle('tg:set', async (_e, token) => {
+  const t = String(token || '').trim();
+  if (t) settings.tgToken = t;
+  saveSettings();
+  await restartTg();
+  return { configured: !!settings.tgToken, ...(tg ? tg.snapshot() : { status: 'disconnected', user: null }) };
+});
+
+ipcMain.handle('tg:start', async () => {
+  if (!settings.tgToken) return { ok: false, error: 'token yok — önce bot tokenı gir' };
+  await restartTg();
+  return { ok: true, ...(tg ? tg.snapshot() : {}) };
+});
+
+ipcMain.handle('tg:stop', async () => {
+  if (tg) {
+    try { await tg.stop(); } catch {}
+  }
+  return { ok: true };
+});
+
+ipcMain.handle('tg:allow:get', () => settings.tgAllow || []);
+ipcMain.handle('tg:allow:set', (_e, list) => {
+  settings.tgAllow = Array.isArray(list) ? list : [];
+  saveSettings();
+  return settings.tgAllow;
+});
+ipcMain.handle('tg:sessions', () => [...tgChats.values()]);
 
 /* ---------- e-posta IPC ---------- */
 

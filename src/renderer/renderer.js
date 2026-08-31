@@ -2472,7 +2472,8 @@ function renderGuestBotMenu() {
   if (!btn || !menu) return;
   const isAdmin = activeBotId === 'beast';
   const show = isAdmin && !!activeId;
-  btn.style.display = show ? '' : 'none';
+  /* DİKKAT: hidden ATTRIBUTUE'sünü kaldırmak şart — style.display ile açılmaz */
+  btn.hidden = !show;
   if (!show) { menu.hidden = true; return; }
   const candidates = botsCache.filter((b) => !b.admin && b.vis !== false);
   menu.innerHTML = '';

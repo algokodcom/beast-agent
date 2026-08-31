@@ -220,7 +220,10 @@ class Engine {
     this.tokRatio = 1; // gerçek prompt_tokens ile kalibre edilir
     this._codeIndex = new Map(); // kısa oturum kodu -> session id
     /* yansıma: oturumda 5+ yeni araç çağrısında skill taslağı denenir */
-    this.reflection = { enabled: opts.reflection !== false, minTools: 5 };
+    this.reflection = { enabled: opts.reflection !== false, minTools: 3 };
+    /* OTOMATİK SKİLL SİSTEMİ: öğrenilen prosedür taslak onayı beklemeden
+       kurulu skill olur; mevcut skillin daha iyisi bulunursa üzerine günceller */
+    this.autoSkills = opts.autoSkills !== false;
     this.historyTokenBudget = Number(opts.historyTokenBudget) || HISTORY_TOKEN_BUDGET;
     this.browser = opts.browser || null; // dahili tarayıcı kancaları
     this.fileSend = opts.fileSend || null; // #26 dosya gönderim köprüsü (chat/WA)
@@ -2479,12 +2482,25 @@ class Engine {
     );
     if (transcript.length < 400) return null; // çok kısa deneyim değmez
 
+    /* OTOMATİK SKİLL SİSTEMİ: kurulu skill listesi de prompta girer —
+       ajan "eski skillden daha kolay/better yol buldum" diyebilmesin, KARAR VERİP
+       skilli GÜNCELLESİN. action: create (yeni) | update (mevcutu iyileştir) | none */
+    const skills = require('./skills');
+    const existing = skills
+      .scan()
+      .map((s) => `- ${s.name}: ${(s.description || '').slice(0, 100)}`)
+      .join('\n');
+
     const prompt =
-      'Aşağıdaki agent oturumunda TEKRARLANABİLİR, yeniden kullanılabilir bir prosedür/bilgi ' +
-      'birikti mi? Kullanıcıya özel geçici detaylar sayılmaz. Karar: evet ise SKILL.md taslağı üret.\n\n' +
+      'Aşağıdaki agent oturumunda TEKRARLANABİLİR, yeniden kullanılabilir bir prosedür/bilgi birikti mi?\n' +
+      'Bir kurulu skill, bu oturumda öğrenilen DAHA KOLAY/DAHA İYİ yöntemle güncellenmeyi hak ediyor mu?\n' +
+      'Kullanıcıya özel geçici detaylar (tarih, şehir, numara gibi) skill\u2019e YAZILMAZ — genel yöntem yazılır.\n\n' +
+      '# KURULU SKİLLER\n' + (existing || '(yok)') + '\n\n' +
       'SADECE şu JSON formatında cevap ver, başka metin yok:\n' +
-      '{"create": true|false, "name": "kisa-kebab-ad", "description": "tek cümle ne işe yarar", ' +
-      '"body": "# Başlık\\n\\nmaddeler halinde adım adım prosedür"}\n\n' +
+      '{"action": "none" | "create" | "update", "name": "kisa-kebab-ad", "description": "tek cümle ne işe yarar", "body": "# Başlık\\n\\nmaddeler halinde adım adım prosedür"}\n\n' +
+      'action=create → yeni skill (body: baştan sona tam prosedür)\n' +
+      'action=update → "name" MEVCUT skillin adı; body o skillin GÜNCELLENMİŞ TAM HALI (eskiden iyi olan adımları koru, yeni kolaylığı işle)\n' +
+      'action=none → değerlenecek bir şey yok\n\n' +
       '# OTURUM ÖZETİ\n' + transcript.slice(0, 6000);
 
     const res = await chatOnce(
@@ -2493,8 +2509,30 @@ class Engine {
       {}
     );
     const draft = parseReflectionJson(res.content || '');
-    if (!draft || !draft.create || !draft.name || !draft.body) return null;
-    const skills = require('./skills');
+    if (!draft || !draft.name || !draft.body) return null;
+
+    const action = String(draft.action || (draft.create ? 'create' : 'none')).toLowerCase();
+    if (action !== 'create' && action !== 'update') return null;
+
+    if (action === 'update') {
+      /* mevcut skillin GÜNCELLENMİŞ hali — doğrudan üzerine (eski hali .bak) */
+      const r = skills.upsertSkill({
+        name: String(draft.name),
+        description: String(draft.description || ''),
+        body: String(draft.body),
+      });
+      return r.ok ? skills.slugify(draft.name) + ' (güncellendi)' : null;
+    }
+
+    /* create: otomatik skill modu AÇIKSA taslak beklemeden direkt kur */
+    if (this.autoSkills) {
+      const r = skills.upsertSkill({
+        name: String(draft.name),
+        description: String(draft.description || ''),
+        body: String(draft.body),
+      });
+      return r.ok ? skills.slugify(draft.name) : null;
+    }
     const r = skills.addDraft({
       name: String(draft.name),
       description: String(draft.description || ''),

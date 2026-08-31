@@ -487,6 +487,33 @@ function dropDraft(id) {
   }
 }
 
+/* OTOMATIK SKILL SİSTEMİ: yansımadan doğan prosedürü DOĞRUDAN kurulu skill olarak
+   yazar (taslak onayı beklemeden). Aynı isimde skill varsa GÜNCELLENİR:
+   eski içerik .bak'a alınır, created korunur, updated damgası vurulur. */
+function upsertSkill({ name, description, body }) {
+  try {
+    const nm = String(name || '').trim() || 'yetenek';
+    const folder = slugify(nm);
+    const d = path.join(dir(), folder);
+    const file = path.join(d, 'SKILL.md');
+    fs.mkdirSync(d, { recursive: true });
+    let fm = `---\nname: ${nm}\ndescription: ${String(description || '').trim().slice(0, 160)}\n`;
+    let updated = false;
+    if (fs.existsSync(file)) {
+      const old = fs.readFileSync(file, 'utf8');
+      const oldFm = parseFrontmatter(old);
+      fm += `created: ${oldFm.created || oldFm.generatedAt || new Date().toISOString()}\n`;
+      fs.writeFileSync(file + '.bak', old);
+      updated = true;
+    }
+    fm += `updated: ${new Date().toISOString()}\n---\n\n`;
+    fs.writeFileSync(file, fm + String(body || '').trim() + '\n');
+    return { ok: true, folder, file, updated };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+}
+
 /* Kurulu bir skill'e madde ekler (#3 kural hattı): "## Kurallar" altına yazılır. */
 function appendRuleToSkill(nameOrFolder, ruleText) {
   try {
@@ -520,4 +547,5 @@ module.exports = {
   acceptDraft,
   dropDraft,
   appendRuleToSkill,
+  upsertSkill,
 };

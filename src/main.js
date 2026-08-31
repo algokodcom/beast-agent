@@ -2071,6 +2071,9 @@ function reloadBackend() {
     thinkLevel: settings.thinkLevel || 0,
     fallout: settings.fallout || null,
     limits: settings.limits || null,
+    /* OTOMATİK SKİLL SİSTEMİ: ayarlardan kapatılmadıysa öğrenilen prosedürler
+       otomatik skill olur, mevcutların daha iyisi bulunursa güncellenir */
+    autoSkills: settings.autoSkills !== false,
     approvals: settings.security && settings.security.approvals ? approvalsBridge : null,
     alwaysAllowTools: (settings.security && settings.security.alwaysAllow) || [],
     crashFile: FALLOUT_CRASH_FILE,
@@ -3827,6 +3830,16 @@ ipcMain.handle('notes:clear', (_e, id) => engine.clearNotes(id));
 ipcMain.handle('memory:save', (_e, { file, content }) => memory.save(file, content));
 
 ipcMain.handle('skills:list', () => skillsMod.scan());
+
+/* OTOMATİK SKİLL SİSTEMİ: açıkken öğrenilen prosedürler direkt kurulur,
+   mevcut skillin daha iyisi bulunursa güncellenir */
+ipcMain.handle('skills:auto:get', () => settings.autoSkills !== false);
+ipcMain.handle('skills:auto:set', (_e, v) => {
+  settings.autoSkills = !!v;
+  saveSettings();
+  if (engine) engine.autoSkills = !!v;
+  return settings.autoSkills;
+});
 
 /* taslak skill'ler (#2 yansıma ürünleri) */
 ipcMain.handle('skills:drafts:list', () => skillsMod.listDrafts());

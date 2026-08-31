@@ -25,6 +25,8 @@ contextBridge.exposeInMainWorld('beast', {
   clearNotes: (id) => ipcRenderer.invoke('notes:clear', id),
   saveMemory: (file, content) => ipcRenderer.invoke('memory:save', { file, content }),
   listSkills: () => ipcRenderer.invoke('skills:list'),
+  skillsGetAuto: () => ipcRenderer.invoke('skills:auto:get'),
+  skillsSetAuto: (v) => ipcRenderer.invoke('skills:auto:set', v),
   openSkillsFolder: () => ipcRenderer.invoke('skills:openFolder'),
   draftsList: () => ipcRenderer.invoke('skills:drafts:list'),
   draftAccept: (id) => ipcRenderer.invoke('skills:drafts:accept', id),

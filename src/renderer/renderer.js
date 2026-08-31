@@ -1255,6 +1255,16 @@ async function renderFalloutPane() {
 async function renderSkillsPane() {
   const pane = $('#tab-skills');
   pane.innerHTML = '<h2>' + _t('sk_h2') + '</h2><div class="sub">' + _t('sk_sub') + '</div>';
+  /* OTOMATİK SKİLL SİSTEMİ: öğrenilen prosedürler otomatik kurulur/güncellenir */
+  const auto = await beast.skillsGetAuto().catch(() => true);
+  pane.insertAdjacentHTML(
+    'afterbegin',
+    `<div class="fo-toggles" style="margin-bottom:12px"><label class="lock-row"><input type="checkbox" id="autoSkillsOn" ${auto ? 'checked' : ''}/><span>${_t('sk_auto')}</span></label></div>`
+  );
+  pane.querySelector('#autoSkillsOn').addEventListener('change', async (e) => {
+    await beast.skillsSetAuto(e.target.checked);
+    toast((e.target.checked ? 'Otomatik skill: AÇIK' : 'Otomatik skill: KAPALI'));
+  });
   const list = await beast.listSkills();
   for (const s of list) {
     const row = document.createElement('div');

@@ -1164,14 +1164,31 @@ async function waFlush(jid) {
   waLog(`flush: çağrıldı jid=${waPrettyJid(jid)} kuyrukta=${q ? q.payloads.length : 0}`);
   if (!q) return;
   waQueue.delete(jid);
-  const merged = { text: '', media: null, isGroup: false, participant: '', mentioned: false };
+  const merged = { text: '', media: null, isGroup: false, participant: '', participantPn: '', participantUsername: '', mentioned: false };
   let senderNum = '';
-  /* push tarafıyla AYNI alan adı: { payload, senderNum } */
+  /* push tarafıyla AYNI alan adı: { payload, senderNum }.
+     Gruplarda farklı kişilerden gelen mesajlar birleşirse, ilk kişi label'da
+     adı geçer; DİĞER kişilerin mesajları metne [kim] etiketiyle eklenir. */
+  let firstParticipant = '';
   for (const { payload, senderNum: sn } of q.payloads) {
-    if (payload.text) merged.text += (merged.text ? '\n' : '') + payload.text;
+    if (payload.text) {
+      let txt = payload.text;
+      if (payload.isGroup && payload.participant) {
+        const pid = String(payload.participant);
+        if (!firstParticipant) firstParticipant = pid;
+        else if (pid !== firstParticipant) {
+          const tagD = String(payload.participantPn || '').split('@')[0].split(':')[0] || pid.split('@')[0].split(':')[0];
+          txt = `[+${tagD}]: ${txt}`;
+        }
+      }
+      merged.text += (merged.text ? '\n' : '') + txt;
+    }
     if (payload.media && !merged.media) merged.media = payload.media;
     if (payload.isGroup) merged.isGroup = true;
-    if (payload.participant) merged.participant = payload.participant;
+    /* ilk gönderen esas alınır — sonrakiler metne [kim] etiketiyle gelir */
+    if (payload.participant && !merged.participant) merged.participant = payload.participant;
+    if (payload.participantPn && !merged.participantPn) merged.participantPn = payload.participantPn;
+    if (payload.participantUsername && !merged.participantUsername) merged.participantUsername = payload.participantUsername;
     if (payload.mentioned) merged.mentioned = true;
     if (!senderNum && sn) senderNum = sn;
   }
@@ -1703,19 +1720,34 @@ async function processWaMessage(jid, payload, senderNum, requeues = 0) {
   waLog(`perm=${fmtPerm(perm)} bot=${botId} sid=${sid}`);
 
   const participantName = payload.participant ? '+' + String(payload.participant).split('@')[0].split(':')[0] : '';
+  /* GRUP GÖNDERENİ: LID çağında gerçek telefon participantAlt'ta gelir.
+     Kimlik çözümleme sırası: izin listesindeki isim → @kullanıcı adı → gerçek PN → LID.
+     Ajan böylece grubun içinde mesajın KİMDEN geldiğini görür. */
+  let groupSender = '';
+  if (isGroup) {
+    const pnDigits = String(payload.participantPn || '').split('@')[0].split(':')[0];
+    const hitP = /^\d+$/.test(pnDigits) ? waFind(pnDigits) : null;
+    const uname = String(payload.participantUsername || '').trim();
+    if (hitP && hitP.name) groupSender = `${hitP.name} (+${pnDigits})`;
+    else if (uname) groupSender = `@${uname}${/^\d+$/.test(pnDigits) ? ' (+' + pnDigits + ')' : ''}`;
+    else if (/^\d+$/.test(pnDigits)) groupSender = '+' + pnDigits;
+    else groupSender = participantName || '';
+  }
   /* #v13.1 rol: SAHİP vs MİSAFİR — ajan kime konuştuğunu net bilsin */
   const isOwner = !isGroup && !!hit.owner;
   const roleTag = isOwner
     ? 'SAHİBİN (talepleri önceliklidir)'
     : 'MİSAFİR (izinli ama sahibin sözü önceliklidir)';
   const label = isGroup
-    ? `Grup ${jid.split('@')[0]}${participantName ? ' · ' + participantName : ''}`
+    ? `Grup ${jid.split('@')[0]}${groupSender ? ' — gönderen: ' + groupSender : ''}`
     : hit.name
       ? `${hit.name} (+${senderNum || '?'}) — ${roleTag}`
       : `+${senderNum || '?'} — ${roleTag}`;
   let text = `[WhatsApp${isGroup ? ' grup' : ''} — gönderen: ${label}]`;
   if (!isGroup && !isOwner) {
     text += `\n[NOT: Bu kişi SAHİP DEĞİL, misafirdir. Sahibin ayarlarını/verilerini değiştirme; kalıcı hafızaya misafire özel bilgi yazma.]`;
+  } else if (isGroup) {
+    text += `\n[NOT: Grup mesajı — gönderen grubun üyesidir, izin listendeki kişi olmayabilir. Grup üyelerine karşı temkinli konuş.]`;
   }
   const attachments = [];
 

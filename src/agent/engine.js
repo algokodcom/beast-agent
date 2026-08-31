@@ -834,6 +834,51 @@ class Engine {
     } catch {}
   }
 
+  /* GÖRSEL DÖNGÜSÜ KORUMASI: görüntü desteklemeyen modele görsel ulaşırsa
+     sağlayıcı 400/404 döndürür; görsel oturum geçmişinde kaldığı için sonraki
+     HER mesaj aynı hatayla ölür (sonsuz hata döngüsü). Bu metod geçmişteki tüm
+     image_url parçalarını metin notuyla değiştirir — hem bellekte hem jsonl'de.
+     Döndürür: kaldırılan görsel sayısı */
+  _sanitizeSessionImages(session) {
+    const NOTE = '[görsel gösterilemedi — bu model görüntü girişini desteklemiyor]';
+    const hasImg = (c) => Array.isArray(c) && c.some((p) => p && p.type === 'image_url');
+    const clean = (content) => {
+      const parts = [];
+      for (const p of content) {
+        if (p && p.type === 'image_url') continue;
+        parts.push(p);
+      }
+      if (!parts.some((p) => p && p.type === 'text' && String(p.text || '').trim())) {
+        parts.push({ type: 'text', text: NOTE });
+      }
+      return parts;
+    };
+    let removed = 0;
+    for (const m of session.messages) {
+      if (hasImg(m.content)) {
+        removed += m.content.filter((p) => p && p.type === 'image_url').length;
+        m.content = clean(m.content);
+      }
+    }
+    if (!removed) return 0;
+    try {
+      const file = this._file(session.id);
+      const lines = fs.readFileSync(file, 'utf8').split('\n');
+      for (let i = 0; i < lines.length; i++) {
+        if (!lines[i].trim()) continue;
+        let r;
+        try { r = JSON.parse(lines[i]); } catch { continue; }
+        if (r.t === 'msg' && r.role === 'user' && hasImg(r.content)) {
+          lines[i] = JSON.stringify({ t: 'msg', role: 'user', content: clean(r.content) });
+        }
+      }
+      const tmp = file + '.tmp';
+      fs.writeFileSync(tmp, lines.join('\n'));
+      fs.renameSync(tmp, file);
+    } catch {}
+    return removed;
+  }
+
   _load(id) {
     if (this.cache.has(id)) return this.cache.get(id);
     const file = this._file(id);
@@ -2113,7 +2158,7 @@ class Engine {
         `\n\n# OTURUM NOTLARI (oturum ${session.code || '?'} — bu oturumun önceki konuşma özeti; birebir geçmişi buradan hatırla)\n` +
         session.notes;
     }
-    const payload = this._buildPayload(system, session.messages, session.notes);
+    let payload = this._buildPayload(system, session.messages, session.notes);
     // Vision model sadece mesajda görsel varsa devreye girer; terminal ise prompt'un
     // shell/command işi olduğunda. Aksi halde ana model kullanılır.
     let role = this._lastUserHasImage(session) ? 'vision' : null;
@@ -2124,16 +2169,48 @@ class Engine {
     if (role && this.roleModels[role]) {
       emitSafe(this, session.id, { type: 'status', status: `rol: ${role} → ${sel.providerName} · ${sel.model}` });
     }
-    // FALLOUT destekli çağrı: hata olursa zincirdeki sıradaki sağlayıcıya geç
-    const res = await this._streamWithFallbacks(
-      session,
-      payload,
-      activeTools,
-      signal,
-      onDelta,
-      sel,
-      role === 'vision'
-    );
+    let res;
+    try {
+      // FALLOUT destekli çağrı: hata olursa zincirdeki sıradaki sağlayıcıya geç
+      res = await this._streamWithFallbacks(
+        session,
+        payload,
+        activeTools,
+        signal,
+        onDelta,
+        sel,
+        role === 'vision'
+      );
+    } catch (e) {
+      /* GÖRSEL DÖNGÜSÜ KORUMASI: görüntü desteklemeyen model hata verirse görsel
+         geçmişte kalır ve sonraki HER mesaj aynı hatayla ölür. Oturumu görsellerden
+         arındırıp turu BİR KEZ görüntüsüz dener. */
+      const msgStr = String((e && e.message) || '');
+      const aborted = signal && signal.aborted;
+      const imgish =
+        !aborted &&
+        /image|vision|multimodal|no endpoints/i.test(msgStr);
+      const hasImg =
+        !aborted &&
+        session.messages.some((m) => Array.isArray(m.content) && m.content.some((p) => p && p.type === 'image_url'));
+      if (!imgish || !hasImg) throw e;
+      const removed = this._sanitizeSessionImages(session);
+      if (!removed) throw e;
+      emitSafe(this, session.id, {
+        type: 'status',
+        status: `\u{1F5BC} bu model görüntü girişini desteklemiyor — sohbetten ${removed} görsel kaldırıldı, mesaj görüntüsüz yanıtlanıyor (/change ile görsel destekli modele geçebilirsin)`,
+      });
+      payload = this._buildPayload(system, session.messages, session.notes);
+      res = await this._streamWithFallbacks(
+        session,
+        payload,
+        activeTools,
+        signal,
+        onDelta,
+        sel,
+        false
+      );
+    }
     // Gerçek kullanım ile tahmini bütçeyi kalibre et
     const actual = res.usage && res.usage.prompt_tokens;
     if (actual > 0) {

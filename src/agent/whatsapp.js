@@ -411,6 +411,9 @@ class WhatsAppBridge {
         media,
         isGroup,
         participant: participantJid,
+        /* LID çağında gerçek telefon: participantAlt; varsa WA kullanıcı adı */
+        participantPn: isGroup ? String(msg.key.participantAlt || '') : '',
+        participantUsername: isGroup ? String(msg.key.participantUsername || '') : '',
         mentioned,
       }, senderNum);
     } catch {}

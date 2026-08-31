@@ -3439,12 +3439,18 @@ function onEvent(ev) {
     case 'done':
       closeChatToolGroup();
       setBusy(false);
+      setStatus(''); /* son durum balonu ("düşünüyor…" vb.) yapışmasın */
+      /* cevabın SONU görünsün: markdown son render sonrası iki kez en alta kilitle */
+      scrollDown(true);
+      setTimeout(() => scrollDown(true), 80);
+      setTimeout(() => scrollDown(true), 260);
       refreshSessions();
       els.input.focus();
       break;
     case 'error':
       closeChatToolGroup();
       setBusy(false);
+      setStatus('');
       addErrorBubble(ev.error);
       refreshSessions();
       break;

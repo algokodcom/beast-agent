@@ -620,29 +620,29 @@ function emitWaEventSafe(ev) {
 function waSlashHelp() {
   return [
     '*Beast komutları*',
-    '• /help – bu liste',
-    '• /new – yeni oturum aç (kod verilir)',
-    '• /open <kod> – o koddaki oturuma geç',
-    '• /sessions – bu sohbetin oturumları',
-    '• /stop – koşan işleri durdur (ajanlar+turlar; cron/izleyici/olay sürer)',
-    '• /start – durdurulan servisleri devam ettir',
-    '• /restart – uygulamayı yeniden başlat',
-    '• /change – modelleri listele (/change 5 ile 5.modele geç)',
-    '• /notes – bu oturumun notlarını göster',
-    '• /notify on|off – hata mail bildirimini aç/kapa',
-    '• /think <0-5> – düşünme seviyesi (0 kapalı · 1 low · 2 medium · 3 high · 4 xhigh · 5 max)',
-    '• /clear – bu oturumun geçmişini temizle',
-    '• /screenshot – masaüstü ekran görüntüsünü gönder',
-    '• /rule <metin> – kalıcı kural ekle (/rules: liste)',
-    '• /allow <isim> <numara> – WhatsApp allow listesine kişi ekle (örn: /allow batu 905414178456)',
-    '• /block – allow listesini numaralarıyla listele (/block 3: 3. kişiyi çıkar; 1 = sahip, silinemez)',
-    '• /approve – bekleyen riskli işlemi onayla (/approve always: bir daha sorulmasın · /deny: reddet)',
-    '• /update – yeni sürüm kontrolü (/update now: indirileni hemen kur)',
-    '• /model – aktif modeli göster (/model <isim> ile değiştir)',
-    '• /skills – kurulu skill\u2019ler',
-    '• /usage – bugünkü kullanım',
-    '• /backup – tüm veriyi ŞİFRELİ yedekle (Beast Kodu imzalı, Masaüstü\\Beast-Backups)',
-    '• /status – bağlantı ve servis durumu',
+    '• */help* – bu liste',
+    '• */new* – yeni oturum aç (kod verilir)',
+    '• */open* <kod> – o koddaki oturuma geç',
+    '• */sessions* – bu sohbetin oturumları',
+    '• */stop* – koşan işleri durdur (ajanlar+turlar; cron/izleyici/olay sürer)',
+    '• */start* – durdurulan servisleri devam ettir',
+    '• */restart* – uygulamayı yeniden başlat',
+    '• */change* – modelleri listele (*/change 5* ile 5.modele geç)',
+    '• */notes* – bu oturumun notlarını göster',
+    '• */notify* on|off – hata mail bildirimini aç/kapa',
+    '• */think* <0-5> – düşünme seviyesi (0 kapalı · 1 low · 2 medium · 3 high · 4 xhigh · 5 max)',
+    '• */clear* – bu oturumun geçmişini temizle',
+    '• */screenshot* – masaüstü ekran görüntüsünü gönder',
+    '• */rule* <metin> – kalıcı kural ekle (*/rules*: liste)',
+    '• */allow* <isim> <numara> – WhatsApp allow listesine kişi ekle (örn: /allow batu 905414178456)',
+    '• */block* – allow listesini numaralarıyla listele (*/block 3*: 3. kişiyi çıkar; 1 = sahip, silinemez)',
+    '• */approve* – bekleyen riskli işlemi onayla (*/approve always*: bir daha sorulmasın · */deny*: reddet)',
+    '• */update* – yeni sürüm kontrolü (*/update now*: indirileni hemen kur)',
+    '• */model* – aktif modeli göster (*/model* <isim> ile değiştir)',
+    '• */skills* – kurulu skill\u2019ler',
+    '• */usage* – bugünkü kullanım',
+    '• */backup* – tüm veriyi ŞİFRELİ yedekle (Beast Kodu imzalı, Masaüstü\\Beast-Backups)',
+    '• */status* – bağlantı ve servis durumu',
     '',
     'Gruplarda beni @mention ile çağır; ardışık mesajlarını tek cevapta birleştiririm.',
   ].join('\n');
@@ -2116,6 +2116,19 @@ function reloadBackend() {
             }
           }
         } catch {}
+      }
+      /* WA ara yorumları: ajanın araç çağrıları ARASINDAKİ açıklama metinleri
+         ("işe başlıyorum…" vb.) da WhatsApp'a gitsin. Son cevap 'done'da
+         gönderildiği için burada yalnız tool_calls TAŞIYAN ara mesajlar alınır. */
+      if (ev.type === 'message' && ev.message && ev.message.role === 'assistant' && wa && wa.connected) {
+        const mtxt = typeof ev.message.content === 'string' ? ev.message.content.trim() : '';
+        const isInterim = Array.isArray(ev.message.tool_calls) && ev.message.tool_calls.length > 0;
+        if (mtxt && isInterim) {
+          try {
+            const hit = [...waChats.entries()].find(([, s]) => s === ev.sessionId);
+            if (hit) sendWaSafe(hit[0], mtxt).catch(() => {});
+          } catch {}
+        }
       }
       /* #14 paralel ajan: arka plan oturumu bitince ana sohbete özet bas.
          aborted (öz-kurtarma/wrap-up kick) turları BİTİŞ değildir — rapor basma */

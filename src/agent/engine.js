@@ -1501,6 +1501,10 @@ class Engine {
       /* #6 bağlam sıkıştırma: öze dönüşen eski mesajlar bellekten VE diskten
          düşer (compacted işaretiyle); notlar + son pencere her zaman kalır.
          Böylece notesAt=0'dan yeniden başlar, uzun sohbette şişme olmaz. */
+      /* YARIŞ KORUMASI: bu bakım artık done SONRASI arka planda koşuyor —
+         yeni tur başladıysa dosya sıkıştırmayı ERTENELE (not satırı append ile
+         zaten kayıtlı; sıkıştırma sonraki bakımda yapılır, append kaybı olmaz) */
+      if (this.ctrls.has(session.id)) return { ok: true, deferred: true };
       this._compactToNotes(session, cut);
       /* bellek kopyasını da eşele: özetlenen bölge [0..cut) atılır */
       session.messages = session.messages.slice(cut);
@@ -1509,6 +1513,29 @@ class Engine {
     } catch (e) {
       return { ok: false, reason: String((e && e.message) || e).slice(0, 120) }; // not üretimi asla sohbeti bozmasın
     }
+  }
+
+  /* Cevap done SONRASI arka planda koşan ev işleri (kullanıcıyı BEKLETMEZ,
+     DURUM BALONUNU DA MEŞGUL ETMEZ — tamamen sessizdir):
+     oturum notları → otomatik memory → skill yansıtma → kişilik kalibrasyonu.
+     Aynı oturum için per-session zincirle sıralanır. */
+  _postRunHousekeeping(session, prevSignal) {
+    const sid = session.id;
+    if (session.bgJob || session.bcCode || session.isBotDm) return;
+    if (prevSignal && prevSignal.aborted) return;
+    if (!this._housekeepingTail) this._housekeepingTail = new Map();
+    const job = this._housekeepingTail.get(sid) || Promise.resolve();
+    const next = job.catch(() => {}).then(async () => {
+      const ctl = new AbortController();
+      try { await this._updateSessionNotes(session, ctl.signal); } catch {}
+      if (ctl.signal.aborted || this.ctrls.has(sid)) return;
+      try { await this._autoMemory(session, ctl.signal); } catch {}
+      if (this.reflection.enabled && !ctl.signal.aborted && !this.ctrls.has(sid)) {
+        try { await this._maybeReflectSkill(session); } catch {}
+      }
+      try { memory.calibratePersona(); } catch {}
+    });
+    this._housekeepingTail.set(sid, next);
   }
 
   /* ---------- agent loop ---------- */
@@ -2275,43 +2302,14 @@ class Engine {
         emit({ type: 'message', message: assistant });
 
         if (!res.toolCalls || !res.toolCalls.length) {
-          // cevap tamam — pencereden düşecek kısmın oturum notlarını güncelle
-          /* #21 bg ajanı: görev sonu ekstra LLM çağrıları YOK — hızlı kapansın.
-             Beast Code (bcCode) oturumları da aynı şekilde ANINDA kapansın:
-             not/hafıza/skill yansıtma çağrıları yapılmaz → done hemen gelir */
-          if (!session.bgJob && !session.bcCode && !session.isBotDm) {
-            const r = await this._updateSessionNotes(session, ctrl.signal);
-            if (r && r.ok) {
-              emitSafe(this, sid, { type: 'status', status: `oturum notları güncellendi (${session.code || ''})` });
-            } else if (r && r.reason && !/^bekleme/.test(r.reason)) {
-              emitSafe(this, sid, { type: 'status', status: `oturum notu YAZILAMADI: ${r.reason}` });
-            }
-          }
-          /* otomatik memory döngüsü: kalıcı değerli bilgiyi MEMORY.md'ye düşür */
-          if (!ctrl.signal.aborted && !session.bgJob && !session.bcCode && !session.isBotDm) {
-            try {
-              await this._autoMemory(session, ctrl.signal);
-            } catch {}
-          }
-          /* deneyimden skill doğurma (#2): 5+ yeni araç çağrısı biriktiyse yansıt */
-          if (this.reflection.enabled && !ctrl.signal.aborted && !session.bgJob && !session.bcCode && !session.isBotDm) {
-            try {
-              const made = await this._maybeReflectSkill(session);
-              if (made) emitSafe(this, sid, { type: 'status', status: `skill taslağı doğdu: ${made}` });
-            } catch {}
-          }
-          this._clearCrash(); // temiz bitiş — çökme kaydını sil
-          this._maybeCompact(sid); // oturum dosyası şiştiyse sıkıştır
+          /* cevap tamam → done HEMEN: kullanıcı beklemeden yeni iş yazabilsin.
+             Not/memory/skill bakımı artık arka planda (_postRunHousekeeping). */
+          this._clearCrash();
+          this._maybeCompact(sid);
           emit({ type: 'done', usage: res.usage || null, meta: res.meta || null });
           this._bgFinish(sid, 'done');
-          this.flushPendingReports(sid); // bekleyen arka plan raporları
-          /* #12: yeterli örnek birikmişse üslup kalibrasyonu (sessiz) */
-          try {
-            const cal = memory.calibratePersona();
-            if (cal.ok && cal.traits && cal.traits.length) {
-              emitSafe(this, sid, { type: 'status', status: 'kişilik kalibre edildi' });
-            }
-          } catch {}
+          this.flushPendingReports(sid);
+          this._postRunHousekeeping(session, ctrl.signal);
           return;
         }
 
@@ -2359,8 +2357,7 @@ class Engine {
         );
       }
       emit({ type: 'done', usage: null });
-      this._bgFinish(sid, 'error', 'tur limiti doldu (MAX_TURNS)');
-    } catch (e) {
+      this._bgFinish(sid, 'error', 'tur limiti doldu (MAX_TURNS)');    } catch (e) {
       const aborted = e && (e.name === 'AbortError' || ctrl.signal.aborted);
       if (aborted) {
         this._clearCrash(); // kullanıcı durdurdu — kurtarma yok

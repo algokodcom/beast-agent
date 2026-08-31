@@ -1,7 +1,7 @@
 {
     "name": "beast-agent",
     "productName": "Beast Agent",
-    "version": "0.24.4",
+    "version": "0.24.5",
     "description": "Ultra-fast local agent shell for Windows.",
     "author": "algokodcom (AlgoKod)",
     "license": "MIT",

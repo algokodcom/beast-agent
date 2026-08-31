@@ -1820,7 +1820,7 @@ async function renderUpdatePane(autoCheck) {
   if (st.npm) {
     actions = `<div class="form-grid" style="grid-template-columns:auto auto;gap:8px;margin-top:12px">
         <button id="upCheck" class="btn ghost">${_t('up_check_now')}</button>
-        <button id="upInstall" class="btn">↻ ${_t('up_install_now')}</button>
+        <button id="upInstall" class="btn"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:5px"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>${_t('up_install_now')}</button>
       </div>
       <div class="sub" style="margin-top:8px">${_t('up_npm_only')}</div>`;
   } else if (isDev) {
@@ -2478,7 +2478,13 @@ function renderGuestBotMenu() {
   const candidates = botsCache.filter((b) => !b.admin && b.vis !== false);
   menu.innerHTML = '';
   if (!candidates.length) {
-    menu.innerHTML = '<div class="dd-item" style="pointer-events:none">Davet edilebilir bot yok</div>';
+    /* bot hiç yoksa yönlendir + tek tıkla oluştur; bot varsa da davet edilebilir değilse bilgi ver */
+    const nonAdmin = botsCache.filter((b) => !b.admin).length;
+    menu.innerHTML = nonAdmin
+      ? '<div class="dd-empty">Davet edilebilir görünür bot yok</div>'
+      : '<div class="dd-empty">Henüz bot yok — <a href="#" id="gbCreate" style="color:var(--accent);font-weight:700">bot oluştur</a></div>';
+    const cr = menu.querySelector('#gbCreate');
+    if (cr) cr.addEventListener('click', (e) => { e.preventDefault(); menu.hidden = true; botAddClick(); });
     return;
   }
   for (const b of candidates) {

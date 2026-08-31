@@ -1013,7 +1013,8 @@ body.term-open #settingsOverlay { right: var(--tw, 520px); }
   padding: 0;
 }
 #guestBotBtn:hover { background: var(--panel); color: var(--accent); }
-#guestBotMenu { width: 260px; left: 0; }
+/* composer en altta olduğu için menü YUKARI açılır (aşağı açılırsa ekran dışına taşar) */
+#guestBotMenu { width: 260px; left: 0; top: auto; bottom: calc(100% + 5px); }
 
 #micBtn {
   width: 32px; height: 32px;

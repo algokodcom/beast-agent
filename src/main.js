@@ -2285,11 +2285,24 @@ function ensureDesktopShortcut() {
   try {
     const desktop = app.getPath('desktop');
     const lnk = path.join(desktop, 'Beast Agent.lnk');
-    if (fs.existsSync(lnk)) return;
+    /* çalışma klasörü kullanıcı home'u olsun: paket klasöründe başlarsa güncelleme
+       cmd'si orada açılır ve npm install -g klasör kilidi (EBUSY) yemek zorunda kalır */
+    const goodCwd = app.getPath('home');
+    if (fs.existsSync(lnk)) {
+      /* eski kısayollar paket klasörünü çalışma klasörü olarak taşıyordu — onar */
+      try {
+        const cur = shell.readShortcutLink(lnk);
+        if (cur && cur.cwd && /node_modules[\\/]beast-agent/i.test(cur.cwd)) {
+          shell.writeShortcutLink(lnk, 'update', { ...cur, cwd: goodCwd });
+          log.info('main', 'Masaüstü kısayolu çalışma klasörü home\u2019a taşındı');
+        }
+      } catch {}
+      return;
+    }
     const ok = shell.writeShortcutLink(lnk, 'create', {
       target: process.execPath,
       args: app.getAppPath(),
-      cwd: app.getAppPath(),
+      cwd: goodCwd,
       description: 'Beast Agent — hızlı, hafif ve becerikli',
       icon: path.join(__dirname, '..', 'assets', 'app.ico'),
       iconIndex: 0,
@@ -4105,14 +4118,14 @@ const NPM_ONLY_TEXT =
 /* buton akışı: görünür cmd + "beast update" + uygulama kapanışı */
 function npmUpdateViaCmd() {
   try {
-    const shim = path.join(process.env.APPDATA || '', 'npm', 'beast-agent.cmd');
-    /* TIRNAKSIZ komut: cmd /k tırnaklı yol alırsa komutu 'yazılmış ama çalıştırılmamış'
-       gösterir. Önce PATH'ten dene; %APPDATA% değişkeni cmd içinde genişler. */
-    const shimOk = fs.existsSync(shim);
-    const inner = shimOk ? '%APPDATA%\\npm\\beast-agent.cmd update' : 'beast update';
+    /* cmd KULLANICININ kendi klasöründe açılır (cd /d %USERPROFILE%): Electron kısayoldan
+       paket klasörü (node_modules\beast-agent) içinde başlatıldıysa cmd orada açılır ve
+       npm install -g değiştirmeye çalıştığı paketi KİLİTLER (EBUSY) — 5 denemede de
+       patlar. Home'da açılınca kurulum sorunsuz akar; "beast" PATH'te %APPDATA%\npm'de.
+       NOT: spawn argümanlarında ÇİFT TIRNAK kullanma — node \" olarak escape'ler ve cmd bozar. */
     spawn(
       'cmd.exe',
-      ['/c', 'start', 'Beast Guncelleme', 'cmd', '/k', inner],
+      ['/c', 'start', 'Beast Guncelleme', 'cmd', '/k', 'cd /d %USERPROFILE% && beast update'],
       { detached: true, stdio: 'ignore', windowsHide: false }
     ).unref();
   } catch {}

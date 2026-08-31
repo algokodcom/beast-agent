@@ -3723,7 +3723,13 @@ ipcMain.handle('agent:send', (_e, { sessionId, text }) => {
       if (!sess) {
         try { sess = engine._load(sid); } catch {}
       }
-      if (sess && !sess.botId) engine.setSessionBot(sid, actBot.id);
+      if (sess && !sess.botId) {
+        engine.setSessionBot(sid, actBot.id);
+        /* tam bağlama: izin + araç seti + botun kendi modeli (sessions:create ile aynı) */
+        engine.setSessionPerm(sid, actBot.perm || 'all');
+        engine.setSessionTools(sid, botToolSet(actBot));
+        engine.setSessionModel(sid, actBot.model || null);
+      }
     }
   } catch {}
   if (t === '/stop' || t === '/start') {
@@ -4315,9 +4321,21 @@ async function netCheck() {
 }
 
 ipcMain.handle('model:set', (_e, sel) => {
-  settings.modelOverride = sel;
-  saveSettings();
-  engine.setModelOverride(sel);
+  /* MÜŞTERİ botu aktifken picker seçimi O BOTUN modelini değiştirir;
+     Beast (admin) aktifken global seçim değişir. */
+  const act = settings.activeBotId ? bots.get(settings.activeBotId) : null;
+  if (act && !act.admin) {
+    try { bots.update(act.id, { model: String(sel || '') }); } catch {}
+    try {
+      for (const v of engine.listSessions()) {
+        if (v.botId === act.id) engine.setSessionModel(v.id, sel || null);
+      }
+    } catch {}
+  } else {
+    settings.modelOverride = sel;
+    saveSettings();
+    engine.setModelOverride(sel);
+  }
   return engine.publicState();
 });
 

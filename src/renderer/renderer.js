@@ -471,16 +471,21 @@ async function renderSessions(list) {
     tgSet = new Set(await beast.tgListSessions());
   } catch {}
   els.sessList.innerHTML = '';
-  /* aktif botun oturumları — botlar arası geçişte liste de o bota göre değişir */
+  /* aktif botun oturumları — botlar arası geçişte liste de o bota göre değişir.
+     BOT BAĞLAMA MİGRASYONU: bot kaydı olmayan (eski) oturumlar HER botun
+     listesinde de görünür — kullanıcı botunda açıp ilk mesajı yazınca
+     oturum KALICI olarak o bota bağlanır (agent:send auto-bind; notlar dahil).
+     Başka bir bota AÇIKÇA bağlı olanlar yalnız o botun listesinde. */
   for (const s of list) {
-    if ((s.botId || 'beast') !== activeBotId) continue;
+    if (s.botId && s.botId !== activeBotId) continue;
+    const unbound = !s.botId && activeBotId !== 'beast';
     const row = document.createElement('div');
     row.className = 'sess' + (s.id === activeId ? ' active' : '');
     row.innerHTML =
       (waSet.has(s.id) ? '<span class="sess-wa" title="WhatsApp">W</span>' : '') +
       (tgSet.has(s.id) ? '<span class="sess-tg" title="Telegram">T</span>' : '') +
       `<span class="sess-title">${escapeHtml(s.title || 'Yeni Sohbet')}</span>` +
-      `<span class="sess-code" title="Oturum kodu">${escapeHtml(s.code || '')}</span>` +
+      `<span class="sess-code" title="${unbound ? 'bağlantı bekliyor — ilk mesajda bu bota bağlanır' : 'Oturum kodu'}">${escapeHtml(s.code || '')}${unbound ? ' ·?' : ''}</span>` +
       `<button class="sess-del" title="Sil">×</button>`;
     row.addEventListener('click', () => openSession(s.id));
     row.querySelector('.sess-del').addEventListener('click', async (e) => {
@@ -815,7 +820,7 @@ async function renderProviderPane() {
 
   for (const m of state.models || []) {
     const row = document.createElement('div');
-    row.className = 'prov-row' + (state.activeModel && state.activeModel.sel === m.sel ? ' active' : '');
+    row.className = 'prov-row' + (effectiveModelSel() === m.sel ? ' active' : '');
     row.innerHTML =
       `<span class="prov-name">${escapeHtml(m.providerName)}</span>` +
       `<span class="prov-model">${escapeHtml(m.model)}</span>` +
@@ -823,6 +828,7 @@ async function renderProviderPane() {
       `<button class="prov-del" title="${_t('p_del_title')}">✕</button>`;
     row.addEventListener('click', async () => {
       state = await beast.setModel(m.sel);
+      await refreshBots().catch(() => {});
       applyState();
       renderProviderPane();
       toast(_t('p_model_toast') + m.providerName + ' · ' + m.model);
@@ -2719,6 +2725,8 @@ async function refreshBots() {
   /* BOT PICKER SENKRONU: liste her yenilendiğinde üstteki rozet de aktif bota
      ayarlanır — startup yarışında (liste boşken çizilen) eski rozet düzelir */
   updateBotChip();
+  /* model picker da aktif botun kendi modelini göstersin */
+  if (state) applyState();
   if (!$('#botOverlay').hidden) renderBotPage();
 }
 
@@ -2776,12 +2784,15 @@ async function switchBot(id) {
     }
   } catch {}
   try { localStorage.setItem('beast.activeBot', id); } catch {}
-  /* o botun en son oturumuna geç; hiç yoksa o bot için yeni sohbet aç */
+  /* o botun en son oturumuna geç; hiç yoksa o bot için yeni sohbet aç.
+     (bot kaydı olmayan eski oturumlar da sayılır — ilk mesajda bağlanır) */
   try {
-    const list = (await beast.listSessions()).filter((s) => (s.botId || 'beast') === id);
+    const list = (await beast.listSessions()).filter((s) => !s.botId || s.botId === id);
     if (list.length) await openSession(list[0].id);
     else { const v = await beast.createSession(); await openSession(v.id); }
   } catch {}
+  /* picker, aktif botun kendi modelini göstersin */
+  applyState();
   toast((b.icon || '🤖') + ' ' + b.name + (b.admin ? '' : ' — ' + _t('bot_switched')));
 }
 
@@ -2883,7 +2894,7 @@ async function renderBotNotes(pane, b) {
   pane.innerHTML = `<h2>${_t('notes_h2')}</h2><div class="sub">${_t('notes_sub')}</div>`;
   let all = [];
   try { all = await beast.listNotes(); } catch {}
-  const list = (b.admin ? all : all.filter((n) => (n.botId || 'beast') === b.id))
+  const list = (b.admin ? all : all.filter((n) => !n.botId || n.botId === b.id))
     .slice()
     .sort((x, y) => String(y.updatedAt).localeCompare(String(x.updatedAt)));
   if (!list.length) {
@@ -2944,7 +2955,8 @@ async function renderBotChats(b) {
   const sessions = [];
   try {
     for (const s of await beast.listSessions()) {
-      if ((s.botId || 'beast') === b.id) sessions.push(s);
+      /* bot kaydı olmayan (eski) oturumlar da gösterilir — ilk mesajda bu bota bağlanır */
+      if (!s.botId || s.botId === b.id) sessions.push(s);
     }
   } catch {}
   sessions.sort((x, y) => String(y.updatedAt).localeCompare(String(x.updatedAt)));
@@ -3180,7 +3192,7 @@ async function renderBotWatcher(pane, b) {
   try { items = (await beast.watchersList()) || []; } catch {}
   let botSessions = new Set();
   try {
-    for (const s of await beast.listSessions()) if ((s.botId || 'beast') === b.id) botSessions.add(s.id);
+    for (const s of await beast.listSessions()) if (!s.botId || s.botId === b.id) botSessions.add(s.id);
   } catch {}
   const mine = items.filter((w) => botSessions.has(w.sessionId));
   if (!mine.length) {
@@ -4023,13 +4035,24 @@ async function openCronModal() {
 
 /* ---------------- state / controls ---------------- */
 
+/* AKTİF BOTUN etkili model seçimi: müşteri botun kendi modeli varsa o,
+   yoksa (ve admin bot daysa) global picker seçimi. */
+function effectiveModelSel() {
+  const b = botsCache.find((x) => x.id === activeBotId);
+  return b && !b.admin && b.model ? b.model : (state.activeModel && state.activeModel.sel) || '';
+}
+
 function applyState() {
   if (!state) return;
-  els.modelBtnLabel.textContent = state.activeModel
-    ? `${state.activeModel.providerName} · ${state.activeModel.model}`
-    : 'Model seçilmedi';
+  const botSel = activeBotId && botsCache.length ? effectiveModelSel() : (state.activeModel && state.activeModel.sel);
+  const bm = botSel ? (state.models || []).find((x) => x.sel === botSel) : null;
+  els.modelBtnLabel.textContent = bm
+    ? `${bm.providerName} · ${bm.model}`
+    : state.activeModel
+      ? `${state.activeModel.providerName} · ${state.activeModel.model}`
+      : 'Model seçilmedi';
   els.thinkBtnLabel.innerHTML =
-    '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 2A2.5 2.5 0 0 0 7 4.5v.55A3.5 3.5 0 0 0 4.5 8.5c0 .74.23 1.43.62 2A3.5 3.5 0 0 0 4 13.5 3.5 3.5 0 0 0 7 16.95v.55A2.5 2.5 0 0 0 9.5 20a2.5 2.5 0 0 0 2.5-2.5v-13A2.5 2.5 0 0 0 9.5 2z"/><path d="M14.5 2A2.5 2.5 0 0 1 17 4.5v.55a3.5 3.5 0 0 1 2.5 3.45c0 .74-.23 1.43-.62 2a3.5 3.5 0 0 1 1.12 3 3.5 3.5 0 0 1-3 3.45v.55A2.5 2.5 0 0 1 14.5 20 2.5 2.5 0 0 1 12 17.5v-13A2.5 2.5 0 0 1 14.5 2z"/></svg>';
+    '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 2A2.5 2.5 0 0 0 7 4.5v.55A3.5 3.5 0 0 0 4.5 8.5c0 .74.23 1.43.62 2A3.5 3.5 0 0 0 4 13.5 3.5 3.5 0 0 0 7 16.95v.55A2.5 2.5 0 0 0 9.5 20a2.5 2.5 0 0 0 2.5-2.5v-13A2.5 2.5 0 0 0 9.5 2z"/><path d="M14.5 2A2.5 2.5 0 0 1 17 4.5v.55a3.5 3.5 0 0 1 2.5 3.45c0 .74-.23 1.43-.62 2a3.5 3.5 0 0 1-1.12 3 3.5 3.5 0 0 1-3 3.45v.55A2.5 2.5 0 0 1 14.5 20 2.5 2.5 0 0 1 12 17.5v-13A2.5 2.5 0 0 1 14.5 2z"/></svg>';
   renderModelMenu();
 }
 
@@ -4088,7 +4111,7 @@ function renderModelMenu() {
   els.modelList.innerHTML = '';
   for (const m of list) {
     const item = document.createElement('div');
-    item.className = 'dd-item' + (state.activeModel && state.activeModel.sel === m.sel ? ' active' : '');
+    item.className = 'dd-item' + (effectiveModelSel() && effectiveModelSel() === m.sel ? ' active' : '');
     item.innerHTML =
       `<span class="dn">${escapeHtml(m.providerName)}</span>` +
       `<span class="dm">${escapeHtml(m.model)}</span>` +
@@ -4096,6 +4119,7 @@ function renderModelMenu() {
     item.addEventListener('click', async () => {
       state = await beast.setModel(m.sel);
       closeModelMenu();
+      await refreshBots().catch(() => {}); // bot modeli değiştiyse botsCache tazelensin
       applyState();
     });
     els.modelList.appendChild(item);
@@ -4750,7 +4774,7 @@ async function init() {
   if ($('#botOverviewBack')) $('#botOverviewBack').addEventListener('click', () => openBotPage(null));
   if ($('#botChip')) $('#botChip').addEventListener('click', () => openBotPage(activeBotId));
   /* kalıcı aktif bot: restart sonrası aynı botun UI'ı açılır */
-  beast.botsActiveGet().then((r) => { activeBotId = (r && r.id) || 'beast'; updateBotChip(); renderBotCards(); }).catch(() => {});
+  beast.botsActiveGet().then((r) => { activeBotId = (r && r.id) || 'beast'; updateBotChip(); renderBotCards(); applyState(); }).catch(() => {});
   document.querySelectorAll('.btab').forEach((b) =>
     b.addEventListener('click', () => {
       document.querySelectorAll('.btab').forEach((x) => x.classList.remove('active'));

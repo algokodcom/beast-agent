@@ -2327,10 +2327,6 @@ function ensureDesktopShortcut() {
 }
 
 app.whenReady().then(() => {
-    try { applyProxy(); } catch {} // proxy ayarı yüklüyse tüm çıkışa uygula
-    if (settings.warp && settings.warp.enabled) {
-      startWarp().catch((e) => log.info('main', 'warp açılışta başlatılamadı: ' + String((e && e.message) || e)));
-    }
     // Tailscale modu: paketli uygulamada Windows ile otomatik başlat (sessiz, tepside)
     if (app.isPackaged) {
       /* DAĞITIM KARARI: EXE/portable kurulum desteklenmiyor — tek yol npm.
@@ -2402,7 +2398,6 @@ app.whenReady().then(() => {
     app.on('before-quit', () => {
       app.isQuitting = true;
       flushBrowserStorage(); // x.com/google oturumları (cookies) diske yazılsın
-      try { stopWarp(); } catch {} // warp-plus yardımcısını da kapat
     });
 
     if (process.argv.includes('--smoke')) {
@@ -3750,20 +3745,6 @@ function flushDesktopOnDone(ev) {
 const NET_CHECK_HOSTS = ['one.one.one.one', 'dns.google'];
 const NET_CHECK_MS = 8000;
 const NET_CHECK_TIMEOUT = 4000;
-const NET_PROBE_URLS = ['https://1.1.1.1/cdn-cgi/trace', 'https://www.google.com/generate_204'];
-let __netFailStreak = 0;
-
-/* Gerçek HTTP yoklaması: DNS yerine sayfa çekmeyi dener — proxy açıksa proxy
-   üzerinden gider (kullanıcı trafiğinin gördüğü interneti ölçer) */
-async function httpProbe() {
-  for (const u of NET_PROBE_URLS) {
-    try {
-      const res = await (__origFetch || fetch)(u, { signal: AbortSignal.timeout(5000) });
-      if (res.ok) return true;
-    } catch {}
-  }
-  return false;
-}
 const CHAT_QUEUE_MAX = 50; // kuyruk üst sınırı — taşarsa en eski düşer
 
 let netOnline = true; // son bilinen bağlantı durumu (başlangıçta iyimser)
@@ -3872,21 +3853,8 @@ async function netCheck() {
     for (const h of NET_CHECK_HOSTS) {
       if (await dnsProbe(h)) { ok = true; break; }
     }
-    if (!ok) {
-      /* DNS probe yanıltıcı olabilir (proxy, DoH, kurumsal ağ, VPN):
-         HTTP yoklamasıyla DOĞRULA — tarayıcının gördüğü internete yakın sinyal */
-      ok = await httpProbe();
-    }
     const first = !netCheckedOnce;
     const was = netOnline;
-    /* Histerezis: tek-iki başarısız yoklama (wifi tıkı, anlık dns) durumu
-       bozmasın — üst üste 3 yoklama (≈24+ sn) başarısızsa offline ilan et */
-    if (!ok) {
-      __netFailStreak++;
-      if (netOnline && __netFailStreak < 3) { netCheckedOnce = true; return; }
-    } else {
-      __netFailStreak = 0;
-    }
     netOnline = ok;
     netCheckedOnce = true;
     if (was !== ok || first) {
@@ -4134,294 +4102,6 @@ ipcMain.handle('wa:groups:set', (_e, cfg) => {
   };
   saveSettings();
   return settings.waGroups;
-});
-
-/* ---------------- Proxy (Ayarlar → Proxy) ----------------
-   Kullanıcının verdiği proxy(ler) üzerinden çıkış: LLM API'leri, http_fetch,
-   TinyFish/Exa, python motorları (env) ve dahili tarayıcı (Chromium proxyRules).
-   Çoklu adres = Node fetch tarafında round-robin rotasyon. SOCKS5 yalnız tarayıcıda. */
-let __proxyIdx = 0;
-let __proxyAgents = null; // url -> undici.ProxyAgent
-let __origFetch = null;
-
-function proxyUrlList() {
-  return String((settings.proxy && settings.proxy.urls) || '')
-    .split(/[\n,;]+/)
-    .map((s) => s.trim())
-    .filter((s) => /^(https?|socks5):\/\//i.test(s));
-}
-
-function proxyAgentFor(url) {
-  const undici = require('undici');
-  if (!__proxyAgents) __proxyAgents = new Map();
-  if (!__proxyAgents.has(url)) {
-    if (/^socks5:/i.test(url)) __proxyAgents.set(url, new undici.Agent({ connect: socks5Connector(url), connections: 64 }));
-    else __proxyAgents.set(url, new undici.ProxyAgent(url));
-  }
-  return __proxyAgents.get(url);
-}
-
-/* Minimal SOCKS5 CONNECT connector (undici Agent.connect imzası).
-   WARP (warp-plus) dahil tüm socks5 proxy'leri Node fetch'te çalıştırır. */
-function socks5Connector(socksUrl) {
-  const net = require('net');
-  const tls = require('tls');
-  const u = new URL(socksUrl);
-  const shost = u.hostname;
-  const sport = Number(u.port) || 1080;
-  const suser = decodeURIComponent(u.username || '');
-  const spass = decodeURIComponent(u.password || '');
-  return function connect(opts, cb) {
-    let stage = 0; // 0 greet · 1 auth · 2 conn
-    let buf = Buffer.alloc(0);
-    const socket = net.connect({ host: shost, port: sport });
-    const fail = (err) => { try { socket.destroy(); } catch {} cb(err); };
-    const onData = (d) => {
-      buf = Buffer.concat([buf, d]);
-      if (stage === 0) {
-        if (buf.length < 2) return;
-        if (buf[0] !== 5) return fail(new Error('socks5: geçersiz yanıt'));
-        const method = buf[1];
-        buf = buf.subarray(2);
-        if (method === 2) {
-          stage = 1;
-          const ub = Buffer.from(suser), pb = Buffer.from(spass);
-          socket.write(Buffer.concat([Buffer.from([1, ub.length]), ub, Buffer.from([pb.length]), pb]));
-        } else if (method === 0) sendReq();
-        else return fail(new Error('socks5: desteklenmeyen kimlik doğrulama'));
-      } else if (stage === 1) {
-        if (buf.length < 2) return;
-        buf = buf.subarray(2);
-        sendReq();
-      } else if (stage === 2) {
-        if (buf.length < 5) return;
-        if (buf[0] !== 5 || buf[1] !== 0) return fail(new Error('socks5: bağlantı reddedildi (' + buf[1] + ')'));
-        const need = 6 + (buf[3] === 1 ? 4 : buf[3] === 4 ? 16 : 1 + buf[4]);
-        if (buf.length < need) return;
-        buf = Buffer.alloc(0);
-        socket.off('data', onData);
-        if (opts.protocol === 'https:') {
-          const tlsSock = tls.connect({ socket, servername: opts.servername || opts.hostname });
-          tlsSock.on('error', fail);
-          tlsSock.once('secureConnect', () => cb(null, tlsSock));
-        } else cb(null, socket);
-      }
-    };
-    socket.on('error', fail);
-    socket.on('connect', () => {
-      /* SOCKS5 greeting: şifre varsa user/pass(2), yoksa no-auth(0) yöntemi öner */
-      socket.write(suser ? Buffer.from([5, 2, 0, 2]) : Buffer.from([5, 1, 0]));
-    });
-    socket.on('data', onData);
-    function sendReq() {
-      stage = 2;
-      const host = opts.hostname || opts.host;
-      const port = Number(opts.port) || (opts.protocol === 'https:' ? 443 : 80);
-      const hb = Buffer.from(String(host), 'utf8');
-      socket.write(Buffer.concat([Buffer.from([5, 1, 0, 3, hb.length]), hb, Buffer.from([(port >> 8) & 255, port & 255])]));
-    }
-  };
-}
-
-function applyProxy() {
-  const enabled = !!(settings.proxy && settings.proxy.enabled);
-  const allUrls = enabled ? proxyUrlList() : [];
-  const httpUrls = allUrls.filter((u) => /^https?:\/\//i.test(u));
-
-  /* 1) Node fetch (LLM API + http_fetch + TinyFish/Exa + GitHub...) — global sarmalayıcı.
-     http(s) VE socks5 (socks5Connector) destekli — http(s) proxy'lerde rotasyon var. */
-  if (enabled && allUrls.length) {
-    if (!__origFetch) {
-      __origFetch = globalThis.fetch;
-      globalThis.fetch = (input, init = {}) => {
-        const list = proxyUrlList();
-        if (!list.length) return __origFetch(input, init);
-        const p = list[Math.abs(__proxyIdx++) % list.length];
-        return __origFetch(input, { ...init, dispatcher: proxyAgentFor(p) });
-      };
-    }
-  } else if (__origFetch) {
-    globalThis.fetch = __origFetch;
-    __origFetch = null;
-  }
-
-  /* 2) python/cmd çocuk süreçleri (ddgs, requests... env'den okur) */
-  if (enabled && httpUrls.length) {
-    process.env.HTTP_PROXY = httpUrls[0];
-    process.env.HTTPS_PROXY = httpUrls[0];
-    process.env.ALL_PROXY = httpUrls[0];
-    process.env.NO_PROXY = 'localhost,127.0.0.1';
-  } else {
-    delete process.env.HTTP_PROXY;
-    delete process.env.HTTPS_PROXY;
-    delete process.env.ALL_PROXY;
-    delete process.env.NO_PROXY;
-  }
-
-  /* 3) dahili tarayıcı (Chromium; socks5 destekler) */
-  try {
-    const ses = session.fromPartition('persist:browser');
-    if (ses) {
-      if (enabled && allUrls.length) ses.setProxy({ proxyRules: allUrls[0] }).catch(() => {});
-      else ses.setProxy({ mode: 'direct' }).catch(() => {});
-    }
-  } catch {}
-}
-
-ipcMain.handle('proxy:get', () => ({
-  enabled: !!(settings.proxy && settings.proxy.enabled),
-  urls: String((settings.proxy && settings.proxy.urls) || ''),
-}));
-
-ipcMain.handle('proxy:set', (_e, cfg) => {
-  settings.proxy = {
-    enabled: !!(cfg && cfg.enabled),
-    urls: String((cfg && cfg.urls) || '').slice(0, 2000),
-  };
-  saveSettings();
-  applyProxy();
-  return { ok: true, enabled: settings.proxy.enabled, urls: settings.proxy.urls };
-});
-
-ipcMain.handle('proxy:test', async () => {
-  const allUrls = proxyUrlList();
-  if (!allUrls.length) return { ok: false, error: 'proxy adresi girilmemiş' };
-  const u = allUrls[Math.abs(__proxyIdx++) % allUrls.length];
-  const t0 = Date.now();
-  try {
-    const res = await (__origFetch || fetch)('https://api.ipify.org?format=json', {
-      dispatcher: proxyAgentFor(u),
-      signal: AbortSignal.timeout(15000),
-    });
-    const j = await res.json();
-    return { ok: true, ip: j.ip, proxy: u, ms: Date.now() - t0 };
-  } catch (e) {
-    return { ok: false, error: String((e && e.message) || e).slice(0, 160), proxy: u };
-  }
-});
-
-/* ---------------- Cloudflare WARP (warp-plus) ----------------
-   Açık kaynak warp-plus tek binary: yerel socks5 (127.0.0.1:8086) açar, o port
-   Cloudflare WARP ağına tünel olur. Bedava, üyeliksiz (profil otomatik oluşur).
-   Beast: indirme + başlatma + watchdog + kapatma. Sadece Beast trafiği geçer. */
-const WARP_PORT = 8086;
-const WARP_PROXY_LINE = 'socks5://127.0.0.1:' + WARP_PORT;
-let warpChild = null;
-let warpWatchdog = null;
-let warpStopping = false;
-
-function warpBinPath() { return path.join(APP_DIR, 'bin', 'warp-plus.exe'); }
-function warpDir() { return path.join(APP_DIR, 'warp'); }
-function warpEnabled() { return !!(settings.warp && settings.warp.enabled); }
-
-async function ensureWarpPlusBinary() {
-  const bin = warpBinPath();
-  if (fs.existsSync(bin)) return bin;
-  fs.mkdirSync(path.dirname(bin), { recursive: true });
-  log.info('main', 'warp-plus indiriliyor…');
-  const rel = await (__origFetch || fetch)('https://api.github.com/repos/bepass-org/warp-plus/releases/latest', {
-    headers: { 'User-Agent': 'beast-agent', Accept: 'application/vnd.github+json' },
-    signal: AbortSignal.timeout(20000),
-  });
-  if (!rel.ok) throw new Error('sürüm bilgisi alınamadı (' + rel.status + ')');
-  const j = await rel.json();
-  const asset = (j.assets || []).find((a) => /warp-plus_windows-amd64\.zip$/i.test(a.name || ''));
-  if (!asset) throw new Error('windows paketi bulunamadı');
-  const zipPath = bin + '.zip';
-  const res = await (__origFetch || fetch)(asset.browser_download_url, { signal: AbortSignal.timeout(300000) });
-  if (!res.ok) throw new Error('indirme başarısız (' + res.status + ')');
-  fs.writeFileSync(zipPath, Buffer.from(await res.arrayBuffer()));
-  await new Promise((resolve, reject) => {
-    spawn('powershell.exe', ['-NoProfile', '-Command', `Expand-Archive -Force -LiteralPath '${zipPath}' -DestinationPath '${path.dirname(bin)}'`])
-      .on('exit', (c) => (c === 0 ? resolve() : reject(new Error('zip açılamadı'))))
-      .on('error', reject);
-  });
-  try { fs.unlinkSync(zipPath); } catch {}
-  if (!fs.existsSync(bin)) throw new Error('warp-plus.exe açılamadı');
-  log.info('main', 'warp-plus indirildi: ' + bin);
-  return bin;
-}
-
-function warpPortAlive() {
-  const net = require('net');
-  return new Promise((resolve) => {
-    const s = net.connect({ host: '127.0.0.1', port: WARP_PORT, timeout: 1200 }, () => { s.destroy(); resolve(true); });
-    s.on('error', () => resolve(false));
-    s.on('timeout', () => { s.destroy(); resolve(false); });
-  });
-}
-
-async function startWarp() {
-  if (warpChild) return { ok: true };
-  const bin = await ensureWarpPlusBinary();
-  fs.mkdirSync(warpDir(), { recursive: true });
-  try {
-    warpChild = spawn(bin, [], { windowsHide: true, cwd: warpDir() });
-  } catch (e) {
-    return { ok: false, error: String((e && e.message) || e) };
-  }
-  warpChild.stdout.on('data', () => {});
-  warpChild.stderr.on('data', () => {});
-  warpChild.on('exit', () => {
-    warpChild = null;
-    if (warpEnabled() && !warpStopping) {
-      /* watchdog: beklenmedik çıkışta 5 sn sonra yeniden başlat */
-      clearTimeout(warpWatchdog);
-      warpWatchdog = setTimeout(() => { startWarp().catch(() => {}); }, 5000);
-    }
-  });
-  for (let i = 0; i < 180; i++) {
-    if (await warpPortAlive()) { log.info('main', 'warp-plus hazır (127.0.0.1:' + WARP_PORT + ')'); return { ok: true }; }
-    if (!warpChild) break;
-    await new Promise((r) => setTimeout(r, 500));
-  }
-  return { ok: false, error: 'warp-plus başlatılamadı (port açılmadı)' };
-}
-
-function stopWarp() {
-  warpStopping = true;
-  clearTimeout(warpWatchdog);
-  try { if (warpChild) spawn('taskkill', ['/pid', String(warpChild.pid), '/T', '/F'], { windowsHide: true }); } catch {}
-  try { if (warpChild) warpChild.kill(); } catch {}
-  warpChild = null;
-  setTimeout(() => { warpStopping = false; }, 1500);
-}
-
-ipcMain.handle('warp:get', () => ({
-  enabled: warpEnabled(),
-  running: !!warpChild,
-  installed: fs.existsSync(warpBinPath()),
-  line: WARP_PROXY_LINE,
-}));
-
-ipcMain.handle('warp:set', async (_e, on) => {
-  const want = !!on;
-  settings.warp = { enabled: want };
-  saveSettings();
-  if (want) {
-    const r = await startWarp();
-    if (!r.ok) {
-      settings.warp = { enabled: false };
-      saveSettings();
-      return { ok: false, error: r.error || 'başlatılamadı' };
-    }
-    if (!settings.proxy) settings.proxy = { enabled: true, urls: '' };
-    const lines = proxyUrlList();
-    if (!lines.includes(WARP_PROXY_LINE)) lines.push(WARP_PROXY_LINE);
-    settings.proxy.urls = lines.join('\n');
-    settings.proxy.enabled = true; // WARP açıldıysa trafik ondan geçsin
-    saveSettings();
-    applyProxy();
-    return { ok: true, enabled: true };
-  }
-  /* kapat: satırı listeden çıkar, başka proxy yoksa master'ı da kapat */
-  const rest = proxyUrlList().filter((u) => u !== WARP_PROXY_LINE);
-  settings.proxy.urls = rest.join('\n');
-  if (!rest.length) settings.proxy.enabled = false;
-  saveSettings();
-  applyProxy();
-  stopWarp();
-  return { ok: true, enabled: false };
 });
 
 ipcMain.handle('settings:get', () => {

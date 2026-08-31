@@ -4106,10 +4106,13 @@ const NPM_ONLY_TEXT =
 function npmUpdateViaCmd() {
   try {
     const shim = path.join(process.env.APPDATA || '', 'npm', 'beast-agent.cmd');
-    const cmdLine = fs.existsSync(shim) ? `"${shim}" update` : 'beast update';
+    /* TIRNAKSIZ komut: cmd /k tırnaklı yol alırsa komutu 'yazılmış ama çalıştırılmamış'
+       gösterir. Önce PATH'ten dene; %APPDATA% değişkeni cmd içinde genişler. */
+    const shimOk = fs.existsSync(shim);
+    const inner = shimOk ? '%APPDATA%\\npm\\beast-agent.cmd update' : 'beast update';
     spawn(
       'cmd.exe',
-      ['/c', 'start', 'Beast Guncelleme', 'cmd', '/k', cmdLine],
+      ['/c', 'start', 'Beast Guncelleme', 'cmd', '/k', inner],
       { detached: true, stdio: 'ignore', windowsHide: false }
     ).unref();
   } catch {}

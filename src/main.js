@@ -1015,9 +1015,10 @@ async function tryWaSlash(jid, rawText, senderNum) {
         ? `*${cmd === 'deny' ? 'Reddedildi' : 'Onaylandı'}:* ${r.tool}${always ? ' — bu araç için bir daha sorulmayacak' : ''}`
         : 'Bekleyen onay yok.';
     } else if (cmd === 'update') {
-      /* /update — sürüm kontrol. TEK DAĞITIM npm: uygulama içi kurulum YOK. */
+      /* /update — sürüm kontrol; /update now — görünür cmd'de beast update */
       if (String(arg || '').toLowerCase() === 'now') {
-        out = NPM_ONLY_TEXT;
+        updateReplies.jids.add(jid);
+        npmUpdateNow(async (text) => { out = text; });
       } else {
         updateReplies.jids.add(jid);
         await runUpdateCommand(async (text) => { out = text; });
@@ -3325,7 +3326,7 @@ ipcMain.handle('agent:send', (_e, { sessionId, text }) => {
     const a = t.slice(7).trim().toLowerCase();
     updateReplies.sids.add(String(sessionId || ''));
     if (a === 'now') {
-      desktopEcho(sessionId, t, NPM_ONLY_TEXT);
+      npmUpdateNow((text) => desktopEcho(sessionId, t, text));
     } else {
       runUpdateCommand((text) => desktopEcho(sessionId, t, text));
     }
@@ -4075,10 +4076,12 @@ ipcMain.handle('update:check', async () => {
 /* TEK DAĞITIM POLİTİKASI: uygulama içi self-update KALDIRILDI (v0.24.0).
    Güncelleme yalnız: uygulamayı kapat → "npm i -g beast-agent@latest" → tekrar aç. */
 
-ipcMain.handle('update:install', () => ({
-  ok: false,
-  error: NPM_ONLY_TEXT,
-}));
+ipcMain.handle('update:install', () => {
+  /* TEK DAĞITIM npm: buton → görünür cmd'de "beast update" → kapan → kur → aç */
+  if (!isNpmMode()) return { ok: false, error: NPM_ONLY_TEXT };
+  npmUpdateViaCmd();
+  return { ok: true, npm: true };
+});
 
 ipcMain.handle('update:setAuto', (_e, cfg) => {
   if (cfg && typeof cfg.autoCheck === 'boolean') settings.autoCheckUpdate = cfg.autoCheck;
@@ -4092,11 +4095,26 @@ ipcMain.handle('update:setAuto', (_e, cfg) => {
 
 /* /update komutu (masaüstü + WA): hedefi kaydet, kontrol başlat */
 /* npm modunda güncelle-şimdi: sürüm kontrolü + numaralarıyla bildir + kendi kendini güncelle */
-/* TEK DAĞITIM POLİTİKASI: exe/installer YOK, uygulama içi self-update YOK.
-   Güncelleme yalnız: uygulamayı kapat → "npm i -g beast-agent@latest" → tekrar aç. */
+/* TEK DAĞITIM POLİTİKASI: exe/installer YOK.
+   Güncelleme akışı: buton → görünür CMD penceresi açılır → "beast update"
+   (npm install çıktısı ekranda akar) → uygulama kapanır → kurulum bitince
+   uygulama kendiliğinden yeniden açılır. */
 const NPM_ONLY_TEXT =
-  'Tek dağıtım npm\u2019dir — uygulama içi güncelleme yok.\n' +
-  'Güncellemek için:\n1) Uygulamayı kapat\n2) Terminalde: npm i -g beast-agent@latest\n3) Tekrar aç';
+  'Tek dağıtım npm\u2019dir. Güncellemek için:\n1) Uygulamayı kapat\n2) Terminalde: npm i -g beast-agent@latest\n3) Tekrar aç';
+
+/* buton akışı: görünür cmd + "beast update" + uygulama kapanışı */
+function npmUpdateViaCmd() {
+  try {
+    const shim = path.join(process.env.APPDATA || '', 'npm', 'beast-agent.cmd');
+    const cmdLine = fs.existsSync(shim) ? `"${shim}" update` : 'beast update';
+    spawn(
+      'cmd.exe',
+      ['/c', 'start', 'Beast Guncelleme', 'cmd', '/k', cmdLine],
+      { detached: true, stdio: 'ignore', windowsHide: false }
+    ).unref();
+  } catch {}
+  setTimeout(() => { try { app.quit(); } catch {} }, 600);
+}
 
 function npmUpdateNow(reply /* fn(text) */) {
   const current = app.getVersion();
@@ -4104,7 +4122,8 @@ function npmUpdateNow(reply /* fn(text) */) {
     if (v && isNewerVersion(v, current)) {
       updateState.available = true;
       updateState.version = v;
-      reply(`🔄 *Yeni sürüm var*\nMevcut: v${current}\nYeni: v${v}\n\n${NPM_ONLY_TEXT}`);
+      reply(`🔄 *Yeni sürüm var*\nMevcut: v${current}\nYeni: v${v}\nGüncelleme başlatıldı — cmd penceresinden takip et.`);
+      npmUpdateViaCmd();
     } else {
       reply(`✅ *Güncelsin* — v${current} zaten en son sürüm.`);
     }
@@ -4112,7 +4131,7 @@ function npmUpdateNow(reply /* fn(text) */) {
 }
 
 async function runUpdateCommand(reply /* fn(text) */) {
-  /* yalnız KONTROL + yol gösterme — kurulum yapmaz */
+  /* yalnız KONTROL + yol gösterme — kendiliğinden kurulum yapmaz */
   return npmUpdateNow(reply);
 }
 

@@ -49,11 +49,12 @@ if (process.argv[2] === 'uninstall') {
   process.exit(ur.status || 0);
 }
 
-/* güncelleme modu: çalışan Beast'i kapat (dosya kilidi EBUSY vermesin) → npm güncelle → yeniden başlat.
-   npm install DETACHED çalışır: terminali/uygulamayı kapatmak update'i boğmaz. */
+/* güncelleme modu: çalışan Beast'i kapat (dosya kilidi EBUSY vermesin) → npm güncelle (görünür ilerleme) → yeniden başlat.
+   Bu komut güncelleme butonu tarafından GÖRÜNÜR bir cmd penceresi içinde çalıştırılır;
+   doğrudan terminalden de çalışır — npm install çıktısı ekranda akar. */
 if (process.argv[2] === 'update') {
   const isWin = process.platform === 'win32';
-  console.log('\u27F3 beast-agent g\u00FCncelleniyor\u2026 (arka planda s\u00FCrer — bu pencereyi kapabilirsin)');
+  console.log('\u27F3 beast-agent g\u00FCncelleniyor\u2026');
   if (isWin) {
     try {
       spawnSync('powershell.exe', ['-NoProfile', '-Command',
@@ -61,42 +62,33 @@ if (process.argv[2] === 'update') {
         { stdio: 'ignore' });
       console.log('\u2022 \u00E7al\u0131\u015Fan Beast kapat\u0131ld\u0131 (varsa)');
     } catch {}
-    /* detached PS helper: npm install (5 deneme) + electron.exe ile yeniden başlatma */
-    const ps = [
-      "$ErrorActionPreference = 'Continue'",
-      "$Log = Join-Path $env:APPDATA 'beast\\update.log'",
-      "function L([string]$m) { try { Add-Content -LiteralPath $Log -Value (\"[\" + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + \"] \" + $m) } catch {} }",
-      "L '=== beast update (terminal) basladi ==='",
-      "$ok = $false",
-      "for ($i = 1; $i -le 5 -and -not $ok; $i++) {",
-      "  L \"npm install -g beast-agent@latest (deneme $i)\"",
-      "  & npm.cmd install -g beast-agent@latest 2>&1 | ForEach-Object { L \"  npm: $_\" }",
-      "  if ($LASTEXITCODE -eq 0) { $ok = $true } else { Start-Sleep -Seconds 3 }",
-      "}",
-      "if (-not $ok) { L 'HATA: npm install basarisiz'; exit 1 }",
-      "L 'npm install tamam - yeniden baslatma'",
-      "$prefix = Join-Path $env:APPDATA 'npm'",
-      "$appDir = Join-Path $prefix 'node_modules\\beast-agent'",
-      "$exe = Join-Path $appDir 'node_modules\\electron\\dist\\electron.exe'",
-      "if (-not (Test-Path $exe)) { $exe = Join-Path $prefix 'node_modules\\electron\\dist\\electron.exe' }",
-      "Start-Process -FilePath $exe -ArgumentList ('\"' + $appDir + '\"')",
-      "L '=== beast update bitti ==='",
-    ].join('\r\n');
-    const os = require('os');
-    const psFile = path.join(os.tmpdir(), 'beast-update-helper.ps1');
-    fs.writeFileSync(psFile, ps, 'utf8');
-    spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', psFile],
-      { detached: true, stdio: 'ignore', windowsHide: true }).unref();
-    console.log('\u2022 npm install arka planda s\u00FCr\u00FCyor (2-4 dk) \u2014 bitince uygulama kendili\u011Finden a\u00E7\u0131l\u0131r');
-    console.log('  durum: %APPDATA%\\beast\\update.log');
-    process.exit(0);
+  } else {
+    try { spawnSync('pkill', ['-f', 'node_modules/beast-agent'], { stdio: 'ignore' }); } catch {}
   }
-  try { spawnSync('pkill', ['-f', 'node_modules/beast-agent'], { stdio: 'ignore' }); } catch {}
-  const sh =
-    'ok=0; for n in 1 2 3 4 5; do npm install -g beast-agent@latest && ok=1 && break; sleep 3; done; ' +
-    'if [ $ok -eq 1 ]; then nohup beast-agent >/dev/null 2>&1 & fi';
-  spawn('sh', ['-c', sh], { detached: true, stdio: 'ignore' }).unref();
-  console.log('\u2022 arka planda s\u00FCr\u00FCyor \u2014 bitince uygulama a\u00E7\u0131l\u0131r');
+  /* dosya kilidi (EBUSY) bazen ilk denemede patlar — 5 deneme hakkı */
+  let ok = false;
+  for (let i = 1; i <= 5 && !ok; i++) {
+    const r = spawnSync('npm', ['install', '-g', 'beast-agent@latest'], { stdio: 'inherit', shell: isWin });
+    ok = r.status === 0;
+    if (!ok && i < 5) {
+      console.log(`  \u2022 deneme ${i}/5 ba\u015Far\u0131s\u0131z (dosya kilidi olabilir) \u2014 3 sn sonra tekrar\u2026`);
+      if (isWin) spawnSync('powershell.exe', ['-NoProfile', '-Command', 'Start-Sleep -Seconds 3'], { stdio: 'ignore' });
+      else spawnSync('sleep', ['3']);
+    }
+  }
+  if (!ok) {
+    console.log('\n\u2717 g\u00FCncelleme ba\u015Far\u0131s\u0131z \u2014 elle: npm install -g beast-agent@latest');
+    if (isWin) spawnSync('cmd.exe', ['/c', 'pause'], { stdio: 'inherit', shell: false });
+    process.exit(1);
+  }
+  console.log('\n\u2713 beast-agent g\u00FCncellendi \u2014 uygulama ba\u015Flat\u0131l\u0131yor\u2026');
+  try {
+    const electron = require('electron');
+    if (typeof electron === 'string') {
+      spawn(electron, [path.resolve(__dirname, '..')], { stdio: 'ignore', detached: true }).unref();
+    }
+  } catch {}
+  if (isWin) spawnSync('cmd.exe', ['/c', 'timeout /t 3'], { stdio: 'ignore' });
   process.exit(0);
 }
 

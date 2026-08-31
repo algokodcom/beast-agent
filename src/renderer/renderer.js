@@ -1813,13 +1813,14 @@ async function renderUpdatePane(autoCheck) {
   if (!st) return;
   clearInterval(updatePaneTimer);
 
-  /* mod bazlı butonlar: npm → kontrol, installer → kontrol, dev → sadece kontrol.
-     TEK DAĞITIM npm — uygulama içi kurulum butonu KALDIRILDI. */
+  /* mod bazlı butonlar: npm → kontrol + güncelle-butonu (görünür cmd açar),
+     installer → kontrol + not, dev → sadece kontrol */
   const isDev = !st.packaged && !st.npm;
   let actions;
   if (st.npm) {
     actions = `<div class="form-grid" style="grid-template-columns:auto auto;gap:8px;margin-top:12px">
         <button id="upCheck" class="btn ghost">${_t('up_check_now')}</button>
+        <button id="upInstall" class="btn">${st.available ? '🔄 ' + _t('up_install_now') : _t('up_install_now')}</button>
       </div>
       <div class="sub" style="margin-top:8px">${_t('up_npm_only')}</div>`;
   } else if (isDev) {

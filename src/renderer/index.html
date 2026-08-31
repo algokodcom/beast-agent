@@ -95,15 +95,15 @@
         <div id="chips" hidden></div>
         <div id="slashMenu" hidden></div>
         <div id="composer">
-          <button id="attachBtn" title="Dosya / resim ekle" data-i18n-title="tipAttach">+</button>
-          <button id="micBtn" title="Sesli komut — konuş, bırakınca yazıya çevirsin" data-i18n-title="tipMic"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><path d="M12 19v3"/></svg></button>
+          <div id="composerLeft" class="dd">
+            <button id="attachBtn" title="Dosya / resim ekle" data-i18n-title="tipAttach">+</button>
+            <button id="micBtn" title="Sesli komut — konuş, bırakınca yazıya çevirsin" data-i18n-title="tipMic"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><path d="M12 19v3"/></svg></button>
+            <button id="guestBotBtn" title="Konuşmaya bot davet et — davetli botlara ajan bot_dm ile danışır" data-i18n-title="tipGuestBot" hidden><span style="filter:grayscale(1)">🤖</span></button>
+            <div id="guestBotMenu" class="dd-menu" hidden></div>
+          </div>
           <textarea id="input" rows="1" placeholder="Bir şey sor ya da görev ver…  (Enter: gönder · Shift+Enter: satır · /: komutlar)" data-i18n-ph="composerPh"></textarea>
           <button id="stopBtn" title="Durdur" hidden data-i18n-title="tipStop">■</button>
           <button id="sendBtn" title="Gönder" data-i18n-title="tipSend">&#x27A4;&#xFE0E;</button>
-        </div>
-        <div id="guestBotDD" class="dd" style="align-self:center">
-          <button id="guestBotBtn" class="btn ghost" style="margin-top:6px;padding:4px 12px;font-size:12px" title="Konuşmaya başka bot davet et">🤖 Bot davet et</button>
-          <div id="guestBotMenu" class="dd-menu" hidden style="left:50%;transform:translateX(-50%)"></div>
         </div>
       </div>
 

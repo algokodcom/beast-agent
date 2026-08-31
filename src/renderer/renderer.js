@@ -2463,15 +2463,16 @@ let botPageStats = [];
 let activeBotId = 'beast'; // masaüstü UI'ının şu an hangi botta olduğu (varsayılan: ilk bot/Beast)
 let activeGuests = []; // aktif ana sohbete davetli botlar [{id, code, name}]
 
-/* ANA SOHBETE BOT DAVETİ: yalnız admin bottayken görünür; davetli botlar
-   session'a kaydedilir, ajan bot_dm aracıyla onlara danışıp cevapları aktarır */
+/* ANA SOHBETE BOT DAVETİ: yalnız admin bottayken görünür (composer'daki 🤖 ikonu);
+   davetli botlar session'a kaydedilir, ajan bot_dm aracıyla onlara danışır */
 function renderGuestBotMenu() {
-  const wrap = $('#guestBotDD');
+  const btn = $('#guestBotBtn');
   const menu = $('#guestBotMenu');
-  if (!wrap || !menu) return;
+  if (!btn || !menu) return;
   const isAdmin = activeBotId === 'beast';
-  wrap.style.display = isAdmin && activeId ? '' : 'none';
-  if (!isAdmin) return;
+  const show = isAdmin && !!activeId;
+  btn.style.display = show ? '' : 'none';
+  if (!show) { menu.hidden = true; return; }
   const candidates = botsCache.filter((b) => !b.admin && b.vis !== false);
   menu.innerHTML = '';
   if (!candidates.length) {

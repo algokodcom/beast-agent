@@ -998,6 +998,23 @@ body.term-open #settingsOverlay { right: var(--tw, 520px); }
 }
 #attachBtn:hover { background: var(--panel); color: var(--accent); }
 
+/* composer sol grubu: + mikrofon bot-davet — yanyana boşluksuz */
+#composerLeft { display: flex; align-items: center; gap: 0; flex-shrink: 0; }
+#guestBotBtn {
+  width: 32px; height: 32px;
+  border-radius: 9px;
+  border: none;
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+  flex-shrink: 0;
+  background: none;
+  color: var(--muted);
+  padding: 0;
+}
+#guestBotBtn:hover { background: var(--panel); color: var(--accent); }
+#guestBotMenu { width: 260px; left: 0; }
+
 #micBtn {
   width: 32px; height: 32px;
   border-radius: 9px;
@@ -1714,7 +1731,6 @@ body.browser-open #toast { left: calc((100vw - var(--bw, 480px)) / 2); }
 #botList { overflow-y: auto; }
 .bot-card {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
   padding: 6px 8px;
@@ -1726,16 +1742,15 @@ body.browser-open #toast { left: calc((100vw - var(--bw, 480px)) / 2); }
 .bot-card:hover { background: var(--panel2); color: var(--text); }
 .bot-card.active { background: var(--panel2); color: var(--text); box-shadow: inset 2px 0 0 var(--accent); }
 .bot-card .bot-ico { font-size: 16px; line-height: 1; flex-shrink: 0; }
-/* 5 haneli benzersiz bot kodu — satırda ortalanmış */
+/* 5 haneli benzersiz bot kodu — bot adının yanında */
 .bot-card .bot-code {
-  width: 100%;
-  text-align: center;
   font-family: ui-monospace, Consolas, monospace;
-  font-size: 10.5px;
+  font-size: 10px;
   font-weight: 700;
-  letter-spacing: 3px;
+  letter-spacing: 1.5px;
   color: var(--accent);
-  opacity: 0.85;
+  opacity: 0.9;
+  margin-left: 2px;
 }
 .bot-card .bot-gear {
   visibility: hidden;

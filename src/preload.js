@@ -143,7 +143,7 @@ contextBridge.exposeInMainWorld('beast', {
   botsAdd: (input) => ipcRenderer.invoke('bots:add', input),
   botsDmList: () => ipcRenderer.invoke('bots:dm:list'),
   botsDmRead: (id) => ipcRenderer.invoke('bots:dm:read', id),
-  sessionSetGuests: (sessionId, guests) => ipcRenderer.invoke('sessions:guests:set', { sessionId, guests }),
+  githubTrending: (opts) => ipcRenderer.invoke('github:trending', opts),
   botsUpdate: (id, patch) => ipcRenderer.invoke('bots:update', { id, patch }),
   botsRemove: (id) => ipcRenderer.invoke('bots:remove', id),
   botsStats: () => ipcRenderer.invoke('bots:stats'),

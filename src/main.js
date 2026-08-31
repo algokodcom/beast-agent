@@ -2555,7 +2555,31 @@ function setBrowserOpen(v, forceVisible) {
   browserEmit({ open: true, width: browser.width, url });
 }
 
+/* --- Paralel ajan trafik düzeni: ajanlar aynı saniyede sorgu atınca Google
+   "olağandışı trafik" uyarısı veriyor. Gezinme/arama isteklerini tek kuyrukta
+   sıraya alıp aralarına min 1.2 sn + rastgele 0-600 ms jitter koyuyoruz.
+   Kuyruğu tutan işin İÇİNDEN yapılan gezinmeler kapıyı atlar (kilitlenme olmaz). --- */
+const BROWSER_TRAFFIC_GAP = 1200;
+let __trafficLast = 0;
+let __trafficTail = Promise.resolve();
+function browserTrafficWait() {
+  const wait = Math.max(0, __trafficLast + BROWSER_TRAFFIC_GAP + Math.floor(Math.random() * 600) - Date.now());
+  __trafficLast = Date.now() + wait;
+  return wait > 0 ? new Promise((r) => setTimeout(r, wait)) : Promise.resolve();
+}
+function browserGate(job) {
+  const p = __trafficTail.then(job, job);
+  __trafficTail = p.catch(() => {});
+  return p;
+}
 async function browserNavigate(raw, signal) {
+  return browserGate(async () => {
+    await browserTrafficWait();
+    return browserNavigateNow(raw, signal);
+  });
+}
+
+async function browserNavigateNow(raw, signal) {
   let url = String(raw || '').trim();
   if (!url) return { ok: false, error: 'boş adres' };
   if (!/^https?:\/\//i.test(url)) {
@@ -2585,7 +2609,21 @@ async function browserNavigate(raw, signal) {
   try { title = wc.getTitle(); finalUrl = wc.getURL() || url; } catch {}
   browserEmit({ open: true, width: browser.width, url: finalUrl });
   flushBrowserStorage(); // oturum çerezleri diske — ani kapanışta kaybolmasın
-  return { ok: true, url: finalUrl, title };
+  /* açılışta snapshot da göm — model ayrı snapshot çağırmadan ref'lere başlar */
+  let snap = null;
+  try {
+    const sraw = await wc.executeJavaScript(BROWSER_SNAPSHOT_JS, true);
+    const sobj = JSON.parse(sraw);
+    if (sobj && typeof sobj.count === 'number') snap = sobj;
+  } catch {}
+  return {
+    ok: true,
+    url: finalUrl,
+    title,
+    ...(snap
+      ? { snapshot: snap.snapshot, refCount: snap.count, note: 'sayfa acildi — güncel snapshot hazır (' + snap.count + ' ref); ref numarasıyla browser_click/browser_type ile devam et' }
+      : { note: 'sayfa acildi — etkileşimli elemanlar için browser_snapshot al' }),
+  };
 }
 
 async function browserRead(signal) {
@@ -2650,6 +2688,14 @@ async function ocrRead({ image, lang = 'tur+eng' } = {}) {
    yapmak (kullanıcının console'da yaptığı gibi) — sayfa bile değişmeden
    DOMParser ile sonuç çekilir. Fetch olmazsa direk gezinme fallback'i var. */
 async function browserSearch(query, signal) {
+  /* paralel ajan sorguları trafik kapısından sırayla geçer */
+  return browserGate(async () => {
+    await browserTrafficWait();
+    return browserSearchNow(query, signal);
+  });
+}
+
+async function browserSearchNow(query, signal) {
   try {
     if (!win || win.isDestroyed()) return null;
     if (signal && signal.aborted) return null;
@@ -2663,7 +2709,7 @@ async function browserSearch(query, signal) {
     let cur = '';
     try { cur = wc.getURL() || ''; } catch {}
     if (!cur.startsWith('https://www.google.com')) {
-      await browserNavigate('https://www.google.com/', signal);
+      await browserNavigateNow('https://www.google.com/', signal);
     }
     if (!browser.view || !browser.open) return null;
 
@@ -2733,7 +2779,7 @@ async function browserSearch(query, signal) {
 
     /* fallback: fetch yerine direk gezinme + DOM'dan çek */
     if (!results.length) {
-      await browserNavigate(
+      await browserNavigateNow(
         'https://www.google.com/search?q=' + encodeURIComponent(q) + '&num=10&hl=tr&pws=0&aep=1',
         signal
       );
@@ -2789,7 +2835,14 @@ async function browserSearch(query, signal) {
       results = parsed.rows || [];
     }
 
-    if (!results.length && !parsed.ai) return null;
+    if (!results.length && !parsed.ai) {
+      /* CAPTCHA / olağandışı trafik sinyali — zincir TinyFish'e kaymalı */
+      let blocked = false;
+      try { blocked = /google\.com\/sorry/i.test(wc.getURL() || ''); } catch {}
+      return blocked
+        ? { ok: false, blocked: true, engine: 'browser-google', query: q, error: 'unusual traffic (CAPTCHA)' }
+        : null;
+    }
     flushBrowserStorage();
     const out = { ok: true, engine: 'browser-google', query: q, results };
     if (parsed.ai) out.ai = parsed.ai;
@@ -2853,26 +2906,37 @@ const BROWSER_JS_HELPERS = `
 
 const BROWSER_SNAPSHOT_JS = `(function(){
   ${BROWSER_JS_HELPERS}
-  const sel='a[href],button,input:not([type="hidden"]),textarea,select,[role="button"],[role="link"],[role="tab"],[contenteditable="true"],summary';
-  const els=[...document.querySelectorAll(sel)];
+  const sel='a[href],button,input:not([type="hidden"]),textarea,select,[role="button"],[role="link"],[role="tab"],[role="option"],[role="menuitem"],[role="gridcell"],[role="checkbox"],[role="switch"],[role="combobox"],[role="textbox"],[role="searchbox"],[contenteditable="true"],summary';
+  /* açık popup/takvim/dialog varsa içindekiler ÖNCE listelenir (tarih seçici, özel dropdown vb.) */
+  const popSel='[role="dialog"],dialog,[role="listbox"],[role="menu"],.flatpickr-calendar,.ui-datepicker,[class*="datepicker" i],[class*="calendar" i],[class*="dropdown" i],[class*="popup" i]';
+  const pops=[...document.querySelectorAll(popSel)].filter(__vis);
+  const inPop=new Set();
+  for(const p of pops){[...p.querySelectorAll(sel)].forEach(e=>inPop.add(e));}
   window.__beMap={};
+  const seen=new Set();
   const lines=[];
   let i=0;
-  for(const e of els){
-    if(!__vis(e)) continue;
-    if(e.disabled||e.getAttribute('aria-disabled')==='true') continue;
+  function add(e){
+    if(!e||seen.has(e)) return;
+    seen.add(e);
+    if(!__vis(e)||e.disabled||e.getAttribute('aria-disabled')==='true') return;
     i++;
     window.__beMap[i]=e;
     const tag=e.tagName.toLowerCase();
-    const type=e.getAttribute('type');
+    const type=(e.getAttribute&&e.getAttribute('type'))||'';
     let s='['+i+'] <'+tag+(type?' type='+type:'')+'>';
     const l=__label(e);
     if(l) s+=' "'+l+'"';
-    if(tag==='input'&&(type==='text'||type==='email'||type==='password'||type==='search'||type==='tel'||type==='url'||type==='number')&&e.value) s+=' deger="'+String(e.value).slice(0,30)+'"';
+    if(tag==='input'&&/^(text|email|password|search|tel|url|number|date|time|month|datetime-local)$/.test(type)&&e.value) s+=' deger="'+String(e.value).slice(0,30)+'"';
     if(tag==='select'){s+=' secenekler=['+[...e.options].slice(0,6).map(o=>o.text.trim()).filter(Boolean).join('|').slice(0,60)+']';}
     lines.push(s);
-    if(i>=100) break;
   }
+  if(inPop.size){
+    lines.push('--- ACIK POPUP/TAKVIM ICINDEKILER (once bunlari kullan) ---');
+    for(const e of inPop){ add(e); if(i>=60) break; }
+    lines.push('--- SAYFA ---');
+  }
+  for(const e of document.querySelectorAll(sel)){ if(i>=100) break; add(e); }
   return JSON.stringify({count:i,title:document.title,url:location.href,snapshot:lines.join('\\n')});
 })()`;
 
@@ -2905,10 +2969,52 @@ function browserActionJs(kind, args) {
   if (kind === 'type') {
     const text = JSON.stringify(String(args.text ?? ''));
     const submit = args.submit ? 'true' : 'false';
-    return `(function(){${BROWSER_JS_HELPERS}${resolveTarget};return new Promise((res)=>{try{
+    return `(function(){${BROWSER_JS_HELPERS}${resolveTarget}
+      /*__DT_HELPERS_START__*/
+      function __norm(s){return String(s).toLowerCase().split('').map(function(c){return {'ş':'s','ğ':'g','ü':'u','ı':'i','ö':'o','ç':'c','İ':'i'}[c]||c;}).join('');}
+      function __parseDate(raw){
+        raw=String(raw||'').trim(); if(!raw) return null;
+        const MON={ocak:1,subat:2,mart:3,nisan:4,mayis:5,haziran:6,temmuz:7,agustos:8,eylul:9,ekim:10,kasim:11,aralik:12,jan:1,feb:2,mar:3,apr:4,may:5,jun:6,jul:7,aug:8,sep:9,oct:10,nov:11,dec:12,january:1,february:2,march:3,april:4,june:6,july:7,august:8,september:9,october:10,november:11,december:12};
+        let m=raw.match(/^(\\d{4})[\\-.\\/,](\\d{1,2})[\\-.\\/,](\\d{1,2})$/);
+        if(m) return [+m[1],+m[2],+m[3]];
+        m=raw.match(/^(\\d{1,2})[\\-.\\/ ](\\d{1,2})[\\-.\\/ ](\\d{2,4})$/);
+        if(m){let d=+m[1],mo=+m[2],y=+m[3];if(y<100)y+=2000;if(mo>12&&d<=12){const t=d;d=mo;mo=t;}return [y,mo,d];}
+        m=raw.match(/^(\\d{1,2})[\\-.\\/ ]+([a-zçğıöşü]+)[\\-.\\/ ]+(\\d{2,4})$/i);
+        if(m){const mo=MON[__norm(m[2])];if(mo){let y=+m[3];if(y<100)y+=2000;return [y,mo,+m[1]];}}
+        return null;
+      }
+      function __parseTime(raw){
+        const m=String(raw||'').trim().match(/^(\\d{1,2})[:.h](\\d{2})/);
+        if(!m) return null;
+        return [Math.min(23,+m[1]),Math.min(59,+m[2])];
+      }
+      /*__DT_HELPERS_END__*/
+      return new Promise((res)=>{try{
       const t=__target();
       if(!t) return res(JSON.stringify({typed:false,reason:'eleman bulunamadi (ref eski olabilir - browser_snapshot al)'}));
       const how=t.how,el=t.el;
+      /* tarih/saat alanları: programatik değer + input/change event — native takvim popup'ı hiç açılmaz */
+      const it=(el.tagName==='INPUT'?(el.type||'').toLowerCase():'');
+      if(it==='date'||it==='month'||it==='time'||it==='datetime-local'){
+        const RAW=${text};
+        let v=null;
+        if(it==='time'){
+          const p=__parseTime(RAW); if(p) v=p.map(function(n){return String(n).padStart(2,'0');}).join(':');
+        } else {
+          const p=__parseDate(RAW);
+          if(p&&p.every(Number.isFinite)&&p[1]>=1&&p[1]<=12&&p[2]>=1&&p[2]<=31){
+            const pad=function(n){return String(n).padStart(2,'0');};
+            const ymd=p[0]+'-'+pad(p[1])+'-'+pad(p[2]);
+            v = it==='month' ? (p[0]+'-'+pad(p[1])) : it==='datetime-local' ? (ymd+'T'+((__parseTime(RAW)||[12,0])).map(pad).join(':')) : ymd;
+          }
+        }
+        if(!v) return res(JSON.stringify({typed:false,inputType:it,reason:'tarih/saat alanı — metin anlaşılamadı. "2026-03-15", "15.03.2026" veya "15 Mart 2026" gibi gönder'}));
+        const setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;
+        setter.call(el,v);
+        el.dispatchEvent(new Event('input',{bubbles:true}));
+        el.dispatchEvent(new Event('change',{bubbles:true}));
+        return res(JSON.stringify({typed:true,target:how+' <input type='+it+'>',value:v,note:'tarih/saat programatik ayarlandi — takvim tiklamak gerekmez'}));
+      }
       el.scrollIntoView({block:'center'});el.focus();
       setTimeout(()=>{try{
         if(el.isContentEditable){el.textContent=${text};}
@@ -3035,6 +3141,14 @@ async function browserAct(kind, args, signal) {
         : (obj.reason || 'tamam')
     );
 
+    /* HIZ: eylem cevabına taze snapshot göm — model ayrı browser_snapshot çağırmaz (tur sayısı yarıya iner) */
+    let freshSnap = null;
+    try {
+      const sraw = await wc.executeJavaScript(BROWSER_SNAPSHOT_JS, true);
+      const sobj = JSON.parse(sraw);
+      if (sobj && typeof sobj.count === 'number') freshSnap = sobj;
+    } catch {}
+
     return {
       ok: true,
       action: kind,
@@ -3042,7 +3156,12 @@ async function browserAct(kind, args, signal) {
       url: wc.getURL(),
       title: wc.getTitle(),
       navigated,
-      ...(navigated ? { note: 'sayfa degisti — gerekirse yeni browser_snapshot al' } : {}),
+      ...(freshSnap ? { snapshot: freshSnap.snapshot, refCount: freshSnap.count } : {}),
+      ...(navigated
+        ? { note: 'sayfa degisti — yanıtta güncel snapshot var; refler eskiyse yeni browser_snapshot al' }
+        : freshSnap
+          ? { note: 'yanıtta güncel snapshot (' + freshSnap.count + ' ref) — sonraki hamlede bunları kullan, ayrıca snapshot alma' }
+          : {}),
       recent: recentLog(),
     };
   } catch (e) {
@@ -4403,22 +4522,9 @@ ipcMain.handle('terminal:toggle', () => {
   return { ok: true, cwd: (engine && engine.workspace) || settings.workspace || app.getPath('home') };
 });
 
-/* Git Bash kuruluysa yolunu bulur; yoksa null döner */
-function findGitBash() {
-  const cands = [];
-  if (process.env['ProgramFiles']) cands.push(path.join(process.env['ProgramFiles'], 'Git', 'bin', 'bash.exe'));
-  if (process.env['ProgramFiles(x86)']) cands.push(path.join(process.env['ProgramFiles(x86)'], 'Git', 'bin', 'bash.exe'));
-  if (process.env['LocalAppData']) cands.push(path.join(process.env['LocalAppData'], 'Programs', 'Git', 'bin', 'bash.exe'));
-  cands.push('C:\\Program Files\\Git\\bin\\bash.exe');
-  for (const c of cands) {
-    try { if (fs.existsSync(c)) return c; } catch {}
-  }
-  return null;
-}
-
 ipcMain.handle('terminal:run', (_e, payload) => {
   const cmd = String((payload && payload.cmd) || '').trim();
-  const shell = String((payload && payload.shell) || 'powershell');
+  const shell = String((payload && payload.shell) || 'cmd');
   if (!cmd) return { ok: false, error: 'boş komut' };
   if (termChild) return { ok: false, error: 'önceki komut sürüyor — ■ ile durdurabilirsin' };
   const cwd = (engine && engine.workspace) || settings.workspace || app.getPath('home');
@@ -4427,12 +4533,8 @@ ipcMain.handle('terminal:run', (_e, payload) => {
   if (shell === 'cmd') {
     file = 'cmd.exe';
     args = ['/d', '/s', '/c', cmd];
-  } else if (shell === 'bash') {
-    const bash = findGitBash();
-    if (!bash) return { ok: false, error: 'Git Bash bulunamadı — Git for Windows kurulu mu? (https://git-scm.com)' };
-    file = bash;
-    args = ['-c', cmd];
   } else {
+    /* geriye dönük uyumluluk — UI artık yalnız CMD gönderir */
     file = 'powershell.exe';
     args = ['-NoProfile', '-NoLogo', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', cmd];
   }
@@ -5425,10 +5527,61 @@ ipcMain.handle('bots:add', (_e, input) => {
 ipcMain.handle('bots:dm:list', () => engine.listBotDmSessions());
 ipcMain.handle('bots:dm:read', (_e, id) => engine.readBotDm(id));
 
-/* Ana sohbete davetli botlar */
-ipcMain.handle('sessions:guests:set', (_e, { sessionId, guests }) => {
-  try { engine.setSessionGuests(sessionId, guests); } catch {}
-  return { ok: true };
+/* GITHUB MODALI → Trending / Tüm Repolar: GitHub Search API.
+   opts.mode: 'trend' (varsayılan) | 'all' (tüm repolar — yıldız tabanı yok)
+   opts.range: all | 6m | 1m | 2w | 1w  (tüm zamanlar / 6 ay / 1 ay / 2 hafta / 1 hafta)
+   opts.order: desc (azalan) | asc (artan) — yıldız sırası
+   opts.q: arama terimi (trend modunda tarih filtresi UYGULANMAZ — her zaman tüm zamanlar)
+   Kimliksiz 60 istek/saat limiti var — 403'te UI bilgi gösterir. */
+ipcMain.handle('github:trending', async (_e, opts) => {
+  const o = opts && typeof opts === 'object' ? opts : {};
+  const mode = o.mode === 'all' ? 'all' : 'trend';
+  const range = ['all', '6m', '1m', '2w', '1w'].includes(o.range) ? o.range : '2w';
+  const order = o.order === 'asc' ? 'asc' : 'desc';
+  const q = String(o.q || '').trim().slice(0, 120);
+  const days = { all: 0, '6m': 180, '1m': 30, '2w': 14, '1w': 7 }[range];
+  const since = days ? new Date(Date.now() - days * 86400000).toISOString().slice(0, 10) : '';
+  /* aralık başına yıldız tabanı: listeler anlamlı kalsın diye */
+  const floor = { all: 5000, '6m': 200, '1m': 50, '2w': 20, '1w': 10 }[range];
+  let query;
+  let useSort = true; /* 'all' + best eşleşmede sort param gönderilmez */
+  if (mode === 'all') {
+    if (!q) return { ok: true, items: [] };
+    query = q; /* yıldız tabanı YOK — 0 yıldızlı dahil tüm repolar bulunur */
+    if (o.allSort === 'best') useSort = false;
+  } else if (q) {
+    /* arama modu: tarih filtresi YOK — her zaman tüm zamanlar içinde arar,
+       yıldız sırasına göre döner (küçük taban: çöp listelenmesin diye) */
+    query = q + ' stars:>=10';
+  } else if (range === 'all') {
+    query = 'stars:>=' + floor;
+  } else {
+    query = 'created:>=' + since + ' stars:>=' + floor;
+  }
+  let url = 'https://api.github.com/search/repositories?q=' + encodeURIComponent(query).replace(/%20/g, '+') + '&per_page=20';
+  if (useSort) url += '&sort=stars&order=' + order;
+  try {
+    const res = await fetch(url, {
+      headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'beast-agent' },
+      signal: AbortSignal.timeout(15000),
+    });
+    if (res.status === 403 || res.status === 429) {
+      return { ok: false, error: 'GitHub API limiti doldu (403) — bir saat sonra tekrar dene' };
+    }
+    if (!res.ok) return { ok: false, error: 'GitHub API ' + res.status };
+    const data = await res.json();
+    const items = (data.items || []).map((r) => ({
+      full_name: r.full_name,
+      html_url: r.html_url,
+      description: String(r.description || '').slice(0, 240),
+      language: r.language || '',
+      stars: r.stargazers_count || 0,
+      pushed_at: r.pushed_at || '',
+    }));
+    return { ok: true, items };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
 });
 
 ipcMain.handle('bots:update', (_e, { id, patch }) => {

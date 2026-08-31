@@ -620,7 +620,7 @@ const definitions = [
     function: {
       name: 'web_search',
       description:
-        'FAST web search with an automatic chain: built-in browser first (real Chromium searching GOOGLE directly with AI Mode — no bot protection; the response may include an `ai` field holding Google\'s own AI answer, ideal for "who/what is X" questions), then Python multi-engine (ddgs / DuckDuckGo+Bing+Mojeek parallel), then Exa API as last resort if a key is configured (Ayarlar → Web Arama). Returns {ai?, results[{title,url,snippet}]}. Use when fresh or external info is needed; skip for things you already know.',
+        'FAST web search with an automatic chain: built-in browser first (real Chromium searching GOOGLE directly with AI Mode — no bot protection; the response may include an `ai` field holding Google\'s own AI answer, ideal for "who/what is X" questions), then TinyFish API (if a key is configured, used IMMEDIATELY whenever the browser hits CAPTCHA/unusual traffic — the browser is then skipped for 10 minutes), then Python multi-engine (ddgs / DuckDuckGo+Bing+Mojeek parallel), then Exa API as last resort if a key is configured (Ayarlar → Web Arama). Returns {ai?, results[{title,url,snippet}]}. Use when fresh or external info is needed; skip for things you already know.',
       parameters: {
         type: 'object',
         properties: {

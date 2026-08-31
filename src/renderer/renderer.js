@@ -58,8 +58,6 @@ const els = {
   bbShot: $('#bbShot'),
   bbClose: $('#bbClose'),
   bbResize: $('#bbResize'),
-  termBtn: $('#termBtn'),
-  termGBtn: $('#termGBtn'),
   termCBtn: $('#termCBtn'),
   termPanel: $('#termPanel'),
   termCwd: $('#termCwd'),
@@ -114,8 +112,8 @@ let streamEl = null;
 let streamRaw = '';
 let renderQueued = false;
 
-/* #19 sağ panel tercih durumu (tarayıcı açılmadan önceki) */
-let railPrefBeforeBrowser = true;
+/* #19 sağ panel tercih durumu (tarayıcı açılmadan önceki) — panel varsayılan KAPALI */
+let railPrefBeforeBrowser = false;
 
 function toggleRail(hide) {
   document.body.classList.toggle('rail-hidden', !!hide);
@@ -285,11 +283,18 @@ function setBusy(b) {
 }
 
 let toastTimer = null;
+let toastHideTimer = null;
 function toast(msg) {
+  /* akış içi balon: göster → fade-in, süre dolunca fade-out → tamamen gizle (yer kaplamasın) */
   els.toast.textContent = msg;
-  els.toast.classList.add('show');
+  els.toast.hidden = false;
+  requestAnimationFrame(() => els.toast.classList.add('show'));
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => els.toast.classList.remove('show'), 2200);
+  clearTimeout(toastHideTimer);
+  toastTimer = setTimeout(() => {
+    els.toast.classList.remove('show');
+    toastHideTimer = setTimeout(() => { els.toast.hidden = true; }, 260);
+  }, 2200);
 }
 
 /* ---------------- messages ---------------- */
@@ -497,15 +502,12 @@ async function renderSessions(list) {
 async function refreshSessions() {
   await renderSessions(await beast.listSessions());
   renderBotCards(); // bot kartlarındaki numara/sayı etiketleri de tazelensin
-  renderGuestBotMenu(); // davet menüsü (aktif bot/bot listesi değişmiş olabilir)
 }
 
 async function openSession(id) {
   activeId = id;
   streamEl = null;
   const s = await beast.openSession(id);
-  activeGuests = Array.isArray(s.guests) ? s.guests : [];
-  renderGuestBotMenu();
   els.msgs.innerHTML = '';
   showEmpty(s.messages.length === 0);
   renderTodos(s.todos || []);
@@ -2462,47 +2464,6 @@ let botsCache = [];
 let botPageId = null; // null = genel bakış (Tüm Botlar)
 let botPageStats = [];
 let activeBotId = 'beast'; // masaüstü UI'ının şu an hangi botta olduğu (varsayılan: ilk bot/Beast)
-let activeGuests = []; // aktif ana sohbete davetli botlar [{id, code, name}]
-
-/* ANA SOHBETE BOT DAVETİ: yalnız admin bottayken görünür (composer'daki 🤖 ikonu);
-   davetli botlar session'a kaydedilir, ajan bot_dm aracıyla onlara danışır */
-function renderGuestBotMenu() {
-  const btn = $('#guestBotBtn');
-  const menu = $('#guestBotMenu');
-  if (!btn || !menu) return;
-  const isAdmin = activeBotId === 'beast';
-  const show = isAdmin && !!activeId;
-  /* DİKKAT: hidden ATTRIBUTUE'sünü kaldırmak şart — style.display ile açılmaz */
-  btn.hidden = !show;
-  if (!show) { menu.hidden = true; return; }
-  const candidates = botsCache.filter((b) => !b.admin && b.vis !== false);
-  menu.innerHTML = '';
-  if (!candidates.length) {
-    /* bot hiç yoksa yönlendir + tek tıkla oluştur; bot varsa da davet edilebilir değilse bilgi ver */
-    const nonAdmin = botsCache.filter((b) => !b.admin).length;
-    menu.innerHTML = nonAdmin
-      ? '<div class="dd-empty">Davet edilebilir görünür bot yok</div>'
-      : '<div class="dd-empty">Henüz bot yok — <a href="#" id="gbCreate" style="color:var(--accent);font-weight:700">bot oluştur</a></div>';
-    const cr = menu.querySelector('#gbCreate');
-    if (cr) cr.addEventListener('click', (e) => { e.preventDefault(); menu.hidden = true; botAddClick(); });
-    return;
-  }
-  for (const b of candidates) {
-    const invited = activeGuests.some((g) => g.id === b.id);
-    const item = document.createElement('div');
-    item.className = 'dd-item';
-    item.innerHTML = `${b.icon} ${escapeHtml(b.name)} <span style="float:right;color:var(--muted)">${invited ? '✓ davetli' : '+ davet et'}</span>`;
-    item.addEventListener('click', async () => {
-      const next = invited ? activeGuests.filter((g) => g.id !== b.id) : [...activeGuests, { id: b.id, code: b.code || '', name: b.name }];
-      activeGuests = next;
-      await beast.sessionSetGuests(activeId, next).catch(() => {});
-      renderGuestBotMenu();
-      toast(invited ? `${b.name} davetten çıkarıldı` : `${b.name} sohbete davet edildi — ajan gerektiğinde ona danışacak`);
-      menu.hidden = true;
-    });
-    menu.appendChild(item);
-  }
-}
 
 async function refreshBots() {
   try {
@@ -2833,9 +2794,6 @@ function renderBotSettings(pane, b) {
     <div class="bot-checks" style="margin-bottom:6px">
       <label><input type="checkbox" id="bExtBrowser" ${b.extBrowser ? 'checked' : ''}/> ${_t('bot_ext_browser')}</label>
     </div>
-    <div class="bot-checks" style="margin-bottom:6px">
-      <label><input type="checkbox" id="bVis" ${b.vis !== false ? 'checked' : ''}/> ${_t('bot_vis')}</label>
-    </div>
     <div class="form-grid">
       <div>
         <label class="mem-label" style="margin-top:0">${_t('bot_def_browser')}</label>
@@ -2896,7 +2854,6 @@ function renderBotSettings(pane, b) {
       prompt: $('#bPrompt').value,
       seeBots: [...f.querySelectorAll('#bSee input:checked')].map((c) => c.dataset.see),
       extBrowser: $('#bExtBrowser').checked,
-      vis: f.querySelector('#bVis') ? f.querySelector('#bVis').checked : true,
       browserDefault: $('#bBrDef').value,
       extCommand: $('#bBrCmd').value.trim(),
       numbers: (b.numbers || []).map((n) => n.num),
@@ -3055,6 +3012,7 @@ function renderBotAdd(pane) {
 
 const agentState = {
   jobs: [],
+  autoOpened: false, // konsol bu turda otomatik açıldı mı (boştan-çalışıyor geçişi)
   last: new Map(), // bgSessionId -> son aktivite metni
   runningIds: new Set(),
   expanded: new Set(), // detayı açık kartlar
@@ -3082,9 +3040,24 @@ function scheduleAgentsRender() {
 
 async function refreshAgentsPane() {
   try { agentState.jobs = (await beast.agentsList()) || []; } catch {}
+  /* açılışta ajanlar zaten çalışıyorsa konsolu otomatik aç */
+  maybeAutoOpenRail();
   updateAgentIds();
   renderAgentsPane();
   renderAgentRail();
+}
+
+/* ajanlar çalışmaya başladığında sağdaki Paralel Ajan konsolu otomatik açılır
+   (yalnız boştan-çalışıyor geçişinde; kullanıcı çalışırken elle kapatırsa ezilmez,
+   dahili tarayıcı açıkken de karışılmaz) */
+function maybeAutoOpenRail() {
+  const hasRunning = agentState.jobs.some((j) => j.status === 'running');
+  if (hasRunning && !agentState.autoOpened && document.body.classList.contains('rail-hidden') &&
+      !document.body.classList.contains('browser-open')) {
+    toggleRail(false);
+    railPrefBeforeBrowser = true;
+  }
+  agentState.autoOpened = hasRunning;
 }
 
 function ingestAgentActivity(ev) {
@@ -3347,6 +3320,7 @@ function onEvent(ev) {
   }
   if (ev.type === 'agents') {
     agentState.jobs = ev.jobs || [];
+    maybeAutoOpenRail();
     updateAgentIds();
     scheduleAgentsRender();
     return;
@@ -3512,23 +3486,19 @@ let termBannerDone = false;
 let termRunning = false;
 let termHist = [];
 let termHistIdx = -1;
-let termShell = 'powershell';
+let termShell = 'cmd';
 const TERM_MAX_LINES = 800;
 
-/* terminal kabukları: > PowerShell · G Git Bash · C CMD */
+/* terminal kabuğu: yalnız CMD (PowerShell/Git Bash kaldırıldı) */
 const TERM_SHELLS = {
-  powershell: { label: 'PowerShell', prompt: 'PS>' },
-  bash: { label: 'Git Bash', prompt: 'bash $' },
-  cmd: { label: 'CMD', prompt: 'C>' },
+  cmd: { label: 'CMD', prompt: 'CMD>' },
 };
 
 function termSetShell(s) {
-  if (!TERM_SHELLS[s]) s = 'powershell';
+  if (!TERM_SHELLS[s]) s = 'cmd';
   const changed = termShell !== s;
   termShell = s;
   if (els.termPrompt) els.termPrompt.textContent = TERM_SHELLS[s].prompt;
-  if (els.termBtn) els.termBtn.classList.toggle('on', termOpen && s === 'powershell');
-  if (els.termGBtn) els.termGBtn.classList.toggle('on', termOpen && s === 'bash');
   if (els.termCBtn) els.termCBtn.classList.toggle('on', termOpen && s === 'cmd');
   if (changed && termOpen && termBannerDone) termLine('t-sys', 'Kabuk: ' + TERM_SHELLS[s].label);
 }
@@ -3573,7 +3543,7 @@ function termBanner(cwd) {
   els.termCwd.title = cwd || '';
   termLine('t-sys', 'Beast Terminal — çalışma klasörü: ' + (cwd || '?'));
   termLine('t-sys', 'Kabuk: ' + TERM_SHELLS[termShell].label + ' · Ajanlar çalışırken araç çağrıları ve çıktıları burada canlı akar.', false);
-  termLine('t-dim', 'Komut yaz, Enter\'a bas — her komut workspace\'te ayrı süreçle çalışır. Üst bar: > PowerShell · G Git Bash · C CMD.', false);
+  termLine('t-dim', 'Komut yaz, Enter\'a bas — her komut workspace\'te ayrı süreçle çalışır. Kabuk: CMD.', false);
 }
 
 function termShortTool(name, args) {
@@ -3608,7 +3578,7 @@ function termCmdDone(ev) {
 }
 
 async function termToggle(shell) {
-  const want = TERM_SHELLS[shell] ? shell : 'powershell';
+  const want = TERM_SHELLS[shell] ? shell : 'cmd';
   /* aynı kabuk butonuna tekrar basıldıysa paneli kapat */
   if (termOpen && termShell === want) {
     termSetOpen(false);
@@ -3635,7 +3605,7 @@ function termRunCurrent() {
   termHist.push(cmd);
   if (termHist.length > 100) termHist.shift();
   termHistIdx = termHist.length;
-  termLine('t-cmd', 'PS> ' + cmd);
+  termLine('t-cmd', TERM_SHELLS[termShell].prompt + ' ' + cmd);
   termRunning = true;
   els.termStop.hidden = false;
   beast.terminalRun(cmd, termShell).then((r) => {
@@ -4075,6 +4045,7 @@ function openCron() { refreshCron(); }
 
 async function init() {
   beast.onEvent(onEvent);
+  toggleRail(true); /* Paralel Ajanlar paneli varsayılan KAPALI — railBtn ile açılır */
 
   state = await beast.getState();
   try {
@@ -4411,8 +4382,6 @@ async function init() {
 
   /* terminal paneli — olay bağlama */
   try { termSetWidth(parseInt(localStorage.getItem('beast.termW')) || 520); } catch {}
-  if (els.termBtn) els.termBtn.addEventListener('click', () => termToggle('powershell'));
-  if (els.termGBtn) els.termGBtn.addEventListener('click', () => termToggle('bash'));
   if (els.termCBtn) els.termCBtn.addEventListener('click', () => termToggle('cmd'));
   if (els.termClose) els.termClose.addEventListener('click', () => termSetOpen(false));
   if (els.termClear) els.termClear.addEventListener('click', () => { els.termOut.innerHTML = ''; });
@@ -4485,18 +4454,6 @@ async function init() {
   if ($('#botClose')) $('#botClose').addEventListener('click', () => botOverlaySetOpen(false));
   if ($('#botOverviewBack')) $('#botOverviewBack').addEventListener('click', () => openBotPage(null));
   if ($('#botChip')) $('#botChip').addEventListener('click', () => openBotPage(activeBotId));
-
-  /* BOT DAVET MENÜSÜ: butona tıkla → aç/kapa; dışarı tık → kapa */
-  if ($('#guestBotBtn') && $('#guestBotMenu')) {
-    $('#guestBotBtn').addEventListener('click', (e) => {
-      e.stopPropagation();
-      renderGuestBotMenu();
-      $('#guestBotMenu').hidden = !$('#guestBotMenu').hidden;
-    });
-    document.addEventListener('click', (e) => {
-      if (!$('#guestBotMenu').hidden && !$('#guestBotMenu').contains(e.target)) $('#guestBotMenu').hidden = true;
-    });
-  }
   /* kalıcı aktif bot: restart sonrası aynı botun UI'ı açılır */
   beast.botsActiveGet().then((r) => { activeBotId = (r && r.id) || 'beast'; updateBotChip(); renderBotCards(); }).catch(() => {});
   document.querySelectorAll('.btab').forEach((b) =>
@@ -4899,6 +4856,251 @@ document.querySelectorAll('.stab').forEach((b) =>
     renderStorePane();
   })
 );
+
+
+/* ================= GITHUB TRENDING =================
+   Skills Store'un sağındaki buton → %70 modal (store ile aynı tasarım).
+   SOL: son 14 günün yıldız yükselenleri (GitHub Search API).
+   SAĞ: favoriler (localStorage'da kalıcı). Her kartta:
+   ★ favori · Chate at (ajana araştırma mesajı) · Kopyala · repoya git. */
+
+const ghState = { items: [], err: '', range: '2w', sort: 'desc', q: '', ghTab: 'trend', allQ: '', allSort: 'best' };
+const GH_FAV_KEY = 'beast.github.favs';
+const GH_RANGE_LABEL = {
+  all: '— tüm zamanların en yıldızlıları',
+  '6m': '— son 6 ayın yıldız yükselenleri',
+  '1m': '— son 1 ayın yıldız yükselenleri',
+  '2w': '— son 2 haftanın yıldız yükselenleri',
+  '1w': '— son 1 haftanın yıldız yükselenleri',
+};
+const GH_ALL_SORT_LABEL = { best: '⭐ En İyi', desc: '↓ Yıldız', asc: '↑ Yıldız' };
+
+function ghFavs() {
+  try { return JSON.parse(localStorage.getItem(GH_FAV_KEY) || '[]'); } catch { return []; }
+}
+function ghSaveFavs(list) {
+  try { localStorage.setItem(GH_FAV_KEY, JSON.stringify(list.slice(0, 100))); } catch {}
+}
+function ghIsFav(fullName) {
+  return ghFavs().some((f) => f.full_name === fullName);
+}
+
+async function openGit() {
+  $('#ghOverlay').hidden = false;
+  renderGhFavs();
+  updateGhSortBtn();
+  updateGhAllSortBtn();
+  updateGhSub();
+  loadGhTrend();
+}
+
+async function loadGhTrend() {
+  const box = $('#ghTrendList');
+  /* tüm repolar sekmesinde boş arama = API'yi boşa yorma, ipucu göster */
+  if (ghState.ghTab === 'all' && !ghState.allQ) {
+    box.innerHTML = '<div class="gh-empty">Depo adı, konu veya anahtar kelime yazıp Enter\u2019a bas — yıldız sayısına bakılmaksızın tüm GitHub aranır.</div>';
+    return;
+  }
+  box.innerHTML = '<div class="gh-empty">Yükleniyor…</div>';
+  const params = ghState.ghTab === 'all'
+    ? { mode: 'all', q: ghState.allQ, allSort: ghState.allSort, order: ghState.allSort === 'desc' ? 'desc' : 'asc' }
+    : { mode: 'trend', range: ghState.range, sort: ghState.sort, q: ghState.q };
+  const r = await beast.githubTrending(params).catch(() => ({ ok: false, error: 'ipc' }));
+  if (r && r.ok) {
+    ghState.items = r.items || [];
+    ghState.err = '';
+  } else {
+    ghState.items = [];
+    ghState.err = (r && r.error) || 'GitHub\u2019a ulaşılamadı';
+  }
+  renderGhTrend();
+}
+
+function updateGhSortBtn() {
+  const btn = $('#ghSortBtn');
+  if (btn) {
+    btn.textContent = ghState.sort === 'desc' ? '↓ Yıldız' : '↑ Yıldız';
+    btn.title = ghState.sort === 'desc' ? 'Yıldız sırası: azalan — artana çevir' : 'Yıldız sırası: artan — azalana çevir';
+  }
+}
+
+function updateGhSub() {
+  const sub = $('#ghTrendSub');
+  if (!sub) return;
+  if (ghState.ghTab === 'all') {
+    const sortTxt = ghState.allSort === 'best' ? 'en iyi eşleşme' : ghState.allSort === 'desc' ? 'yıldız azalan' : 'yıldız artan';
+    sub.textContent = ghState.allQ ? `— "${ghState.allQ}" araması · ${sortTxt}` : '— tüm GitHub: ada, konuya, açıklamaya göre arama';
+  } else {
+    sub.textContent = ghState.q ? `— "${ghState.q}" araması · tüm zamanlar` : GH_RANGE_LABEL[ghState.range] || '';
+  }
+}
+
+function updateGhAllSortBtn() {
+  const btn = $('#ghAllSortBtn');
+  if (btn) btn.textContent = GH_ALL_SORT_LABEL[ghState.allSort] || '⭐ En İyi';
+}
+
+function closeGit() {
+  $('#ghOverlay').hidden = true;
+}
+
+/* chate at: ajana araştırma komutu gider (oturum yoksa input'a bırakılır) */
+function ghSendToChat(url, name) {
+  const msg = `GitHub\u2019da şu repoyu araştır: ${url}${name ? ' (' + name + ')' : ''} — ne işe yarıyor, öne çıkan özellikleri neler, aktif mi? Kısa özet ver.`;
+  if (!activeId) {
+    els.input.value = msg;
+    toast('Aktif oturum yok — mesaj kutusuna bırakıldı');
+    return;
+  }
+  els.input.value = msg;
+  sendCurrent();
+}
+
+function ghCard(repo, isFav) {
+  const stars = repo.stars >= 1000 ? (repo.stars / 1000).toFixed(1).replace('.0', '') + 'k' : String(repo.stars);
+  const lang = repo.language ? `<span class="gh-lang">${escapeHtml(repo.language)}</span>` : '';
+  return `
+    <div class="gh-card" data-repo="${escapeHtml(repo.full_name)}">
+      <div class="gh-card-top">
+        <span class="gh-name" data-url="${escapeHtml(repo.html_url)}" title="${escapeHtml(repo.html_url)}">${escapeHtml(repo.full_name)}</span>
+        <span class="gh-stars">★ ${stars}</span>
+        ${lang}
+      </div>
+      ${repo.description ? `<div class="gh-desc" title="${escapeHtml(repo.description)}">${escapeHtml(repo.description)}</div>` : ''}
+      <div class="gh-actions">
+        <button class="gh-fav ${isFav ? 'on' : ''}" data-act="fav">${isFav ? '★ Favoride' : '☆ Favorile'}</button>
+        <button data-act="chat"><svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-1px;margin-right:4px"><path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4z"/></svg>Chate at</button>
+        <button data-act="copy">⧉ Kopyala</button>
+      </div>
+    </div>`;
+}
+
+function wireGhCards(container, list, isFavPane) {
+  container.querySelectorAll('.gh-card').forEach((card) => {
+    const repo = list.find((x) => x.full_name === card.dataset.repo);
+    if (!repo) return;
+    card.querySelector('.gh-name').addEventListener('click', () => beast.openExternal(repo.html_url).catch(() => {}));
+    card.querySelector('[data-act="chat"]').addEventListener('click', () => {
+      ghSendToChat(repo.html_url, repo.full_name);
+      /* mesaj chate gitti — cevap chatten geleceği için modal kapanır */
+      closeGit();
+    });
+    card.querySelector('[data-act="copy"]').addEventListener('click', async () => {
+      try { await navigator.clipboard.writeText(repo.html_url); toast('Link kopyalandı'); } catch {}
+    });
+    card.querySelector('[data-act="fav"]').addEventListener('click', () => {
+      const favs = ghFavs();
+      if (ghIsFav(repo.full_name)) {
+        ghSaveFavs(favs.filter((f) => f.full_name !== repo.full_name));
+        toast('Favoriden çıkarıldı: ' + repo.full_name);
+      } else {
+        favs.unshift({ ...repo, addedAt: new Date().toISOString() });
+        ghSaveFavs(favs);
+        toast('Favorilere eklendi: ' + repo.full_name);
+      }
+      renderGhTrend();
+      renderGhFavs();
+    });
+  });
+}
+
+function renderGhTrend() {
+  const box = $('#ghTrendList');
+  if (!box) return;
+  if (ghState.err) {
+    box.innerHTML = `<div class="gh-err">⚠ ${escapeHtml(ghState.err)}</div>`;
+    return;
+  }
+  if (!ghState.items.length) {
+    box.innerHTML = '<div class="gh-empty">Son 14 günde öne çıkan repo bulunamadı.</div>';
+    return;
+  }
+  box.innerHTML = ghState.items.map((r) => ghCard(r, ghIsFav(r.full_name))).join('');
+  wireGhCards(box, ghState.items, false);
+}
+
+function renderGhFavs() {
+  const box = $('#ghFavList');
+  if (!box) return;
+  const favs = ghFavs();
+  if (!favs.length) {
+    box.innerHTML = '<div class="gh-empty">Henüz favori yok — trendden ☆ ile ekle.</div>';
+    return;
+  }
+  box.innerHTML = favs.map((r) => ghCard(r, true)).join('');
+  wireGhCards(box, favs, true);
+}
+
+$('#gitBtn').addEventListener('click', openGit);
+$('#ghClose').addEventListener('click', closeGit);
+$('#ghOverlay').addEventListener('click', (e) => {
+  if (e.target === $('#ghOverlay')) closeGit();
+});
+/* aralık filtreleri: Tümü / 6 Ay / 1 Ay / 2 Hafta / 1 Hafta */
+document.querySelectorAll('#ghRanges button').forEach((b) =>
+  b.addEventListener('click', () => {
+    ghState.range = b.dataset.range;
+    document.querySelectorAll('#ghRanges button').forEach((x) => x.classList.toggle('on', x === b));
+    loadGhTrend();
+    updateGhSub();
+  })
+);
+/* yıldız sırası: azalan ⇄ artan */
+$('#ghSortBtn').addEventListener('click', () => {
+  ghState.sort = ghState.sort === 'desc' ? 'asc' : 'desc';
+  updateGhSortBtn();
+  loadGhTrend();
+});
+/* repo arama: Enter ile; boş Enter → trend moduna döner */
+$('#ghSearch').addEventListener('keydown', (e) => {
+  if (e.key !== 'Enter') return;
+  ghState.q = $('#ghSearch').value.trim();
+  updateGhSub();
+  loadGhTrend();
+});
+/* sol sekme: Trend Depolar ⇄ Tüm Repolar (eşit bölünmüş, ortalanmış) */
+document.querySelectorAll('.gh-tab').forEach((b) =>
+  b.addEventListener('click', () => {
+    ghState.ghTab = b.dataset.ghtab;
+    document.querySelectorAll('.gh-tab').forEach((x) => x.classList.toggle('on', x === b));
+    $('#ghTrendTools').hidden = ghState.ghTab !== 'trend';
+    $('#ghAllTools').hidden = ghState.ghTab !== 'all';
+    updateGhSub();
+    loadGhTrend();
+  })
+);
+/* tüm repolar arama + üçlü sıralama: en iyi eşleşme → azalan → artan */
+$('#ghAllSearch').addEventListener('keydown', (e) => {
+  if (e.key !== 'Enter') return;
+  ghState.allQ = $('#ghAllSearch').value.trim();
+  updateGhSub();
+  loadGhTrend();
+});
+$('#ghAllSortBtn').addEventListener('click', () => {
+  ghState.allSort = ghState.allSort === 'best' ? 'desc' : ghState.allSort === 'desc' ? 'asc' : 'best';
+  updateGhAllSortBtn();
+  updateGhSub();
+  loadGhTrend();
+});
+/* ⟳ sıfırla + yenile: ilgili sekmenin filtrelerini başa alır, modal ilk açıldığı gibi yüklenir */
+$('#ghTrendRefresh').addEventListener('click', () => {
+  ghState.range = '2w';
+  ghState.sort = 'desc';
+  ghState.q = '';
+  $('#ghSearch').value = '';
+  document.querySelectorAll('#ghRanges button').forEach((x) => x.classList.toggle('on', x.dataset.range === '2w'));
+  updateGhSortBtn();
+  updateGhSub();
+  loadGhTrend();
+});
+$('#ghAllRefresh').addEventListener('click', () => {
+  ghState.allQ = '';
+  ghState.allSort = 'best';
+  $('#ghAllSearch').value = '';
+  updateGhAllSortBtn();
+  updateGhSub();
+  loadGhTrend();
+});
 
 
 /* ================= IDE MODU =================

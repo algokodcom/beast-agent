@@ -39,6 +39,7 @@
         <button id="themeBtn" title="Koyu tema">&#x263E;</button>
         <button id="langBtn" title="Dil değiştir / Switch language" data-i18n-title="tipLang"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3c2.6 2.6 2.6 15.4 0 18M12 3c-2.6 2.6-2.6 15.4 0 18"/></svg></button>
         <button id="storeBtn" title="Skills Store" data-i18n-title="tipStore"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16l-1.3 12.1a2 2 0 0 1-2 1.9H7.3a2 2 0 0 1-2-1.9L4 7z"/><path d="M8 10V6a4 4 0 0 1 8 0v4"/></svg></button>
+        <button id="gitBtn" title="GitHub Trending" data-i18n-title="tipGithub"><svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor" aria-hidden="true"><path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></svg></button>
         <button id="ideBtn" title="IDE Modu" data-i18n-title="tipIde"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6l-5 6 5 6"/><path d="M16 6l5 6-5 6"/><path d="M13.5 4l-3 16"/></svg></button>
       </div>
     </aside>
@@ -70,11 +71,9 @@
             <div id="cfgList" class="dd-list"></div>
           </div>
         </div>
-        <button id="railBtn" class="dd-btn dd-icon-btn on" title="Paralel Ajan Konsolu" data-i18n-title="tipRail">&#x25A4;</button>
+        <button id="railBtn" class="dd-btn dd-icon-btn" title="Paralel Ajan Konsolu" data-i18n-title="tipRail">&#x25A4;</button>
         <button id="watchBtn" class="dd-btn dd-icon-btn" title="İzleyiciler (Watchers)" data-i18n-title="tipWatch">&#x25CE;</button>
         <button id="cronBtn" class="dd-btn dd-icon-btn" title="Cron Görevler" data-i18n-title="tipCron">&#x23F1;&#xFE0E;</button>
-        <button id="termBtn" class="dd-btn dd-icon-btn" title="Terminal (PowerShell)" data-i18n-title="tipTerm">&gt;</button>
-        <button id="termGBtn" class="dd-btn dd-icon-btn" title="Git Bash terminali" data-i18n-title="tipTermG">&#x25C8;</button>
         <button id="termCBtn" class="dd-btn dd-icon-btn" title="CMD terminali" data-i18n-title="tipTermC">&#x276F;&#xFE0E;</button>
         <button id="browserBtn" class="dd-btn dd-icon-btn" title="Dahili tarayıcı" data-i18n-title="tipBrowser">&#x29C9;</button>
         <button id="eyeBtn" class="dd-btn dd-icon-btn" title="Ajan tarayıcısı görünür/gizli — göz açıkken aramalar panelde izlenir, kapalıyken gizli çalışır" data-i18n-title="tipEye"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/><line class="eye-slash" x1="4" y1="4" x2="20" y2="20"/></svg></button>
@@ -91,15 +90,13 @@
 
       <div id="composerWrap">
         <div id="todoPanel" hidden></div>
-        <div id="statusPill" hidden></div>
+        <div id="statusRow"><div id="statusPill" hidden></div><div id="toast" hidden></div></div>
         <div id="chips" hidden></div>
         <div id="slashMenu" hidden></div>
         <div id="composer">
           <div id="composerLeft" class="dd">
             <button id="attachBtn" title="Dosya / resim ekle" data-i18n-title="tipAttach">+</button>
             <button id="micBtn" title="Sesli komut — konuş, bırakınca yazıya çevirsin" data-i18n-title="tipMic"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><path d="M12 19v3"/></svg></button>
-            <button id="guestBotBtn" title="Konuşmaya bot davet et — davetli botlara ajan bot_dm ile danışır" data-i18n-title="tipGuestBot" hidden><span style="filter:grayscale(1)">🤖</span></button>
-            <div id="guestBotMenu" class="dd-menu" hidden></div>
           </div>
           <textarea id="input" rows="1" placeholder="Bir şey sor ya da görev ver…  (Enter: gönder · Shift+Enter: satır · /: komutlar)" data-i18n-ph="composerPh"></textarea>
           <button id="stopBtn" title="Durdur" hidden data-i18n-title="tipStop">■</button>
@@ -272,6 +269,47 @@
     </div>
   </div>
 
+  <div id="ghOverlay" hidden>
+    <div id="ghDialog">
+      <div id="ghHead">
+        <span id="ghTitle">GITHUB TRENDING</span>
+        <span class="store-spacer"></span>
+        <button id="ghClose" class="mini-close" title="Kapat" data-i18n-title="btn_close">&#x00D7;</button>
+      </div>
+      <div id="ghBody">
+        <section id="ghTrendPane" class="gh-pane">
+          <div class="gh-pane-tabs">
+            <button class="gh-tab on" data-ghtab="trend">Trend Depolar</button>
+            <button class="gh-tab" data-ghtab="all">Tüm Repolar</button>
+          </div>
+          <div class="gh-pane-subline" id="ghTrendSub">— son 2 haftanın yıldız yükselenleri</div>
+          <div id="ghTrendTools" class="gh-filters">
+            <div class="gh-ranges" id="ghRanges">
+              <button data-range="all" title="Tüm zamanlar">Tümü</button>
+              <button data-range="6m" title="Son 6 ay">6 Ay</button>
+              <button data-range="1m" title="Son 1 ay">1 Ay</button>
+              <button data-range="2w" class="on" title="Son 2 hafta">2 Hafta</button>
+              <button data-range="1w" title="Son 1 hafta">1 Hafta</button>
+            </div>
+            <button id="ghSortBtn" title="Yıldız sırası: azalan / artan">↓ Yıldız</button>
+            <input id="ghSearch" placeholder="Repo ara… (Enter)" spellcheck="false" />
+            <button id="ghTrendRefresh" class="gh-refresh" title="Sıfırla ve yenile — modal ilk açıldığı gibi">&#x27F3;</button>
+          </div>
+          <div id="ghAllTools" class="gh-filters" hidden>
+            <input id="ghAllSearch" placeholder="Tüm GitHub'da ara… (Enter)" spellcheck="false" />
+            <button id="ghAllSortBtn" title="Sıralama: en iyi eşleşme / yıldız">⭐ En İyi</button>
+            <button id="ghAllRefresh" class="gh-refresh" title="Sıfırla ve yenile">&#x27F3;</button>
+          </div>
+          <div id="ghTrendList" class="gh-pane-list"></div>
+        </section>
+        <section id="ghFavPane" class="gh-pane">
+          <div class="gh-pane-title">Favoriler <span class="gh-pane-sub">— yıldızladıkların burada saklanır</span></div>
+          <div id="ghFavList" class="gh-pane-list"></div>
+        </section>
+      </div>
+    </div>
+  </div>
+
   <div id="watchOverlay" class="mini-overlay" hidden>
     <div class="mini-dialog">
       <div class="mini-head">
@@ -318,14 +356,12 @@
       <div id="termOut"></div>
     </div>
     <div id="termInputRow">
-      <span id="termPrompt">PS&gt;</span>
+      <span id="termPrompt">CMD&gt;</span>
       <input id="termInput" spellcheck="false" autocomplete="off" placeholder="komut yaz, Enter'la çalıştır…" data-i18n-ph="term_ph" />
       <button id="termStop" title="Çalışan komutu durdur" hidden data-i18n-title="term_stop">&#x25A0;&#xFE0E;</button>
     </div>
   </div>
   <div id="termResize" hidden title="Sürükleyerek boyutlandır"></div>
-
-  <div id="toast"></div>
 
   <div id="fileCtxMenu" hidden></div>
 

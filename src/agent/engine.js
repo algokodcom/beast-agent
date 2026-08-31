@@ -333,41 +333,6 @@ class Engine {
     else this.sessionTools.delete(id);
   }
 
-  /* ANA SOHBETE DAVETLİ BOTLAR: oturuma guest bot ekle/çıkar (persist) */
-  setSessionGuests(sessionId, guests) {
-    const s = this._load(String(sessionId || ''));
-    if (!s) return false;
-    const items = (Array.isArray(guests) ? guests : [])
-      .slice(0, 4)
-      .map((g) => ({ id: String((g && g.id) || ''), code: String((g && g.code) || ''), name: String((g && g.name) || '').slice(0, 40) }))
-      .filter((g) => g.id && g.code);
-    s.guests = items;
-    try {
-      const file = this._file(s.id);
-      const lines = fs.readFileSync(file, 'utf8').split('\n').filter((l) => l.trim());
-      const kept = lines.filter((l) => {
-        try { return JSON.parse(l).t !== 'guests'; } catch { return true; }
-      });
-      const out = kept.join('\n') + (items.length ? '\n' + JSON.stringify({ t: 'guests', items }) : '') + '\n';
-      const tmp = file + '.tmp';
-      fs.writeFileSync(tmp, out);
-      fs.renameSync(tmp, file);
-    } catch {}
-    return true;
-  }
-
-  /* Davetli botlar system prompt bloğu — ajan bot_dm ile onlara danışır */
-  _guestsBlock(session) {
-    const g = Array.isArray(session && session.guests) ? session.guests : [];
-    if (!g.length) return '';
-    const lines = g.map((x) => `- ${x.name} (kod: ${x.code})`).join('\n');
-    return (
-      `# DAVETLİ BOTLAR\n` +
-      `Bu sohbete şu botlar davet edildi. Kullanıcı onlara hitap ederse veya uzmanlıkları gereken bir konu olursa ` +
-      `bot_dm aracıyla (to=5 haneli kod) onlara yaz; aldığın cevabı [BotAdı] etiketiyle kullanıcıya aktar:\n${lines}`
-    );
-  }
-
   /* Oturumun bağlı olduğu MÜŞTERİ botu (admin/seasız → null → global hafıza) */
   _sessionBotCtx(session) {
     if (!session || !session.botId || typeof this.resolveBot !== 'function') return null;
@@ -947,9 +912,6 @@ class Engine {
             session.isBotDm = true;
             session.dmA = String(rec.a || '');
             session.dmB = String(rec.b || '');
-          } else if (rec.t === 'guests') {
-            /* ana sohbete davetli botlar */
-            session.guests = Array.isArray(rec.items) ? rec.items : [];
           } else if (rec.t === 'msg') {
             delete rec.t;
             session.messages.push(rec);
@@ -1086,7 +1048,6 @@ class Engine {
       count: s.messages.length,
       isBg,
       isBotDm: !!s.isBotDm,
-      guests: Array.isArray(s.guests) ? s.guests : [],
       bgStatus: isBg ? (job ? job.status : null) : null,
     };
   }
@@ -1330,11 +1291,11 @@ class Engine {
             : 'Bağımsız alt-işleri delegate_task ile devret; kendi başına halledebileceğin işleri devretme.',
           'Güncel/dış bilgi gerekiyorsa web_search kullan (zincir DAHİLİ tarayıcıyla başlar — gerçek Chromium ile Google); hızlı ham metin okuması için http_fetch kullan.',
           'ARAMA-DİSİPLİN: bir bilgiyi 2-3 denemede bulamazsan TAKILMA — farklı bir açıya/sorguya geç, yine yoksa bulabildiğin kısmi bilgiyle cevap ver ve neyi bulamadığını açıkça söyle. Kapalı/gizli içerik (private profil, login arkası veri) peşinde KOŞMA — bulunamayacağı belliyse hemen vazgeç.',
-          'TARAYICI VARSAYILANI (ZORUNLU): kullanıcı "şu siteyi aç", "bunu ara / google\u2019da ara", "şu sayfaya git" gibi bir web isteği verdiğinde HEP DAHİLİ TARAYICIYI KULLAN (browser_open ile aç → browser_snapshot al → ref numaralarıyla browser_click/browser_type/browser_select ile hareket et, browser_read ile metin oku; sadece görsel yerleşim/grafik gerekiyorsa browser_screenshot çek). Panel ekranın sağında açılır ve kullanıcı da sayfayı anında görür; JS/login/SPA/dinamik içerik için idealdir. Bu kural TÜM oturumları kapsar — masaüstü sohbeti ve çok kullanıcılı botlar (WhatsApp vb.) dahil.' +
+          'TARAYICI VARSAYILANI (ZORUNLU): kullanıcı "şu siteyi aç", "bunu ara / google\u2019da ara", "şu sayfaya git" gibi bir web isteği verdiğinde HEP DAHİLİ TARAYICIYI KULLAN (browser_open ile aç → açılış yanıtında hazır snapshot gelir → ref numaralarıyla browser_click/browser_type/browser_select ile hareket et; HER eylem yanıtında taze snapshot döner — ayrıca browser_snapshot çağırma, yanıttaki refleri kullan; browser_read ile metin oku; sadece görsel yerleşim/grafik gerekiyorsa browser_screenshot çek). Tarih/saat alanlarını (type=date/time) browser_type ile DÜZ METİN yaz ("15.03.2026", "2026-03-15") — takvimden tıklamaya çalışma, alan programatik ayarlanır. Panel ekranın sağında açılır ve kullanıcı da sayfayı anında görür; JS/login/SPA/dinamik içerik için idealdir. Bu kural TÜM oturumları kapsar — masaüstü sohbeti ve çok kullanıcılı botlar (WhatsApp vb.) dahil.' +
             ' DIŞ TARAYICI İSTİSNASI: kullanıcı AÇIKÇA "chrome\u2019da aç", "firefox\u2019ta aç", "başka tarayıcıda aç", "normal tarayıcıda aç", "kendi tarayıcımda aç" derse O ZAMAN run_command ile `start "" <url>` çalıştır — sistem varsayılan (dış) tarayıcısında açılır. Kullanıcı dış tarayıcı istemedikçe ASLA dış tarayıcı açma.' +
             ' Görselleri GÖREMEMİYORSAN (metin-model) görüntüdeki metni okumak için ocr_read kullan: source:"browser" ile tarayıcı sayfasını, "screen" ile masaüstünü OCR\u2019la okursun (captcha/canvas/görsel metin dahil).' +
             (this.ceoMode ? ' (CEO: bu araçları KENDİN ÇAĞIRMA — içinde tarayıcı geçen işi run_background ile paralel ajana devret.)' : ''),
-          'Tarayıcı eylemlerinin yanıtındaki recent günlüğü ve navigated bilgisini takip et; sayfa değişmişse yeni snapshot al.',
+          'Tarayıcı eylemlerinin yanıtındaki recent günlüğü ve navigated bilgisini takip et; eylem yanıtları zaten taze snapshot içerir — refler tutarsız görünürse yeni snapshot al.',
           'CONUŞMA ODAĞI SENDE KALSIN: kullanıcı seninle konuşurken iş çıkmışsa — uzun da olsa UFACIK da (tek komutluk dizin listesi, tek dosya okuma, tek arama…) — run_background ile PARALEL ajana devret; ana sohbet hiçbir işi beklemez; bittiğinde özet otomatik düşer.',
           'Python işleri için python_run kullan: küçük betikler inline code ile; tekrarlayan işler %APPDATA%\\beast\\scripts klasöründeki dosyalarla (ör. news.py = RSS haber toplayıcı: args ["--limit","8","--json"]). Python kurulu olmasa bile ilk çağrıda taşınabilir gömülü runtime otomatik iner.',
           'PYTHON DURUMU: makinede sistem Python\'u görünmese bile ŞAŞIRMA ve "python yok" DEME — python_run aracı kendi taşınabilir runtime\'ını (%APPDATA%\\beast\\py\\python.exe) otomatik indirir/kullanır ve bu klasör run_command PATH\'inde önceliklidir; yani run_command içinde de `python` çalışır. Ham Google/Bing scrape yerine önce web_search aracını kullan (zaten Python çoklu-motor + Exa destekli), script gerektiğinde python_run yaz.',
@@ -2220,8 +2181,6 @@ class Engine {
     /* bot kimliği: bota bağlı oturumlarda kişilik + izolasyon kuralları */
     const botBlock = this._botSystemBlock(session);
     if (botBlock) system += '\n\n' + botBlock;
-    const guestBlock = this._guestsBlock(session);
-    if (guestBlock) system += '\n\n' + guestBlock;
     if (session.notes) {
       system +=
         `\n\n# OTURUM NOTLARI (oturum ${session.code || '?'} — bu oturumun önceki konuşma özeti; birebir geçmişi buradan hatırla)\n` +
@@ -3112,23 +3071,38 @@ class Engine {
         return JSON.stringify(r);
       }
       if (name === 'web_search') {
-        /* SIRA: 0) TinyFish (anahtar girildiyse ZİRVEDE)
-                 1) dahili tarayıcı (gerçek Chromium ile DİREK GOOGLE — bot koruması yok)
-                 2) python çoklu-motor (ddgs / DDG+Bing+Mojeek)
-                 3) Exa (anahtar girildiyse, son çare) */        const q = String((args && args.query) || '');
+        /* SIRA: 1) dahili tarayıcı (DİREK GOOGLE — ücretsiz + AI cevabı)
+                 2) TinyFish (tarayıcı sorun çıkarsa HEMEN devreye girer — anahtar girildiyse)
+                 3) python çoklu-motor (ddgs / DDG+Bing+Mojeek)
+                 4) Exa (anahtar girildiyse, son çare)
+           Tarayıcıda CAPTCHA/"olağandışı trafik"/boş sonuç algılanırsa 10 dk boyunca
+           tarayıcı ATLANIR — her arama TinyFish'ten başlar, süre dolunca tarayıcı geri döner. */
+        const q = String((args && args.query) || '');
+        const n = Number((args && args.max_results) || 8);
         let r = null;
-        try { r = await tools.tinyfishSearch(q, Number((args && args.max_results) || 8), signal); } catch {}
-        if (!r || !r.ok || !(r.results || []).length) {
-          if (this.browser && typeof this.browser.search === 'function') {
-            try { r = await this.browser.search(q, signal); } catch {}
+        let banned = false;
+        const browserUsable = this.browser && typeof this.browser.search === 'function';
+        if (Date.now() < (this._webSearchBrowserBanUntil || 0)) banned = true;
+        if (browserUsable && !banned) {
+          try { r = await this.browser.search(q, signal); } catch {}
+          if (!r || !r.ok || !(r.results || []).length) {
+            /* tarayıcı sorunlu — 10 dk atla, alternatif zincir hemen devrede */
+            this._webSearchBrowserBanUntil = Date.now() + 10 * 60 * 1000;
+            r = null;
+            banned = true;
           }
+        }
+        if (!r || !r.ok || !(r.results || []).length) {
+          try { r = await tools.tinyfishSearch(q, n, signal); } catch {}
         }
         if (!r || !r.ok || !(r.results || []).length) {
           try {
             r = JSON.parse(await tools.exec('web_search', args, { cwd: this._sessionWorkspace(sessionId), signal }));
           } catch {}
         }
-        return JSON.stringify(r || { ok: false, error: 'web arama başarısız — tüm motorlar boş döndü' });
+        const out = r || { ok: false, error: 'web arama başarısız — tüm motorlar boş döndü' };
+        if (out && out.ok && banned) out.note = 'tarayıcı araması 10 dk askıda (CAPTCHA/trafik) — TinyFish/alternatif zincir kullanıldı';
+        return JSON.stringify(out);
       }
       if (name === 'ocr_read') {
         return JSON.stringify(await this._ocrRead(args || {}, signal));
@@ -3676,7 +3650,7 @@ const TOOLS = [
     function: {
       name: 'browser_open',
       description:
-        'Open a URL in the built-in visible browser panel (JS-rendered pages work). This is the DEFAULT for every "open this site / search this / go to page" request — the user watches the page live in the side panel; ideal for login, SPA and dynamic content. Always follow with browser_snapshot, then act via refs (browser_click/browser_type/browser_select) and read via browser_read. Open the OS default (external) browser ONLY when the user explicitly asks for chrome/firefox/another/normal/my-own browser — in that case use run_command with `start "" <url>` instead of this tool.',
+        'Open a URL in the built-in visible browser panel (JS-rendered pages work). This is the DEFAULT for every "open this site / search this / go to page" request — the user watches the page live in the side panel; ideal for login, SPA and dynamic content. The response ALREADY includes a fresh snapshot with numbered refs — act directly with browser_click/browser_type/browser_select; no separate browser_snapshot needed. Open the OS default (external) browser ONLY when the user explicitly asks for chrome/firefox/another/normal/my-own browser — in that case use run_command with `start "" <url>` instead of this tool.',
       parameters: {
         type: 'object',
         properties: {
@@ -3709,7 +3683,7 @@ const TOOLS = [
     function: {
       name: 'browser_snapshot',
       description:
-        'List all interactive elements of the built-in browser page as numbered refs: [3] <button> "Gönder". ALWAYS start with this; then act using ref numbers. Much more reliable than CSS selectors.',
+        'List all interactive elements of the built-in browser page as numbered refs: [3] <button> "Gönder". NOTE: every browser action response already includes a fresh snapshot — call this separately only when refs seem stale or you need a re-scan (e.g. after an action whose response had no snapshot). Open popups/calendars/datepickers are listed FIRST. Much more reliable than CSS selectors.',
       parameters: { type: 'object', properties: {}, required: [] },
     },
   },
@@ -3733,7 +3707,7 @@ const TOOLS = [
     function: {
       name: 'browser_click',
       description:
-        'Click an element in the built-in browser. Prefer ref from browser_snapshot (e.g. {"ref":3}); CSS selector or text=X also accepted.',
+        'Click an element in the built-in browser. Prefer ref from the latest snapshot (e.g. {"ref":3}); CSS selector or text=X also accepted. The response includes a FRESH snapshot with new refs — continue with those directly instead of calling browser_snapshot again.',
       parameters: {
         type: 'object',
         properties: {
@@ -3748,7 +3722,7 @@ const TOOLS = [
     function: {
       name: 'browser_type',
       description:
-        'Type text into an input/textarea/contenteditable in the built-in browser (prefer ref). Set submit=true to press Enter afterwards.',
+        'Type text into an input/textarea/contenteditable in the built-in browser (prefer ref). Set submit=true to press Enter afterwards. Date/time fields (input type=date/time/month/datetime-local) are set PROGRAMMATICALLY — just send the date as text in any common format ("2026-03-15", "15.03.2026", "15 Mart 2026"); do NOT click the calendar popup. The response includes a FRESH snapshot with new refs.',
       parameters: {
         type: 'object',
         properties: {
@@ -3766,7 +3740,7 @@ const TOOLS = [
     function: {
       name: 'browser_press',
       description:
-        'Press a key (Enter, Tab, Escape, ArrowDown…) on the focused element in the built-in browser; optionally focus a ref first.',
+        'Press a key (Enter, Tab, Escape, ArrowDown…) on the focused element in the built-in browser; optionally focus a ref first. The response includes a FRESH snapshot with new refs.',
       parameters: {
         type: 'object',
         properties: {
@@ -3781,7 +3755,8 @@ const TOOLS = [
     type: 'function',
     function: {
       name: 'browser_scroll',
-      description: 'Scroll the built-in browser page. direction: up | down.',
+      description:
+        'Scroll the built-in browser page. direction: up | down. The response includes a FRESH snapshot with newly visible refs.',
       parameters: {
         type: 'object',
         properties: {
@@ -3797,7 +3772,7 @@ const TOOLS = [
     function: {
       name: 'browser_select',
       description:
-        'Pick an <option> of a dropdown (<select>) in the built-in browser by value/text (prefer ref).',
+        'Pick an <option> of a dropdown (<select>) in the built-in browser by value/text (prefer ref). The response includes a FRESH snapshot with new refs. For CUSTOM (JS) dropdowns that are not <select>, click the trigger, then click the [role=option] ref from the snapshot (popups are listed first).',
       parameters: {
         type: 'object',
         properties: {

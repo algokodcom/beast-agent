@@ -149,8 +149,7 @@ function startNpmUpdateWatch() {
   check();
   setInterval(check, 6 * 60 * 60 * 1000);
 }
-const { htmlToText, setExaKey, setTinyfishKey, webSearchFast } = require('./agent/tools');
-const research = require('./agent/research');
+const { htmlToText, setExaKey, setTinyfishKey } = require('./agent/tools');
 const { waToolLine } = require('./agent/watext');
 
 /* #3 merkezî log sistemine process-seviye hataları da düşsün */
@@ -2100,13 +2099,9 @@ function reloadBackend() {
       act: (k, a, s) => browserAct(k, a, s),
     },
     research: {
-      /* deep_search hook'u: çoklu sorgu araması + GİZLİ tarayıcıda tam sayfa okuma.
-         Panel (browser.*) hiç kullanılmaz — kullanıcı ekranı rahatsız edilmez. */
-      deepSearch: (args, signal) =>
-        research.deepSearch(args || {}, {
-          search: (q) => webSearchFast(q, { maxResults: 10, signal }),
-          readPage: (u) => researchRead(u, signal),
-        }, signal),
+      /* deep_search'ün "sayfayı GİZLİ tarayıcıda açıp oku" parçası (Electron-only).
+         Arama zinciri engine._webSearchChain içinde web_search ile birebir aynı. */
+      readPage: (u, s) => researchRead(u, s),
     },
     emit: (ev) => {
       if (win && !win.isDestroyed()) win.webContents.send('agent:event', ev);
@@ -2598,26 +2593,13 @@ function browserGate(job) {
   __trafficTail = p.catch(() => {});
   return p;
 }
-/* çağıran oturum paralel ajan mı? (run_background ile açılan bg oturumu)
-   → tarayıcıyı GİZLİ kullan: panel ekrana fırlamaz, ajan konsolu kapanmaz */
-function isBgBrowserCtx(ctx) {
-  const sid = ctx && ctx.sessionId ? String(ctx.sessionId) : '';
-  if (!sid) return false;
-  try {
-    return !!(engine && engine._bgJobs && engine._bgJobs.has(sid));
-  } catch {
-    return false;
-  }
-}
-
-/* bg ajan için açma stratejisi: kapalıysa GİZLİ aç; zaten açıksa mevcut
-   görünürlüğe dokunma (kullanıcı paneli izliyorsa aniden saklamayalım) */
-function setBrowserOpenForAgent(ctx) {
-  if (isBgBrowserCtx(ctx)) {
-    if (!browser.open) setBrowserOpen(true, false);
-    return;
-  }
-  setBrowserOpen(true);
+/* AJAN TARAYICI STRATEJİSİ — TÜM oturumlar (ana sohbet + WhatsApp botları + paralel ajanlar):
+   ajan tarayıcıyı KENDİ açıyorsa hep GİZLİ açılır — panel ekrana fırlamaz,
+   Paralel Ajan Konsolu kapanmaz. Kullanıcı izlemek isterse tarayıcı düğmesine
+   basar (browser:toggle gizli paneli görünür kılar). Zaten açıksa (kullanıcı
+   paneli açık tutuyorsa) görünürlüğe dokunulmaz. */
+function setBrowserOpenForAgent() {
+  if (!browser.open) setBrowserOpen(true, false);
 }
 
 async function browserNavigate(raw, signal, ctx) {
@@ -2636,7 +2618,7 @@ async function browserNavigateNow(raw, signal, ctx) {
       ? 'https://' + url
       : 'https://duckduckgo.com/?q=' + encodeURIComponent(url);
   }
-  setBrowserOpenForAgent(ctx);
+  setBrowserOpenForAgent();
   const wc = browser.view.webContents;
   await new Promise((resolve) => {
     let settled = false;
@@ -2863,7 +2845,7 @@ async function browserSearchNow(query, signal, ctx) {
     if (signal && signal.aborted) return null;
     const q = String(query || '').trim();
     if (!q) return null;
-    setBrowserOpenForAgent(ctx);
+    setBrowserOpenForAgent();
     const wc = browser.view && browser.view.webContents;
     if (!wc) return null;
 
@@ -4665,7 +4647,12 @@ ipcMain.handle('cron:runNow', (_e, id) => {
 
 /* ---------------- tarayıcı IPC ---------------- */
 ipcMain.handle('browser:toggle', () => {
-  /* kullanıcı kendi açıyor → mutlaka görünür */
+  /* gizli çalışan ajan paneli varsa düğme ONU GÖRÜNÜR yapar; değilse aç/kapa.
+     (ajanlar tarayıcıyı hep gizli açar — kullanıcı izlemek isterse buradan gösterir) */
+  if (browser.open && !browser.visible) {
+    setBrowserOpen(true, true);
+    return { open: browser.open, visible: browser.visible };
+  }
   setBrowserOpen(!browser.open, true);
   return { open: browser.open, visible: browser.visible };
 });

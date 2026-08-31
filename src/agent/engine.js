@@ -6,9 +6,10 @@
 
 const fs = require('fs');
 const path = require('path');
-const { chatStream, chatOnce } = require('./llm');
+const { chatStream, chatStreamAuto, chatOnce } = require('./llm');
 const { chatCompletionsUrl } = require('./config');
 const tools = require('./tools');
+const research = require('./research');
 const memory = require('./memory');
 const skills = require('./skills');
 const { estTokens, estMsgTokens } = require('./tokens');
@@ -608,7 +609,7 @@ class Engine {
             }
           }
         }
-        const res = await chatStream(
+        const res = await chatStreamAuto(
           c,
           { messages: msgs, tools: activeTools, reasoningEffort: this._thinkEffortFor(session) },
           {
@@ -1300,6 +1301,7 @@ class Engine {
           'CONUŞMA ODAĞI SENDE KALSIN: kullanıcı seninle konuşurken iş çıkmışsa — uzun da olsa UFACIK da (tek komutluk dizin listesi, tek dosya okuma, tek arama…) — run_background ile PARALEL ajana devret; ana sohbet hiçbir işi beklemez; bittiğinde özet otomatik düşer.',
           'Python işleri için python_run kullan: küçük betikler inline code ile; tekrarlayan işler %APPDATA%\\beast\\scripts klasöründeki dosyalarla (ör. news.py = RSS haber toplayıcı: args ["--limit","8","--json"]). Python kurulu olmasa bile ilk çağrıda taşınabilir gömülü runtime otomatik iner.',
           'PYTHON DURUMU: makinede sistem Python\'u görünmese bile ŞAŞIRMA ve "python yok" DEME — python_run aracı kendi taşınabilir runtime\'ını (%APPDATA%\\beast\\py\\python.exe) otomatik indirir/kullanır ve bu klasör run_command PATH\'inde önceliklidir; yani run_command içinde de `python` çalışır. Ham Google/Bing scrape yerine önce web_search aracını kullan (zaten Python çoklu-motor + Exa destekli), script gerektiğinde python_run yaz.',
+          'PDF ÇIKTI KURALI: PDF üretirken pip\u2019ten pdf paketi (fpdf, fpdf2, markdown-pdf, weasyprint, reportlab vb.) KURMA/KULLANMA — bunlar Türkçe karakterleri bozar. Doğru kit Node tarafında ZATEN kurulu: `pdf-lib` + `@pdf-lib/fontkit` (Türkçe font gömme) ve `pdfkit`. python_run ile DEĞİL; write_file ile .js script yazıp run_command ile `node script.js` çalıştır. md→pdf çevirici YOKTUR ve kurulmaz: kullanıcıya rapor/özet/belge çıktısı vereceksen .md dosyası gönderme — aynı içeriği DOĞRUDAN pdf-lib/pdfkit ile PDF olarak üret ve send_file ile o PDF\u2019i gönder. Ayrıntılı örnekler: pdf skill\u2019i (SKILL.md).',
           'Eski bir hafıza kaydına ihtiyacın olursa memory_search ile ara; kalıcı bilgi/birikim için kb_search kullan, yeni bilgi öğrenirsen kb_add ile kaynak belirt.',
           'Bir oturumda 3+ kez memory_write yaptıysan iş bitince memory_hygiene çağır (duplike/eskime temizliği).',
           'BEAST KAYNAK KORUMASI: Beast\u2019in kendi kurulum/kaynak kod klasörü KİLİTLİDİR — oraya dosya yazamaz, silamaz, komut/betikle değiştiremezsin; okumak serbest. Kullanıcı kodu ancak kendi eliyle dışarıdan değiştirir; böyle bir istek gelirse yapamayacağını söyle ve kullanıcının elle yapması için yol göster.',
@@ -2116,6 +2118,7 @@ class Engine {
       `- Döngülü işleri (çok URL/dosya/sayfa, tekrarlı parse-hesap) TEK python_run betiğinde topluca bitir.\n` +
       `- Web için web_search kullan (zincir dahili tarayıcıyla başlar — gerçek Chromium ile Google); tek aramada bulunamazsa veya çok kaynaklı derin araştırma gerekiyorsa deep_search kullan (çoklu sorgu paralel + gizli tarayıcıda tam sayfa okuma). Sayfa açma/göstermenin VARSAYILANI DAHİLİ tarayıcıdır: browser_open → browser_snapshot → browser_click/type/read. Kullanıcı açıkça dış tarayıcı (chrome/firefox/başka/normal/kendi tarayıcım) istediyse run_command ile \`start "" <url>\` çalıştır. Görseli göremiyorsan metni ocr_read ile oku (source:"browser").\n` +
       `- Bağımsız araç çağrılarını aynı turda PARALEL ver.\n` +
+      `- PDF gerekirse pip\u2019ten paket kurma (Türkçe bozar); Node\u2019un kurulu \`pdf-lib\`+fontkit\u2019iyle .js script yazıp \`node\` ile çalıştır. md→pdf çevirme: belge çıktısını doğrudan PDF olarak üret.\n` +
       `- ARAŞTIRMA SINIRI: 3-5 kaynak yeter; süre hedefi ~3 dakika. 2-3 denemede bulunamayan bilgiyi BIRAK — bulabildiğin kısmi sonucu raporla ve neyi bulamadığını yaz. Kapalı/gizli içerik peşinde koşma.\n` +
       FORMAT_RULES + '\n' +
       `SON ÇIKTI: 3-5 satırlık net sonuç raporu, madde madde. Soru sorma, sohbet etme.`
@@ -2695,7 +2698,7 @@ class Engine {
     ];
     try {
       for (let turn = 0; turn < SUB_MAX_TURNS; turn++) {
-        const res = await chatStream(
+        const res = await chatStreamAuto(
           sel,
           { messages: [{ role: 'system', content: system }, ...msgs.slice(1)], tools: subTools, reasoningEffort: this._thinkEffort() },
           { signal: ctrl.signal }
@@ -2718,6 +2721,40 @@ class Engine {
     } finally {
       if (parentSignal) parentSignal.removeEventListener('abort', onAbort);
     }
+  }
+
+  /* web_search zinciri — web_search VE deep_search aynı zinciri kullanır:
+     1) dahili tarayıcı (DİREK GOOGLE — ücretsiz + AI cevabı)
+     2) TinyFish (tarayıcı sorun çıkarsa HEMEN devreye girer — anahtar girildiyse)
+     3) python çoklu-motor (ddgs / DDG+Bing+Mojeek)
+     4) Exa (anahtar girildiyse, son çare)
+     Tarayıcıda CAPTCHA/"olağandışı trafik"/boş sonuç algılanırsa 10 dk boyunca
+     tarayıcı ATLANIR — her arama TinyFish'ten başlar, süre dolunca tarayıcı geri döner. */
+  async _webSearchChain(q, n, sessionId, signal) {
+    let r = null;
+    let banned = false;
+    const browserUsable = this.browser && typeof this.browser.search === 'function';
+    if (Date.now() < (this._webSearchBrowserBanUntil || 0)) banned = true;
+    if (browserUsable && !banned) {
+      try { r = await this.browser.search(q, signal, { sessionId }); } catch {}
+      if (!r || !r.ok || !(r.results || []).length) {
+        /* tarayıcı sorunlu — 10 dk atla, alternatif zincir hemen devrede */
+        this._webSearchBrowserBanUntil = Date.now() + 10 * 60 * 1000;
+        r = null;
+        banned = true;
+      }
+    }
+    if (!r || !r.ok || !(r.results || []).length) {
+      try { r = await tools.tinyfishSearch(q, n, signal); } catch {}
+    }
+    if (!r || !r.ok || !(r.results || []).length) {
+      try {
+        r = JSON.parse(await tools.exec('web_search', { query: q, max_results: n }, { cwd: this._sessionWorkspace(sessionId), signal }));
+      } catch {}
+    }
+    const out = r || { ok: false, error: 'web arama başarısız — tüm motorlar boş döndü' };
+    if (out && out.ok && banned) out.note = 'tarayıcı araması 10 dk askıda (CAPTCHA/trafik) — TinyFish/alternatif zincir kullanıldı';
+    return out;
   }
 
   /* Dahili OCR aracı: görüntüden metin çıkarır (görsel desteklemeyen modeller için).
@@ -3070,48 +3107,25 @@ class Engine {
       }
       if (name === 'deep_search') {
         /* agentic derin araştırma: çoklu sorgu + gizli tarayıcıda sayfa okuma.
-           Hook (main process) yoksa tools.exec'teki arama-tek yol devreye girer. */
+           ARAMA zinciri web_search ile BİREBİR AYNI — eski sürüm yalnız python
+           motorlarını (ddgs/DDG/Bing) kullanıyordu; CAPTCHA/engel sonucu motorlar
+           boş dönünce "tüm motorlar boş döndü" hatası veriyordu. Artık önce
+           DAHİLİ TARAYICI (Google) denenir, sonra TinyFish → python → Exa. */
         try {
           emitSafe(this, sessionId, { type: 'status', status: 'derin araştırma: çoklu sorgu + gizli sayfa okuma' });
         } catch {}
-        const run = this.research && typeof this.research.deepSearch === 'function'
-          ? this.research.deepSearch(args || {}, signal)
-          : tools.exec('deep_search', args || {}, { cwd: this._sessionWorkspace(sessionId), signal });
-        return JSON.stringify(await run);
+        const deps = {
+          search: (q) => this._webSearchChain(q, 10, sessionId, signal),
+        };
+        if (this.research && typeof this.research.readPage === 'function') {
+          deps.readPage = (u) => this.research.readPage(u, signal);
+        }
+        return JSON.stringify(await research.deepSearch(args || {}, deps, signal));
       }
       if (name === 'web_search') {
-        /* SIRA: 1) dahili tarayıcı (DİREK GOOGLE — ücretsiz + AI cevabı)
-                 2) TinyFish (tarayıcı sorun çıkarsa HEMEN devreye girer — anahtar girildiyse)
-                 3) python çoklu-motor (ddgs / DDG+Bing+Mojeek)
-                 4) Exa (anahtar girildiyse, son çare)
-           Tarayıcıda CAPTCHA/"olağandışı trafik"/boş sonuç algılanırsa 10 dk boyunca
-           tarayıcı ATLANIR — her arama TinyFish'ten başlar, süre dolunca tarayıcı geri döner. */
         const q = String((args && args.query) || '');
         const n = Number((args && args.max_results) || 8);
-        let r = null;
-        let banned = false;
-        const browserUsable = this.browser && typeof this.browser.search === 'function';
-        if (Date.now() < (this._webSearchBrowserBanUntil || 0)) banned = true;
-        if (browserUsable && !banned) {
-          try { r = await this.browser.search(q, signal, { sessionId }); } catch {}
-          if (!r || !r.ok || !(r.results || []).length) {
-            /* tarayıcı sorunlu — 10 dk atla, alternatif zincir hemen devrede */
-            this._webSearchBrowserBanUntil = Date.now() + 10 * 60 * 1000;
-            r = null;
-            banned = true;
-          }
-        }
-        if (!r || !r.ok || !(r.results || []).length) {
-          try { r = await tools.tinyfishSearch(q, n, signal); } catch {}
-        }
-        if (!r || !r.ok || !(r.results || []).length) {
-          try {
-            r = JSON.parse(await tools.exec('web_search', args, { cwd: this._sessionWorkspace(sessionId), signal }));
-          } catch {}
-        }
-        const out = r || { ok: false, error: 'web arama başarısız — tüm motorlar boş döndü' };
-        if (out && out.ok && banned) out.note = 'tarayıcı araması 10 dk askıda (CAPTCHA/trafik) — TinyFish/alternatif zincir kullanıldı';
-        return JSON.stringify(out);
+        return JSON.stringify(await this._webSearchChain(q, n, sessionId, signal));
       }
       if (name === 'ocr_read') {
         return JSON.stringify(await this._ocrRead(args || {}, signal, sessionId));

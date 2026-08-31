@@ -188,6 +188,51 @@ async function streamOnce(sel, body, { signal, onDelta, onRetry } = {}, omitReas
   return { content, reasoning, toolCalls, usage, finishReason };
 }
 
+/* usage toplama: devam turları gerçek faturalamayı yansıtsın (prompt yeniden sayılır) */
+function sumUsage(a, b) {
+  if (!a) return b || null;
+  if (!b) return a;
+  const out = {};
+  for (const k of new Set([...Object.keys(a), ...Object.keys(b)])) {
+    if (typeof a[k] === 'number' && typeof b[k] === 'number') out[k] = a[k] + b[k];
+    else out[k] = b[k] !== undefined ? b[k] : a[k];
+  }
+  return out;
+}
+
+/* OTOMATİK DEVAM: model cevabı çıkış limiti (finish_reason='length') yüzünden
+   kelime ortasında kesilirse — özellikle free modellerin düşük varsayılan
+   limitlerinde olur — yarım cümle kullanıcıya gitmesin. Kaldığı yerden devam
+   istenip metin birleştirilir (en fazla 2 devam turu). Araç çağrılı yanıtlarda
+   ve içerik hiç gelmediyse devreye girmez; orijinal mesaj dizisi DEĞİŞTİRİLMEZ. */
+const CONTINUE_PROMPT =
+  'Yanıtın çıkış limiti nedeniyle ortadan kesildi. Kaldığın yerden DEVAM ET — baştan başlama, özetleme, açıklama yapma; yalnızca kesilen kısmın DEVAMINI yaz.';
+
+async function chatStreamAuto(sel, body, opts = {}) {
+  const first = await chatStream(sel, body, opts);
+  if (first.finishReason !== 'length' || !first.content || (first.toolCalls && first.toolCalls.length)) {
+    return first;
+  }
+  let full = first.content;
+  let last = first;
+  for (let i = 0; i < 2; i++) {
+    const msgs2 = body.messages.slice();
+    msgs2.push({ role: 'assistant', content: full });
+    msgs2.push({ role: 'user', content: CONTINUE_PROMPT });
+    let cont;
+    try {
+      cont = await chatStream(sel, { ...body, messages: msgs2 }, opts);
+    } catch {
+      break; // devam turu patlarsa elimizdeki kısmi yanıtla döneriz
+    }
+    if (!cont.content || (cont.toolCalls && cont.toolCalls.length)) break;
+    full += cont.content;
+    last = { ...cont, content: full, usage: sumUsage(first.usage, cont.usage) };
+    if (cont.finishReason !== 'length') break;
+  }
+  return last;
+}
+
 async function chatOnce(sel, body, { signal, onRetry } = {}) {
   const res = await withRetries(
     async () => {
@@ -216,4 +261,4 @@ async function chatOnce(sel, body, { signal, onRetry } = {}) {
   };
 }
 
-module.exports = { chatStream, chatOnce, withRetries, friendlyError };
+module.exports = { chatStream, chatStreamAuto, chatOnce, withRetries, friendlyError, sumUsage };

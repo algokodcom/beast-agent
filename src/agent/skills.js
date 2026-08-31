@@ -232,13 +232,20 @@ Zorunlu kurallar:
   },
   {
     folder: 'pdf',
+    force: true,
     body: `---
 name: pdf
 description: PDF işleme rehberi — metin çıkarma (pdf-parse), Türkçe karakterli PDF oluşturma/değiştirme (pdf-lib/pdfkit), sayfa→görsel (pdf-to-img) ve taranmış PDF için OCR (tesseract.js). Kullanıcı bir .pdf dosyasından bahsederse ÖNCE bu skill'i oku.
-version: 1.0.0
+version: 1.1.0
 ---
 
 # PDF İşleme Rehberi
+
+## EN KRİTİK KURALLAR (önce bunlar)
+
+1. Türkçe karakterli PDF için pip\u2019ten paket KURMA/KULLANMA (fpdf, fpdf2, markdown-pdf, weasyprint, reportlab vb.) — bunlar ğ ş ı İ karakterlerini bozar. Doğru kit Node\u2019ta ZATEN kurulu: \`pdf-lib\` + \`@pdf-lib/fontkit\` ve \`pdfkit\`. Script\u2019i write_file ile .js yaz, run_command ile \`node script.js\` çalıştır (python_run İLE DEĞİL).
+2. md→pdf çevirici YOKTUR ve kurulmaz — kullanıcıya rapor/özet/belge çıktısı vereceksen .md gönderme; aynı içeriği doğrudan PDF olarak ÜRET ve o dosyayı send_file ile gönder.
+3. \`pdf-parse\` ile \`pdf-to-img\` aynı process\u2019e yüklenmez (aşağıdaki çakışma kuralı).
 
 Kurulu paketler ve rolleri:
 

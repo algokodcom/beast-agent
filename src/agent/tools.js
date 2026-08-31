@@ -501,21 +501,27 @@ async function fetchWithTimeout(url, opts = {}, timeoutMs = 20000, signal) {
 async function webSearch(query, { maxResults = 8, signal } = {}) {
   const q = String(query || '').trim().slice(0, 400);
   if (!q) return { ok: false, error: 'boş sorgu' };
-  const res = await fetchWithTimeout(
-    'https://html.duckduckgo.com/html/',
-    {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'User-Agent': UA,
-        Accept: 'text/html',
+  let res;
+  try {
+    res = await fetchWithTimeout(
+      'https://html.duckduckgo.com/html/',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'User-Agent': UA,
+          Accept: 'text/html',
+        },
+        body: new URLSearchParams({ q }).toString(),
       },
-      body: new URLSearchParams({ q }).toString(),
-    },
-    20000,
-    signal
-  );
-  if (!res.ok) throw new Error(`DDG HTTP ${res.status}`);
+      20000,
+      signal
+    );
+  } catch (e) {
+    /* ağ hatası/rate-limit exception fırlatmasın — zincir devam edebilsin */
+    return { ok: false, error: 'DDG erişilemedi: ' + String((e && e.message) || e) };
+  }
+  if (!res.ok) return { ok: false, error: `DDG HTTP ${res.status}` };
   const html = await res.text();
   const results = parseDdgResults(html, Math.min(Math.max(Number(maxResults) || 8, 1), 12));
   if (!results.length) {

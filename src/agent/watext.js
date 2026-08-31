@@ -36,6 +36,10 @@ const TOOL_LABELS = {
   write_file: (a) => `Dosya yaz: ${a.path || ''}`,
   list_dir: (a) => `Klasör: ${a.path || '.'}`,
   web_search: (a) => `Web arama: ${String(a.query || '').slice(0, 100)}`,
+  deep_search: (a) => {
+    const qs = Array.isArray(a.queries) ? a.queries : [a.query || ''];
+    return `Derin araştırma (${qs.length} sorgu): ${String(qs[0] || '').slice(0, 80)}`;
+  },
   http_fetch: (a) => `Sayfa: ${a.url || ''}`,
   browser_open: (a) => `Tarayıcı aç: ${a.url || ''}`,
   browser_click: (a) => `Tıkla: ${a.ref ?? ''}`,

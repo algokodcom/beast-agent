@@ -69,13 +69,13 @@ const FORMAT_RULES =
 const PERM_TOOL_SETS = {
   all: null, // tüm araçlar (filtre yok)
   web: new Set([
-    'web_search', 'http_fetch',
+    'web_search', 'http_fetch', 'deep_search',
     'browser_open', 'browser_read', 'browser_snapshot', 'browser_screenshot',
     'browser_click', 'browser_type', 'browser_press', 'browser_scroll', 'browser_select',
     'ocr_read',
   ]),
   read: new Set([
-    'web_search', 'http_fetch',
+    'web_search', 'http_fetch', 'deep_search',
     'browser_open', 'browser_read', 'browser_snapshot',
     'list_dir', 'read_file',
   ]),
@@ -99,7 +99,7 @@ function normalizePerms(p) {
 const CEO_EXEC_TOOLS = new Set([
   'run_command', 'read_file', 'write_file', 'list_dir',
   'python_run',
-  'web_search', 'http_fetch',
+  'web_search', 'http_fetch', 'deep_search',
   'browser_open', 'browser_read', 'browser_screenshot', 'browser_snapshot',
   'browser_click', 'browser_type', 'browser_press', 'browser_scroll', 'browser_select',
   'computer_look', 'computer_act',
@@ -1290,6 +1290,7 @@ class Engine {
             ? 'Bağımsız alt-işleri run_background ile PARALEL ajana devret; işi KENDİN YÜRÜTME — emri ver, takip et, raporla.'
             : 'Bağımsız alt-işleri delegate_task ile devret; kendi başına halledebileceğin işleri devretme.',
           'Güncel/dış bilgi gerekiyorsa web_search kullan (zincir DAHİLİ tarayıcıyla başlar — gerçek Chromium ile Google); hızlı ham metin okuması için http_fetch kullan.',
+          'DERİN ARAŞTIRMA: web_search\u2019in sonucu yetersizse/istenen bilgi listede YOKSA aramayı tekrar tekrar deneme yerine deep_search kullan — 1-4 sorgu varyantını (eş anlamlı, Türkçe+İngilizce yazımlar) PARALEL aratır ve ilk sayfaları GİZLİ gerçek Chromium\u2019da açıp tam metin okur (paneli açmaz, kullanıcıyı rahatsız etmez; JS/SPA sayfalar çalışır). Fiyat karşılaştırma, çok kaynaklı araştırma, "her şeyi bul" işleri ve Türkçe sorgularda sonuç zayıfsa doğrudan deep_search seç. read_top=0 verirsen yalnız harmanlanmış sonuç listesi döner.',
           'ARAMA-DİSİPLİN: bir bilgiyi 2-3 denemede bulamazsan TAKILMA — farklı bir açıya/sorguya geç, yine yoksa bulabildiğin kısmi bilgiyle cevap ver ve neyi bulamadığını açıkça söyle. Kapalı/gizli içerik (private profil, login arkası veri) peşinde KOŞMA — bulunamayacağı belliyse hemen vazgeç.',
           'TARAYICI VARSAYILANI (ZORUNLU): kullanıcı "şu siteyi aç", "bunu ara / google\u2019da ara", "şu sayfaya git" gibi bir web isteği verdiğinde HEP DAHİLİ TARAYICIYI KULLAN (browser_open ile aç → açılış yanıtında hazır snapshot gelir → ref numaralarıyla browser_click/browser_type/browser_select ile hareket et; HER eylem yanıtında taze snapshot döner — ayrıca browser_snapshot çağırma, yanıttaki refleri kullan; browser_read ile metin oku; sadece görsel yerleşim/grafik gerekiyorsa browser_screenshot çek). Tarih/saat alanlarını (type=date/time) browser_type ile DÜZ METİN yaz ("15.03.2026", "2026-03-15") — takvimden tıklamaya çalışma, alan programatik ayarlanır. Panel ekranın sağında açılır ve kullanıcı da sayfayı anında görür; JS/login/SPA/dinamik içerik için idealdir. Bu kural TÜM oturumları kapsar — masaüstü sohbeti ve çok kullanıcılı botlar (WhatsApp vb.) dahil.' +
             ' DIŞ TARAYICI İSTİSNASI: kullanıcı AÇIKÇA "chrome\u2019da aç", "firefox\u2019ta aç", "başka tarayıcıda aç", "normal tarayıcıda aç", "kendi tarayıcımda aç" derse O ZAMAN run_command ile `start "" <url>` çalıştır — sistem varsayılan (dış) tarayıcısında açılır. Kullanıcı dış tarayıcı istemedikçe ASLA dış tarayıcı açma.' +
@@ -2113,7 +2114,7 @@ class Engine {
       `Ortam: Windows + PowerShell; çalışma klasörü: ${this.workspace}\n` +
       `HIZ KURALLARI:\n` +
       `- Döngülü işleri (çok URL/dosya/sayfa, tekrarlı parse-hesap) TEK python_run betiğinde topluca bitir.\n` +
-      `- Web için web_search kullan (zincir dahili tarayıcıyla başlar — gerçek Chromium ile Google); sayfa açma/göstermenin VARSAYILANI DAHİLİ tarayıcıdır: browser_open → browser_snapshot → browser_click/type/read. Kullanıcı açıkça dış tarayıcı (chrome/firefox/başka/normal/kendi tarayıcım) istediyse run_command ile \`start "" <url>\` çalıştır. Görseli göremiyorsan metni ocr_read ile oku (source:"browser").\n` +
+      `- Web için web_search kullan (zincir dahili tarayıcıyla başlar — gerçek Chromium ile Google); tek aramada bulunamazsa veya çok kaynaklı derin araştırma gerekiyorsa deep_search kullan (çoklu sorgu paralel + gizli tarayıcıda tam sayfa okuma). Sayfa açma/göstermenin VARSAYILANI DAHİLİ tarayıcıdır: browser_open → browser_snapshot → browser_click/type/read. Kullanıcı açıkça dış tarayıcı (chrome/firefox/başka/normal/kendi tarayıcım) istediyse run_command ile \`start "" <url>\` çalıştır. Görseli göremiyorsan metni ocr_read ile oku (source:"browser").\n` +
       `- Bağımsız araç çağrılarını aynı turda PARALEL ver.\n` +
       `- ARAŞTIRMA SINIRI: 3-5 kaynak yeter; süre hedefi ~3 dakika. 2-3 denemede bulunamayan bilgiyi BIRAK — bulabildiğin kısmi sonucu raporla ve neyi bulamadığını yaz. Kapalı/gizli içerik peşinde koşma.\n` +
       FORMAT_RULES + '\n' +
@@ -2721,7 +2722,7 @@ class Engine {
 
   /* Dahili OCR aracı: görüntüden metin çıkarır (görsel desteklemeyen modeller için).
      Kaynak: 'browser' (dahili tarayıcı görüntüsü, varsayılan) | 'screen' (masaüstü) | dosya yolu. */
-  async _ocrRead(args, signal) {
+  async _ocrRead(args, signal, sessionId) {
     if (!this.ocr) return { ok: false, error: 'OCR kullanılamıyor' };
     const src = String((args && args.source) || 'browser');
     let image = null;
@@ -2732,7 +2733,7 @@ class Engine {
         if (!this.browser || typeof this.browser.screenshot !== 'function') {
           return { ok: false, error: 'dahili tarayıcı kullanılamıyor' };
         }
-        const shot = await this.browser.screenshot(signal);
+        const shot = await this.browser.screenshot(signal, { sessionId });
         if (!shot || !shot.ok) return { ok: false, error: (shot && shot.error) || 'görüntü alınamadı' };
         image = shot.__injectImage || shot.image || null;
       } else if (src === 'screen') {
@@ -3067,6 +3068,17 @@ class Engine {
         const r = await this.computer.act(op, args || {});
         return JSON.stringify(r);
       }
+      if (name === 'deep_search') {
+        /* agentic derin araştırma: çoklu sorgu + gizli tarayıcıda sayfa okuma.
+           Hook (main process) yoksa tools.exec'teki arama-tek yol devreye girer. */
+        try {
+          emitSafe(this, sessionId, { type: 'status', status: 'derin araştırma: çoklu sorgu + gizli sayfa okuma' });
+        } catch {}
+        const run = this.research && typeof this.research.deepSearch === 'function'
+          ? this.research.deepSearch(args || {}, signal)
+          : tools.exec('deep_search', args || {}, { cwd: this._sessionWorkspace(sessionId), signal });
+        return JSON.stringify(await run);
+      }
       if (name === 'web_search') {
         /* SIRA: 1) dahili tarayıcı (DİREK GOOGLE — ücretsiz + AI cevabı)
                  2) TinyFish (tarayıcı sorun çıkarsa HEMEN devreye girer — anahtar girildiyse)
@@ -3081,7 +3093,7 @@ class Engine {
         const browserUsable = this.browser && typeof this.browser.search === 'function';
         if (Date.now() < (this._webSearchBrowserBanUntil || 0)) banned = true;
         if (browserUsable && !banned) {
-          try { r = await this.browser.search(q, signal); } catch {}
+          try { r = await this.browser.search(q, signal, { sessionId }); } catch {}
           if (!r || !r.ok || !(r.results || []).length) {
             /* tarayıcı sorunlu — 10 dk atla, alternatif zincir hemen devrede */
             this._webSearchBrowserBanUntil = Date.now() + 10 * 60 * 1000;
@@ -3102,41 +3114,41 @@ class Engine {
         return JSON.stringify(out);
       }
       if (name === 'ocr_read') {
-        return JSON.stringify(await this._ocrRead(args || {}, signal));
+        return JSON.stringify(await this._ocrRead(args || {}, signal, sessionId));
       }
       if (name === 'browser_open') {
         if (!this.browser || typeof this.browser.openUrl !== 'function') {
           return JSON.stringify({ ok: false, error: 'dahili tarayıcı kullanılamıyor' });
         }
-        const r = await this.browser.openUrl(String(args.url || ''), signal);
+        const r = await this.browser.openUrl(String(args.url || ''), signal, { sessionId });
         return JSON.stringify(r);
       }
       if (name === 'browser_read') {
         if (!this.browser || typeof this.browser.readText !== 'function') {
           return JSON.stringify({ ok: false, error: 'dahili tarayıcı kullanılamıyor' });
         }
-        const r = await this.browser.readText(signal);
+        const r = await this.browser.readText(signal, { sessionId });
         return JSON.stringify(r);
       }
       if (name === 'browser_screenshot') {
         if (!this.browser || typeof this.browser.screenshot !== 'function') {
           return JSON.stringify({ ok: false, error: 'dahili tarayıcı kullanılamıyor' });
         }
-        const r = await this.browser.screenshot(signal);
+        const r = await this.browser.screenshot(signal, { sessionId });
         return JSON.stringify(r);
       }
       if (name === 'browser_snapshot') {
         if (!this.browser || typeof this.browser.snapshot !== 'function') {
           return JSON.stringify({ ok: false, error: 'dahili tarayıcı kullanılamıyor' });
         }
-        const r = await this.browser.snapshot(signal);
+        const r = await this.browser.snapshot(signal, { sessionId });
         return JSON.stringify(r);
       }
       if (name === 'browser_click' || name === 'browser_type' || name === 'browser_press' || name === 'browser_scroll' || name === 'browser_select') {
         if (!this.browser || typeof this.browser.act !== 'function') {
           return JSON.stringify({ ok: false, error: 'dahili tarayıcı kullanılamıyor' });
         }
-        const r = await this.browser.act(name.slice(8), args, signal);
+        const r = await this.browser.act(name.slice(8), args, signal, { sessionId });
         return JSON.stringify(r);
       }
       if (!(name === 'run_command' || name === 'read_file' || name === 'write_file' || name === 'list_dir' ||

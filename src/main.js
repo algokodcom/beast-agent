@@ -149,7 +149,8 @@ function startNpmUpdateWatch() {
   check();
   setInterval(check, 6 * 60 * 60 * 1000);
 }
-const { htmlToText, setExaKey, setTinyfishKey } = require('./agent/tools');
+const { htmlToText, setExaKey, setTinyfishKey, webSearchFast } = require('./agent/tools');
+const research = require('./agent/research');
 const { waToolLine } = require('./agent/watext');
 
 /* #3 merkezî log sistemine process-seviye hataları da düşsün */
@@ -1442,7 +1443,7 @@ function botToolSet(cfg) {
     'event_list', 'event_subscribe', 'event_unsubscribe',
     'watcher_add', 'watcher_list', 'watcher_remove',
   ]);
-  if (s.web_search) { set.add('web_search'); set.add('http_fetch'); }
+  if (s.web_search) { set.add('web_search'); set.add('http_fetch'); set.add('deep_search'); }
   if (s.browser) {
     for (const t of ['browser_open', 'browser_read', 'browser_screenshot', 'browser_snapshot', 'browser_click', 'browser_type', 'browser_press', 'browser_scroll', 'browser_select', 'ocr_read']) set.add(t);
   }
@@ -2091,12 +2092,21 @@ function reloadBackend() {
     ocr: (o) => ocrRead(o),
     email: { list: emailList, read: emailRead, send: emailSend },
     browser: {
-      openUrl: (u, s) => browserNavigate(u, s),
-      search: (q, s) => browserSearch(q, s),
+      openUrl: (u, s, ctx) => browserNavigate(u, s, ctx),
+      search: (q, s, ctx) => browserSearch(q, s, ctx),
       readText: (s) => browserRead(s),
       screenshot: (s) => browserScreenshot(s),
       snapshot: (s) => browserSnapshot(s),
       act: (k, a, s) => browserAct(k, a, s),
+    },
+    research: {
+      /* deep_search hook'u: çoklu sorgu araması + GİZLİ tarayıcıda tam sayfa okuma.
+         Panel (browser.*) hiç kullanılmaz — kullanıcı ekranı rahatsız edilmez. */
+      deepSearch: (args, signal) =>
+        research.deepSearch(args || {}, {
+          search: (q) => webSearchFast(q, { maxResults: 10, signal }),
+          readPage: (u) => researchRead(u, signal),
+        }, signal),
     },
     emit: (ev) => {
       if (win && !win.isDestroyed()) win.webContents.send('agent:event', ev);
@@ -2553,10 +2563,13 @@ function setBrowserOpen(v, forceVisible) {
     return;
   }
 
-  // AÇMA — görünürlük: kullanıcı kendi açtıysa (forceVisible) MUTLAKA görünür;
-  // ajan açtıysa DA VARSAYILAN GÖRÜNÜR (göz ikonuyla gizli mod seçilmedikçe)
+  // AÇMA — görünürlük: forceVisible true/false ise onu uygula;
+  // belirtilmemişse kullanıcı tercihi (settings.browserHeadless) belirler.
+  // PARALEL AJANLAR (bg oturum) her zaman forceVisible=false ile çağırır →
+  // tarayıcı gizli modda çalışır, kullanıcı ekranı ve ajan konsolu rahatsız edilmez.
   browser.open = true;
-  browser.visible = forceVisible === true ? true : settings.browserHeadless !== true;
+  browser.visible =
+    forceVisible === true ? true : forceVisible === false ? false : settings.browserHeadless !== true;
   ensureBrowser();
   if (!browser.started) {
     browser.started = true;
@@ -2585,14 +2598,36 @@ function browserGate(job) {
   __trafficTail = p.catch(() => {});
   return p;
 }
-async function browserNavigate(raw, signal) {
+/* çağıran oturum paralel ajan mı? (run_background ile açılan bg oturumu)
+   → tarayıcıyı GİZLİ kullan: panel ekrana fırlamaz, ajan konsolu kapanmaz */
+function isBgBrowserCtx(ctx) {
+  const sid = ctx && ctx.sessionId ? String(ctx.sessionId) : '';
+  if (!sid) return false;
+  try {
+    return !!(engine && engine._bgJobs && engine._bgJobs.has(sid));
+  } catch {
+    return false;
+  }
+}
+
+/* bg ajan için açma stratejisi: kapalıysa GİZLİ aç; zaten açıksa mevcut
+   görünürlüğe dokunma (kullanıcı paneli izliyorsa aniden saklamayalım) */
+function setBrowserOpenForAgent(ctx) {
+  if (isBgBrowserCtx(ctx)) {
+    if (!browser.open) setBrowserOpen(true, false);
+    return;
+  }
+  setBrowserOpen(true);
+}
+
+async function browserNavigate(raw, signal, ctx) {
   return browserGate(async () => {
     await browserTrafficWait();
-    return browserNavigateNow(raw, signal);
+    return browserNavigateNow(raw, signal, ctx);
   });
 }
 
-async function browserNavigateNow(raw, signal) {
+async function browserNavigateNow(raw, signal, ctx) {
   let url = String(raw || '').trim();
   if (!url) return { ok: false, error: 'boş adres' };
   if (!/^https?:\/\//i.test(url)) {
@@ -2601,7 +2636,7 @@ async function browserNavigateNow(raw, signal) {
       ? 'https://' + url
       : 'https://duckduckgo.com/?q=' + encodeURIComponent(url);
   }
-  setBrowserOpen(true);
+  setBrowserOpenForAgent(ctx);
   const wc = browser.view.webContents;
   await new Promise((resolve) => {
     let settled = false;
@@ -2663,6 +2698,120 @@ function flushBrowserStorage() {
   } catch {}
 }
 
+/* ---------- GİZLİ ARAŞTIRMA TARAYICISI (deep_search) ----------
+   deep_search'ün "sayfayı açıp oku" adımı burada çalışır: WebContentsView
+   HİÇbir pencereye eklenmez (kullanıcı hiçbir şey görmez) ama gerçek Chromium
+   çalışır — JS/SPA sayfalar render olur, innerText okunur. Panel (browser.view)
+   hiç meşgul edilmez. Görsel/font/media indirme hız için iptal edilir.
+   2 slot = en fazla 2 sayfa aynı anda okunur (ayrı view, çakışma yok). */
+const researchPool = { views: [null, null], queue: [], slots: [false, false] };
+const RESEARCH_PAGE_TIMEOUT = 25000;
+const RESEARCH_SETTLE_MS = 900;
+const RESEARCH_CONTENT_CAP = 4500;
+
+function researchAcquire() {
+  return new Promise((resolve) => {
+    researchPool.queue.push(resolve);
+    researchPump();
+  });
+}
+
+function researchRelease(idx) {
+  researchPool.slots[idx] = false;
+  researchPump();
+}
+
+function researchPump() {
+  for (let i = 0; i < researchPool.slots.length; i++) {
+    if (!researchPool.slots[i] && researchPool.queue.length) {
+      researchPool.slots[i] = true;
+      researchPool.queue.shift()(i);
+    }
+  }
+}
+
+function researchViewAt(idx) {
+  let v = researchPool.views[idx];
+  if (v && v.webContents && !v.webContents.isDestroyed()) return v;
+  v = new WebContentsView({
+    webPreferences: {
+      partition: 'research', // kalıcı olmayan bölüm — çerez birikmez
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      spellcheck: false,
+      backgroundThrottling: false, // gizli çalışırken zamanlayıcılar yavaşlamasın
+    },
+  });
+  const wc = v.webContents;
+  try {
+    /* Google/bazı siteler Electron UA'yı reddeder — gerçek Chrome kimliği */
+    const chromeUA = `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${process.versions.chrome} Safari/537.36`;
+    wc.setUserAgent(chromeUA);
+    const ses = session.fromPartition('research');
+    if (ses && ses.setUserAgent) ses.setUserAgent(chromeUA, 'tr-TR,tr;q=0.9,en;q=0.8');
+  } catch {}
+  try { wc.setWindowOpenHandler(() => ({ action: 'deny' })); } catch {}
+  try {
+    session.fromPartition('research').setPermissionRequestHandler((_w, _p, cb) => cb(false));
+  } catch {}
+  try {
+    /* hız: araştırma okuması için görsel/font/media gereksiz — iptal et */
+    session.fromPartition('research').webRequest.onBeforeRequest({ urls: ['*://*/*'] }, (details, cb) => {
+      cb({ cancel: ['image', 'media', 'font'].includes(details.resourceType) });
+    });
+  } catch {}
+  try {
+    session.fromPartition('research').on('will-download', (_e, item) => { try { item.cancel(); } catch {} });
+  } catch {}
+  wc.on('render-process-gone', () => { researchPool.views[idx] = null; });
+  researchPool.views[idx] = v;
+  return v;
+}
+
+async function researchRead(rawUrl, signal) {
+  const url = String(rawUrl || '').trim();
+  if (!/^https?:\/\//i.test(url)) return { ok: false, url, error: 'geçersiz adres' };
+  if (signal && signal.aborted) return { ok: false, url, error: 'iptal edildi' };
+  const idx = await researchAcquire();
+  try {
+    const view = researchViewAt(idx);
+    if (!view) return { ok: false, url, error: 'araştırma tarayıcısı oluşturulamadı' };
+    const wc = view.webContents;
+    const loaded = await new Promise((resolve) => {
+      let settled = false;
+      const finish = (v) => { if (!settled) { settled = true; clearTimeout(timer); wc.removeListener('did-finish-load', onDone); wc.removeListener('did-fail-load', onFail); resolve(v); } };
+      const timer = setTimeout(() => finish(false), RESEARCH_PAGE_TIMEOUT);
+      const onDone = () => finish(true);
+      const onFail = (_e, code) => { if (code !== -3) finish(false); };
+      wc.once('did-finish-load', onDone);
+      wc.on('did-fail-load', onFail);
+      wc.loadURL(url).catch(() => {});
+    });
+    /* SPA hidrasyonu için kısa settle; metin boşsa bir kez daha dene */
+    await new Promise((r) => setTimeout(r, RESEARCH_SETTLE_MS));
+    let title = '';
+    let finalUrl = url;
+    try { title = wc.getTitle() || ''; finalUrl = wc.getURL() || url; } catch {}
+    const grab = async () => {
+      try { return String((await wc.executeJavaScript('(document.body&&document.body.innerText)||""', true)) || ''); } catch { return ''; }
+    };
+    let text = (await grab()).replace(/\n{3,}/g, '\n\n').trim();
+    if (!text) {
+      await new Promise((r) => setTimeout(r, 1500));
+      text = (await grab()).replace(/\n{3,}/g, '\n\n').trim();
+    }
+    if (!text) {
+      return { ok: false, url: finalUrl, title, error: loaded ? 'sayfa metni boş (tam JS-görsel veya engelli sayfa olabilir)' : 'sayfa yüklenemedi (zaman aşımı/hata)' };
+    }
+    return { ok: true, url: finalUrl, title, truncated: text.length > RESEARCH_CONTENT_CAP, content: text.slice(0, RESEARCH_CONTENT_CAP) };
+  } catch (e) {
+    return { ok: false, url, error: String((e && e.message) || e) };
+  } finally {
+    researchRelease(idx);
+  }
+}
+
 /* Dahili OCR: görsel desteklemeyen modeller için tesseract.js ile metin okuma.
    Dil verisi ilk kullanımda %APPDATA%\beast\tessdata'ya iner, sonra offline çalışır. */
 const _ocrWorkers = new Map(); // lang -> worker (her çağrıda yeniden init olmasın)
@@ -2700,21 +2849,21 @@ async function ocrRead({ image, lang = 'tur+eng' } = {}) {
    Numara: view'i google.com'a bir kez açıp aramaları SAYFA İÇİ fetch() ile
    yapmak (kullanıcının console'da yaptığı gibi) — sayfa bile değişmeden
    DOMParser ile sonuç çekilir. Fetch olmazsa direk gezinme fallback'i var. */
-async function browserSearch(query, signal) {
+async function browserSearch(query, signal, ctx) {
   /* paralel ajan sorguları trafik kapısından sırayla geçer */
   return browserGate(async () => {
     await browserTrafficWait();
-    return browserSearchNow(query, signal);
+    return browserSearchNow(query, signal, ctx);
   });
 }
 
-async function browserSearchNow(query, signal) {
+async function browserSearchNow(query, signal, ctx) {
   try {
     if (!win || win.isDestroyed()) return null;
     if (signal && signal.aborted) return null;
     const q = String(query || '').trim();
     if (!q) return null;
-    setBrowserOpen(true);
+    setBrowserOpenForAgent(ctx);
     const wc = browser.view && browser.view.webContents;
     if (!wc) return null;
 

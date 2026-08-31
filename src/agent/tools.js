@@ -6,6 +6,7 @@ const path = require('path');
 const https = require('https');
 const { execFile } = require('child_process');
 const { spawn } = require('child_process');
+const research = require('./research');
 
 const MAX_CMD_OUTPUT = 16000;
 const MAX_FILE_CHARS = 200000;
@@ -650,6 +651,28 @@ const definitions = [
   {
     type: 'function',
     function: {
+      name: 'deep_search',
+      description:
+        'AGENTIC DEEP RESEARCH — use when web_search is not enough or the answer was NOT found on the first try. Runs 1-4 query variants IN PARALLEL (rephrase, synonyms, Turkish + English spellings of the same question), merges + dedupes results, then AUTOMATICALLY opens and reads the top pages with a HIDDEN real-Chromium browser (JS/SPA pages work; the visible panel is NOT touched) and returns full-text excerpts. Ideal for: multi-angle questions (price comparison, reviews, specs, "find everything about X"), Turkish queries that miss results, pages that need JS rendering. Returns {queries, results[{title,url,snippet}], pages[{url,title,content}]}.',
+      parameters: {
+        type: 'object',
+        properties: {
+          queries: {
+            type: 'array',
+            maxItems: 4,
+            items: { type: 'string' },
+            description: '1-4 query variants; e.g. ["iphone 16 fiyat", "iphone 16 price turkey", "iphone 16 technosa"]',
+          },
+          max_results: { type: 'number', description: 'merged result cap, default 16' },
+          read_top: { type: 'number', description: 'how many top results to auto-read fully (0-6, default 3); 0 = results only' },
+        },
+        required: ['queries'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'python_run',
       description:
         "Run Python (system interpreter, or Beast auto-installs a portable embedded runtime on first use). Either pass inline `code`, or `script` = filename inside the Beast scripts library (%APPDATA%\\beast\\scripts — e.g. news.py haber toplayıcı) or an absolute path. Use for scraping, RSS/haber toplama, veri analizi, regex/parsing işleri. stdout+stderr returned; scripts should print results.",
@@ -736,6 +759,16 @@ async function exec(name, args, ctx) {
           const exa = await exaSearch(q, n, ctx.signal);
           if (exa) return JSON.stringify(exa);
         }
+        return JSON.stringify(r);
+      }
+      case 'deep_search': {
+        /* hook'suz bağlamda bile çalışsın: yalnız arama zinciri (sayfa okuma yok).
+           Gizli tarayıcı okuması engine.research hook'undan gelir (main process). */
+        const r = await research.deepSearch(
+          args,
+          { search: (q) => webSearchFast(q, { maxResults: 10, signal: ctx.signal }) },
+          ctx.signal
+        );
         return JSON.stringify(r);
       }
       case 'python_run': {

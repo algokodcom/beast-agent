@@ -3395,6 +3395,7 @@ function onEvent(ev) {
     case 'browser': {
       /* visible=false → ajan tarayıcıyı GİZLİ kullanıyor: UI yer açmaz */
       const shown = !!ev.open && ev.visible !== false;
+      const wasShown = document.body.classList.contains('browser-open');
       document.body.classList.toggle('browser-open', shown);
       if (shown && ev.width) document.body.style.setProperty('--bw', ev.width + 'px');
       els.browserBar.hidden = !shown;
@@ -3402,11 +3403,13 @@ function onEvent(ev) {
       /* terminal de sağ dock'u kullanır — tarayıcı açılınca yerini bırak */
       if (shown && termOpen) termSetOpen(false);
       /* #19 tarayıcı açılınca paralel ajan konsolu (sağ panel) yerini bırakır;
-         kapanınca önceki durumuna döner — istenirse railBtn ile elle açılır */
+         kapanınca önceki durumuna döner — istenirse railBtn ile elle açılır.
+         GİZLİ ajan gezinmeleri (shown=false, wasShown=false) rail'e DOKUNMAZ —
+         aksi halde paralel ajan konsolu kendi kendine kapanırdı */
       if (shown) {
         railPrefBeforeBrowser = !document.body.classList.contains('rail-hidden');
         toggleRail(true);
-      } else {
+      } else if (wasShown) {
         toggleRail(!railPrefBeforeBrowser);
       }
       /* IDE modunda tarayıcı açılır/kapanır/genişlik değişirse row yeniden bölünür —

@@ -82,27 +82,44 @@ if (process.argv[2] === 'update') {
     process.exit(1);
   }
   console.log('\n\u2713 beast-agent g\u00FCncellendi \u2014 uygulama ba\u015Flat\u0131l\u0131yor\u2026');
-  try {
-    const electron = require('electron');
-    if (typeof electron === 'string') {
-      spawn(electron, [path.resolve(__dirname, '..')], { stdio: 'ignore', detached: true }).unref();
-    }
-  } catch {}
+  launchDetached([]);
   if (isWin) spawnSync('cmd.exe', ['/c', 'timeout /t 3'], { stdio: 'ignore' });
   process.exit(0);
 }
 
-const electron = require('electron');
-if (typeof electron !== 'string') {
-  /* electron runtime içindeyiz — bu script için anlamsız */
-  process.exit(1);
+/* detached başlatıcı + kendini onaran electron:
+   taze makinalarda npm postinstall sırasında electron binary indirmesi
+   sessizce başarısız olmuş olabilir → burada otomatik tamir edilir. */
+function launchDetached(extraArgs) {
+  let electron = null;
+  try { electron = require('electron'); } catch {}
+  if (typeof electron !== 'string') {
+    let fix = null;
+    try { fix = require('../scripts/fix-electron'); } catch {}
+    if (fix) {
+      console.log('\u27F3 electron \u00e7al\u0131\u015Fma dosyalar\u0131 eksik bulundu \u2014 otomatik onar\u0131l\u0131yor\u2026');
+      const r = fix.repair({ quiet: false });
+      if (r.ok && !r.skipped) console.log('\u2713 electron onar\u0131ld\u0131');
+      if (r.ok) {
+        try { electron = require('electron'); } catch {}
+      }
+    }
+  }
+  if (typeof electron !== 'string') {
+    console.log('\n\u2717 Electron \u00e7al\u0131\u015Fma dosyas\u0131 kurulamad\u0131.');
+    console.log('  Elle \u00e7\u00f6z\u00fcm \u2014 \u015fu 2 komutu \u00e7al\u0131\u015Ft\u0131r:');
+    console.log('    npm config set ignore-scripts false');
+    console.log('    npm install -g beast-agent');
+    return false;
+  }
+  const child = spawn(electron, [path.resolve(__dirname, '..'), ...extraArgs], {
+    stdio: 'ignore',
+    detached: true,
+    /* windowsHide KULLANMA: Chromium ilk pencereyi gizli başlatıyor (tray-only bug) */
+  });
+  child.unref();
+  return true;
 }
 
-const appPath = path.resolve(__dirname, '..');
-const child = spawn(electron, [appPath, ...process.argv.slice(2)], {
-  stdio: 'ignore',
-  detached: true,
-  /* windowsHide KULLANMA: Chromium ilk pencereyi gizli başlatıyor (tray-only bug) */
-});
-child.unref();
+if (!launchDetached(process.argv.slice(2))) process.exit(1);
 process.exit(0);

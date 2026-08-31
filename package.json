@@ -1,7 +1,7 @@
 {
     "name": "beast-agent",
     "productName": "Beast Agent",
-    "version": "0.25.3",
+    "version": "0.25.4",
     "description": "Ultra-fast local agent shell for Windows.",
     "author": "algokodcom (AlgoKod)",
     "license": "MIT",
@@ -33,6 +33,7 @@
         "dist": "electron-builder --win nsis portable",
         "test": "node --test \"tests/**/*.test.js\"",
         "release": "node scripts/release.js",
+        "postinstall": "node scripts/fix-electron.js --soft",
         "prepublishOnly": "node scripts/swap-electron.js deps",
         "postpublish": "node scripts/swap-electron.js devdeps"
     },

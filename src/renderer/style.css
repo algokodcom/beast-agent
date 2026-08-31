@@ -2852,3 +2852,62 @@ body.browser-open #ghOverlay { right: var(--bw, 480px); }
   flex: none;
   text-align: center;
 }
+
+/* proxy ekleme satırı + liste */
+.px-add-row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin-top: 6px; }
+.px-add-row select,
+.px-add-row input {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  color: var(--text);
+  font-size: 12.5px;
+  padding: 6px 9px;
+  outline: none;
+}
+.px-add-row select { flex: 0 0 auto; }
+.px-add-row input:focus { border-color: var(--accent); }
+#pxHost { flex: 2 1 140px; }
+#pxPort { flex: 0 1 80px; }
+#pxUser, #pxPass { flex: 1 1 110px; }
+.px-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  border-radius: 8px;
+  padding: 6px 10px;
+  margin-bottom: 6px;
+}
+.px-row code {
+  font-family: var(--mono, monospace);
+  font-size: 12px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+.px-row .px-del {
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 13px;
+  padding: 2px 6px;
+  border-radius: 6px;
+  flex: none;
+}
+.px-row .px-del:hover { color: var(--err); background: var(--panel2); }
+
+/* WARP kartı */
+.warp-card {
+  border: 1px solid var(--border);
+  background: var(--panel);
+  border-radius: 10px;
+  padding: 12px 14px;
+  margin-top: 12px;
+}
+.warp-head { display: flex; justify-content: space-between; align-items: center; font-weight: 800; margin-bottom: 8px; }
+.warp-state { color: var(--muted); font-weight: 400; font-size: 12px; }

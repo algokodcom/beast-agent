@@ -135,6 +135,7 @@ async function streamOnce(sel, body, { signal, onDelta, onRetry } = {}, omitReas
   const toolCalls = [];
   let usage = null;
   let finishReason = null;
+  let sawDone = false;
 
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
@@ -151,7 +152,8 @@ async function streamOnce(sel, body, { signal, onDelta, onRetry } = {}, omitReas
       buf = buf.slice(idx + 1);
       if (!line.startsWith('data:')) continue;
       const data = line.slice(5).trim();
-      if (!data || data === '[DONE]') continue;
+      if (!data) continue;
+      if (data === '[DONE]') { sawDone = true; continue; }
 
       let json;
       try {
@@ -182,6 +184,20 @@ async function streamOnce(sel, body, { signal, onDelta, onRetry } = {}, omitReas
           if (tc.function.arguments) toolCalls[i].function.arguments += tc.function.arguments;
         }
       }
+    }
+  }
+
+  /* YARIDA KESİLEN AKIŞ: stream erişilmeyen bir yerde koptuysa reader sessizce
+     done=true döner — yarım metni "tamamlanmış" sanmak yerine işaretle.
+     ([DONE] geldi ama finish_reason yok = sağlayıcı tuhaflığı → kabul) */
+  if (!finishReason && !sawDone) {
+    if (toolCalls.length) {
+      const e = new Error('cevap akışı yarıda kesildi (bağlantı koptu) — araç çağrısı tamamlanamadı, tekrar deneyin');
+      e.partialStream = true;
+      throw e;
+    }
+    if (content) {
+      content += '\n\n⚠ _akış yarıda kesildi (bağlantı koptu) — devam etmesini istersen tekrar yaz._';
     }
   }
 

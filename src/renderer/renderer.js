@@ -635,7 +635,7 @@ function switchTab(name) {
   document.querySelectorAll('#setTabs .tab').forEach((b) =>
     b.classList.toggle('active', b.dataset.tab === name)
   );
-  for (const p of ['provider', 'fallout', 'skills', 'agents', 'tts', 'email', 'integrations', 'websearch', 'events', 'cron', 'usage', 'logs', 'dash', 'limits', 'sec', 'update']) {
+  for (const p of ['provider', 'fallout', 'skills', 'agents', 'tts', 'email', 'integrations', 'websearch', 'events', 'cron', 'usage', 'logs', 'dash', 'limits', 'sec', 'proxy', 'update']) {
     const el = $('#tab-' + p);
     if (el) el.hidden = p !== name; // guard: eksik pane tüm sekmeleri kilitlemesin
   }
@@ -646,6 +646,7 @@ function switchTab(name) {
   if (name === 'dash') renderDashboardPane();
   if (name === 'limits') renderLimitsPane();
   if (name === 'sec') renderSecurityPane();
+  if (name === 'proxy') renderProxyPane();
   if (name === 'update') renderUpdatePane(true);
   if (name === 'agents') refreshAgentsPane();
   if (name === 'websearch') renderWebSearchPane();
@@ -1790,8 +1791,134 @@ async function renderSecurityPane() {
   }
 }
 
-/* ---------------- Update: sürüm kontrol + otomatik güncelleme ---------------- */
+/* ---------------- Proxy sekmesi ----------------
+   Kullanıcı yalnız IP/port/kullanıcı/şifre alanlarını doldurur; URL'i biz kurarız.
+   Eklenen her satır bir proxy — çoklu satır = Node tarafında round-robin rotasyon. */
+let proxyDraft = null; // { enabled, items:[line,...] } — sekme açıkken çalışma kopyası
 
+function parseProxyLine(line) {
+  const m = String(line || '').trim().match(/^(https?|socks5):\/\/(?:([^:@/]+):([^@/]*)@)?([^:/]+):(\d+)$/i);
+  if (!m) return null;
+  return { proto: m[1].toLowerCase(), user: decodeURIComponent(m[2] || ''), pass: decodeURIComponent(m[3] || ''), host: m[4], port: m[5] };
+}
+
+function proxyLineDisplay(line) {
+  const p = parseProxyLine(line);
+  if (!p) return escapeHtml(line);
+  const creds = p.user ? p.user + ':' + (p.pass ? '•••' : '') + '@' : '';
+  return `${p.proto}://${escapeHtml(creds)}${escapeHtml(p.host)}:${p.port}`;
+}
+
+async function renderProxyPane() {
+  const pane = $('#tab-proxy');
+  if (!pane) return;
+  if (!proxyDraft) {
+    const [cfg, ws] = await Promise.all([
+      beast.proxyGet().catch(() => ({ enabled: false, urls: '' })),
+      beast.warpGet().catch(() => ({ enabled: false, running: false, installed: false })),
+    ]);
+    proxyDraft = {
+      enabled: !!cfg.enabled,
+      items: String(cfg.urls || '').split(/[\n,;]+/).map((s) => s.trim()).filter(Boolean),
+      warp: ws || {},
+    };
+  }
+  const warp = proxyDraft.warp || {};
+  const warpState = warp.enabled ? (warp.running ? _t('warp_state_on') : _t('warp_state_starting')) : _t('warp_state_off');
+
+  const listHtml = proxyDraft.items.length
+    ? proxyDraft.items.map((line, i) =>
+        `<div class="px-row"><code>${proxyLineDisplay(line)}</code><button class="px-del" data-i="${i}" title="${_t('proxy_remove')}">✕</button></div>`
+      ).join('')
+    : `<div class="gh-empty" style="padding:10px">${_t('proxy_none')}</div>`;
+
+  pane.innerHTML =
+    '<h2>' + _t('proxy_h2') + '</h2>' +
+    '<div class="sub">' + _t('proxy_sub') + '</div>' +
+    '<div class="warp-card">' +
+    `<div class="warp-head"><span>☁ Cloudflare WARP</span><span class="warp-state">${escapeHtml(warpState)}</span></div>` +
+    `<button id="pxWarp" class="btn ${warp.enabled ? 'ghost' : ''}">${warp.enabled ? _t('warp_off') : _t('warp_on')}</button>` +
+    `<div class="sub" style="margin-top:6px">${_t('warp_note')}</div>` +
+    '</div>' +
+    '<div class="fo-toggles" style="margin-top:12px">' +
+    `<label class="lock-row"><input type="checkbox" id="pxOn" ${proxyDraft.enabled ? 'checked' : ''}/><span>${_t('proxy_enabled')}</span></label>` +
+    '</div>' +
+    `<label class="mem-label">${_t('proxy_urls')}</label>` +
+    `<div id="pxList">${listHtml}</div>` +
+    '<div class="px-add-row">' +
+    `<select id="pxProto"><option value="http">http</option><option value="socks5">socks5</option></select>` +
+    `<input id="pxHost" placeholder="${_t('proxy_host')}" spellcheck="false"/>` +
+    `<input id="pxPort" placeholder="${_t('proxy_port')}" inputmode="numeric"/>` +
+    `<input id="pxUser" placeholder="${_t('proxy_user')}" autocomplete="off" spellcheck="false"/>` +
+    `<input id="pxPass" placeholder="${_t('proxy_pass')}" type="password" autocomplete="off"/>` +
+    `<button id="pxAdd" class="btn" style="margin-top:0">${_t('proxy_add')}</button>` +
+    '</div>' +
+    '<div class="form-grid" style="grid-template-columns:auto auto;gap:8px;margin-top:10px">' +
+    `<button id="pxSave" class="btn">${_t('proxy_save')}</button>` +
+    `<button id="pxTest" class="btn ghost">${_t('proxy_test')}</button>` +
+    '</div>' +
+    `<div id="pxTestOut" class="sub" style="margin-top:8px"></div>` +
+    '<div class="sub" style="margin-top:10px">' + _t('proxy_note') + '</div>';
+
+  pane.querySelector('#pxOn').addEventListener('change', (e) => { proxyDraft.enabled = e.target.checked; });
+
+  pane.querySelector('#pxWarp').addEventListener('click', async () => {
+    const btn = pane.querySelector('#pxWarp');
+    const st = pane.querySelector('#pxWarpState');
+    const want = !warp.enabled;
+    btn.disabled = true;
+    st.textContent = want ? '⏳ ' + _t('warp_state_starting') : '⏳ ' + _t('warp_state_off');
+    const r = await beast.warpSet(want).catch((e) => ({ ok: false, error: String(e) }));
+    if (!(r && r.ok)) {
+      btn.disabled = false;
+      st.textContent = '⚠ ' + ((r && r.error) || 'hata');
+      return;
+    }
+    proxyDraft = null; // listeyi (socks satırı eklenmiş/çıkarılmış) tazele
+    renderProxyPane();
+  });
+
+  const collect = () => {
+    const host = pane.querySelector('#pxHost').value.trim();
+    const port = pane.querySelector('#pxPort').value.trim();
+    const user = pane.querySelector('#pxUser').value.trim();
+    const pass = pane.querySelector('#pxPass').value;
+    const proto = pane.querySelector('#pxProto').value || 'http';
+    if (!host || !/^\d{1,5}$/.test(port)) { toast(_t('proxy_invalid')); return null; }
+    const creds = user ? encodeURIComponent(user) + (pass ? ':' + encodeURIComponent(pass) : '') + '@' : '';
+    return `${proto}://${creds}${host}:${port}`;
+  };
+  pane.querySelector('#pxAdd').addEventListener('click', () => {
+    const line = collect();
+    if (!line) return;
+    if (proxyDraft.items.includes(line)) { toast(_t('proxy_dup')); return; }
+    proxyDraft.items.push(line);
+    renderProxyPane();
+  });
+  pane.querySelectorAll('.px-del').forEach((b) =>
+    b.addEventListener('click', () => {
+      proxyDraft.items.splice(Number(b.dataset.i), 1);
+      renderProxyPane();
+    })
+  );
+
+  pane.querySelector('#pxSave').addEventListener('click', async () => {
+    const r = await beast.proxySet({ enabled: proxyDraft.enabled, urls: proxyDraft.items.join('\n') }).catch(() => null);
+    if (r && r.ok) toast(_t('proxy_saved'));
+    else toast((r && r.error) || 'hata');
+  });
+  pane.querySelector('#pxTest').addEventListener('click', async () => {
+    const out = pane.querySelector('#pxTestOut');
+    out.textContent = '⏳ ' + _t('proxy_testing');
+    /* önce kaydet — test, kayıtlı ayarla çalışır */
+    await beast.proxySet({ enabled: proxyDraft.enabled, urls: proxyDraft.items.join('\n') }).catch(() => null);
+    const r = await beast.proxyTest().catch((e) => ({ ok: false, error: String(e) }));
+    if (r && r.ok) out.innerHTML = `✅ ${_t('proxy_test_ok')} <b>${escapeHtml(r.ip || '?')}</b> · ${escapeHtml(r.proxy || '')} · ${r.ms || '?'}ms`;
+    else out.innerHTML = `⚠ ${_t('proxy_test_fail')} ${escapeHtml((r && r.error) || '?')}`;
+  });
+}
+
+/* ---------------- Update: sürüm kontrol + otomatik güncelleme ---------------- */
 let updatePaneTimer = null;
 
 function renderUpdateStateHtml(st) {

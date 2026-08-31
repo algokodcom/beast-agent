@@ -327,6 +327,14 @@ function update(id, patch) {
       changes.push('dış tarayıcı komutu güncellendi');
       b.extCommand = String(patch.extCommand).slice(0, 200);
     }
+    if (typeof patch.model === 'string') {
+      /* bot bazlı model override — boş string = global seçim */
+      const next = patch.model.trim().slice(0, 160);
+      if (next !== (b.model || '')) {
+        changes.push('model güncellendi');
+        b.model = next;
+      }
+    }
     if (Array.isArray(patch.plugins)) {
       const next = [...new Set(patch.plugins.map((p) => String(p).slice(0, 40)).filter((p) => PLUGIN_LIST.includes(p)))];
       if (JSON.stringify(next) !== JSON.stringify(b.plugins || [])) {

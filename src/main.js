@@ -16,6 +16,7 @@ const skillsMod = require('./agent/skills');
 const storeMod = require('./agent/store');
 const { WhatsAppBridge } = require('./agent/whatsapp');
 const { TelegramBridge } = require('./agent/telegram');
+const { DiscordBridge } = require('./agent/discord');
 const cron = require('./cron');
 const watchers = require('./agent/watchers');
 const usageMod = require('./agent/usage');
@@ -229,6 +230,11 @@ let tg = null;
 let tgChats = new Map(); // telegram chatId -> aktif session id
 let tgHistory = new Map(); // chatId -> [sid,...]
 const TG_HISTORY_CAP = 20;
+let dc = null;
+let dcChats = new Map(); // discord channelId -> aktif session id
+let dcHistory = new Map(); // channelId -> [sid,...]
+const DC_HISTORY_CAP = 20;
+const DC_CHATS_FILE = path.join(APP_DIR, 'dc-chats.json');
 let tray = null;
 app.isQuitting = false;
 
@@ -1711,6 +1717,7 @@ async function processWaMessage(jid, payload, senderNum, requeues = 0) {
   } else {
     engine.setSessionTools(sid, null);
   }
+  engine.setSessionModel(sid, botCfg && !botCfg.admin ? (botCfg.model || null) : null);
   waLog(`perm=${fmtPerm(perm)} bot=${botId} sid=${sid}`);
 
   const participantName = payload.participant ? '+' + String(payload.participant).split('@')[0].split(':')[0] : '';
@@ -1979,6 +1986,7 @@ async function processTgMessage(chatId, payload, requeues = 0) {
   } else {
     engine.setSessionTools(sid, null);
   }
+  engine.setSessionModel(sid, botCfg && !botCfg.admin ? (botCfg.model || null) : null);
   tgLog(`perm=${fmtPerm(perm)} bot=${botId} sid=${sid}`);
 
   /* #v13.1 rol: SAHİP vs MİSAFİR — ajan kime konuştuğunu net bilsin */
@@ -2034,6 +2042,224 @@ async function restartTg() {
     await b.start();
   } catch (e) {
     tgLog(`start başarısız: ${String((e && e.message) || e)}`);
+  }
+}
+
+/* ---------- DISCORD: allow list — WA/TG ile aynı mantık ----------
+   Liste formatı: [{ id:'123456789' | '@kullanici_adi', name, perm, bot_id }, '*']
+   Eşleşme: sayısal ID birebir, @username büyük/küçük harf duyarsız. */
+function dcLog(line) {
+  try { log.info('discord', line); } catch {}
+}
+
+function dcFind(senderId, username) {
+  const list = settings.dcAllow || [];
+  if (!list.length) return null; // boş liste = kimseye cevap yok
+  const id = String(senderId || '').trim();
+  const uname = String(username || '').replace(/^@/, '').toLowerCase();
+  for (const e of list) {
+    if (e === '*') return { id: '*', name: '' };
+    const eid = typeof e === 'string' ? e.trim() : String((e && e.id) || '').trim();
+    if (!eid) continue;
+    if (eid === '*') return { id: '*', name: '' };
+    if (eid.startsWith('@')) {
+      if (uname && eid.slice(1).toLowerCase() === uname) {
+        return typeof e === 'string' ? { id: eid, name: '' } : e;
+      }
+    } else if (id && eid === id) {
+      return typeof e === 'string' ? { id: eid, name: '' } : e;
+    }
+  }
+  return null;
+}
+
+(function dcChatsLoad() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(DC_CHATS_FILE, 'utf8'));
+    if (raw && typeof raw.chats === 'object') {
+      for (const [c, s] of Object.entries(raw.chats)) {
+        if (typeof s === 'string') dcChats.set(c, s);
+      }
+    }
+    if (raw && typeof raw.history === 'object') {
+      for (const [c, arr] of Object.entries(raw.history)) {
+        if (Array.isArray(arr)) dcHistory.set(c, arr.filter((x) => typeof x === 'string').slice(-DC_HISTORY_CAP));
+      }
+    }
+    for (const [c, s] of dcChats.entries()) {
+      const h = dcHistory.get(c) || [];
+      if (!h.includes(s)) h.push(s);
+      dcHistory.set(c, h.slice(-DC_HISTORY_CAP));
+    }
+  } catch {}
+})();
+
+function saveDcChats() {
+  try {
+    fs.writeFileSync(
+      DC_CHATS_FILE,
+      JSON.stringify({
+        chats: Object.fromEntries(dcChats),
+        history: Object.fromEntries([...dcHistory.entries()].map(([c, a]) => [c, a.slice(-DC_HISTORY_CAP)])),
+      })
+    );
+  } catch {}
+}
+
+function dcRememberSession(channelId, sid) {
+  const h = dcHistory.get(channelId) || [];
+  if (!h.includes(sid)) h.push(sid);
+  dcHistory.set(channelId, h.slice(-DC_HISTORY_CAP));
+}
+
+const DC_DEBOUNCE_MS = 4500;
+const dcQueue = new Map(); // channelId -> { payloads[] }
+
+function dcQueuePush(channelId, payload) {
+  let q = dcQueue.get(channelId);
+  if (!q) {
+    q = { payloads: [] };
+    dcQueue.set(channelId, q);
+  }
+  q.payloads.push(payload);
+  clearTimeout(q.timer);
+  dcLog(`queue: mesaj kuyruğa girdi channel=${channelId} toplam=${q.payloads.length} (4.5 sn birleştirme)`);
+  q.timer = setTimeout(() => {
+    dcFlush(channelId).catch((e) => dcLog(`flush KRASİ: ${String((e && e.stack) || e)}`));
+  }, DC_DEBOUNCE_MS);
+}
+
+async function dcFlush(channelId) {
+  const q = dcQueue.get(channelId);
+  if (!q) return;
+  dcQueue.delete(channelId);
+  const merged = { text: '', senderId: '', username: '', senderName: '' };
+  for (const p of q.payloads) {
+    if (p.text) merged.text += (merged.text ? '\n' : '') + p.text;
+    if (!merged.senderId && p.senderId) { merged.senderId = p.senderId; merged.username = p.username; merged.senderName = p.senderName; }
+  }
+  await processDcMessage(channelId, merged);
+}
+
+async function handleDcIncoming(channelId, payload) {
+  try {
+    const hit = dcFind(payload.senderId, payload.username);
+    dcLog(
+      `incoming channel=${channelId} sender=${payload.senderId || '?'} user=${payload.username || '-'} allowed=${!!hit}` +
+        (hit && hit.name ? ' name=' + hit.name : '')
+    );
+    if (!hit) return; // allowlist dışı yoksay
+    /* İsimsiz kayıt: güvenlik için cevap verme — kullanıcıyı ayarlara yönlendir */
+    if (hit.id !== '*' && !hit.name) {
+      dcLog(`skip: isimsiz kayıt (${hit.id}) — cevap verilmedi, Entegrasyonlar'da isim ekle`);
+      return;
+    }
+    resumeServices(); // pause durumunda gelen mesaj servisleri canlandırır
+    dcQueuePush(String(channelId), payload);
+  } catch (e) {
+    dcLog(`handleDcIncoming KRASİ: ${String((e && e.stack) || e)}`);
+  }
+}
+
+async function processDcMessage(channelId, payload) {
+  const hit = dcFind(payload.senderId, payload.username);
+  if (!hit) {
+    dcLog(`skip flush: izinli eşleşme yok (sender=${payload.senderId || '?'})`);
+    return;
+  }
+  let sid = dcChats.get(channelId);
+  if (sid && engine.isBusy(sid)) {
+    /* oturum meşgul — WA/TG ile aynı: kaybetme, iş bitene dek yeniden dene */
+    await new Promise((r) => setTimeout(r, DC_DEBOUNCE_MS));
+    return processDcMessage(channelId, payload, 1);
+  }
+  if (!sid) {
+    const v = engine.createSession();
+    sid = v.id;
+    dcChats.set(channelId, sid);
+    dcRememberSession(channelId, sid);
+    saveDcChats();
+  } else {
+    dcRememberSession(channelId, sid);
+  }
+  /* Kişi bazlı granül izin: all/web/read/chat */
+  let perm = hit.perm || (hit.lockdown ? 'chat' : 'all');
+  engine.setSessionPerm(sid, perm);
+
+  /* BOT SİSTEMİ: izinli kayıtta bot_id yoksa beast'e düşer (WA/TG ile aynı) */
+  let botId = hit && hit.bot_id ? String(hit.bot_id) : 'beast';
+  if (!bots.get(botId)) {
+    if (botId !== 'beast') dcLog(`bot="${botId}" yok — kayıt botsuz, beast (admin) botuna yönlendirildi`);
+    botId = 'beast';
+  }
+  engine.setSessionBot(sid, botId);
+  const botCfg = bots.get(botId);
+  if (botCfg && !botCfg.admin) {
+    const eff = moreRestrictivePerm(perm, botCfg.perm || 'all');
+    if (eff !== perm) {
+      perm = eff;
+      engine.setSessionPerm(sid, eff);
+    }
+    engine.setSessionTools(sid, botToolSet(botCfg));
+  } else {
+    engine.setSessionTools(sid, null);
+  }
+  engine.setSessionModel(sid, botCfg && !botCfg.admin ? (botCfg.model || null) : null);
+  dcLog(`perm=${fmtPerm(perm)} bot=${botId} sid=${sid}`);
+
+  /* #v13.1 rol: SAHİP vs MİSAFİR — ajan kime konuştuğunu net bilsin */
+  const isOwner = !!hit.owner;
+  const roleTag = isOwner
+    ? 'SAHİBİN (talepleri önceliklidir)'
+    : 'MİSAFİR (izinli ama sahibin sözü önceliklidir)';
+  const label =
+    (hit.name || payload.senderName || '?') +
+    (payload.username ? ` (@${payload.username})` : '') +
+    ` — ${roleTag}`;
+  let text = `[Discord — gönderen: ${label}]`;
+  if (!isOwner) {
+    text += `\n[NOT: Bu kişi SAHİP DEĞİL, misafirdir. Sahibin ayarlarını/verilerini değiştirme; kalıcı hafızaya misafire özel bilgi yazma.]`;
+  }
+  text += `\n${String(payload.text || '').slice(0, 6000)}`;
+  engine.send(sid, { text: text.slice(0, 8000), attachments: [] });
+}
+
+async function sendDcSafe(channelId, text) {
+  if (!dc) return false;
+  try {
+    return !!(await dc.send(channelId, text));
+  } catch (e) {
+    dcLog(`send hata channel=${channelId}: ${String((e && e.message) || e)}`);
+    return false;
+  }
+}
+
+function ensureDc() {
+  if (!dc) {
+    dc = new DiscordBridge({
+      token: settings.dcToken || '',
+      emit: (ev) => {
+        if (ev.type === 'status') dcLog(`status=${ev.status}${ev.user ? ' user=' + ev.user : ''}`);
+        if (win && !win.isDestroyed()) win.webContents.send('dc:event', ev);
+      },
+      onIncoming: handleDcIncoming,
+    });
+  }
+  return dc;
+}
+
+/* token değişimi / yeniden başlatma: eski köprüyü kapat, yenisini aç */
+async function restartDc() {
+  if (dc) {
+    try { await dc.stop(); } catch {}
+    dc = null;
+  }
+  if (!settings.dcToken) return;
+  const b = ensureDc();
+  try {
+    await b.start();
+  } catch (e) {
+    dcLog(`start başarısız: ${String((e && e.message) || e)}`);
   }
 }
 
@@ -2201,6 +2427,27 @@ function reloadBackend() {
                 const lastA = [...s.messages].reverse().find((m) => m.role === 'assistant' && m.content);
                 const txt = typeof (lastA && lastA.content) === 'string' ? lastA.content : '';
                 if (txt.trim()) await sendTgSafe(tgid, txt);
+              }
+            } catch {}
+          })();
+        }
+      }
+      // Discord oturumlarının son cevabını geri gönder (TG ile aynı akış)
+      if ((ev.type === 'done' || ev.type === 'error') && dc && dc.connected) {
+        const hitD = [...dcChats.entries()].find(([, s]) => s === ev.sessionId);
+        if (hitD) {
+          const dchid = hitD[0];
+          (async () => {
+            try {
+              if (ev.type === 'error') {
+                await sendDcSafe(dchid, 'Bir aksilik oldu: ' + String(ev.error || '').slice(0, 200));
+                return;
+              }
+              if (!ev.aborted) {
+                const s = engine.openSession(ev.sessionId);
+                const lastA = [...s.messages].reverse().find((m) => m.role === 'assistant' && m.content);
+                const txt = typeof (lastA && lastA.content) === 'string' ? lastA.content : '';
+                if (txt.trim()) await sendDcSafe(dchid, txt);
               }
             } catch {}
           })();
@@ -2394,6 +2641,11 @@ app.whenReady().then(() => {
     // Telegram köprüsünü otomatik başlat (token kayıtlıysa)
     if (settings.tgToken) {
       ensureTg().start().catch((e) => tgLog('autostart failed: ' + String((e && e.message) || e)));
+    }
+
+    // Discord köprüsünü otomatik başlat (token kayıtlıysa)
+    if (settings.dcToken) {
+      ensureDc().start().catch((e) => dcLog('autostart failed: ' + String((e && e.message) || e)));
     }
 
     app.on('activate', () => {
@@ -3451,6 +3703,7 @@ ipcMain.handle('sessions:create', () => {
   } else {
     engine.setSessionTools(v.id, null);
   }
+  engine.setSessionModel(v.id, b && !b.admin ? (b.model || null) : null);
   return v;
 });
 ipcMain.handle('sessions:open', (_e, id) => engine.openSession(id));
@@ -5542,6 +5795,42 @@ ipcMain.handle('tg:allow:set', (_e, list) => {
 });
 ipcMain.handle('tg:sessions', () => [...tgChats.values()]);
 
+/* ---------- Discord IPC ---------- */
+ipcMain.handle('dc:status:get', () => {
+  if (!dc) return { configured: !!settings.dcToken, status: 'disconnected', user: null, connected: false };
+  return { configured: true, ...dc.snapshot() };
+});
+
+/* token kaydet + köprüyü (yeniden) başlat */
+ipcMain.handle('dc:set', async (_e, token) => {
+  const t = String(token || '').trim();
+  if (t) settings.dcToken = t;
+  saveSettings();
+  await restartDc();
+  return { configured: !!settings.dcToken, ...(dc ? dc.snapshot() : { status: 'disconnected', user: null }) };
+});
+
+ipcMain.handle('dc:start', async () => {
+  if (!settings.dcToken) return { ok: false, error: 'token yok — önce bot tokenı gir' };
+  await restartDc();
+  return { ok: true, ...(dc ? dc.snapshot() : {}) };
+});
+
+ipcMain.handle('dc:stop', async () => {
+  if (dc) {
+    try { await dc.stop(); } catch {}
+  }
+  return { ok: true };
+});
+
+ipcMain.handle('dc:allow:get', () => settings.dcAllow || []);
+ipcMain.handle('dc:allow:set', (_e, list) => {
+  settings.dcAllow = Array.isArray(list) ? list : [];
+  saveSettings();
+  return settings.dcAllow;
+});
+ipcMain.handle('dc:sessions', () => [...dcChats.values()]);
+
 /* ---------- e-posta IPC ---------- */
 
 ipcMain.handle('email:get', () => {
@@ -5803,6 +6092,7 @@ ipcMain.handle('bots:update', (_e, { id, patch }) => {
         if ((v.botId || 'beast') === String(id || '')) {
           const cfg = bots.get(String(id));
           engine.setSessionTools(v.id, cfg && !cfg.admin ? botToolSet(cfg) : null);
+          engine.setSessionModel(v.id, cfg && !cfg.admin ? (cfg.model || null) : null);
         }
       }
     } catch {}

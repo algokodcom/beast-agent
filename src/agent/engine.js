@@ -35,9 +35,10 @@ const SUP_IDLE_MIN = 2; // ...bu kadar süredir hiç aktivite yoksa TAKILDI
 const SUP_LONG_MIN = 6; // bu kadar süredir koşuyorsa ara kontrol nödü
 const SUP_NUDGE_COOLDOWN_MIN = 4; // aynı iş için iki uyarı arası min süre
 const BG_FIX_MAX = 2; // paralel ajanın otomatik öz-kurtarma hakkı (bitince CEO devreye girer)
-/* Zarif bitirme: iş BU sürede bitmezse ajan artık yeni araştırma yapmaz,
-   elindekiyle SON RAPORU yazar ve düzgün biter — "görev bitmeden patlama" yok */
-const BG_WRAP_MIN = 4;
+/* SÜRE SINIRI YOK: bg ajanlar dakika bazında kesilmez. Sonsuz döngü koruması
+   üç katmanla sağlanır: 1) aktivite yoksa öz-kurtarma + CEO (stuck denetimi),
+   2) MAX_TURNS sert tur tavanı, 3) tur limitine yaklaşınca zarif "raporu yaz"
+   uyarısı (_run içinde). Dakika bazlı wrap-up KALDIRILDI (BG_WRAP_MIN). */
 /* #5 hız: eşzamanlı arka plan LLM turu sınırı — rate-limit yemeden maksimum paralellik */
 const BG_MAX_CONCURRENT_DEFAULT = 4;
 /* #17 kalıcı başarısızlıkta owner'a anlık uyarı */
@@ -203,6 +204,7 @@ class Engine {
     this.lockdown = !!opts.lockdown; // varsayılan kısıt (oturum bazlı override edilmezse)
     this.sessionPerm = new Map(); // sessionId -> ['web'] | ['web','read'] | ['chat'] (kişi/bot bazlı izin)
     this.sessionTools = new Map(); // sessionId -> Set(araç adları) — bot skill kısıtı
+    this.sessionModel = new Map(); // sessionId -> chain entry — bot bazlı model override (setSessionModel)
     this.resolveBot = opts.resolveBot || null; // botId -> bot bilgisi (main enjekte eder)
     /* bot oturumu hafıza köprüsü: botun kendi SOUL/USER/MEMORY dosyaları */
     this.botMemory = opts.botMemory || null;
@@ -332,6 +334,16 @@ class Engine {
     if (!id) return;
     if (names && names.size) this.sessionTools.set(id, new Set(names));
     else this.sessionTools.delete(id);
+  }
+
+  /* BOT MODEL OVERRIDE: her bot farklı model kullanabilir (sel boşsa global seçim).
+     sel biçimi: 'providerId::model' — zincirde yoksa sessizce global'e düşer. */
+  setSessionModel(sessionId, sel) {
+    const id = String(sessionId || '');
+    if (!id) return;
+    const resolved = sel ? this._resolve(String(sel)) : null;
+    if (resolved) this.sessionModel.set(id, resolved);
+    else this.sessionModel.delete(id);
   }
 
   /* Oturumun bağlı olduğu MÜŞTERİ botu (admin/seasız → null → global hafıza) */
@@ -1286,7 +1298,8 @@ class Engine {
                     'Kullanıcı kalıcı bir arka plan takibi isterse (fiyat eşiği, pil seviyesi, sayfa değişikliği) watcher_add ile izleyici kur; kurduktan sonra watcher_list ile doğrula ve kullanıcıya koşulu + kontrol sıklığını kısaca bildir.',
           'Anlık olay takipleri için (yeni mail, fiyat eşiği, dosya değişimi, webhook) event_subscribe kullan — cron/polling gerekmez; listeyi event_list ile göster, vazgeçirirse event_unsubscribe.',
         'Kullanıcı "artık hep böyle yap / bunu unutma" tarzı kalıcı talimat verirse kural olarak kaydet: sohbette /rule <metin> kullanmasını söyle VEYA kullanıcı isterse event_subscribe ile olaya bağlan (mail/fiyat/dosya/webhook).',
-          'Kullanıcının mesajında 2+ ayrı iş/hedef varsa (örn "X yap ve sonra Y\u2019i kontrol et") KODLAMAYA/İŞE BAŞLAMADAN önce todo_write ile plan çıkar ve sırayla yürüt; her adımı tamamlarken güncelle.',
+          'Kullanıcının mesajında 2+ ayrı iş/hedef varsa (örn "X yap ve sonra Y\u2019i kontrol et") KODLAMAYA/İŞE BAŞLAMADAN önce todo_write ile plan çıkar ve sırayla yürüt; her adımı tamamlarken güncelle. LİSTE DİSİPLİNİ: her adım bittiği AN status:"done" yap; son cevabını vermeden önce tüm maddeler done olmalı — yapılmayacaksa listeden düş. Listeyi yarım bırakma.',
+          'HIZ KURALI: Bağımsız işleri AYNI turda birden çok tool_calls ile PARALEL ver. Küçük işleri tek tek çağırma — her ayrı araç turu 5-15 sn LLM gecikmesidir: 3+ küçük komutu TEK run_command\u2019te `;` ile zincirle (örn `git status; node -v; dir`), döngülü/çoklu işleri TEK python_run betiğinde topla, çok dosyalık değişikliği TEK script ile yap. Her küçük işlem için ayrı araç çağrısı açmak yavaşlığın 1 numaralı sebebidir.',
           this.ceoMode
             ? 'Bağımsız alt-işleri run_background ile PARALEL ajana devret; işi KENDİN YÜRÜTME — emri ver, takip et, raporla.'
             : 'Bağımsız alt-işleri delegate_task ile devret; kendi başına halledebileceğin işleri devretme.',
@@ -1910,7 +1923,7 @@ class Engine {
     job.lastActivityAt = nowIso();
   }
 
-  /* Saf sınıflandırma (test edilebilir): null | 'stuck' | 'wrapup' | 'long' */
+  /* Saf sınıflandırma (test edilebilir): null | 'stuck' | 'long' */
   static superviseReason(job, nowMs) {
     if (!job || job.status !== 'running') return null;
     const started = Date.parse(job.startedAt || '') || nowMs;
@@ -1922,7 +1935,6 @@ class Engine {
       : Infinity;
     if (nudgedMin < SUP_NUDGE_COOLDOWN_MIN) return null; // yeni uyardık — boğmayalım
     if (runMin >= SUP_STUCK_START_MIN && idleMin >= SUP_IDLE_MIN) return 'stuck';
-    if (!job.wrapAt && runMin >= BG_WRAP_MIN) return 'wrapup';
     if (runMin >= SUP_LONG_MIN) return 'long';
     return null;
   }
@@ -1937,11 +1949,6 @@ class Engine {
       /* #16 öz-kurtarma: takılan ajan CEO'yu meşgul etmeden kendini toparlar */
       if (reason === 'stuck' && (job.fixes || 0) < BG_FIX_MAX) {
         this._bgSelfHeal(job, now);
-        continue;
-      }
-      /* zarif bitirme: süre dolunca yeni araştırma yasak → SON RAPORU yazsın */
-      if (reason === 'wrapup') {
-        this._bgWrapUp(job, now);
         continue;
       }
       job.lastNudgeAt = nowIso();
@@ -1979,24 +1986,6 @@ class Engine {
       `1) Takılan aracı/adımı bırak, FARKLI bir yöntemle devam et (farklı komut, daha kısa yol, farklı kaynak).\n` +
       `2) Gerekirse görevi küçült: en kritik sonucu üretecek kısma odaklan.\n` +
       `3) Her yolla çıkılmıyorsa engeli TEK cümlede açıkla ve şu ana kadarki EN İYİ KISMİ SONUCU rapor olarak yazıp bitir.`;
-    this._bgKick(job, text);
-  }
-
-  /* Zarif bitirme: süre dolunca ajanı kesip SON RAPORU yazmasını iste.
-     Uzatma yok, öldürme yok — mevcut bulgularla düzgün kapanış. */
-  _bgWrapUp(job, now) {
-    job.wrapAt = nowIso();
-    job.lastNudgeAt = nowIso();
-    job.checks = (job.checks || 0) + 1;
-    const runMin = Math.max(1, Math.round((now - Date.parse(job.startedAt)) / 60000));
-    const det = this.bgDetail(job.id);
-    const tail = det.ok && det.messages.length ? det.messages.slice(-3).join('\n') : '';
-    const text =
-      `[SÜRE UYARISI] "${job.title}" görevi ${runMin} dk'dır sürüyor — süre doldu.\n` +
-      `YENİ arama/fetch/sayfa açma YAPMA. Şu ana kadar bulduklarınla SON RAPORU şimdi yaz:\n` +
-      `- 3-5 madde: net sonuç + yapılamayanlar açıkça "bulunamadı" diye.\n` +
-      `Raporu yazınca görev tamamlanır — fazladan tur harcama.` +
-      (tail ? `\n\nSon çıktın:\n${tail}` : '');
     this._bgKick(job, text);
   }
 
@@ -2225,6 +2214,11 @@ class Engine {
       role = 'terminal';
     }
     let sel = this.modelFor(role);
+    /* bot model override: rol modeli (vision/terminal) yoksa botun kendi seçimi kazanır */
+    if (!role) {
+      const ssel = this.sessionModel.get(String(session.id));
+      if (ssel) sel = ssel;
+    }
     if (role && this.roleModels[role]) {
       emitSafe(this, session.id, { type: 'status', status: `rol: ${role} → ${sel.providerName} · ${sel.model}` });
     }
@@ -2288,9 +2282,26 @@ class Engine {
     const sid = session.id;
     const emit = (ev) => this.emit({ ...ev, sessionId: sid });
     try {
-      if (!this.sel) throw new Error('Model yapılandırılmadı — %APPDATA%\\beast\\config.yaml ve .env kontrol et');
+      if (!this.sel && !this.sessionModel.get(String(session.id))) throw new Error('Model yapılandırılmadı — %APPDATA%\\beast\\config.yaml ve .env kontrol et');
 
+      let nudged = false; // görev listesi disiplini: run başına en fazla 1 hatırlatma
+      let wrapNudged = false; // tur limitine yaklaşınca zarif kapanış (bg ajanlar)
       for (let turn = 0; turn < MAX_TURNS; turn++) {
+        /* SÜRE SINIRI YOK — ama sonsuz tur da yok: bg ajan son 3 tura gelirken
+           "raporu yaz ve bitir" uyarısı alır; MAX_TURNS sert tavan olarak kalır. */
+        if (session.bgJob && turn === MAX_TURNS - 3 && !wrapNudged) {
+          wrapNudged = true;
+          const wmsg = {
+            role: 'user',
+            content:
+              '[TUR LİMİTİ YAKLAŞIYOR] Kalın son turlar: yeni araştırma/iş AÇMA — şu ana kadarki bulgularınla SON RAPORU yaz ve bitir. Yapılamayanları açıkça "bulunamadı" diye belirt.',
+          };
+          session.messages.push(wmsg);
+          try {
+            this._append(session, wmsg);
+          } catch {}
+          emit({ type: 'message', message: wmsg });
+        }
         this._bgTrim(session); // #21 bg geçmişini olabildiğince ince tut
         emit({ type: 'status', status: 'thinking' });
         const res = await this._chatTurn(session, ctrl.signal, (delta) =>
@@ -2306,6 +2317,27 @@ class Engine {
         emit({ type: 'message', message: assistant });
 
         if (!res.toolCalls || !res.toolCalls.length) {
+          /* GÖREV LİSTESİ DİSİPLİNİ: ajan işi bitti sanıyor ama listede hâlâ
+             bekleyen/aktif madde varsa BİR KEZ hatırlat ve tura devam et —
+             liste ya tamamlanmalı ya kalan maddeler listeden düşürülmeli. */
+          const todos = session.todos || this.todos.get(sid) || [];
+          const pending = todos.filter((t) => t && t.status !== 'done');
+          if (pending.length && !nudged) {
+            nudged = true;
+            const nudge = {
+              role: 'user',
+              content:
+                '[OTOMATİK HATIRLATMA] Görev listende hâlâ tamamlanmamış maddeler var: ' +
+                pending.map((t) => '"' + t.title + '"').join(', ') +
+                '. Görevi yarım bırakma: eksik adımları ŞİMDİ tamamla; gerçekten yapılmayacaksa listeden düş. todo_write ile listeyi güncelle (status:"done") ve işi kapat.',
+            };
+            session.messages.push(nudge);
+            try {
+              this._append(session, nudge);
+            } catch {}
+            emit({ type: 'message', message: nudge });
+            continue;
+          }
           /* cevap tamam → done HEMEN: kullanıcı beklemeden yeni iş yazabilsin.
              Not/memory/skill bakımı artık arka planda (_postRunHousekeeping). */
           this._clearCrash();
@@ -3282,7 +3314,7 @@ const TOOLS = [
     function: {
       name: 'todo_write',
       description:
-        'Replace the visible task checklist for this chat. Use ONLY for multi-step work (3+ steps); do not use for simple questions. Keep titles short; update statuses as you progress; clear the list when done.',
+        'Replace the visible task checklist for this chat. Use ONLY for multi-step work (3+ steps); do not use for simple questions. Keep titles short; update statuses as you progress; clear the list when done. DISCIPLINE: mark each step done THE MOMENT it is completed; NEVER end your reply while items are still pending/active — the system bounces unfinished lists back.',
       parameters: {
         type: 'object',
         properties: {

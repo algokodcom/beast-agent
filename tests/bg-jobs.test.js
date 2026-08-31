@@ -121,18 +121,14 @@ function fakeJob(over) {
   };
 }
 
-test('superviseReason: takılan stuck, çalışan uzun iş once wrapup (wrapAt sonrası long), yeni uyarılan null', () => {
+test('superviseReason: takılan stuck, uzun koşan iş CEO kontrolü (long), yeni uyarılan null', () => {
   assert.strictEqual(Engine.superviseReason(fakeJob(), Date.now()), 'stuck');
 
+  // süre sınırı KALDIRILDI: aktivite süren uzun iş artık kesilmez → CEO ara kontrolü (long)
   assert.strictEqual(
     Engine.superviseReason(fakeJob({ lastActivityAt: new Date(Date.now() - 30 * 1000).toISOString() }), Date.now()),
-    'wrapup'
-  ); // aktivite sürüyor ama 10 dk koştu — önce zarif bitirme uyarısı
-
-  assert.strictEqual(
-    Engine.superviseReason(fakeJob({ wrapAt: new Date().toISOString(), lastActivityAt: new Date(Date.now() - 30 * 1000).toISOString() }), Date.now()),
     'long'
-  ); // wrap-up uyarısı verildi, hâlâ bitmedi → CEO ara kontrolü
+  );
 
   assert.strictEqual(
     Engine.superviseReason(fakeJob({ startedAt: new Date(Date.now() - 1 * MIN).toISOString() }), Date.now()),
@@ -182,12 +178,11 @@ test('_supervise önce ajana ÖZ-KURTARMA verir, haklar bitince CEO\'ya uyarır'
   eng._supervise();
   assert.strictEqual(job.checks, 1);
 
-  /* 2. aşama: öz-kurtarma hakları bitmiş + iş hâlâ koşuyor (wrap-up zaten
-     verildi, aktif) → CEO uyarısı ('long') */
+  /* 2. aşama: öz-kurtarma hakları bitmiş + iş hâlâ koşuyor (aktivite sürüyor,
+     süre sınırı yok) → CEO uyarısı ('long') */
   job.status = 'running';
   job.endedAt = null;
   job.fixes = 2;
-  job.wrapAt = new Date().toISOString();
   job.lastActivityAt = new Date(Date.now() - 30 * 1000).toISOString();
   job.lastNudgeAt = new Date(Date.now() - 5 * MIN).toISOString();
   eng._supervise();

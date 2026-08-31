@@ -1535,6 +1535,35 @@ async function renderIntegrationsPane() {
         <button id="tgAllowAdd" class="btn ghost" style="margin-top:6px">${_t('it_add')}</button>
       </div>
       <div class="sub" style="margin-top:8px">${_t('it_tg_note')}</div>
+    </div>
+
+    <div class="wa-card" style="margin-top:14px">
+      <div class="wa-head">
+        <div class="wa-logo tg">D</div>
+        <div>
+          <div class="wa-title">Discord</div>
+          <div class="wa-sub">${_t('it_dc_sub')}</div>
+        </div>
+      </div>
+      <div class="wa-status"><span id="dcDot" class="wa-dot"></span><span id="dcStatText">—</span></div>
+      <div id="dcUser" class="wa-user" hidden></div>
+      <div class="form-grid" style="grid-template-columns:1fr auto;align-items:center">
+        <input id="dcTokenInp" class="inp" type="password" style="margin:6px 0 0" placeholder="${_t('it_dc_token_ph')}" autocomplete="off" />
+        <button id="dcSaveBtn" class="btn" style="margin-top:6px">${_t('it_tg_save')}</button>
+      </div>
+      <div class="wa-actions" style="margin-top:6px">
+        <button id="dcStopBtn" class="btn ghost">${_t('it_disconnect')}</button>
+      </div>
+      <div class="divider"></div>
+      <label class="mem-label" style="margin-top:0">${_t('it_allow_label')} — Discord</label>
+      <div id="dcAllowChips" class="chips-inline"></div>
+      <div class="form-grid" style="grid-template-columns:1.2fr 1fr 1fr auto;align-items:center">
+        <input id="dcAllowNameInp" class="inp" style="margin:6px 0 0" placeholder="${_t('it_name_ph')}" autocomplete="off" />
+        <input id="dcAllowIdInp" class="inp" style="margin:6px 0 0" placeholder="${_t('it_dc_id_ph')}" autocomplete="off" />
+        <select id="dcAllowBotSel" class="perm-select" style="margin:6px 0 0;min-width:105px" title="${_t('bot_bind_title')}"></select>
+        <button id="dcAllowAdd" class="btn ghost" style="margin-top:6px">${_t('it_add')}</button>
+      </div>
+      <div class="sub" style="margin-top:8px">${_t('it_dc_note')}</div>
     </div>`;
 
   const waGroupsOn = $('#waGroupsOn');
@@ -1596,6 +1625,29 @@ async function renderIntegrationsPane() {
     tgUI.status = ts.status || 'disconnected';
     tgUI.user = ts.user || null;
     updateTgPane();
+  } catch {}
+
+  /* DISCORD: token + allow list + durum */
+  $('#dcSaveBtn').addEventListener('click', async () => {
+    const tok = $('#dcTokenInp').value.trim();
+    if (!tok) { toast(_t('it_dc_token_ph')); return; }
+    toast(_t('it_dc_connecting'));
+    const r = await beast.dcSetToken(tok).catch((e) => ({ status: 'error', error: String(e) }));
+    $('#dcTokenInp').value = '';
+    updateDcPane();
+    toast(r.status === 'connected' ? 'Discord bağlı: ' + (r.user || '') : r.status === 'error' ? _t('it_dc_token_bad') : _t('it_dc_connecting'));
+  });
+  $('#dcStopBtn').addEventListener('click', async () => {
+    await beast.dcStop().catch(() => {});
+    updateDcPane();
+    toast('Kesildi');
+  });
+  await renderDcAllow();
+  try {
+    const ds = await beast.dcGetStatus();
+    dcUI.status = ds.status || 'disconnected';
+    dcUI.user = ds.user || null;
+    updateDcPane();
   } catch {}
 }
 
@@ -2439,6 +2491,199 @@ async function renderTgAllow() {
   }
 }
 
+/* ---------------- Discord izin listesi + durum — TG ile aynı mantık ---------------- */
+
+const dcUI = { status: 'disconnected', user: null };
+const DC_STATUS_TEXT = {
+  disconnected: 'Bağlı değil',
+  connecting: 'Bağlanıyor…',
+  connected: 'Bağlı',
+  error: 'Hata — tokenı kontrol et',
+};
+
+function onDcEvent(ev) {
+  if (ev.type !== 'status') return;
+  dcUI.status = ev.status;
+  if (ev.user) dcUI.user = ev.user;
+  updateDcPane();
+}
+
+function updateDcPane() {
+  const pane = $('#tab-integrations');
+  const dot = pane && pane.querySelector('#dcDot');
+  if (!dot) return;
+  dot.className = 'wa-dot' + (dcUI.status === 'connected' ? ' on' : dcUI.status === 'error' ? ' qr' : '');
+  pane.querySelector('#dcStatText').textContent = DC_STATUS_TEXT[dcUI.status] || dcUI.status;
+  const u = pane.querySelector('#dcUser');
+  u.hidden = !(dcUI.status === 'connected' && dcUI.user);
+  u.textContent = dcUI.user ? '🤖 ' + dcUI.user : '';
+}
+
+async function renderDcAllow() {
+  const wrap = $('#dcAllowChips');
+  if (!wrap) return;
+  const list = await beast.dcGetAllow();
+  let botChoices = [];
+  try { botChoices = (await beast.botsList()) || []; } catch {}
+  const dcLabel = (e) => {
+    if (e === '*') return '* herkes';
+    if (typeof e === 'string') return e;
+    const name = String((e && e.name) || '').trim();
+    const id = String((e && e.id) || '');
+    const bot = e && e.bot_id ? botChoices.find((bb) => bb.id === e.bot_id) : null;
+    return (name ? name + ' ' : '') + id + (bot ? ' → ' + bot.name : '');
+  };
+  wrap.innerHTML = '';
+  if (!list.length) wrap.innerHTML = '<span class="sub">— boş —</span>';
+  list.forEach((entry, idx) => {
+    const curPerm = (typeof entry === 'object' && entry.perm) || (entry && entry.lockdown ? 'chat' : 'all');
+    const c = document.createElement('span');
+    c.className = 'chip';
+    c.style.margin = '0 6px 6px 0';
+    const txt = document.createElement('span');
+    txt.className = 'chip-txt';
+    txt.textContent = dcLabel(entry);
+    c.appendChild(txt);
+    if (entry !== '*') {
+      const selP = document.createElement('select');
+      selP.className = 'perm-select';
+      selP.title = _t('wa_perm_title');
+      const PERMS = [
+        ['all', _t('wa_perm_all')],
+        ['web', 'web'],
+        ['read', _t('wa_perm_read')],
+        ['chat', _t('wa_perm_chat')],
+      ];
+      for (const [v, lbl] of PERMS) {
+        const o = document.createElement('option');
+        o.value = v;
+        o.textContent = lbl;
+        if (curPerm === v) o.selected = true;
+        selP.appendChild(o);
+      }
+      selP.addEventListener('change', async () => {
+        const cur = await beast.dcGetAllow();
+        const next = cur.map((e, i) => {
+          if (i !== idx) return e;
+          const base = typeof e === 'string' ? { id: e, name: '' } : { ...e };
+          base.lockdown = selP.value === 'chat';
+          base.perm = selP.value;
+          return base;
+        });
+        await beast.dcSetAllow(next);
+        renderDcAllow();
+        toast(dcLabel(entry) + ': ' + selP.selectedOptions[0].textContent);
+      });
+      c.appendChild(selP);
+
+      if (botChoices.length) {
+        const sel = document.createElement('select');
+        sel.className = 'perm-select';
+        sel.title = _t('bot_bind_title');
+        const empty = document.createElement('option');
+        empty.value = '';
+        empty.textContent = _t('bot_sel_empty');
+        sel.appendChild(empty);
+        for (const bb of botChoices) {
+          const o = document.createElement('option');
+          o.value = bb.id;
+          o.textContent = `${bb.icon} ${bb.name}`;
+          if ((typeof entry === 'object' && entry.bot_id) === bb.id) o.selected = true;
+          sel.appendChild(o);
+        }
+        sel.addEventListener('change', async () => {
+          const cur = await beast.dcGetAllow();
+          const next = cur.map((e, i) => {
+            if (i !== idx) return e;
+            const base = typeof e === 'string' ? { id: e, name: '' } : { ...e };
+            base.bot_id = sel.value || undefined;
+            return base;
+          });
+          await beast.dcSetAllow(next);
+          renderDcAllow();
+          const bt = botChoices.find((bb) => bb.id === sel.value);
+          toast(dcLabel(entry) + ' → ' + (bt ? bt.name : '?'));
+        });
+        c.appendChild(sel);
+      }
+
+      const isOwnerEntry = typeof entry === 'object' && !!entry.owner;
+      const ownerBtn = document.createElement('span');
+      ownerBtn.className = 'lk';
+      ownerBtn.style.cssText = 'font-size:11px;padding:1px 6px;' + (isOwnerEntry ? 'color:#c9a227;font-weight:800' : '');
+      ownerBtn.title = isOwnerEntry ? _t('wa_owner_title_on') : _t('wa_owner_title_off');
+      ownerBtn.textContent = isOwnerEntry ? _t('wa_owner_on') : _t('wa_owner_off');
+      ownerBtn.addEventListener('click', async () => {
+        if (isOwnerEntry) return;
+        const cur = await beast.dcGetAllow();
+        const next = cur.map((e, i) => {
+          if (typeof e === 'object' && e && e.owner) return { ...e, owner: false };
+          if (i === idx) {
+            const obj = typeof e === 'string' ? { id: e, name: '' } : { ...e };
+            obj.owner = true;
+            return obj;
+          }
+          return e;
+        });
+        const tgt = next[idx];
+        await beast.dcSetAllow(next);
+        renderDcAllow();
+        toast('Sahip: ' + dcLabel(tgt));
+      });
+      c.appendChild(ownerBtn);
+    }
+    const x = document.createElement('span');
+    x.className = 'x';
+    x.textContent = '×';
+    x.addEventListener('click', async () => {
+      const next = (await beast.dcGetAllow()).filter((_v, i) => i !== idx);
+      await beast.dcSetAllow(next);
+      renderDcAllow();
+      toast('Kaldırıldı: ' + dcLabel(entry));
+    });
+    c.appendChild(x);
+    wrap.appendChild(c);
+  });
+
+  const inp = $('#dcAllowIdInp');
+  const nameInp = $('#dcAllowNameInp');
+  const add = $('#dcAllowAdd');
+  const botSel = $('#dcAllowBotSel');
+  if (botSel) {
+    const prev = botSel.value;
+    botSel.innerHTML =
+      `<option value="">${_t('bot_sel_empty')}</option>` +
+      botChoices
+        .map((bb) => `<option value="${bb.id}">${bb.icon} ${escapeHtml(bb.name)}${bb.admin ? ' (admin)' : ''}</option>`)
+        .join('');
+    if (prev) botSel.value = prev;
+  }
+  if (!add.dataset.bound) {
+    add.dataset.bound = '1';
+    const addEntry = async () => {
+      let v = inp.value.trim();
+      if (!v) return;
+      const name = nameInp.value.trim().slice(0, 40);
+      if (!name) { toast('İsim zorunlu — kimin yazdığını bilmek için'); nameInp.focus(); return; }
+      v = v.startsWith('@') ? '@' + v.slice(1).replace(/[^\w]/g, '') : v.replace(/[^\d]/g, '');
+      if (!v) { toast(_t('it_dc_id_ph')); return; }
+      const botId = botSel && botSel.value ? { bot_id: botSel.value } : {};
+      const next = [...(await beast.dcGetAllow()), { id: v, name, ...botId }];
+      if (!next.some((e) => e && typeof e === 'object' && e.owner)) {
+        if (next.length && typeof next[0] === 'object') next[0].owner = true;
+      }
+      await beast.dcSetAllow(next);
+      inp.value = '';
+      nameInp.value = '';
+      renderDcAllow();
+      toast('Eklendi: ' + name);
+    };
+    add.addEventListener('click', addEntry);
+    inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); addEntry(); } });
+    nameInp.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); addEntry(); } });
+  }
+}
+
 /* ---------------- BOT SİSTEMİ (BÖLÜM 2-3-4) ----------------
    Sol panel altında bot kartları; her bot için sohbet geçmişi + sekmeli yönetim.
    İlk bot hep Beast (admin, silinemez). Max 5 bot. */
@@ -2767,6 +3012,15 @@ function renderBotSettings(pane, b) {
   const numRows = (b.numbers || [])
     .map((n) => `<div class="bot-num-row" data-num="${n.num}"><span class="n">+${escapeHtml(n.num)}${n.name ? ' · ' + escapeHtml(n.name) : ''}</span><span class="x" title="${_t('bot_num_del')}">×</span></div>`)
     .join('');
+  /* bot bazlı model seçenekleri: ana picker'daki listeyle aynı (state.models) */
+  const modelOpts = ['<option value="">' + escapeHtml(_t('bot_model_global')) + '</option>']
+    .concat(
+      (state.models || []).map((m) => {
+        const s = m.sel || (m.providerId || '') + '::' + (m.model || '');
+        return `<option value="${escapeHtml(s)}" ${b.model === s ? 'selected' : ''}>${escapeHtml(m.providerName || m.providerId || '')} · ${escapeHtml(m.model || '')}</option>`;
+      })
+    )
+    .join('');
   /* Numara ekleme KALDIRILDI — girişler yalnız Ayarlar → Entegrasyonlar (WhatsApp
      izin listesi) üzerinden yapılır. Bu bölüm salt-okunur bağlı-numara listesidir. */
   f.innerHTML = `
@@ -2789,7 +3043,10 @@ function renderBotSettings(pane, b) {
     <div class="bot-checks" id="bPerm">${permChecks}</div>
     <div class="sub" style="margin-top:4px">${_t('bot_perm_note')}</div>
     <label class="mem-label">${_t('bot_skills')}</label>
-    <div class="bot-checks" id="bSkills">${skillChecks}</div>`}
+    <div class="bot-checks" id="bSkills">${skillChecks}</div>
+    <label class="mem-label">${_t('bot_model')}</label>
+    <select id="bModel" class="inp">${modelOpts}</select>
+    <div class="sub" style="margin-top:4px">${_t('bot_model_note')}</div>`}
     <label class="mem-label">${_t('bot_browser')}</label>
     <div class="bot-checks" style="margin-bottom:6px">
       <label><input type="checkbox" id="bExtBrowser" ${b.extBrowser ? 'checked' : ''}/> ${_t('bot_ext_browser')}</label>
@@ -2864,6 +3121,8 @@ function renderBotSettings(pane, b) {
       const sk = {};
       f.querySelectorAll('#bSkills input').forEach((c) => { sk[c.dataset.skill] = c.checked; });
       patch.skills = sk;
+      const bm = $('#bModel');
+      if (bm) patch.model = bm.value;
     }
     const r = await beast.botsUpdate(b.id, patch);
     if (r.ok) { toast(_t('bot_saved')); await refreshBots(); renderBotPage(); }
@@ -3087,6 +3346,39 @@ function fmtAgo(iso) {
   return s >= 60 ? Math.floor(s / 60) + 'dk' : s + 'sn';
 }
 
+/* canlı süre sayacı: 0:43 · 2:05 · 1:02:15 biçimi (koşan ajan kartlarında) */
+function fmtElapsed(ms) {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  const p = (n) => String(n).padStart(2, '0');
+  return h > 0 ? `${h}:${p(m)}:${p(sec)}` : `${m}:${p(sec)}`;
+}
+
+/* koşan ajanların ⏱ sayaçları — saniyede bir yalnızca sayaç span'leri güncellenir
+   (tüm rail yeniden çizilmez). Koşan kart kalmayınca interval kapanır. */
+let agentTimerInt = null;
+function ensureAgentTimers() {
+  const any = !!document.querySelector('.agent-timer[data-start]');
+  if (any && !agentTimerInt) {
+    agentTimerInt = setInterval(() => {
+      document.querySelectorAll('.agent-timer[data-start]').forEach((el) => {
+        const t0 = Date.parse(el.dataset.start || '');
+        if (t0) el.textContent = fmtElapsed(Date.now() - t0);
+      });
+    }, 1000);
+  } else if (!any && agentTimerInt) {
+    clearInterval(agentTimerInt);
+    agentTimerInt = null;
+  }
+}
+function agentTimerHtml(startedAt) {
+  const t0 = Date.parse(startedAt || '');
+  const val = t0 ? fmtElapsed(Date.now() - t0) : '0:00';
+  return `<span class="agent-timer" data-start="${escapeHtml(startedAt || '')}">⏱ ${val}</span>`;
+}
+
 /* sağ panel — paralel ajanların arka plan işleri */
 function renderAgentRail() {
   const list = els.railList;
@@ -3117,7 +3409,7 @@ function renderAgentRail() {
       `<span class="ag-dot"></span>` +
       `<span class="sess-title">${escapeHtml(j.title)}</span>` +
       (j.code ? `<span class="sess-code" title="Oturum kodu">${escapeHtml(j.code)}</span>` : ``) +
-       `<span class="rj-time">${j.status === 'running' ? when + ' · ' + _t('ag_working') : (agStText(j.status) === _t('ag_st_done') ? '\u2713' : (agStText(j.status) || j.status))}</span>` +
+       `<span class="rj-time">${j.status === 'running' ? when + ' · ' + agentTimerHtml(j.startedAt) + ' · ' + _t('ag_working') : (agStText(j.status) === _t('ag_st_done') ? '\u2713' : (agStText(j.status) || j.status))}</span>` +
        (j.status === 'running'
          ? `<button class="rj-cancel" title="${_t('ag_cancel')}">×</button>`
          : `<button class="rj-cancel" title="${_t('ag_delete')}"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M10 11v6M14 11v6"/></svg></button>`) +
@@ -3162,6 +3454,7 @@ function renderAgentRail() {
     /* açık sohbet dökümünü re-render sonrası GERİ GETİR (kapanma bug'ının fix'i) */
     if (open && agentState.chatOpen.has(j.id)) maybeLoadRailChat(j.id);
   }
+  ensureAgentTimers();
 }
 
 /* re-render storm'da IPC fırtınası olmasın: döküm 2 sn'de bir tazelenir */
@@ -3247,7 +3540,7 @@ function renderAgentsPane() {
       `<span class="ag-dot"></span>` +
       `<span class="ag-title">${escapeHtml(j.title)}</span>` +
        `<span class="ag-st">${agStText(j.status) || j.status}</span>` +
-      `<span class="ag-time">${when}${j.endedAt ? ` · ${fmtAgo(j.endedAt)}` : ''}</span>` +
+      `<span class="ag-time">${when}${j.status === 'running' ? ' · ' + agentTimerHtml(j.startedAt) : j.endedAt ? ` · ${fmtAgo(j.endedAt)}` : ''}</span>` +
       (j.status === 'running'
          ? `<button class="ag-btn cancel" title="${_t('ag_cancel')}">${_t('ag_cancel')}</button>`
          : ``) +
@@ -3285,16 +3578,8 @@ function renderAgentsPane() {
     list.appendChild(card);
   }
 
-  /* canlı süre sayacı */
-  clearInterval(agentState.tick);
-  agentState.tick = setInterval(() => {
-    if (setTab !== 'agents') { clearInterval(agentState.tick); return; }
-    for (const el of document.querySelectorAll('.agent-card.st-running .ag-time')) {
-      /* sadece saati yenile */
-      const t = el.textContent.split(' ')[0];
-      el.textContent = `${t} · ${_t('ag_working')}…`;
-    }
-  }, 5000);
+  /* canlı süre sayacı — saniyede bir yalnız ⏱ sayaç span'leri güncellenir */
+  ensureAgentTimers();
 }
 
 /* ---------------- events from engine ---------------- */
@@ -4262,6 +4547,7 @@ async function init() {
 
   beast.onWaEvent(onWaEvent);
   beast.onTgEvent(onTgEvent);
+  beast.onDcEvent(onDcEvent);
 
   els.gearBtn.addEventListener('click', openSettings);
   els.setClose.addEventListener('click', closeSettings);

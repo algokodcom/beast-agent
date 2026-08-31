@@ -1,6 +1,6 @@
 'use strict';
 
-const { app, BrowserWindow, WebContentsView, ipcMain, shell, dialog, Tray, Menu, nativeImage, desktopCapturer, session } = require('electron');
+const { app, BrowserWindow, WebContentsView, ipcMain, shell, dialog, Tray, Menu, nativeImage, desktopCapturer, session, net: electronNet } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const http = require('http');
@@ -3743,13 +3743,21 @@ function flushDesktopOnDone(ev) {
    - Bağlantı geri gelince (DNS kontrolü) sırayla otomatik gönderilir
    - Renderer'a 'net' / 'netQueue' olayları gider: ⏳ kuyruk balonu + toast */
 const NET_CHECK_HOSTS = ['one.one.one.one', 'dns.google'];
+const NET_LOOKUP_HOSTS = ['www.google.com', 'www.microsoft.com'];
+const NET_HTTP_PROBES = [
+  'http://www.msftconnecttest.com/connecttest.txt',
+  'http://cp.cloudflare.com/generate_204',
+  'http://connectivitycheck.gstatic.com/generate_204',
+];
 const NET_CHECK_MS = 8000;
 const NET_CHECK_TIMEOUT = 4000;
+const NET_OFFLINE_STRIKES = 2; // üst üste bu kadar başarısız turda offline ilan edilir
 const CHAT_QUEUE_MAX = 50; // kuyruk üst sınırı — taşarsa en eski düşer
 
 let netOnline = true; // son bilinen bağlantı durumu (başlangıçta iyimser)
 let netCheckedOnce = false;
 let netCheckBusy = false;
+let netFailStreak = 0;
 let chatQueueFlushing = false;
 const chatOfflineQueue = []; // { key, sessionId, text, attachments, at }
 
@@ -3833,8 +3841,42 @@ async function flushChatQueue() {
   }
 }
 
-/* gerçek internet kontrolü: DNS çözümlemesi (sadece ağ arayüzü değil,
-   paket gerçekten çıkıyor mu test eder). Adaylar sırayla denenir. */
+/* gerçek internet kontrolü — TEK yöntem yanıltıcı olabilir:
+   dns.resolve (c-ares) sistem çözümleyicisini atlar; mobil ağ/hotspot/VPN ve
+   ISS DNS engellemelerinde (ör. 1.1.1.1, dns.google) internet VARken bile
+   başarısız çıkar. Bu yüzden katmanlı deniyoruz; HERHANGİ bir katman başarılıysa
+   internet VAR sayılır:
+     1) HTTP connectivity endpoint'leri (http modülü dns.lookup = OS çözümleyicisi
+        kullanır — tarayıcı gibi; captive portal/proxy/mobil ağ hepsinde çalışır)
+     2) dns.lookup (Windows sistem çözümleyicisi — hosts dosyası/VPN/NRPT dahil)
+        + dns.resolve (doğrudan DNS sunucusu)
+     3) OS'in kendi bağlantı durumu (Electron net.isOnline — Windows NCSI)
+   Ayrıca tek başarısız tur offline ilan etmez (2 üst üste başarısız tur gerekir):
+   geçici DNS gecikmesi mesajları gereksiz kuyruğa atmaz. */
+function httpProbe(url) {
+  return new Promise((resolve) => {
+    let done = false;
+    const fin = (v) => { if (!done) { done = true; resolve(v); } };
+    try {
+      const req = http.get(url, { timeout: NET_CHECK_TIMEOUT }, (res) => {
+        res.resume(); // gövdeyi tüket — soket serbest kalsın
+        const ok = !!res.statusCode && res.statusCode < 500;
+        try { res.destroy(); } catch {}
+        fin(ok);
+      });
+      req.on('timeout', () => { try { req.destroy(); } catch {} fin(false); });
+      req.on('error', () => fin(false));
+    } catch { fin(false); }
+  });
+}
+
+function lookupProbe(host) {
+  return new Promise((resolve) => {
+    const t = setTimeout(() => resolve(false), NET_CHECK_TIMEOUT);
+    dns.lookup(host, (err) => { clearTimeout(t); resolve(!err); });
+  });
+}
+
 function dnsProbe(host) {
   return new Promise((resolve) => {
     const t = setTimeout(() => resolve(false), NET_CHECK_TIMEOUT);
@@ -3849,24 +3891,37 @@ async function netCheck() {
   if (netCheckBusy) return;
   netCheckBusy = true;
   try {
-    let ok = false;
-    for (const h of NET_CHECK_HOSTS) {
-      if (await dnsProbe(h)) { ok = true; break; }
+    let ok = (await Promise.all(NET_HTTP_PROBES.map(httpProbe))).some(Boolean);
+    if (!ok) {
+      const lookups = [
+        ...NET_LOOKUP_HOSTS.map(lookupProbe),
+        ...NET_CHECK_HOSTS.map(dnsProbe),
+      ];
+      ok = (await Promise.all(lookups)).some(Boolean);
+    }
+    if (!ok) {
+      try { ok = electronNet.isOnline() === true; } catch {}
     }
     const first = !netCheckedOnce;
     const was = netOnline;
-    netOnline = ok;
     netCheckedOnce = true;
-    if (was !== ok || first) {
+    if (ok) {
+      netFailStreak = 0;
+      netOnline = true;
+    } else {
+      netFailStreak++;
+      if (!was || netFailStreak >= NET_OFFLINE_STRIKES) netOnline = false;
+    }
+    if (netOnline !== was || first) {
       try {
-        if (win && !win.isDestroyed()) win.webContents.send('agent:event', { type: 'net', online: ok });
+        if (win && !win.isDestroyed()) win.webContents.send('agent:event', { type: 'net', online: netOnline });
       } catch {}
-      if (ok) {
+      if (netOnline) {
         log.info('main', 'bağlantı geri geldi — offline kuyruk kontrol ediliyor');
         chatQueueEmit(); // renderer: pill/toast güncellensin
         flushChatQueue().catch(() => {});
       } else {
-        log.info('main', 'internet bağlantısı yok — mesajlar kuyruğa alınacak');
+        log.info('main', `internet bağlantısı yok — mesajlar kuyruğa alınacak (streak=${netFailStreak})`);
         chatQueueEmit();
       }
     }

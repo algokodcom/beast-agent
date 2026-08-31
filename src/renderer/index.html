@@ -101,6 +101,10 @@
           <button id="stopBtn" title="Durdur" hidden data-i18n-title="tipStop">■</button>
           <button id="sendBtn" title="Gönder" data-i18n-title="tipSend">&#x27A4;&#xFE0E;</button>
         </div>
+        <div id="guestBotDD" class="dd" style="align-self:center">
+          <button id="guestBotBtn" class="btn ghost" style="margin-top:6px;padding:4px 12px;font-size:12px" title="Konuşmaya başka bot davet et">🤖 Bot davet et</button>
+          <div id="guestBotMenu" class="dd-menu" hidden style="left:50%;transform:translateX(-50%)"></div>
+        </div>
       </div>
 
       <div id="ideRow">
@@ -241,6 +245,7 @@
             <button class="btab" data-btab="watcher" data-i18n="bot_tab_watcher">Watcher</button>
             <button class="btab" data-btab="stats" data-i18n="bot_tab_stats">İstatistik</button>
             <button class="btab" data-btab="notes" data-i18n="bot_tab_notes">Notlar</button>
+            <button class="btab" data-btab="dmlog" hidden>DM Log</button>
           </nav>
           <div id="botPane"></div>
         </div>

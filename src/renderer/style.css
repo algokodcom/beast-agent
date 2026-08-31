@@ -1714,6 +1714,7 @@ body.browser-open #toast { left: calc((100vw - var(--bw, 480px)) / 2); }
 #botList { overflow-y: auto; }
 .bot-card {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
   padding: 6px 8px;
@@ -1725,6 +1726,17 @@ body.browser-open #toast { left: calc((100vw - var(--bw, 480px)) / 2); }
 .bot-card:hover { background: var(--panel2); color: var(--text); }
 .bot-card.active { background: var(--panel2); color: var(--text); box-shadow: inset 2px 0 0 var(--accent); }
 .bot-card .bot-ico { font-size: 16px; line-height: 1; flex-shrink: 0; }
+/* 5 haneli benzersiz bot kodu — satırda ortalanmış */
+.bot-card .bot-code {
+  width: 100%;
+  text-align: center;
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 3px;
+  color: var(--accent);
+  opacity: 0.85;
+}
 .bot-card .bot-gear {
   visibility: hidden;
   color: var(--muted);

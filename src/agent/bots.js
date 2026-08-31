@@ -84,8 +84,10 @@ function adminBot() {
     name: 'Beast',
     icon: '🦁',
     admin: true,
+    code: '', // 5 haneli benzersiz bot kodu (ensureBotCodes atar)
     prompt: '',
     perm: 'all',
+    vis: true, // sohbet görünürlüğü: ana sohbete davet edilebilir
     skills: { ...DEFAULT_SKILLS, run_command: true },
     seeBots: [], // admin her şeyi görür
     extBrowser: true, // dış tarayıcı yetkisi
@@ -153,6 +155,7 @@ function botConfigOf(b) {
     name: b.name,
     icon: b.icon,
     admin: !!b.admin,
+    code: b.code || '',
     prompt: b.prompt || '',
     browser: { default: b.browserDefault || 'dahili', extCommand: b.extCommand || '' },
     plugins: b.plugins || [],
@@ -204,8 +207,10 @@ function add({ name, icon, prompt }) {
     name: n,
     icon: ICONS.includes(icon) ? icon : '🤖',
     admin: false,
+    code: '', // ensureBotCodes hemen altında benzersiz 5 hane atar
     prompt: String(prompt || '').slice(0, 4000),
     perm: 'all',
+    vis: true, // sohbet görünürlüğü (admin matristen kapatır)
     skills: { ...DEFAULT_SKILLS },
     seeBots: [], // varsayılan: hiçbir bot baka botu göremez
     extBrowser: false, // dış tarayıcı sadece yetkilide
@@ -215,10 +220,41 @@ function add({ name, icon, prompt }) {
     createdAt: nowIso(),
   };
   REG.bots.push(bot);
+  ensureBotCodes();
   saveRegistry();
   ensureDirs();
-  logChange(id, `bot oluşturuldu (name="${n}", icon=${bot.icon})`);
+  logChange(id, `bot oluşturuldu (name="${n}", icon=${bot.icon}, code=${bot.code})`);
   return { ok: true, bot: { ...bot } };
+}
+
+/* ---------- 5 HANELİ BENZERSİZ BOT KODU ----------
+   Her bot oluşurken 10000-99999 arası rastgele kod alır; duplicate kontrolü
+   zorunlu (tüm botlara karşı). Açılışta kodu eksik/çakışık botlara da atanır. */
+function ensureBotCodes() {
+  loadRegistry();
+  let dirty = false;
+  const used = () => new Set(REG.bots.map((b) => String(b.code || '')).filter((c) => /^\d{5}$/.test(c)));
+  const seen = new Set();
+  for (const b of REG.bots) {
+    const cur = String(b.code || '');
+    if (/^\d{5}$/.test(cur) && !seen.has(cur)) { seen.add(cur); continue; }
+    const u = used();
+    let c;
+    do { c = String(10000 + Math.floor(Math.random() * 90000)); } while (u.has(c));
+    logChange(b.id, `bot kodu atandı: ${c}${cur ? ` (eskisi geçersizdi: ${cur})` : ''}`);
+    b.code = c;
+    seen.add(c);
+    dirty = true;
+  }
+  if (dirty) saveRegistry();
+  return dirty;
+}
+
+function byCode(code) {
+  const c = String(code || '').replace(/\D/g, '');
+  if (!/^\d{5}$/.test(c)) return null;
+  loadRegistry();
+  return REG.bots.find((b) => String(b.code || '') === c) || null;
 }
 
 function update(id, patch) {
@@ -278,6 +314,10 @@ function update(id, patch) {
     if (typeof patch.extBrowser === 'boolean' && patch.extBrowser !== b.extBrowser) {
       changes.push(`dış tarayıcı yetkisi: ${b.extBrowser} → ${patch.extBrowser}`);
       b.extBrowser = patch.extBrowser;
+    }
+    if (typeof patch.vis === 'boolean' && patch.vis !== (b.vis !== false)) {
+      changes.push(`sohbet görünürlüğü: ${b.vis !== false} → ${patch.vis}`);
+      b.vis = patch.vis;
     }
     if (['dahili', 'dis'].includes(patch.browserDefault) && patch.browserDefault !== b.browserDefault) {
       changes.push(`varsayılan tarayıcı: ${b.browserDefault} → ${patch.browserDefault}`);
@@ -497,6 +537,8 @@ module.exports = {
   update,
   remove,
   canSee,
+  ensureBotCodes,
+  byCode,
   readMemory,
   readMemoryFiles,
   writeMemoryFile,

@@ -333,6 +333,41 @@ class Engine {
     else this.sessionTools.delete(id);
   }
 
+  /* ANA SOHBETE DAVETLİ BOTLAR: oturuma guest bot ekle/çıkar (persist) */
+  setSessionGuests(sessionId, guests) {
+    const s = this._load(String(sessionId || ''));
+    if (!s) return false;
+    const items = (Array.isArray(guests) ? guests : [])
+      .slice(0, 4)
+      .map((g) => ({ id: String((g && g.id) || ''), code: String((g && g.code) || ''), name: String((g && g.name) || '').slice(0, 40) }))
+      .filter((g) => g.id && g.code);
+    s.guests = items;
+    try {
+      const file = this._file(s.id);
+      const lines = fs.readFileSync(file, 'utf8').split('\n').filter((l) => l.trim());
+      const kept = lines.filter((l) => {
+        try { return JSON.parse(l).t !== 'guests'; } catch { return true; }
+      });
+      const out = kept.join('\n') + (items.length ? '\n' + JSON.stringify({ t: 'guests', items }) : '') + '\n';
+      const tmp = file + '.tmp';
+      fs.writeFileSync(tmp, out);
+      fs.renameSync(tmp, file);
+    } catch {}
+    return true;
+  }
+
+  /* Davetli botlar system prompt bloğu — ajan bot_dm ile onlara danışır */
+  _guestsBlock(session) {
+    const g = Array.isArray(session && session.guests) ? session.guests : [];
+    if (!g.length) return '';
+    const lines = g.map((x) => `- ${x.name} (kod: ${x.code})`).join('\n');
+    return (
+      `# DAVETLİ BOTLAR\n` +
+      `Bu sohbete şu botlar davet edildi. Kullanıcı onlara hitap ederse veya uzmanlıkları gereken bir konu olursa ` +
+      `bot_dm aracıyla (to=5 haneli kod) onlara yaz; aldığın cevabı [BotAdı] etiketiyle kullanıcıya aktar:\n${lines}`
+    );
+  }
+
   /* Oturumun bağlı olduğu MÜŞTERİ botu (admin/seasız → null → global hafıza) */
   _sessionBotCtx(session) {
     if (!session || !session.botId || typeof this.resolveBot !== 'function') return null;
@@ -907,6 +942,14 @@ class Engine {
           } else if (rec.t === 'notes') {
             session.notes = String(rec.text || '');
             session.notesAt = Number(rec.at) || 0;
+          } else if (rec.t === 'botdm') {
+            /* botlar arası DM oturumu — admin izleyebilir, sidebar'da görünmez */
+            session.isBotDm = true;
+            session.dmA = String(rec.a || '');
+            session.dmB = String(rec.b || '');
+          } else if (rec.t === 'guests') {
+            /* ana sohbete davetli botlar */
+            session.guests = Array.isArray(rec.items) ? rec.items : [];
           } else if (rec.t === 'msg') {
             delete rec.t;
             session.messages.push(rec);
@@ -1042,6 +1085,8 @@ class Engine {
       updatedAt: s.updatedAt,
       count: s.messages.length,
       isBg,
+      isBotDm: !!s.isBotDm,
+      guests: Array.isArray(s.guests) ? s.guests : [],
       bgStatus: isBg ? (job ? job.status : null) : null,
     };
   }
@@ -1058,6 +1103,7 @@ class Engine {
       const id = f.replace(/\.jsonl$/, '');
       const v = this._view(this._load(id));
       if (v.isBg) continue;
+      if (v.isBotDm) continue; // botlar arası DM — yalnız admin DM Log ekranında
       out.push(v);
     }
     out.sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
@@ -2150,6 +2196,8 @@ class Engine {
     /* bot skill kısıtı: bota verilen yetkiye göre araç seti daraltılır */
     const toolLimit = this.sessionTools.get(String(session.id));
     if (toolLimit) activeTools = activeTools.filter((t) => toolLimit.has(t.function.name));
+    /* DM oturumlarında bot_dm KAPALI — botlar botlara DM açıp döngü kuramaz */
+    if (session.isBotDm) activeTools = activeTools.filter((t) => t.function.name !== 'bot_dm');
     if (session.bgJob) {
       /* arka plan ajanı: yönetim araçlarını görmez — işini bitirsin */
       activeTools = activeTools.filter((t) => !BG_HIDDEN_TOOLS.has(t.function.name));
@@ -2172,6 +2220,8 @@ class Engine {
     /* bot kimliği: bota bağlı oturumlarda kişilik + izolasyon kuralları */
     const botBlock = this._botSystemBlock(session);
     if (botBlock) system += '\n\n' + botBlock;
+    const guestBlock = this._guestsBlock(session);
+    if (guestBlock) system += '\n\n' + guestBlock;
     if (session.notes) {
       system +=
         `\n\n# OTURUM NOTLARI (oturum ${session.code || '?'} — bu oturumun önceki konuşma özeti; birebir geçmişi buradan hatırla)\n` +
@@ -2270,7 +2320,7 @@ class Engine {
           /* #21 bg ajanı: görev sonu ekstra LLM çağrıları YOK — hızlı kapansın.
              Beast Code (bcCode) oturumları da aynı şekilde ANINDA kapansın:
              not/hafıza/skill yansıtma çağrıları yapılmaz → done hemen gelir */
-          if (!session.bgJob && !session.bcCode) {
+          if (!session.bgJob && !session.bcCode && !session.isBotDm) {
             const r = await this._updateSessionNotes(session, ctrl.signal);
             if (r && r.ok) {
               emitSafe(this, sid, { type: 'status', status: `oturum notları güncellendi (${session.code || ''})` });
@@ -2279,13 +2329,13 @@ class Engine {
             }
           }
           /* otomatik memory döngüsü: kalıcı değerli bilgiyi MEMORY.md'ye düşür */
-          if (!ctrl.signal.aborted && !session.bgJob && !session.bcCode) {
+          if (!ctrl.signal.aborted && !session.bgJob && !session.bcCode && !session.isBotDm) {
             try {
               await this._autoMemory(session, ctrl.signal);
             } catch {}
           }
           /* deneyimden skill doğurma (#2): 5+ yeni araç çağrısı biriktiyse yansıt */
-          if (this.reflection.enabled && !ctrl.signal.aborted && !session.bgJob && !session.bcCode) {
+          if (this.reflection.enabled && !ctrl.signal.aborted && !session.bgJob && !session.bcCode && !session.isBotDm) {
             try {
               const made = await this._maybeReflectSkill(session);
               if (made) emitSafe(this, sid, { type: 'status', status: `skill taslağı doğdu: ${made}` });
@@ -2541,6 +2591,119 @@ class Engine {
     return r.ok ? skills.slugify(draft.name) : null;
   }
 
+  /* ---------- BOTLAR ARASI DM (FEATURE) ----------
+     Admin bot, 5 haneli kodla başka bota özel mesaj atar; hedef botun cevabı
+     senkron döner. İzolasyon: DM turları gizli pair oturumunda yürür, bot_dm
+     DM oturumlarında KAPALI (döngü koruması). Tüm trafik admin DM Log'ta. */
+  async _botDm(args, sessionId, signal) {
+    const bots = require('./bots');
+    const code = String((args && args.to) || '').replace(/\D/g, '');
+    const message = String((args && args.message) || '').slice(0, 6000);
+    if (!/^\d{5}$/.test(code)) return { ok: false, error: 'geçersiz kod — 5 haneli bot kodu gir' };
+    if (!message.trim()) return { ok: false, error: 'mesaj boş' };
+
+    const session = this.cache.get(String(sessionId)) || this._load(String(sessionId));
+    const senderBotId = (session && session.botId) || 'beast';
+    const senderBot = (typeof this.resolveBot === 'function' && senderBotId) ? this.resolveBot(senderBotId) : null;
+    const senderIsAdmin = !session.botId || !!(senderBot && senderBot.admin);
+    if (!senderIsAdmin) {
+      return { ok: false, error: 'yetki yok — botlar arası DM yalnız yönetici (admin) bot tarafından açılabilir' };
+    }
+
+    const target = bots.byCode(code);
+    if (!target) return { ok: false, error: `bu kotta bot yok: ${code}` };
+    if (target.id === senderBotId) return { ok: false, error: 'kendine DM atılamaz' };
+
+    /* deterministik pair oturumu: dm + (küçük kod + büyük kod) — aynı çift aynı oturum */
+    const codes = [String(senderBot ? senderBot.code || '' : ''), String(target.code || '')]
+      .map((c) => (/^\d{5}$/.test(c) ? c : '00000'))
+      .sort();
+    const pairId = 'dm' + codes[0] + codes[1];
+
+    let pair = this.cache.get(pairId) || this._load(pairId);
+    const fresh = !pair.isBotDm && !pair.messages.length;
+    if (!pair.isBotDm) {
+      try {
+        fs.appendFileSync(this._file(pairId), JSON.stringify({ t: 'botdm', a: senderBotId, b: target.id, at: nowIso() }) + '\n');
+      } catch {}
+      pair.isBotDm = true;
+      pair.dmA = senderBotId;
+      pair.dmB = target.id;
+    }
+    /* hedef botun kimliğiyle çalışsın; izolasyon _botSystemBlock'tan gelir */
+    this.setSessionBot(pairId, target.id);
+    this.setSessionPerm(pairId, target.perm || 'all');
+
+    const senderName = senderBot ? senderBot.name : 'Beast';
+    const senderCode = senderBot && /^\d{5}$/.test(String(senderBot.code || '')) ? senderBot.code : codes[0];
+    const prefix = `[BOT DM — gönderen bot: ${senderName} (kod ${senderCode}) — cevabını kısa ve net ver, araç kullanman gerekmiyorsa kullanma]`;
+    const before = pair.messages.length;
+    const sent = this.send(pairId, { text: prefix + '\n' + message });
+    if (!sent) return { ok: false, error: 'DM oturumu başlatılamadı' };
+
+    /* tur bitene kadar bekle (ctrl kaydı düşer), en fazla 120 sn */
+    const t0 = Date.now();
+    while (Date.now() - t0 < 120000) {
+      if (signal && signal.aborted) return { ok: false, error: 'iptal edildi' };
+      await new Promise((r) => setTimeout(r, 400));
+      if (!this.ctrls.has(pairId)) break;
+    }
+    if (this.ctrls.has(pairId)) {
+      try { this.interrupt(pairId); } catch {}
+      return { ok: false, error: 'hedef bot zaman aşımına uğradı (120 sn)' };
+    }
+    const after = this.cache.get(pairId) || pair;
+    const newMsgs = after.messages.slice(before);
+    const lastA = [...newMsgs].reverse().find((m) => m.role === 'assistant' && m.content && !(m.tool_calls && m.tool_calls.length));
+    const reply = lastA ? String(typeof lastA.content === 'string' ? lastA.content : '(medya içerikli cevap)').slice(0, 12000) : '';
+    if (!reply.trim()) return { ok: false, error: 'hedef bot cevap vermedi' };
+    return { ok: true, from: target.name, code: target.code, reply };
+  }
+
+  /* ADMIN İZLEME: tüm botlar arası DM oturumlarının listesi */
+  listBotDmSessions() {
+    const bots = require('./bots');
+    let files = [];
+    try {
+      files = fs.readdirSync(this.sessionsDir).filter((f) => f.startsWith('dm') && f.endsWith('.jsonl'));
+    } catch {}
+    const out = [];
+    for (const f of files) {
+      const id = f.replace(/\.jsonl$/, '');
+      const s = this._load(id);
+      if (!s.isBotDm || !s.messages.length) continue;
+      const a = bots.get(s.dmA);
+      const b = bots.get(s.dmB);
+      out.push({
+        id,
+        a: s.dmA,
+        b: s.dmB,
+        aName: a ? a.name : s.dmA,
+        bName: b ? b.name : s.dmB,
+        aCode: (a && a.code) || '—',
+        bCode: (b && b.code) || '—',
+        count: s.messages.length,
+        updatedAt: s.updatedAt,
+      });
+    }
+    out.sort((x, y) => String(y.updatedAt).localeCompare(String(x.updatedAt)));
+    return out;
+  }
+
+  /* ADMIN İZLEME: bir DM oturumunun tam dökümü */
+  readBotDm(id) {
+    const s = this._load(String(id || ''));
+    if (!s || !s.isBotDm) return { ok: false, error: 'DM oturumu yok' };
+    return {
+      ok: true,
+      id: s.id,
+      messages: s.messages.map((m) => ({
+        role: m.role,
+        content: typeof m.content === 'string' ? m.content : '[ek/medya]',
+      })),
+    };
+  }
+
   /* ---------- alt-agent ---------- */
 
   async _subagent(task, context, parentSignal, sessionId) {
@@ -2780,6 +2943,14 @@ class Engine {
         emitSafe(this, sessionId, { type: 'status', status: 'delegate_task' });
         const result = await this._subagent(task, String(args.context || ''), signal, sessionId);
         return JSON.stringify({ ok: true, task, result: String(result).slice(0, 12000) });
+      }
+      if (name === 'bot_dm') {
+        const dmS = this.cache.get(String(sessionId));
+        if (dmS && dmS.isBotDm) {
+          return JSON.stringify({ ok: false, error: 'DM oturumunda bot_dm kullanılamaz (döngü koruması)' });
+        }
+        const r = await this._botDm(args, sessionId, signal);
+        return JSON.stringify(r);
       }
       if (name === 'send_file') {
         if (typeof this.fileSend !== 'function') {
@@ -3148,6 +3319,22 @@ const TOOLS = [
           context: { type: 'string', description: 'Optional data/notes the sub-agent needs' },
         },
         required: ['task'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'bot_dm',
+      description:
+        'Send a direct message to ANOTHER BOT by its 5-digit code and receive its answer. Use when the user asks another bot something, invites bots into this chat, or a specialist bot should weigh in. Admin bot only.',
+      parameters: {
+        type: 'object',
+        properties: {
+          to: { type: 'string', description: "Target bot's 5-digit code, e.g. 48213" },
+          message: { type: 'string', description: 'Message to send to that bot' },
+        },
+        required: ['to', 'message'],
       },
     },
   },

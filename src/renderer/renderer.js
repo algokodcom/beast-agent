@@ -497,12 +497,15 @@ async function renderSessions(list) {
 async function refreshSessions() {
   await renderSessions(await beast.listSessions());
   renderBotCards(); // bot kartlarındaki numara/sayı etiketleri de tazelensin
+  renderGuestBotMenu(); // davet menüsü (aktif bot/bot listesi değişmiş olabilir)
 }
 
 async function openSession(id) {
   activeId = id;
   streamEl = null;
   const s = await beast.openSession(id);
+  activeGuests = Array.isArray(s.guests) ? s.guests : [];
+  renderGuestBotMenu();
   els.msgs.innerHTML = '';
   showEmpty(s.messages.length === 0);
   renderTodos(s.todos || []);
@@ -1810,14 +1813,15 @@ async function renderUpdatePane(autoCheck) {
   if (!st) return;
   clearInterval(updatePaneTimer);
 
-  /* mod bazlı butonlar: npm → available, installer → downloaded, dev → sadece kontrol */
+  /* mod bazlı butonlar: npm → kontrol, installer → kontrol, dev → sadece kontrol.
+     TEK DAĞITIM npm — uygulama içi kurulum butonu KALDIRILDI. */
   const isDev = !st.packaged && !st.npm;
   let actions;
   if (st.npm) {
     actions = `<div class="form-grid" style="grid-template-columns:auto auto;gap:8px;margin-top:12px">
-        <button id="upInstall" class="btn ghost" ${st.available ? '' : 'disabled style="opacity:.45;cursor:default"'}>${_t('up_install_now')}</button>
+        <button id="upCheck" class="btn ghost">${_t('up_check_now')}</button>
       </div>
-      <div class="sub" style="margin-top:8px">${_t('up_npm_note')}</div>`;
+      <div class="sub" style="margin-top:8px">${_t('up_npm_only')}</div>`;
   } else if (isDev) {
     actions = `<div class="form-grid" style="grid-template-columns:auto auto;gap:8px;margin-top:12px">
         <button id="upCheck" class="btn ghost">${_t('up_check_now')}</button>
@@ -1826,9 +1830,8 @@ async function renderUpdatePane(autoCheck) {
   } else {
     actions = `<div class="form-grid" style="grid-template-columns:auto auto;gap:8px;margin-top:12px">
         <button id="upCheck" class="btn ghost">${_t('up_check_now')}</button>
-        <button id="upInstall" class="btn ghost" ${st.downloaded ? '' : 'disabled style="opacity:.45;cursor:default"'}>${_t('up_install_now')}</button>
       </div>
-      <div class="sub" style="margin-top:8px">${_t('up_note')}</div>`;
+      <div class="sub" style="margin-top:8px">${_t('up_npm_only')}</div>`;
   }
 
   pane.innerHTML =
@@ -1864,6 +1867,7 @@ async function renderUpdatePane(autoCheck) {
     if (r.ok && r.npm) toast(_t('up_npm_started'));
     else if (!r.ok && r.error) toast(r.error);
   });
+  /* #upInstall butonu kaldırıldı — tek dağıtım npm (buton geri gelirse çalışsın diye koruma duruyor) */
 
   /* indirme ilerlemesi için sekme açıkken canlı tazele — YALNIZ durum kutusu */
   updatePaneTimer = setInterval(() => {
@@ -2457,6 +2461,39 @@ let botsCache = [];
 let botPageId = null; // null = genel bakış (Tüm Botlar)
 let botPageStats = [];
 let activeBotId = 'beast'; // masaüstü UI'ının şu an hangi botta olduğu (varsayılan: ilk bot/Beast)
+let activeGuests = []; // aktif ana sohbete davetli botlar [{id, code, name}]
+
+/* ANA SOHBETE BOT DAVETİ: yalnız admin bottayken görünür; davetli botlar
+   session'a kaydedilir, ajan bot_dm aracıyla onlara danışıp cevapları aktarır */
+function renderGuestBotMenu() {
+  const wrap = $('#guestBotDD');
+  const menu = $('#guestBotMenu');
+  if (!wrap || !menu) return;
+  const isAdmin = activeBotId === 'beast';
+  wrap.style.display = isAdmin && activeId ? '' : 'none';
+  if (!isAdmin) return;
+  const candidates = botsCache.filter((b) => !b.admin && b.vis !== false);
+  menu.innerHTML = '';
+  if (!candidates.length) {
+    menu.innerHTML = '<div class="dd-item" style="pointer-events:none">Davet edilebilir bot yok</div>';
+    return;
+  }
+  for (const b of candidates) {
+    const invited = activeGuests.some((g) => g.id === b.id);
+    const item = document.createElement('div');
+    item.className = 'dd-item';
+    item.innerHTML = `${b.icon} ${escapeHtml(b.name)} <span style="float:right;color:var(--muted)">${invited ? '✓ davetli' : '+ davet et'}</span>`;
+    item.addEventListener('click', async () => {
+      const next = invited ? activeGuests.filter((g) => g.id !== b.id) : [...activeGuests, { id: b.id, code: b.code || '', name: b.name }];
+      activeGuests = next;
+      await beast.sessionSetGuests(activeId, next).catch(() => {});
+      renderGuestBotMenu();
+      toast(invited ? `${b.name} davetten çıkarıldı` : `${b.name} sohbete davet edildi — ajan gerektiğinde ona danışacak`);
+      menu.hidden = true;
+    });
+    menu.appendChild(item);
+  }
+}
 
 async function refreshBots() {
   try {
@@ -2483,7 +2520,8 @@ function renderBotCards() {
       `<span class="bot-ico">${b.icon || '🤖'}</span>` +
       `<span class="bot-nm">${escapeHtml(b.name)}</span>` +
       `<span class="bot-gear" title="${_t('bot_manage')}">⚙</span>` +
-      `<span class="bot-tag">${b.admin ? 'ADMIN' : 'BOT'}</span>`;
+      `<span class="bot-tag">${b.admin ? 'ADMIN' : 'BOT'}</span>` +
+      (b.code ? `<span class="bot-code" title="${_t('bot_code_title')}">${escapeHtml(b.code)}</span>` : '');
     /* tıkla → UI o bota geçer; ⚙ → yönetim sayfası */
     row.addEventListener('click', () => switchBot(b.id));
     row.querySelector('.bot-gear').addEventListener('click', (e) => {
@@ -2576,6 +2614,9 @@ function renderBotPage() {
   head.querySelector('#botHeadIcon').textContent = b.icon || '🤖';
   head.querySelector('#botHeadName').textContent = b.name;
   $('#botHeadTag').textContent = b.admin ? 'ADMIN' : 'BOT';
+  /* DM Log sekmesi yalnız admin botta görünür — botlar arası tüm trafiği o izler */
+  const dmTab = document.querySelector('.btab[data-btab="dmlog"]');
+  if (dmTab) dmTab.hidden = !b.admin;
   const active = document.querySelector('.btab.active');
   const tab = active ? active.dataset.btab : 'settings';
   if (tab === 'settings') renderBotSettings(pane, b);
@@ -2584,7 +2625,41 @@ function renderBotPage() {
   else if (tab === 'watcher') renderBotWatcher(pane, b);
   else if (tab === 'stats') renderBotStats(pane, b);
   else if (tab === 'notes') renderBotNotes(pane, b);
+  else if (tab === 'dmlog') renderBotDmLog(pane, b);
   renderBotChats(b);
+}
+
+/* --- DM Log sekmesi (yalnız admin): botlar arası TÜM özel mesaj trafiği.
+    Botlar birbirini göremez; admin her çiftin konuşmasını burada okur. --- */
+async function renderBotDmLog(pane, b) {
+  pane.innerHTML = `<h2>Bot DM Log</h2><div class="sub">Botlar arası tüm özel mesaj trafiği — hangi bot kiminle, ne zaman, ne konuştu. Bu ekranı yalnız yönetici görür.</div>`;
+  const list = await beast.botsDmList().catch(() => []);
+  if (!list.length) {
+    pane.insertAdjacentHTML('beforeend', '<p class="sub">Henüz botlar arası DM yok — admin botda bot_dm aracını kullanın.</p>');
+    return;
+  }
+  for (const d of list) {
+    const row = document.createElement('div');
+    row.className = 'skill-row';
+    row.innerHTML =
+      `<div class="skill-name">${escapeHtml(d.aName)} (${escapeHtml(d.aCode)}) ⇄ ${escapeHtml(d.bName)} (${escapeHtml(d.bCode)})</div>` +
+      `<div class="skill-desc">${d.count} mesaj · son: ${new Date(d.updatedAt).toLocaleString('tr-TR')}</div>` +
+      `<button class="btn ghost" style="margin-top:6px;padding:3px 12px;font-size:12px">Dökümü aç/kapat</button>`;
+    row.querySelector('button').addEventListener('click', async () => {
+      const old = row.nextElementSibling;
+      if (old && old.dataset && old.dataset.dmread === d.id) { old.remove(); return; }
+      const r = await beast.botsDmRead(d.id).catch(() => ({ ok: false, error: 'ipc' }));
+      const pre = document.createElement('pre');
+      pre.dataset.dmread = d.id;
+      pre.className = 'notes-body';
+      pre.style.cssText = 'white-space:pre-wrap;max-height:340px;overflow:auto;margin-top:8px;border:1px solid var(--border);border-radius:8px;padding:10px';
+      pre.textContent = r.ok
+        ? r.messages.map((m) => `[${m.role === 'user' ? '→ hedef bot' : m.role === 'assistant' ? '← hedef bot' : m.role}] ${m.content}`).join('\n\n')
+        : (r.error || 'okunamadı');
+      row.after(pre);
+    });
+    pane.appendChild(row);
+  }
 }
 
 /* --- Notlar sekmesi: oturum notları — konuşma kodu, başlık, tarih ve özet metni.
@@ -2729,6 +2804,7 @@ function renderBotSettings(pane, b) {
       <div><label class="mem-label">${_t('bot_name')}</label><input id="bName" class="inp" value="${escapeHtml(b.name)}" maxlength="40"/></div>
       <div><label class="mem-label">${_t('bot_icon')}</label><div class="icon-pick" id="bIconPick">${iconBtns}</div></div>
     </div>
+    <div class="sub" style="margin:2px 0 6px">BOT KODU: <b style="letter-spacing:2px">${escapeHtml(b.code || '—')}</b> — botlar arası DM adresi</div>
     <label class="mem-label">${_t('bot_prompt')}</label>
     <textarea id="bPrompt" class="mem-area" rows="5" placeholder="${_t('bot_prompt_ph')}">${escapeHtml(b.prompt || '')}</textarea>
     <div class="sub" style="margin-top:4px">${_t('bot_tpl_hint')}</div>
@@ -2747,6 +2823,9 @@ function renderBotSettings(pane, b) {
     <label class="mem-label">${_t('bot_browser')}</label>
     <div class="bot-checks" style="margin-bottom:6px">
       <label><input type="checkbox" id="bExtBrowser" ${b.extBrowser ? 'checked' : ''}/> ${_t('bot_ext_browser')}</label>
+    </div>
+    <div class="bot-checks" style="margin-bottom:6px">
+      <label><input type="checkbox" id="bVis" ${b.vis !== false ? 'checked' : ''}/> ${_t('bot_vis')}</label>
     </div>
     <div class="form-grid">
       <div>
@@ -2808,6 +2887,7 @@ function renderBotSettings(pane, b) {
       prompt: $('#bPrompt').value,
       seeBots: [...f.querySelectorAll('#bSee input:checked')].map((c) => c.dataset.see),
       extBrowser: $('#bExtBrowser').checked,
+      vis: f.querySelector('#bVis') ? f.querySelector('#bVis').checked : true,
       browserDefault: $('#bBrDef').value,
       extCommand: $('#bBrCmd').value.trim(),
       numbers: (b.numbers || []).map((n) => n.num),
@@ -4396,6 +4476,18 @@ async function init() {
   if ($('#botClose')) $('#botClose').addEventListener('click', () => botOverlaySetOpen(false));
   if ($('#botOverviewBack')) $('#botOverviewBack').addEventListener('click', () => openBotPage(null));
   if ($('#botChip')) $('#botChip').addEventListener('click', () => openBotPage(activeBotId));
+
+  /* BOT DAVET MENÜSÜ: butona tıkla → aç/kapa; dışarı tık → kapa */
+  if ($('#guestBotBtn') && $('#guestBotMenu')) {
+    $('#guestBotBtn').addEventListener('click', (e) => {
+      e.stopPropagation();
+      renderGuestBotMenu();
+      $('#guestBotMenu').hidden = !$('#guestBotMenu').hidden;
+    });
+    document.addEventListener('click', (e) => {
+      if (!$('#guestBotMenu').hidden && !$('#guestBotMenu').contains(e.target)) $('#guestBotMenu').hidden = true;
+    });
+  }
   /* kalıcı aktif bot: restart sonrası aynı botun UI'ı açılır */
   beast.botsActiveGet().then((r) => { activeBotId = (r && r.id) || 'beast'; updateBotChip(); renderBotCards(); }).catch(() => {});
   document.querySelectorAll('.btab').forEach((b) =>

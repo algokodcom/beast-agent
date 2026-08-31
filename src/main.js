@@ -1015,16 +1015,9 @@ async function tryWaSlash(jid, rawText, senderNum) {
         ? `*${cmd === 'deny' ? 'Reddedildi' : 'Onaylandı'}:* ${r.tool}${always ? ' — bu araç için bir daha sorulmayacak' : ''}`
         : 'Bekleyen onay yok.';
     } else if (cmd === 'update') {
-      /* /update — sürüm kontrol; /update now — indirileni kur (npm modunda kendini günceller) */
+      /* /update — sürüm kontrol. TEK DAĞITIM npm: uygulama içi kurulum YOK. */
       if (String(arg || '').toLowerCase() === 'now') {
-        if (isNpmMode()) {
-          npmUpdateNow(async (text) => { out = text; });
-        } else if (updateState.downloaded && autoUpdater) {
-          out = `*v${updateState.version} kuruluyor* — uygulama yeniden başlayacak.`;
-          setTimeout(() => { try { autoUpdater.quitAndInstall(); } catch {} }, 1200);
-        } else {
-          out = 'İndirilmiş sürüm yok — önce `/update` yaz.';
-        }
+        out = NPM_ONLY_TEXT;
       } else {
         updateReplies.jids.add(jid);
         await runUpdateCommand(async (text) => { out = text; });
@@ -2309,18 +2302,16 @@ function ensureDesktopShortcut() {
 app.whenReady().then(() => {
     // Tailscale modu: paketli uygulamada Windows ile otomatik başlat (sessiz, tepside)
     if (app.isPackaged) {
+      /* DAĞITIM KARARI: EXE/portable kurulum desteklenmiyor — tek yol npm.
+         EXE kendini startup'a YAZMAZ (eski portable kayıtları da temizlenir). */
       try {
-        // portable exe Temp'e açılır; gerçek yolu PORTABLE_EXECUTABLE_FILE verir
-        const exe = process.env.PORTABLE_EXECUTABLE_FILE || process.execPath;
-        app.setLoginItemSettings({
-          openAtLogin: true,
-          path: exe,
-          args: ['--hidden'],
+        const k = 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run';
+        spawn('reg.exe', ['delete', k, '/v', 'electron.app.Beast Agent', '/f'], { stdio: 'ignore', windowsHide: true }).unref();
+        spawn('reg.exe', ['query', k, '/v', 'electron.app.Beast Agent'], { stdio: 'ignore', windowsHide: true }).on('exit', (code) => {
+          if (code !== 0) log.info('main', 'EXE modunda çalışıyor — startup kaydı temizlendi (npm kurulumuna geçin)');
         });
-        log.info('main', `Startup kaydı açık: ${exe} (--hidden, açılışta tepside)`);
-      } catch (e) {
-        log.error('main', 'Startup kaydı başarısız: ' + String((e && e.message) || e));
-      }
+      } catch {}
+      log.info('main', '⚠ EXE/portable mod desteklenmiyor — tek dağıtım: npm i -g beast-agent');
     } else if (!app.isPackaged && /node_modules[\\/]beast-agent/i.test(String(app.getAppPath()))) {
       /* npm (global) kurulum modu: startup kaydı + masaüstü kısayolu */
       try {
@@ -2337,6 +2328,7 @@ app.whenReady().then(() => {
     }
     reloadBackend();
     syncWhitelist(); // bot sistemi: whitelist.json aynası ilk açılışta garanti
+    try { bots.ensureBotCodes(); } catch {} // her bota benzersiz 5 haneli kod garanti
     createSplash();
     createWindow();
     log.info('main', 'Beast Agent başlatıldı');
@@ -3333,14 +3325,7 @@ ipcMain.handle('agent:send', (_e, { sessionId, text }) => {
     const a = t.slice(7).trim().toLowerCase();
     updateReplies.sids.add(String(sessionId || ''));
     if (a === 'now') {
-      if (isNpmMode()) {
-        npmUpdateNow((text) => desktopEcho(sessionId, t, text));
-      } else if (updateState.downloaded && autoUpdater) {
-        desktopEcho(sessionId, t, `*v${updateState.version} kuruluyor* — uygulama yeniden başlayacak.`);
-        setTimeout(() => { try { autoUpdater.quitAndInstall(); } catch {} }, 1200);
-      } else {
-        desktopEcho(sessionId, t, 'İndirilmiş sürüm yok — önce `/update` yaz.');
-      }
+      desktopEcho(sessionId, t, NPM_ONLY_TEXT);
     } else {
       runUpdateCommand((text) => desktopEcho(sessionId, t, text));
     }
@@ -4087,100 +4072,13 @@ ipcMain.handle('update:check', async () => {
   return out;
 });
 
-/* npm kurulumunda KENDİ KENDİNİ GÜNCELLEME:
-   helper script %APPDATA%\beast'a yazılır (paket dizini değişse de yaşar) ve
-   detached çalışır: 1) uygulama PID'i tamamen çıkana kadar bekler (en çok 30 sn,
-   sonra zorla kapatır — EBUSY dosya kilidinin numarası), 2) npm install -g
-   beast-agent@latest — kilide karşı 5 deneme, 3) tüm çıktı update.log'a yazılır,
-   4) beast-agent komut shim'i üzerinden yeniden başlatır (electron sürümü
-   değişse de yol bozulmaz). Sonra app.quit(). */
-function npmSelfUpdate() {
-  try {
-    fs.mkdirSync(APP_DIR, { recursive: true });
-    const pid = String(process.pid);
-    if (process.platform === 'win32') {
-      const ps = [
-        "param([int]$ProcId = 0)",
-        "$ErrorActionPreference = 'Continue'",
-        "$Log = Join-Path $env:APPDATA 'beast\\update.log'",
-        "function L([string]$m) { try { Add-Content -LiteralPath $Log -Value (\"[\" + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + \"] \" + $m) } catch {} }",
-        "L \"=== self-update basladi (app pid: $ProcId) ===\"",
-        "if ($ProcId -gt 0) {",
-        "  $deadline = (Get-Date).AddSeconds(30)",
-        "  while ((Get-Date) -lt $deadline) {",
-        "    if (-not (Get-Process -Id $ProcId -ErrorAction SilentlyContinue)) { break }",
-        "    Start-Sleep -Milliseconds 500",
-        "  }",
-        "  if (Get-Process -Id $ProcId -ErrorAction SilentlyContinue) {",
-        "    L 'uygulama hala acik - zorla kapatiliyor'",
-        "    try { Stop-Process -Id $ProcId -Force } catch {}",
-        "    Start-Sleep -Seconds 2",
-        "  }",
-        "}",
-        "L 'uygulama kapandi, npm install basliyor'",
-        "$npmCmd = (Get-Command 'npm.cmd' -ErrorAction SilentlyContinue).Source",
-        "if (-not $npmCmd) { $npmCmd = Join-Path $env:APPDATA 'npm\\npm.cmd' }",
-        "$ok = $false",
-        "for ($i = 1; $i -le 5; $i++) {",
-        "  if ($ok) { break }",
-        "  L \"npm install -g beast-agent@latest (deneme $i)\"",
-        "  $out = & $npmCmd install -g beast-agent@latest 2>&1",
-        "  $code = $LASTEXITCODE",
-        "  foreach ($line in @($out)) { L \"  npm: $line\" }",
-        "  if ($code -eq 0) { $ok = $true } else { Start-Sleep -Seconds 3 }",
-        "}",
-        "if (-not $ok) {",
-        "  L 'HATA: npm install 5 denemede basarisiz - uygulama yeniden baslatilmiyor'",
-        "  exit 1",
-        "}",
-        "L 'npm install tamam, yeniden baslatma'",
-        "$prefix = (& $npmCmd prefix -g 2>$null)",
-        "if (-not $prefix) { $prefix = Join-Path $env:APPDATA 'npm' }",
-        "$appDir = Join-Path $prefix 'node_modules\\beast-agent'",
-        "$exe = Join-Path $appDir 'node_modules\\electron\\dist\\electron.exe'",
-        "if (-not (Test-Path $exe)) { $exe = Join-Path $prefix 'node_modules\\electron\\dist\\electron.exe' }",
-        "if (Test-Path $exe) {",
-        "  L \"dogrudan electron: $exe\"",
-        "  # WindowStyle Hidden KULLANMA: gizli bayragi Chromium miras alir, ilk pencere tray'de kaybolur",
-        "  Start-Process -FilePath $exe -ArgumentList \"`\"$appDir`\"\"",
-        "} else {",
-        "  $shim = Get-Command 'beast-agent.cmd' -ErrorAction SilentlyContinue",
-        "  if ($shim) {",
-        "    L \"shim uzerinden: $($shim.Source)\"",
-        "    Start-Process -FilePath $shim.Source",
-        "  } else {",
-        "    L 'HATA: electron.exe ve shim bulunamadi - yeniden baslatma yapilamadi'",
-        "    exit 1",
-        "  }",
-        "}",
-        "L '=== self-update bitti ==='",
-      ].join('\r\n');
-      const psFile = path.join(APP_DIR, 'update-helper.ps1');
-      fs.writeFileSync(psFile, ps, 'utf8');
-      spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', psFile, '-ProcId', pid],
-        { detached: true, stdio: 'ignore', windowsHide: true }).unref();
-    } else {
-      const sh =
-        `i=0; while [ $i -lt 60 ] && kill -0 ${pid} 2>/dev/null; do i=$((i+1)); sleep 0.5; done; ` +
-        'ok=0; for n in 1 2 3 4 5; do npm install -g beast-agent@latest && ok=1 && break; sleep 3; done; ' +
-        'if [ $ok -eq 1 ]; then nohup beast-agent >/dev/null 2>&1 & fi';
-      spawn('sh', ['-c', sh], { detached: true, stdio: 'ignore' }).unref();
-    }
-    log.info('main', 'npm self-update: helper bırakıldı, uygulama kapatılıyor');
-  } catch (e) {
-    log.error('main', 'npm self-update hatası: ' + String((e && e.message) || e));
-  }
-  setTimeout(() => { try { app.quit(); } catch {} }, 400);
-}
+/* TEK DAĞITIM POLİTİKASI: uygulama içi self-update KALDIRILDI (v0.24.0).
+   Güncelleme yalnız: uygulamayı kapat → "npm i -g beast-agent@latest" → tekrar aç. */
 
-ipcMain.handle('update:install', () => {
-  if (isNpmMode()) { npmSelfUpdate(); return { ok: true, npm: true }; }
-  if (!app.isPackaged) return { ok: false, error: 'Geliştirme modu — güncelleme npm / GitHub Releases üzerinden yapılır' };
-  if (!updateState.downloaded) return { ok: false, error: 'indirilmiş sürüm yok — önce /update' };
-  try { autoUpdater.quitAndInstall(); return { ok: true }; } catch (e) {
-    return { ok: false, error: String((e && e.message) || e) };
-  }
-});
+ipcMain.handle('update:install', () => ({
+  ok: false,
+  error: NPM_ONLY_TEXT,
+}));
 
 ipcMain.handle('update:setAuto', (_e, cfg) => {
   if (cfg && typeof cfg.autoCheck === 'boolean') settings.autoCheckUpdate = cfg.autoCheck;
@@ -4194,14 +4092,19 @@ ipcMain.handle('update:setAuto', (_e, cfg) => {
 
 /* /update komutu (masaüstü + WA): hedefi kaydet, kontrol başlat */
 /* npm modunda güncelle-şimdi: sürüm kontrolü + numaralarıyla bildir + kendi kendini güncelle */
+/* TEK DAĞITIM POLİTİKASI: exe/installer YOK, uygulama içi self-update YOK.
+   Güncelleme yalnız: uygulamayı kapat → "npm i -g beast-agent@latest" → tekrar aç. */
+const NPM_ONLY_TEXT =
+  'Tek dağıtım npm\u2019dir — uygulama içi güncelleme yok.\n' +
+  'Güncellemek için:\n1) Uygulamayı kapat\n2) Terminalde: npm i -g beast-agent@latest\n3) Tekrar aç';
+
 function npmUpdateNow(reply /* fn(text) */) {
   const current = app.getVersion();
   getNpmLatest(true).then((v) => {
     if (v && isNewerVersion(v, current)) {
       updateState.available = true;
       updateState.version = v;
-      reply(`🔄 *Güncelleniyor*\nMevcut: v${current}\nYeni: v${v}\nKapanıp yeniden açılıyorum…`);
-      setTimeout(() => npmSelfUpdate(), 1500);
+      reply(`🔄 *Yeni sürüm var*\nMevcut: v${current}\nYeni: v${v}\n\n${NPM_ONLY_TEXT}`);
     } else {
       reply(`✅ *Güncelsin* — v${current} zaten en son sürüm.`);
     }
@@ -4209,30 +4112,8 @@ function npmUpdateNow(reply /* fn(text) */) {
 }
 
 async function runUpdateCommand(reply /* fn(text) */) {
-  const current = app.getVersion();
-  if (isNpmMode()) return npmUpdateNow(reply);
-  if (!autoUpdater) {
-    reply('Updater bu modda kullanılamıyor. Yeni sürüm: github.com/algokodcom/beast-agent/releases');
-    return;
-  }
-  /* önce npm registry'den sürüm bilgisi — kullanıcıya numaraları söyle */
-  const v = await getNpmLatest(true);
-  if (v && isNewerVersion(v, current)) {
-    updateState.available = true;
-    updateState.version = v;
-    emitUpdateEvent();
-    reply(`🔄 *Yeni sürüm bulundu*\nMevcut: v${current}\nYeni: v${v}\nİndiriliyor… (kurulum için: /update now)`);
-    try { await autoUpdater.checkForUpdates(); } catch (e) {
-      reply('İndirme başlatılamadı: ' + String((e && e.message) || e));
-    }
-  } else if (v) {
-    reply(`✅ *Güncelsin* — v${current} en son sürüm.`);
-  } else {
-    reply(`🔍 Kontrol ediliyor (mevcut sürüm v${current})…`);
-    try { await autoUpdater.checkForUpdates(); } catch (e) {
-      reply('Kontrol başarısız: ' + String((e && e.message) || e));
-    }
-  }
+  /* yalnız KONTROL + yol gösterme — kurulum yapmaz */
+  return npmUpdateNow(reply);
 }
 
 /* #STT: sohbet mikrofonu — MediaRecorder sesini (webm/opus) yerel whisper'a çevir */
@@ -5482,8 +5363,37 @@ ipcMain.handle('bots:list', () => botListWithNumbers());
 
 ipcMain.handle('bots:add', (_e, input) => {
   const r = bots.add(input || {});
-  if (r.ok) log.info('main', `yeni bot: ${r.bot.name} (${r.bot.id})`);
+  if (r.ok) {
+    log.info('main', `yeni bot: ${r.bot.name} (${r.bot.id}) kod=${r.bot.code}`);
+    /* BOT KODU MAİL BİLDİRİMİ: bot oluşur oluşmez sahibine mail atılır */
+    try {
+      const cfg = emailCfg();
+      if (cfg.host && cfg.user && cfg.pass) {
+        emailSend({
+          to: cfg.user,
+          subject: `Beast Agent — yeni bot kuruldu: ${r.bot.name} (kod ${r.bot.code})`,
+          body:
+            `Yeni bot oluşturuldu.\n\n` +
+            `Ad: ${r.bot.name}\n` +
+            `Bot kodu: ${r.bot.code}\n` +
+            `Zaman: ${new Date().toLocaleString('tr-TR')}\n\n` +
+            `Bu 5 haneli kod botlar arası DM adresidir — bot_dm aracında 'to' olarak kullanılır.\n` +
+            `Sol alttaki bot listesinde de görüntülenir.`,
+        }).catch(() => {});
+      }
+    } catch {}
+  }
   return { ...r, list: r.ok ? botListWithNumbers() : null };
+});
+
+/* Botlar arası DM izleme (admin) */
+ipcMain.handle('bots:dm:list', () => engine.listBotDmSessions());
+ipcMain.handle('bots:dm:read', (_e, id) => engine.readBotDm(id));
+
+/* Ana sohbete davetli botlar */
+ipcMain.handle('sessions:guests:set', (_e, { sessionId, guests }) => {
+  try { engine.setSessionGuests(sessionId, guests); } catch {}
+  return { ok: true };
 });
 
 ipcMain.handle('bots:update', (_e, { id, patch }) => {

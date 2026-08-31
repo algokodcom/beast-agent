@@ -5322,12 +5322,15 @@ function runNpmGlobalInstall() {
   });
 }
 
-/* auth login etkileşimlidir (tarayıcı açar) — kullanıcı görsün diye ayrı pencere */
+/* auth login etkileşimlidir (tarayıcı açar) — kullanıcı görsün diye ayrı pencere.
+   -ExecutionPolicy Bypass: SADECE bu pencere için — Windows varsayılan "Restricted"
+   politikası npm'in opencode.ps1 shim'ini bloklar ("running scripts is disabled")
+   → taze makinede tek tık kurulum patlamasın; sistem politikası DEĞİŞMEZ. */
 function openZenAuthWindow() {
   try {
     spawn(
       'cmd.exe',
-      ['/c', 'start', '', 'powershell.exe', '-NoExit', '-Command', 'opencode auth login'],
+      ['/c', 'start', '', 'powershell.exe', '-NoExit', '-ExecutionPolicy', 'Bypass', '-Command', 'opencode auth login'],
       { detached: true, windowsHide: false, stdio: 'ignore' }
     ).unref();
     return true;

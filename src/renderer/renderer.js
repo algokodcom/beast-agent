@@ -458,8 +458,12 @@ function finishToolCard(callId, ok, result) {
 
 async function renderSessions(list) {
   let waSet = new Set();
+  let tgSet = new Set();
   try {
     waSet = new Set(await beast.waListSessions());
+  } catch {}
+  try {
+    tgSet = new Set(await beast.tgListSessions());
   } catch {}
   els.sessList.innerHTML = '';
   /* aktif botun oturumları — botlar arası geçişte liste de o bota göre değişir */
@@ -469,6 +473,7 @@ async function renderSessions(list) {
     row.className = 'sess' + (s.id === activeId ? ' active' : '');
     row.innerHTML =
       (waSet.has(s.id) ? '<span class="sess-wa" title="WhatsApp">W</span>' : '') +
+      (tgSet.has(s.id) ? '<span class="sess-tg" title="Telegram">T</span>' : '') +
       `<span class="sess-title">${escapeHtml(s.title || 'Yeni Sohbet')}</span>` +
       `<span class="sess-code" title="Oturum kodu">${escapeHtml(s.code || '')}</span>` +
       `<button class="sess-del" title="Sil">×</button>`;
@@ -1619,7 +1624,9 @@ async function renderDashboardPane() {
   let sessions = [];
   try { sessions = (await beast.listSessions()) || []; } catch {}
   let waSet = new Set();
+  let tgSet = new Set();
   try { waSet = new Set(await beast.waListSessions()); } catch {}
+  try { tgSet = new Set(await beast.tgListSessions()); } catch {}
 
   const totalMsgs = sessions.reduce((a, s) => a + (Number(s.count) || 0), 0);
   const today = new Date().toDateString();
@@ -1655,6 +1662,7 @@ async function renderDashboardPane() {
     row.className = 'usage-row' + (s.id === activeId ? ' dash-active' : '');
     row.innerHTML =
       (waSet.has(s.id) ? '<span class="sess-wa" title="WhatsApp">W</span>' : '') +
+      (tgSet.has(s.id) ? '<span class="sess-tg" title="Telegram">T</span>' : '') +
       `<span class="sess-code" title="Oturum kodu">${escapeHtml(s.code || '')}</span>` +
       `<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">` +
       `${escapeHtml(s.title || 'Yeni Sohbet')}</span>` +
@@ -2630,7 +2638,9 @@ async function renderBotChats(b) {
   const box = $('#botChatMsgs');
   box.innerHTML = '';
   let waSet = new Set();
+  let tgSet = new Set();
   try { waSet = new Set(await beast.waListSessions()); } catch {}
+  try { tgSet = new Set(await beast.tgListSessions()); } catch {}
   const sessions = [];
   try {
     for (const s of await beast.listSessions()) {
@@ -2648,7 +2658,11 @@ async function renderBotChats(b) {
     const row = document.createElement('div');
     row.className = 'bot-chat-row';
     row.innerHTML =
-      (waSet.has(s.id) ? '<span class="sess-wa" title="WhatsApp">W</span>' : '<span class="sess-wa" style="opacity:.35">D</span>') +
+      (waSet.has(s.id)
+        ? '<span class="sess-wa" title="WhatsApp">W</span>'
+        : tgSet.has(s.id)
+          ? '<span class="sess-tg" title="Telegram">T</span>'
+          : '<span class="sess-wa" style="opacity:.35">D</span>') +
       `<span class="bt">${escapeHtml(s.title || 'Yeni Sohbet')}</span>` +
       `<span class="sess-code">${escapeHtml(s.code || '')}</span>`;
     row.addEventListener('click', async () => {

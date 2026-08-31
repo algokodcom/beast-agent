@@ -1014,11 +1014,27 @@ class Engine {
     const firstUser = s.messages.find((m) => m.role === 'user');
     const isBg = !!s.bgTitle;
     const job = isBg ? this._bgJobs.get(String(s.id)) : null;
+    /* Başlık: ilk user mesajının METNİ. Ekli mesajlarda content dizidir —
+       String() doğrudan "[object Object]" üretir; text parçaları birleştirilir.
+       WhatsApp/Telegram transport etiketi ([WhatsApp — gönderen: ...]) başlıkta
+       gürültüdür — kırpılır, gerçek konuşma metni kalsın. */
+    let title = '';
+    if (!isBg && firstUser) {
+      let t = Array.isArray(firstUser.content)
+        ? firstUser.content.filter((p) => p && p.type === 'text').map((p) => String(p.text || '')).join(' ')
+        : String(firstUser.content || '');
+      t = t
+        .replace(/^\s*\[(WhatsApp|Telegram)[^\]]*\]\s*/i, '')
+        .replace(/\[görsel gösterilemedi[^\]]*\]/gi, '')
+        .replace(/\[(resim eki alındı|belge alındı[^\]]*|sesli mesaj[^\]]*)\]/gi, '')
+        .trim();
+      title = (t.split('\n')[0] || '').replace(/\s+/g, ' ').trim().slice(0, 48);
+    }
     return {
       id: s.id,
       code: s.code || '',
       botId: s.botId || null,
-      title: (isBg ? s.bgTitle : (firstUser ? String(firstUser.content).slice(0, 48) : '')) || 'Yeni Sohbet',
+      title: (isBg ? s.bgTitle : title) || 'Yeni Sohbet',
       createdAt: s.createdAt,
       updatedAt: s.updatedAt,
       count: s.messages.length,

@@ -130,7 +130,18 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  flex-shrink: 0;
+}
+.sess-tg {
+  width: 15px;
+  height: 15px;
+  border-radius: 4px;
+  background: #229ed9;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 800;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 .sess-title { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 13px; }
 .sess-code {
@@ -1525,7 +1536,7 @@ body.browser-open #toast { left: calc((100vw - var(--bw, 480px)) / 2); }
 
 #toast {
   position: fixed;
-  bottom: 28px;
+  bottom: 84px; /* chat input alanının hemen üstünde */
   left: 50%;
   transform: translateX(-50%) translateY(16px);
   opacity: 0;

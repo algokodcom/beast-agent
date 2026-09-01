@@ -472,20 +472,17 @@ async function renderSessions(list) {
   } catch {}
   els.sessList.innerHTML = '';
   /* aktif botun oturumları — botlar arası geçişte liste de o bota göre değişir.
-     BOT BAĞLAMA MİGRASYONU: bot kaydı olmayan (eski) oturumlar HER botun
-     listesinde de görünür — kullanıcı botunda açıp ilk mesajı yazınca
-     oturum KALICI olarak o bota bağlanır (agent:send auto-bind; notlar dahil).
-     Başka bir bota AÇIKÇA bağlı olanlar yalnız o botun listesinde. */
+     KATI KURAL: her oturum yalnız BAĞLI OLDUĞU botun listesinde görünür;
+     bot kaydı olmayan (eski) oturumlar Beast (varsayılan sahip) altında görünür. */
   for (const s of list) {
-    if (s.botId && s.botId !== activeBotId) continue;
-    const unbound = !s.botId && activeBotId !== 'beast';
+    if ((s.botId || 'beast') !== activeBotId) continue;
     const row = document.createElement('div');
     row.className = 'sess' + (s.id === activeId ? ' active' : '');
     row.innerHTML =
       (waSet.has(s.id) ? '<span class="sess-wa" title="WhatsApp">W</span>' : '') +
       (tgSet.has(s.id) ? '<span class="sess-tg" title="Telegram">T</span>' : '') +
       `<span class="sess-title">${escapeHtml(s.title || 'Yeni Sohbet')}</span>` +
-      `<span class="sess-code" title="${unbound ? 'bağlantı bekliyor — ilk mesajda bu bota bağlanır' : 'Oturum kodu'}">${escapeHtml(s.code || '')}${unbound ? ' ·?' : ''}</span>` +
+      `<span class="sess-code" title="Oturum kodu">${escapeHtml(s.code || '')}</span>` +
       `<button class="sess-del" title="Sil">×</button>`;
     row.addEventListener('click', () => openSession(s.id));
     row.querySelector('.sess-del').addEventListener('click', async (e) => {
@@ -2784,10 +2781,9 @@ async function switchBot(id) {
     }
   } catch {}
   try { localStorage.setItem('beast.activeBot', id); } catch {}
-  /* o botun en son oturumuna geç; hiç yoksa o bot için yeni sohbet aç.
-     (bot kaydı olmayan eski oturumlar da sayılır — ilk mesajda bağlanır) */
+  /* o botun en son oturumuna geç; hiç yoksa o bot için yeni sohbet aç */
   try {
-    const list = (await beast.listSessions()).filter((s) => !s.botId || s.botId === id);
+    const list = (await beast.listSessions()).filter((s) => (s.botId || 'beast') === id);
     if (list.length) await openSession(list[0].id);
     else { const v = await beast.createSession(); await openSession(v.id); }
   } catch {}
@@ -2894,7 +2890,7 @@ async function renderBotNotes(pane, b) {
   pane.innerHTML = `<h2>${_t('notes_h2')}</h2><div class="sub">${_t('notes_sub')}</div>`;
   let all = [];
   try { all = await beast.listNotes(); } catch {}
-  const list = (b.admin ? all : all.filter((n) => !n.botId || n.botId === b.id))
+  const list = (b.admin ? all : all.filter((n) => (n.botId || 'beast') === b.id))
     .slice()
     .sort((x, y) => String(y.updatedAt).localeCompare(String(x.updatedAt)));
   if (!list.length) {
@@ -2955,8 +2951,7 @@ async function renderBotChats(b) {
   const sessions = [];
   try {
     for (const s of await beast.listSessions()) {
-      /* bot kaydı olmayan (eski) oturumlar da gösterilir — ilk mesajda bu bota bağlanır */
-      if (!s.botId || s.botId === b.id) sessions.push(s);
+      if ((s.botId || 'beast') === b.id) sessions.push(s);
     }
   } catch {}
   sessions.sort((x, y) => String(y.updatedAt).localeCompare(String(x.updatedAt)));
@@ -3192,7 +3187,7 @@ async function renderBotWatcher(pane, b) {
   try { items = (await beast.watchersList()) || []; } catch {}
   let botSessions = new Set();
   try {
-    for (const s of await beast.listSessions()) if (!s.botId || s.botId === b.id) botSessions.add(s.id);
+    for (const s of await beast.listSessions()) if ((s.botId || 'beast') === b.id) botSessions.add(s.id);
   } catch {}
   const mine = items.filter((w) => botSessions.has(w.sessionId));
   if (!mine.length) {

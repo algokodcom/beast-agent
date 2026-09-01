@@ -1844,6 +1844,23 @@ function onWaEvent(ev) {
     if (!els.settingsOverlay.hidden && setTab === 'integrations') renderIntegrationsPane();
     return;
   }
+  if (ev.type === 'bc-screen') {
+    /* WA'dan /beastcode → masaüstünde GERÇEK Beast Code paneli açılır;
+       /beastagent → chat ekranına dönülür. Panel, WA oturumuna bağlanır:
+       WhatsApp'tan yazılan sohbet canlı olarak panelde akar. */
+    setIdeMode(!!ev.on);
+    if (ev.on) {
+      if (ev.sessionId) bcSessionId = ev.sessionId;
+      bcSetBusy(false);
+      if (ev.workspace) bcLine('t-sys', '[WhatsApp — Beast Code modu açıldı · ' + ev.workspace + ']');
+      else bcLine('t-sys', '[WhatsApp — Beast Code modu açıldı]');
+    } else {
+      if (bcSessionId) bcSessionId = null;
+      bcSetBusy(false);
+      bcStatusHide();
+    }
+    return;
+  }
   if (ev.type === 'queue') {
     /* FEATURE 2: offline kuyruk bildirimi — toast + paneldeki sayaç */
     if (ev.text) toast(ev.text);

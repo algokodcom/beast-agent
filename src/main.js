@@ -316,36 +316,24 @@ function waRememberSession(jid, sid) {
    /beastagent → normal sohbet oturumuna geri dönülür. */
 
 function waBcWorkspace() {
-  const dir = path.join(app.getPath('home'), 'BeastCode');
+  /* masaüstü Beast Code paneliyle AYNI klasör — WhatsApp'tan yazınca
+     panelde aynı dosyalar canlı görünür */
+  const dir = ideRoot();
   try { fs.mkdirSync(dir, { recursive: true }); } catch {}
   return dir;
 }
 
-/* Sohbetin Beast Code oturumu: varsa onu, yoksa yenisini aç */
+/* Sohbetin Beast Code oturumu: masaüstü paneliyle AYNI oturum (klasör bazlı
+   bcGetSession) — WhatsApp'tan yazılan sohbet, masaüstü Beast Code panelinde
+   canlı akar; panelde yazılan da WhatsApp'a düşer */
 function waBcSession(jid) {
-  const sid = waChats.get(jid);
-  if (sid) {
-    try {
-      const s = engine.cache.get(sid);
-      if (s && s.bcCode) return s;
-    } catch {}
+  const s = bcGetSession(waBcWorkspace());
+  if (waChats.get(jid) !== s.id) {
+    waChats.set(jid, s.id);
+    waRememberSession(jid, s.id);
+    saveWaChats();
+    if (wa) wa.setWatchJids([...waChats.keys()]);
   }
-  const s = engine._load(engine.createSession().id);
-  s.messages = s.messages || [];
-  s.bgTitle = 'Beast Code (WA)'; /* sohbet geçmişi listesinde etiketli görünür */
-  s.bcCode = true; /* engine: BEAST CODE MODU bloğu + todo disiplini */
-  s.workspace = waBcWorkspace();
-  engine.cache.set(s.id, s);
-  try {
-    fs.appendFileSync(
-      engine._file(s.id),
-      JSON.stringify({ t: 'meta2', bgOf: '', title: 'Beast Code (WA)', at: new Date().toISOString() }) + '\n'
-    );
-  } catch {}
-  waChats.set(jid, s.id);
-  waRememberSession(jid, s.id);
-  saveWaChats();
-  if (wa) wa.setWatchJids([...waChats.keys()]);
   return s;
 }
 
@@ -701,8 +689,8 @@ function waSlashHelp() {
     '• */new* – yeni oturum aç (kod verilir)',
     '• */open* <kod> – o koddaki oturuma geç',
     '• */sessions* – bu sohbetin oturumları',
-    '• */beastcode* [görev] – ⚡ UZAKTAN KODLAMA modu: WhatsApp\u2019tan uygulama yazdır (örn: /beastcode hava durumu uygulaması yaz)',
-    '• */beastagent* – kodlama modundan normal sohbete dön',
+    '• */beastcode* [görev] – ⚡ UZAKTAN KODLAMA: masaüstünde Beast Code paneli açılır, WhatsApp\u2019tan uygulama yazdır (örn: /beastcode hava durumu uygulaması yaz)',
+    '• */beastagent* – kodlama modunu kapat, masaüstünde chat ekranına dön',
     '• */plan* · */build* · */auto* – BeastCode modunda çalışma modu (planla · uygula · otomatik)',
     '• */stop* – koşan işleri durdur (ajanlar+turlar; cron/izleyici/olay sürer)',
     '• */start* – durdurulan servisleri devam ettir',
@@ -1201,29 +1189,31 @@ async function tryWaSlash(jid, rawText, senderNum, payload0) {
         `*İzleyici:* ${watchers.list().length} adet\n*Cron:* ${jobs} aktif görev`;
     } else if (cmd === 'beastcode') {
       /* /beastcode [görev] — WhatsApp'tan UZAKTAN KODLAMA modu:
-         sohbet masaüstü Beast Code motoruna bağlanır (bcCode + workspace) */
+         masaüstünde GERÇEK Beast Code paneli açılır (IDE ekranı), sohbet
+         panel oturumuyla birleşir; yazılanlar panelde canlı akar */
       const s = waBcSession(jid);
       waBcMode.add(jid);
       saveWaChats();
-      emitWaEventSafe({ type: 'bc-mode', jid, on: true });
+      emitWaEventSafe({ type: 'bc-screen', on: true, sessionId: s.id, workspace: s.workspace || waBcWorkspace() });
       if (arg) {
         /* görev normal WA akışına verilir — meşgulse bekleme-kuyruğu devrede */
         waQueuePush(jid, { text: arg, isGroup: !!(payload0 && payload0.isGroup) }, senderNum);
         out =
-          `*⚡ BEASTCODE MODU — görev alındı, yazıyorum.*\n` +
-          `Klasör: \`${s.workspace}\`\n` +
+          `*⚡ BEASTCODE MODU AÇILDI — görev alındı, yazıyorum.*\n` +
+          `Bilgisayarda Beast Code paneli açıldı: \`${s.workspace || waBcWorkspace()}\`\n` +
           `Mod değiştir: \`/plan\` (sadece plan) · \`/build\` (uygula) · \`/auto\`\n` +
           `Sohbete dönmek için: /beastagent`;
       } else {
         out =
-          `*⚡ BEASTCODE MODU AKTİF*\n` +
-          `Oturum: \`${s.code || '?'}\` · Klasör: \`${s.workspace}\`\n` +
-          `Artık ne yazarsan UYGULAMA olarak yaparım: dosyalar yazar, komut çalıştırır, doğrular.\n` +
+          `*⚡ BEASTCODE MODU AÇILDI*\n` +
+          `Bilgisayarda Beast Code paneli açıldı — çalışma klasörü: \`${s.workspace || waBcWorkspace()}\`\n` +
+          `Ne yazarsan UYGULAMA olarak yaparım: dosyalar yazar, komut çalıştırır, doğrular.\n` +
           `İlk görevi yaz — örn: "todo listesi uygulaması yaz"\n` +
           `Sohbete dönmek için: /beastagent`;
       }
     } else if (cmd === 'beastagent') {
-      /* /beastagent — kodlama modundan normal sohbete dön */
+      /* /beastagent — kodlama modundan normal sohbete dön; masaüstünde
+         Beast Code paneli kapanır, chat ekranı geri gelir */
       if (!waBcMode.has(jid)) {
         out = 'Zaten sohbet modundasın — kodlamak için /beastcode yaz.';
       } else {
@@ -1237,9 +1227,9 @@ async function tryWaSlash(jid, rawText, senderNum, payload0) {
         waRememberSession(jid, v.id);
         saveWaChats();
         if (wa) wa.setWatchJids([...waChats.keys()]);
-        emitWaEventSafe({ type: 'bc-mode', jid, on: false });
+        emitWaEventSafe({ type: 'bc-screen', on: false });
         out =
-          `*💬 Sohbet moduna dönüldü* — yeni oturum \`${v.code}\`.\n` +
+          `*💬 Sohbet moduna dönüldü* — masaüstünde chat ekranı açıldı, yeni oturum \`${v.code}\`.\n` +
           `Kodlar duruyor: \`${waBcWorkspace()}\`\n` +
           `Tekrar kodlamak için: /beastcode`;
       }

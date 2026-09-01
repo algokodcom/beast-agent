@@ -119,6 +119,9 @@ body {
 }
 .sess:hover { background: var(--panel2); color: var(--text); }
 .sess.active { background: var(--panel2); color: var(--text); box-shadow: inset 2px 0 0 var(--accent); }
+/* sürükle-bırak sıralama görselleri */
+.sess.dragging { opacity: 0.35; }
+.sess.drag-over { box-shadow: inset 0 2px 0 var(--accent); }
 .sess-wa {
   width: 15px;
   height: 15px;
@@ -934,6 +937,18 @@ body.term-open #settingsOverlay { right: var(--tw, 520px); }
   margin-bottom: 5px;
 }
 #todoPanel .td-count { letter-spacing: 0; font-weight: 700; color: var(--text); }
+#todoPanel .td-right { display: flex; align-items: center; gap: 8px; }
+/* sağ köşe kapatma (×): yalnız bu listeyi gizler — yeni güncellemede yine görünür */
+#todoPanel .td-x {
+  border: none;
+  background: none;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 3px;
+  cursor: pointer;
+}
+#todoPanel .td-x:hover { color: var(--err); }
 #todoPanel .td-row {
   display: flex;
   align-items: baseline;

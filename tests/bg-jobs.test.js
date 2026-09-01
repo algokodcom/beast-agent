@@ -286,6 +286,51 @@ test('#5 eşzamanlılık limiti: fazlası kuyrukta bekler, slot boşalınca FIFO
 
 /* ---------- İPTAL SEBEBİ DİSİPLİNİ ---------- */
 
+test('üst oturum hata verirse rapor TEK SEFER düşer — sonsuz _run zinciri yok', async () => {
+  /* model yok → bg işi error ile biter → rapor üst oturuma flush edilir;
+     üst oturum da model-yok ile SYNC çökerse flush zinciri SONSUZA dönmemeli
+     (gerçek hata: flush → send → _run sync-throw → finally → flush … stack overflow) */
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'beast-flush-'));
+  let runCount = 0;
+  const eng = new Engine({}, { sessionsDir: dir, emit: () => {} });
+  const origRun = Engine.prototype._run;
+  eng._run = function (s) { runCount++; return origRun.call(this, s); };
+  eng.runBackground('pflush', 'iş', 'Rapor İş');
+  await sleep(700);
+  assert.ok(runCount <= 4, 'sonsuz _run zinciri yok (runCount=' + runCount + ')');
+  /* rapor tam olarak 1 kez üst oturuma gönderilmiş olmalı */
+  eng.deleteSession('pflush');
+});
+
+test('takılı iş ZORLA kapatılır: grup tamamlanır, birleşik rapor düşer', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'beast-fc-'));
+  const eng = new Engine({}, { sessionsDir: dir, emit: () => {} });
+  const sent = [];
+  eng.send = (sid, payload) => { sent.push({ sid, text: String((payload && payload.text) || '') }); return true; };
+  const r = eng.runBackgroundMany(
+    'pfc',
+    [
+      { title: 'A1', task: 'görev a' },
+      { title: 'B1', task: 'görev b' },
+    ],
+    'Zorla Grup'
+  );
+  assert.ok(r.ok);
+  /* A1 done; B1 takılı → force-close */
+  await eng.reportBackgroundDone(r.ids[0]);
+  const stuck = eng._bgJobs.get(r.ids[1]);
+  stuck.fixes = 99; /* öz-kurtarma hakları tükenmiş */
+  eng._bgForceClose(stuck, 'test: takıldı');
+  await sleep(30);
+  const j = eng._bgJobs.get(r.ids[1]);
+  assert.strictEqual(j.status, 'aborted', 'zorla kapatılan iş aborted');
+  assert.ok(String(j.error || '').includes('test: takıldı'), 'sebep kayda geçti');
+  const rep = sent.find((x) => x.sid === 'pfc' && x.text.includes('[ARKA PLAN GRUP BİTTİ'));
+  assert.ok(rep, 'birleşik rapor düştü — grup kilitlenmedi');
+  assert.ok(/B1/.test(rep.text) && /aborted/.test(rep.text), 'raporda takılan üye SEBEPİYLE görünüyor');
+  eng.deleteSession('pfc');
+});
+
 test('iptal SEBEBİ zorunlu: interrupt sebebi iş kaydına ve üst sohbete yazar', async () => {
   const { eng } = tmpEngine();
   const sent = [];

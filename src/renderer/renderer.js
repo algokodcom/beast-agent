@@ -280,8 +280,14 @@ function renderTodos(items) {
     })
     .join('');
   els.todoPanel.innerHTML =
-    `<div class="td-head"><span>GÖREVLER</span><span class="td-count">${done}/${list.length}</span></div>` + rows;
+    `<div class="td-head"><span>GÖREVLER</span>` +
+    `<span class="td-right"><span class="td-count">${done}/${list.length}</span>` +
+    `<button class="td-x" title="${_t('td_hide')}">×</button></span></div>` + rows;
   els.todoPanel.hidden = false;
+  /* X yalnız BU listeyi gizler — kalıcı kapanma yok: bir sonraki görev
+     güncellemesi (yeni görev eklendi / görev yapıldı) paneli yeniden gösterir */
+  const x = els.todoPanel.querySelector('.td-x');
+  if (x) x.addEventListener('click', () => { els.todoPanel.hidden = true; });
 }
 function setBusy(b) {
   busy = b;
@@ -482,7 +488,41 @@ function finishToolCard(callId, ok, result) {
 
 /* ---------------- sessions sidebar ---------------- */
 
+/* sol panel sohbet listesi: kullanıcı ELLE sıralayabilir (sürükle-bırak).
+   sessionOrder: session id'lerinin tercih sırası — settings.json'da kalıcı.
+   Listede olmayan oturumlar engine sırasıyla (son mesaja göre) arkada gelir. */
+let sessionOrder = [];
+let sessionOrderLoaded = null;
+function loadSessionOrder() {
+  if (!sessionOrderLoaded) {
+    sessionOrderLoaded = beast
+      .sessionsOrderGet()
+      .then((r) => { sessionOrder = (r && Array.isArray(r.order) ? r.order : []).map(String); })
+      .catch(() => {});
+  }
+  return sessionOrderLoaded;
+}
+
+function reorderSessions(dragId, targetId) {
+  const idx = (id) => sessionOrder.indexOf(id);
+  const dp = idx(dragId);
+  const tp = idx(targetId);
+  sessionOrder = sessionOrder.filter((x) => x !== dragId);
+  const ti = sessionOrder.indexOf(targetId);
+  if (ti === -1) {
+    /* hedef hiç elle sıralanmamış: listeden görünür konumunu korumak mümkün değil — sona ekle */
+    sessionOrder.push(targetId, dragId);
+  } else if (dp !== -1 && dp < tp) {
+    sessionOrder.splice(ti + 1, 0, dragId); /* aşağı sürüklendi → hedefin ALTINA */
+  } else {
+    sessionOrder.splice(ti, 0, dragId); /* yukarı sürüklendi → hedefin ÜSTÜNE */
+  }
+  beast.sessionsOrderSet(sessionOrder).catch(() => {});
+  refreshSessions();
+}
+
 async function renderSessions(list) {
+  await loadSessionOrder();
   let waSet = new Set();
   let tgSet = new Set();
   try {
@@ -492,13 +532,19 @@ async function renderSessions(list) {
     tgSet = new Set(await beast.tgListSessions());
   } catch {}
   els.sessList.innerHTML = '';
+  /* elle sıra: sessionOrder'daki id'ler önde (o sırayla), diğerleri engine sırasıyla arkada */
+  const rank = new Map(sessionOrder.map((id, i) => [id, i]));
+  const withRank = list.map((s, i) => ({ s, r: rank.has(s.id) ? rank.get(s.id) : 1e6 + i }));
+  withRank.sort((a, b) => a.r - b.r);
   /* aktif botun oturumları — botlar arası geçişte liste de o bota göre değişir.
      KATI KURAL: her oturum yalnız BAĞLI OLDUĞU botun listesinde görünür;
      bot kaydı olmayan (eski) oturumlar Beast (varsayılan sahip) altında görünür. */
-  for (const s of list) {
+  for (const { s } of withRank) {
     if ((s.botId || 'beast') !== activeBotId) continue;
     const row = document.createElement('div');
     row.className = 'sess' + (s.id === activeId ? ' active' : '');
+    row.title = _t('sess_drag');
+    row.draggable = true;
     row.innerHTML =
       (waSet.has(s.id) ? '<span class="sess-wa" title="WhatsApp">W</span>' : '') +
       (tgSet.has(s.id) ? '<span class="sess-tg" title="Telegram">T</span>' : '') +
@@ -516,11 +562,39 @@ async function renderSessions(list) {
         const created = await beast.createSession();
         await openSession(created.id);
       }
+      sessionOrder = sessionOrder.filter((x) => x !== s.id);
       refreshSessions();
+    });
+    /* sürükle-bırak: yukarı/aşağı yer değiştirme */
+    row.addEventListener('dragstart', (e) => {
+      dragSid = s.id;
+      row.classList.add('dragging');
+      try { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', s.id); } catch {}
+    });
+    row.addEventListener('dragend', () => {
+      dragSid = null;
+      row.classList.remove('dragging');
+      els.sessList.querySelectorAll('.drag-over').forEach((x) => x.classList.remove('drag-over'));
+    });
+    row.addEventListener('dragover', (e) => {
+      if (!dragSid || dragSid === s.id) return;
+      e.preventDefault();
+      try { e.dataTransfer.dropEffect = 'move'; } catch {}
+      row.classList.add('drag-over');
+    });
+    row.addEventListener('dragleave', () => row.classList.remove('drag-over'));
+    row.addEventListener('drop', (e) => {
+      e.preventDefault();
+      row.classList.remove('drag-over');
+      if (!dragSid || dragSid === s.id) return;
+      reorderSessions(dragSid, s.id);
+      dragSid = null;
     });
     els.sessList.appendChild(row);
   }
 }
+
+let dragSid = null;
 
 async function refreshSessions() {
   await renderSessions(await beast.listSessions());
@@ -6234,6 +6308,15 @@ function bcIngest(ev) {
     case 'tool-end':
       bcToolBoxEnd(ev.callId, ev.ok, ev.result);
       break;
+    case 'bc-mode':
+      /* OpenCode disiplini çalışma modu: başlıkta rozet + panelde bilgi satırı */
+      if (els.bcTitle) {
+        els.bcTitle.textContent =
+          ev.mode === 'plan' ? 'BEAST CODE · PLAN' :
+          ev.mode === 'build' ? 'BEAST CODE · BUILD' : 'BEAST CODE';
+      }
+      bcLine('t-dim', '[' + (ev.body || ev.mode || 'mod değişti') + ']');
+      break;
     case 'done':
       bcFlushStream();
       bcCloseToolGroup();
@@ -6271,7 +6354,12 @@ function bcRunCurrent() {
   /* sürüyor/serbest kararını main'deki gerçek engine.isBusy verir —
      panel bayat kilitli kaldıysa ilk mesajla kendini düzeltir */
   beast.beastcodeSend(msg).then((r) => {
-    if (r && r.ok) {
+    if (r && r.ok && r.mode) {
+      /* /plan · /build · /auto: mod değişimi — tur AÇILMAZ, kilit anında açılır
+         (bilgi satırı bc-mode olayıyla düşer, başlık rozeti güncellenir) */
+      bcSessionId = r.sessionId;
+      bcSetBusy(false);
+    } else if (r && r.ok) {
       bcSessionId = r.sessionId;
     } else if (r && r.busy) {
       /* iş gerçekten sürüyor — kilit açılmaz, bilgi satırı düşer */
@@ -6306,6 +6394,7 @@ if (els.bcNew) els.bcNew.addEventListener('click', async () => {
     bcCloseToolGroup();
     bcHideTodos();
     bcFlushStream();
+    if (els.bcTitle) els.bcTitle.textContent = 'BEAST CODE';
     bcLine('t-sys', 'yeni oturum — sonraki mesaj taze başlar');
   }
 });

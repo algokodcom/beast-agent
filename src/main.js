@@ -5221,6 +5221,21 @@ ipcMain.handle('beastcode:send', (_e, payload) => {
   const s = bcGetSession(ws);
   s.workspace = ws; /* soldaki klasörde çalış */
   s.bcCode = true; /* todo disiplini + iş sonu hızlı kapanış (engine) */
+  /* OpenCode disiplini — çalışma modu: /plan (incele+planla) · /build (uygula) · /auto */
+  const m = /^\/(plan|build|auto)\b/i.exec(text);
+  if (m) {
+    s.bcMode = m[1].toLowerCase();
+    engine.cache.set(s.id, s);
+    if (win && !win.isDestroyed()) {
+      const body = m[1].toLowerCase() === 'plan'
+        ? 'PLAN MODU — dosyaları okuyup inceler, KOD YAZMAZ; adım adım uygulama planı verir.'
+        : m[1].toLowerCase() === 'build'
+          ? 'BUILD MODU — son planı UYGULAR: dosyaları düzenler, komutları çalıştırır, doğrular.'
+          : 'OTOMATİK MOD — önce kısa plan, sonra uygulama + doğrulama (OpenCode disiplini).';
+      win.webContents.send('agent:event', { sessionId: s.id, type: 'bc-mode', mode: s.bcMode, body });
+    }
+    return { ok: true, sessionId: s.id, mode: s.bcMode };
+  }
   engine.cache.set(s.id, s);
   const ok = engine.send(s.id, text);
   if (!ok) return { ok: false, error: 'mesaj gönderilemedi' };
@@ -5315,6 +5330,17 @@ ipcMain.handle('searchorder:set', (_e, chain) => {
   } catch (e) {
     return { ok: false, error: String((e && e.message) || e) };
   }
+});
+
+/* Sohbet listesi ELLE sıralama (sol panelde sürükle-bırak) */
+ipcMain.handle('sessions:order:get', () => ({
+  order: Array.isArray(settings.sessionOrder) ? settings.sessionOrder : [],
+}));
+ipcMain.handle('sessions:order:set', (_e, order) => {
+  const arr = Array.isArray(order) ? order.map(String).filter(Boolean).slice(0, 500) : [];
+  settings.sessionOrder = arr;
+  saveSettings();
+  return { ok: true };
 });
 
 /* #TinyFish: anahtar girilirse web_search zincirinin BAŞINDA kullanılır */

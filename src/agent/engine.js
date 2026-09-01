@@ -13,6 +13,7 @@ const research = require('./research');
 const memory = require('./memory');
 const skills = require('./skills');
 const { estTokens, estMsgTokens } = require('./tokens');
+const log = require('./logger');
 
 const MAX_TURNS = 25;
 const SUB_MAX_TURNS = 8;
@@ -258,6 +259,8 @@ class Engine {
     this._bgLimit = Math.max(1, Number(opts.bgLimit || process.env.BEAST_BG_LIMIT) || BG_MAX_CONCURRENT_DEFAULT);
     this._bgPendingStart = new Map(); // sid -> ilk görev metni (slot açılınca gönderilir)
     this._bgGroups = new Map(); // groupId -> {parentId,total,results,dead}
+    /* silinen oturum işaretleri: rapor/zincir buraya gönderilmez (hayalet oturum yok) */
+    this._deletedSessions = new Set();
     /* #17 kalıcı ajan geçmişi: restart sonrası işler + sohbetler kaybolmasın */
     this._bgJobsFile = path.join(this.sessionsDir, 'bg-jobs.json');
     this._loadBgJobsPersisted();
@@ -1173,13 +1176,14 @@ class Engine {
   }
 
   deleteSession(id) {
+    const sid = String(id || '');
     try {
-      const c = this.ctrls.get(id);
+      const c = this.ctrls.get(sid);
       if (c) {
         this._abortReasons = this._abortReasons || new Map();
-        this._abortReasons.set(String(id), 'oturum silindiği için tur iptal edildi');
+        this._abortReasons.set(sid, 'oturum silindiği için tur iptal edildi');
         c.abort();
-        this.ctrls.delete(id);
+        this.ctrls.delete(sid);
       }
       /* #17 silinecek ajanın bekleyen öz-kurtarma zamanlayıcısını iptal et —
          yoksa send() oturum dosyasını yeniden yaratıp işi diriltir */
@@ -1206,6 +1210,14 @@ class Engine {
       this._saveBgJobs();
       this._bgEmit();
     }
+    /* silinme işareti: bekleyen raporlar/rapor zinciri bu oturuma ASLA düşmez */
+    if (this._deletedSessions) {
+      this._deletedSessions.add(sid);
+      if (this._deletedSessions.size > 300) {
+        const first = this._deletedSessions.values().next().value;
+        if (first !== undefined) this._deletedSessions.delete(first);
+      }
+    }
     this.emit({ type: 'sessions' });
     return true;
   }
@@ -1213,23 +1225,37 @@ class Engine {
   /* ---------- prompt assembly (the frugal part) ---------- */
 
   /* Beast Code (IDE paneli): VS Code hızında çalışsın diye SECMET prompt.
+     OpenCode kodlama disiplini gömülü: bağlam → plan → küçük diff → doğrula.
      Hafıza embedding araması, skills taraması, kişilik/kural blokları YOK —
      prompt kısa kalır → ilk token hızlı, tur maliyeti düşük. */
   buildBcSystem(session) {
     const nowD = new Date();
     const localDate = nowD.toLocaleDateString('tr-TR');
     const localTime = nowD.toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' });
+    const mode = String((session && session.bcMode) || 'auto').toLowerCase();
+    const modeBlock =
+      mode === 'plan'
+        ? 'ÇALIŞMA MODU: PLAN 🔍 — dosyaları oku/incele (read_file, list_dir), KOD YAZMA; mevcut yapıyı özetle ve adım adım UYGULAMA PLANI ver (hangi dosya, ne değişecek, nasıl doğrulanır). Kullanıcı /build deyince plan uygulanır.'
+        : mode === 'build'
+          ? 'ÇALIŞMA MODU: BUILD 🛠 — son planı SOHBETTEKİ bağlamdan al ve UYGULA: dosyaları düzenle, komutları çalıştır, doğrula. Yeni plan açma; en fazla 1 cümlelik yön gösterimi + uygulama.'
+          : 'ÇALIŞMA MODU: OTOMATİK ⚡ — önce 2-4 satırlık mini plan (todo_write), sonra hemen uygula + doğrula.';
     return (
-      'Sen BEAST CODE\u2019sun — IDE panelinde çalışan hızlı bir kodlama ajanı. VS Code gibi çevik ol.\n' +
+      'Sen BEAST CODE\u2019sun — IDE panelinde çalışan, OpenCode disiplinli hızlı bir kodlama ajanı. VS Code gibi çevik ol.\n' +
       `Çalışma klasörü: ${(session && session.workspace) || this.workspace}\n` +
       `Yerel zaman: ${localDate} ${localTime}\n` +
+      `${modeBlock}\n` +
+      'WORKFLOW (her işte bu sıra):\n' +
+      '1) BAĞLAM: değiştirmeden önce ilgili dosyaları OKU (read_file / list_dir / grep mantığıyla hedefli ara) — varsayım yapma, mevcut stili/konvansiyonu takip et.\n' +
+      '2) PLAN: 2+ adımlı işlerde İLK EYLEM todo_write olsun (2-6 madde); her adım bitince status:"done" ile GÜNCELLE — liste bitene kadar iş bitmiş sayılmaz.\n' +
+      '3) EDİT: küçük, HEDEFLİ diff\u2019ler yaz (write_file ile yalnız ilgili bölümü etkile); dosyayı baştan yazma; ilgisiz yeniden biçimleme/kayıt boşluk değişikliği YAPMA.\n' +
+      '4) DOĞRULA: edit sonrası mümkünse derle/test et/lint çalıştır (run_command); hata varsa DÜZELT ve TEKRAR dene (en fazla 2 doğrulama turu) — kırmızı bırakma.\n' +
+      '5) RAPOR: 1-3 satır — ne değişti + doğrulama sonucu (ör. "npm test ✓ 154/154"). Uzun açıklama yok.\n' +
       'HIZ KURALLARI:\n' +
-      '- İLK EYLEMİN daima todo_write olsun: işi 2-6 maddelik plana böl; her adım bitince status:"done" ile güncelle.\n' +
-      '- Kodu ve dosyaları DOĞRUDAN write_file ile yaz/güncelle. Basit dosya oluşturma/düzenleme için asla Python scripti yazma; python_run yalnız gerçek hesap/veri işleme gerekiyorsa.\n' +
-      '- Kurulum, test, build, git gibi işler için run_command kullan (Windows PowerShell ortamı).\n' +
-      '- Bağımsız araç çağrılarını AYNI TURDA paralel ver.\n' +
+      '- Kodu ve dosyaları DOĞRUDAN write_file ile yaz; basit dosya oluşturma/düzenleme için Python scripti yazma; python_run yalnız gerçek hesap/veri işleme gerekiyorsa.\n' +
+      '- Bağımsız araç çağrılarını AYNI TURDA paralel ver (birden çok read_file tek turda).\n' +
       '- Dosyayı kullanıcı söylememişse list_dir ile yapıyı görüp kendin karar ver.\n' +
-      '- Uzun açıklama yok: doğrudan çalış, bitince 1-3 satırlık kısa özet ver. Soru sorma, sohbet etme.\n' +
+      '- Run_command PowerShell ortamında çalışır (Windows).\n' +
+      '- Soru sorma, sohbet etme; uygulayıp özetle. Kullanıcı /plan /build /auto ile modu değiştirir.\n' +
       FORMAT_RULES
     );
   }
@@ -1801,6 +1827,11 @@ class Engine {
   _bgGroupRecord(title, status, summary) {
     for (const [gid, g] of this._bgGroups) {
       if (g.dead) continue;
+      /* üst oturum silinmişse grup ölü sayılır — hayalet oturuma yazma */
+      if (this._deletedSessions && this._deletedSessions.has(g.parentId)) {
+        g.dead = true;
+        continue;
+      }
       g.results.push({ title, status, summary: String(summary || '').slice(0, 900) });
       if (g.results.length >= g.total) {
         this._bgGroups.delete(gid);
@@ -1998,8 +2029,18 @@ class Engine {
       const reason = Engine.superviseReason(job, now);
       if (!reason) continue;
       /* #16 öz-kurtarma: takılan ajan CEO'yu meşgul etmeden kendini toparlar */
-      if (reason === 'stuck' && (job.fixes || 0) < BG_FIX_MAX) {
-        this._bgSelfHeal(job, now);
+      if (reason === 'stuck') {
+        if ((job.fixes || 0) < BG_FIX_MAX) {
+          this._bgSelfHeal(job, now);
+        } else {
+          /* öz-kurtarma hakları tükendi + hâlâ takılı → ZORLA KAPAT:
+             ajan sonsuza dek 'running' kalırsa fan-out grubu ASLA tamamlanmaz
+             ve birleşik rapor hiç düşmez — CEO "uyuyor" kalır */
+          this._bgForceClose(
+            job,
+            `superyorizon: ajan ${Math.round((now - Date.parse(job.startedAt)) / 60000)} dk'dır takılı, öz-kurtarma hakları tükendi`
+          );
+        }
         continue;
       }
       job.lastNudgeAt = nowIso();
@@ -2038,6 +2079,26 @@ class Engine {
       `2) Gerekirse görevi küçült: en kritik sonucu üretecek kısma odaklan.\n` +
       `3) Her yolla çıkılmıyorsa engeli TEK cümlede açıkla ve şu ana kadarki EN İYİ KISMİ SONUCU rapor olarak yazıp bitir.`;
     this._bgKick(job, text);
+  }
+
+  /* Takılı işi ZORLA sonlandır: tur abort edilir, iş kaydı SEBEPİYLE kapanır,
+     grup üyesiyse 'aborted' olarak gruba yazılır → birleşik rapor AKAR,
+     CEO "uyumak" yerine hemen sonucu kullanıcıya aktarır. */
+  _bgForceClose(job, reason) {
+    const sid = String(job.id);
+    job.revive = false; /* kick-in-flight guard'ı devre dışı — bu gerçek bir bitiş */
+    this._clearKicks(sid);
+    this._abortReasons = this._abortReasons || new Map();
+    this._abortReasons.set(sid, this._abortReason(reason));
+    const ctrl = this.ctrls.get(sid);
+    if (ctrl) {
+      try { ctrl.abort(); } catch {}
+      /* _run catch'i sebebi okuyup _bgFinish('aborted') yapacak */
+    } else {
+      /* tur zaten yok — kaydı doğrudan kapat */
+      this._bgFinish(sid, 'aborted', reason);
+    }
+    try { log.info('bg', `iş zorla kapatıldı: ${job.title} — ${reason}`); } catch {}
   }
 
   /* Arka plan oturumuna müdahale: asılı turu kes (ctrl.abort), sonra
@@ -2093,6 +2154,11 @@ class Engine {
     try {
       const meta = this._bgMeta && this._bgMeta.get(String(bgSessionId));
       if (!meta) return false;
+      /* üst oturum silinmişse rapor düşer — hayalet oturum yaratma */
+      if (this._deletedSessions && this._deletedSessions.has(meta.parentId)) {
+        this._bgMeta.delete(String(bgSessionId));
+        return false;
+      }
       /* Öz-kurtarma/wrap-up kick'i bekliyorsa bu bir ABORT turudur — gerçek
          bitiş DEĞİL; erken "ARKA PLAN BİTTİ (sonuca ulaşmadan)" ilanı basma */
       const pendingKick = this._bgJobs.get(String(bgSessionId));
@@ -2134,14 +2200,19 @@ class Engine {
     }
   }
 
-  /* Ana oturum işini bitirince bekleyen arka plan raporlarını boşalt */
+  /* Ana oturum işini bitirince bekleyen arka plan raporlarını boşalt.
+     Güvenli: oturum SİLİNMİŞSE rapor düşer (hayalet oturum yaratılmaz);
+     send başarısızsa (aniden meşgul oldu) rapor sırada kalır, sonra denenir. */
   flushPendingReports(sessionId) {
     if (!this._pendingReports || !this._pendingReports.length) return;
     const rest = [];
     for (const r of this._pendingReports) {
-      if (r.parentId === sessionId && !this.isBusy(sessionId)) {
-        try { this.send(sessionId, { text: r.text }); } catch {}
-      } else rest.push(r);
+      if (r.parentId !== sessionId) { rest.push(r); continue; }
+      if (this._deletedSessions && this._deletedSessions.has(sessionId)) continue;
+      if (this.isBusy(sessionId)) { rest.push(r); continue; }
+      let sent = false;
+      try { sent = !!this.send(sessionId, { text: r.text }); } catch {}
+      if (!sent) rest.push(r);
     }
     this._pendingReports = rest;
   }
@@ -2474,6 +2545,14 @@ class Engine {
     } finally {
       this.ctrls.delete(sid);
       emit({ type: 'status', status: 'idle' });
+      /* bekleyen paralel-ajan raporları HER bitiş yolunda boşaltılır —
+         hata/durdurma/tur-limiti sonrası bile sonuç raporu kullanıcıya ulaşır.
+         DİKKAT: buradan flush'u DOĞRUDAN çağırma! send → _run senkron-hata
+         yolunda (model-yok gibi) await'siz zincirlenir → stack taşması.
+         Macrotask'a ertele: her hop taze stack alır, pop-gönder sırası bozulmaz. */
+      const fl = () => { try { this.flushPendingReports(sid); } catch {} };
+      const t = setTimeout(fl, 0);
+      if (t.unref) t.unref();
     }
   }
 

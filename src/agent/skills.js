@@ -61,43 +61,101 @@ function scan() {
 const SEEDS = [
   {
     folder: 'help',
+    force: true,
     body: `---
 name: help
-description: Beast Agent genel yardım — tüm veri yolları (%APPDATA%\\beast), ayar/config dosyaları, memory, cron, watcher, WhatsApp, TTS, araç özeti.
-version: 1.0.0
+description: Beast Agent'ın İÇ HARİTASI — "kaç bot var", "oturumlar nerede", "x nasıl çalışır" gibi SİSTEM sorularını saniyeler içinde çözer: tüm veri yolları, hazır PowerShell/json one-liner'lar, kod haritası, slash komutları, ayar sekmeleri. Kod tabanını saatlerce taramadan bu haritadan oku.
+version: 2.0.0
 ---
 
-# Beast Agent Yardım
+# Beast Agent İç Haritası (self-help)
 
-Tüm veri tek kökte: \`%APPDATA%\\beast\\\` (test/taşınabilir için \`BEAST_DATA\` env override).
+## ALTIN KURAL
+Sistem sorusu geldiğinde KOD TABANINI TARAMA. Aşağıdaki hazır yolu/one-liner'ı kullan — cevap 1-2 saniyede çıkar.
 
-## Dosya Haritası
+## HIZLI CEVAPLAR (hazır komutlar)
+
+**"Kaç bot var / botları listele"**
+\`\`\`powershell
+$b = Get-Content "$env:APPDATA\\beast\\bots.json" | ConvertFrom-Json; $b.bots | Select-Object id,name,admin,code
+"Toplam bot: " + $b.bots.Count + " (admin: Beast)"
+\`\`\`
+(python_run ile: \`import json;d=json.load(open(r'%APPDATA%\\beast\\bots.json',encoding='utf-8'));print(len(d['bots']),[b['name'] for b in d['bots']])\`)
+
+**"Kaç oturum var / sohbet geçmişi"**
+\`\`\`powershell
+(Get-ChildItem "$env:APPDATA\\beast\\sessions\\*.jsonl").Count
+\`\`\`
+Kod ↔ dosya eşleşmesi: jsonl'nin ilk satırı \`{"t":"meta","code":"ABC12"}\` taşır.
+
+**"Paralel ajanlar ne durumda"** → \`tasks_list\` aracını ÇAĞIR (kod okumaya gerek yok) ya da:
+\`\`\`powershell
+Get-Content "$env:APPDATA\\beast\\sessions\\bg-jobs.json" | ConvertFrom-Json | % jobs | Select title,status,startedAt,error
+\`\`\`
+
+**"Maliyet/usage"** → \`/usage\` komutu ya da Ayarlar → Maliyet; kayıt dosyası \`usage.json\`.
+
+**"Cron/izleyici var mı"** → \`cron.json\`, \`watchers.json\`.
+
+## DOSYA HARİTASI (%APPDATA%\\beast\\)
 
 | Yol | Ne İşe Yarar |
 |---|---|
-| \`config.yaml\` + \`.env\` | Model sağlayıcıları + API anahtarları. Provider tanımı: \`providers.<id>.base_url/key_env/models\`; aktif seçim: \`model.provider/default\`. \`.env\`'de \`<PROVIDER>_API_KEY\` veya \`key_env\` ile eşleşen anahtar |
-| \`settings.json\` | App ayarları: theme, workspace, modelOverride, customProviders, roleModels, deletedModels, fallout, waTts (TTS), email (mail credential), waAllow, waLockdown |
-| \`sessions\\\` | Sohbet oturumları (mesaj JSON'ları) |
-| \`memories\\\` | SOUL.md (kişilik), MEMORY.md (uzun hafıza kayıtları), USER.md (kullanıcı bilgisi) |
-| \`skills\\\` | \`**\\\\SKILL.md\` — isim+açıklama system prompt'a gider, gövde okunur |
-| \`cron.json\` | Zamanlanmış görevler (5 alanlı cron) |
-| \`watchers.json\` | Web/batarya izleyicileri |
-| \`wa-auth\\\` | WhatsApp Baileys eşleme auth'u — SİLME |
-| \`wa-chats.json\`, \`wa.log\` | WA sohbet eşlemesi ve log |
-| \`bots.json\`, \`bots/<id>/\`, \`whitelist.json\` | Bot sistemi: bot kaydı (max 5, \`beast\` admin silinemez), her botun izole klasörü (config.json, memory.md, yetkiler.json, logs/), numara→bot eşlemesi. Bağlı olmayan numara beast'e düşer |
-| \`logs\\\`, \`scripts\\\` | Çalışma logları / kullanıcı scriptleri |
+| \`config.yaml\` + \`.env\` | Model sağlayıcıları + API anahtarları (\`providers.<id>.base_url/key_env/models\`, aktif: \`model.provider/default\`) |
+| \`settings.json\` | App ayarları: theme, workspace, modelOverride, customProviders, roleModels, deletedModels, fallout, waTts, email, waAllow, **searchChain (web arama sırası)**, **obscuraEnabled**, activeBotId |
+| \`sessions\\*.jsonl\` | Sohbet oturumları (satır JSON: t:meta kod, t:meta2 paralel-ajan işareti, t:msg mesaj, t:todo, t:notes) |
+| \`sessions\\bg-jobs.json\` | Paralel ajan iş kayıtları: id, title, status(queued/running/done/error/aborted), error=İPTAL SEBEBİ, groupId |
+| \`memories\\\` | SOUL.md (kişilik), MEMORY.md (uzun hafıza), USER.md (kullanıcı) |
+| \`skills\\<ad>\\SKILL.md\` | Skill'ler (isim+açıklama prompt'a girer, gövde okunur) |
+| \`bots.json\` | Bot kayıt defteri — max 5 bot, ilk kayıt admin 'Beast' (silinemez). Bot adı HARFLE başlamak ZORUNDA |
+| \`bots/<id>/\` | Botun izole klasörü: config.json, memory.md, yetkiler.json, logs/ |
+| \`whitelist.json\`, \`wa-auth\\\`, \`wa-chats.json\`, \`wa.log\` | WhatsApp izin listesi, Baileys auth (SİLME), sohbet eşlemesi, log |
+| \`cron.json\`, \`watchers.json\`, \`bus.json\` | Zamanlanmış görevler, web/batarya izleyicileri, olay abonelikleri |
+| \`scripts\\\` | Python scriptleri (websearch.py, news.py) |
+| \`obscura\\obscura.exe\` | Obscura stealth tarayıcı (web arama zincirinin 2. motoru; açılışta otomatik kurulur) |
+| \`py\\python.exe\` | Gömülü Python runtime (makinede Python olmasa bile python_run çalışır) |
+| \`usage.json\`, \`logs\\\` | Kullanım sayaçları, çalışma logları |
+| Masaüstü\\Beast-Backups | Şifreli yedekler (.beastbak) — /backup ile alınır |
 
-## Sağlık Kontrolleri
+## KOD HARİTASI (src/)
 
-- "Model yapılandırılmadı" hatası → \`config.yaml\`/\`.env\` dolu mu bak; yoksa kullanıcıdan Ayarlar → Provider'dan model seçmesini ya da dosyaları doldurmasını iste (\`config.example.yaml\` repo kökünde örnek var).
-- Mail sorunları → \`email\` skill'ini oku.
-- fallout zinciri → Ayarlar → Fallout; 401'de sıradaki slota otomatik düşer.
+| Dosya | Sorumluluk |
+|---|---|
+| \`main.js\` | Electron ana süreç: tüm IPC, WhatsApp/Telegram/Discord entegrasyonları, onay kapısı (/approve), /stop /restart, splash, gizli araştırma tarayıcısı, obscura kurulumu |
+| \`agent/engine.js\` | OTURUM MOTORU: send/_run tur döngüsü, paralel ajanlar (run_background, run_background_many, tasks_list, task_status, task_cancel — task_cancel reason ZORUNLU), superyorizon (takılan işi zorla kapatır), iptal sebep disiplini, flushPendingReports |
+| \`agent/tools.js\` | Araçlar + web_search SIRALI ZİNCİRİ (searchChain: 1 dahili tarayıcı(Google) → 2 Obscura(stealth→DuckDuckGo) → 3 TinyFish(anahtarsa) → 4 python çoklu-motor; sıra Ayarlar→Web Arama'dan değişir), run_command, read/write_file, python_run, http_fetch, deep_search |
+| \`agent/llm.js\` | Sağlayıcı çağrısı + retry: ağ kopmasında 6 deneme + internet dönene kadar bekler; akış ortası kopmada kaldığı yerden devam |
+| \`agent/obscura.js\` | Obscura: otomatik kurulum (GitHub releases, stealth zip) + DuckDuckGo html/lite arama ayrıştırıcı |
+| \`agent/bots.js\` | Bot CRUD, 5 haneli bot kodu, izolasyon; ad-ilk-harf doğrulaması |
+| \`agent/skills.js\` | Builtin tohumlar (help, email, python-web-search, pdf, gold-trading) + SKILL.md taraması + taslaklar |
+| \`agent/memory.js\`, \`agent/kb.js\` | Kalıcı hafıza + bilgi bankası |
+| \`cron.js\` (src kökü), \`agent/watchers.js\`, \`agent/bus.js\` | Cron, izleyici, olay merkezi — /stop bunlara DOKUNMAZ |
+| \`agent/usage.js\` | Token/maliyet sayaçları |
+| \`renderer/\` | Arayüz: renderer.js (tüm paneller), i18n.js (TR/EN), index.html, style.css |
+| \`bin/beast-agent.js\` | CLI: \`beast\` (başlat), \`beast update\`, \`beast uninstall\` |
 
-## Davranış Kuralları
+## SLASH KOMUTLARI
+/help · /version · /new · /open <kod> · /sessions · /stop · /start · /restart · /change [n] · /model <isim> · /think 0-5 · /clear · /notes · /rule <metin> · /rules · /notify on|off · /screenshot · /approve [always] · /deny · /update [now] · /usage · /backup · /status · /skills
 
+## AYAR SEKMELERİ
+Provider · Fallout · Skills · Paralel Ajanlar · TTS · E-posta · Entegrasyonlar · Web Arama (Obscura kurulum + arama sırası) · Olaylar · Cron · Maliyet · Loglar · Panel · Limitler · Güvenlik · Güncelleme
+
+## PARALEL AJAN HIZLI BİLGİ
+- CEO modu: konuşan ajan iş YAPMAZ, run_background/run_background_many ile devreder; görev tanımı kendine yeterli olmalı (ajan CEO bağlamını GÖREMEZ).
+- İş bitince birleşik/bireysel rapor OTOMATİK üst sohbete düşer — takılı iş superyorizon tarafından SEBEPİYLE zorla kapatılır.
+- Canlı izleme: tasks_list/task_status; iptal: task_cancel (reason zorunlu, kullanıcıya sebep yazılır).
+
+## SAĞLIK KONTROLLERİ
+- "Model yapılandırılmadı" → config.yaml/.env dolu mu; Ayarlar → Provider'dan seçim.
+- Mail hatası → \`email\` skill'ini oku.
+- 401 → Fallout zinciri sıradaki slota otomatik düşer.
+- DDG boş/engelli → normaldir; zincir Obscura/Bing/Mojeek'e otomatik geçer.
+
+## DAVRANIŞ KURALLARI
 - Şifre/API anahtarlarını asla düz metin loglama/tekrarlama.
-- settings.json'a el ile yazarken app kapalı olsun (kapanışta ezme riski).
-- Yeni yetenek gerekiyorsa \`%APPDATA%\\beast\\skills\\<ad>\\\\SKILL.md\` oluşturmayı önerebilirsin.`,
+- settings.json'a el ile yazarken app kapalı olsun.
+- Yeni yetenek gerekiyorsa \`%APPDATA%\\beast\\skills\\<ad>\\SKILL.md\` oluşturmayı öner.
+- Bu haritadaki yolları ÖNCE dene; kod taraması yalnız haritada olmayan derin sorularda.`,
   },
   {
     folder: 'email',

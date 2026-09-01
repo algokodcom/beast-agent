@@ -76,6 +76,8 @@ contextBridge.exposeInMainWorld('beast', {
   obscuraSetEnabled: (v) => ipcRenderer.invoke('obscura:setEnabled', v),
   searchOrderGet: () => ipcRenderer.invoke('searchorder:get'),
   searchOrderSet: (chain) => ipcRenderer.invoke('searchorder:set', chain),
+  sessionsOrderGet: () => ipcRenderer.invoke('sessions:order:get'),
+  sessionsOrderSet: (order) => ipcRenderer.invoke('sessions:order:set', order),
   tinyfishGet: () => ipcRenderer.invoke('tinyfish:get'),
   tinyfishSet: (key) => ipcRenderer.invoke('tinyfish:set', key),
   tinyfishClear: () => ipcRenderer.invoke('tinyfish:clear'),

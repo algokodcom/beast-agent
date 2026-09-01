@@ -235,6 +235,7 @@ setTimeout(() => {
 let wa = null;
 let waChats = new Map(); // jid -> aktif session id
 let waHistory = new Map(); // jid -> [sid,...] bu sohbete ait tüm oturumlar
+let waBcMode = new Set(); // jid -> BeastCode modu AKTİF (WhatsApp'tan uzaktan kodlama)
 let waJidPn = new Map(); // jid -> gerçek telefon numarası (LID fallback için)
 const WA_HISTORY_CAP = 20;
 let tg = null;
@@ -281,6 +282,10 @@ try {
       if (!h.includes(s)) h.push(s);
       waHistory.set(j, h.slice(-WA_HISTORY_CAP));
     }
+    /* BeastCode modu: hangi sohbetler uzaktan kodlama yapıyor */
+    if (Array.isArray(raw.bcMode)) {
+      for (const j of raw.bcMode) if (typeof j === 'string') waBcMode.add(j);
+    }
   }
 } catch {}
 
@@ -291,6 +296,7 @@ function saveWaChats() {
       JSON.stringify({
         chats: Object.fromEntries(waChats),
         history: Object.fromEntries([...waHistory.entries()].map(([j, a]) => [j, a.slice(-WA_HISTORY_CAP)])),
+        bcMode: [...waBcMode],
       })
     );
   } catch {}
@@ -301,6 +307,46 @@ function waRememberSession(jid, sid) {
   const h = waHistory.get(jid) || [];
   if (!h.includes(sid)) h.push(sid);
   waHistory.set(jid, h.slice(-WA_HISTORY_CAP));
+}
+
+/* ---------- BEASTCODE MODU (WA'dan uzaktan kodlama) ----------
+   /beastcode → sohbet BEAST CODE oturumuna döner: masaüstü IDE paneliyle
+   AYNI motor (engine bcCode + buildBcSystem) — todo planı, edit_file/run_command
+   disiplini, /plan /build /auto modları. Dosyalar Kullanıcı\BeastCode'a düşer.
+   /beastagent → normal sohbet oturumuna geri dönülür. */
+
+function waBcWorkspace() {
+  const dir = path.join(app.getPath('home'), 'BeastCode');
+  try { fs.mkdirSync(dir, { recursive: true }); } catch {}
+  return dir;
+}
+
+/* Sohbetin Beast Code oturumu: varsa onu, yoksa yenisini aç */
+function waBcSession(jid) {
+  const sid = waChats.get(jid);
+  if (sid) {
+    try {
+      const s = engine.cache.get(sid);
+      if (s && s.bcCode) return s;
+    } catch {}
+  }
+  const s = engine._load(engine.createSession().id);
+  s.messages = s.messages || [];
+  s.bgTitle = 'Beast Code (WA)'; /* sohbet geçmişi listesinde etiketli görünür */
+  s.bcCode = true; /* engine: BEAST CODE MODU bloğu + todo disiplini */
+  s.workspace = waBcWorkspace();
+  engine.cache.set(s.id, s);
+  try {
+    fs.appendFileSync(
+      engine._file(s.id),
+      JSON.stringify({ t: 'meta2', bgOf: '', title: 'Beast Code (WA)', at: new Date().toISOString() }) + '\n'
+    );
+  } catch {}
+  waChats.set(jid, s.id);
+  waRememberSession(jid, s.id);
+  saveWaChats();
+  if (wa) wa.setWatchJids([...waChats.keys()]);
+  return s;
 }
 
 function settingsLog(line) {
@@ -655,6 +701,9 @@ function waSlashHelp() {
     '• */new* – yeni oturum aç (kod verilir)',
     '• */open* <kod> – o koddaki oturuma geç',
     '• */sessions* – bu sohbetin oturumları',
+    '• */beastcode* [görev] – ⚡ UZAKTAN KODLAMA modu: WhatsApp\u2019tan uygulama yazdır (örn: /beastcode hava durumu uygulaması yaz)',
+    '• */beastagent* – kodlama modundan normal sohbete dön',
+    '• */plan* · */build* · */auto* – BeastCode modunda çalışma modu (planla · uygula · otomatik)',
     '• */stop* – koşan işleri durdur (ajanlar+turlar; cron/izleyici/olay sürer)',
     '• */start* – durdurulan servisleri devam ettir',
     '• */restart* – uygulamayı yeniden başlat',
@@ -910,7 +959,7 @@ function resolveFirstApproval(ok, always) {
 }
 
 /* true dönerse mesaj slash komutuydu ve cevap gönderildi */
-async function tryWaSlash(jid, rawText, senderNum) {
+async function tryWaSlash(jid, rawText, senderNum, payload0) {
   const t = String(rawText || '').trim();
   if (!t.startsWith('/') || t.includes('\n')) return false;
   const parts = t.slice(1).split(/\s+/);
@@ -1150,6 +1199,65 @@ async function tryWaSlash(jid, rawText, senderNum) {
       out =
         `*WA:* ${wst.status}${wst.user ? ' (' + wst.user + ')' : ''}\n` +
         `*İzleyici:* ${watchers.list().length} adet\n*Cron:* ${jobs} aktif görev`;
+    } else if (cmd === 'beastcode') {
+      /* /beastcode [görev] — WhatsApp'tan UZAKTAN KODLAMA modu:
+         sohbet masaüstü Beast Code motoruna bağlanır (bcCode + workspace) */
+      const s = waBcSession(jid);
+      waBcMode.add(jid);
+      saveWaChats();
+      emitWaEventSafe({ type: 'bc-mode', jid, on: true });
+      if (arg) {
+        /* görev normal WA akışına verilir — meşgulse bekleme-kuyruğu devrede */
+        waQueuePush(jid, { text: arg, isGroup: !!(payload0 && payload0.isGroup) }, senderNum);
+        out =
+          `*⚡ BEASTCODE MODU — görev alındı, yazıyorum.*\n` +
+          `Klasör: \`${s.workspace}\`\n` +
+          `Mod değiştir: \`/plan\` (sadece plan) · \`/build\` (uygula) · \`/auto\`\n` +
+          `Sohbete dönmek için: /beastagent`;
+      } else {
+        out =
+          `*⚡ BEASTCODE MODU AKTİF*\n` +
+          `Oturum: \`${s.code || '?'}\` · Klasör: \`${s.workspace}\`\n` +
+          `Artık ne yazarsan UYGULAMA olarak yaparım: dosyalar yazar, komut çalıştırır, doğrular.\n` +
+          `İlk görevi yaz — örn: "todo listesi uygulaması yaz"\n` +
+          `Sohbete dönmek için: /beastagent`;
+      }
+    } else if (cmd === 'beastagent') {
+      /* /beastagent — kodlama modundan normal sohbete dön */
+      if (!waBcMode.has(jid)) {
+        out = 'Zaten sohbet modundasın — kodlamak için /beastcode yaz.';
+      } else {
+        const sid = waChats.get(jid);
+        if (sid && engine.isBusy(sid)) {
+          try { engine.interrupt(sid, 'kullanıcı /beastagent ile sohbet moduna döndü'); } catch {}
+        }
+        waBcMode.delete(jid);
+        const v = engine.createSession();
+        waChats.set(jid, v.id);
+        waRememberSession(jid, v.id);
+        saveWaChats();
+        if (wa) wa.setWatchJids([...waChats.keys()]);
+        emitWaEventSafe({ type: 'bc-mode', jid, on: false });
+        out =
+          `*💬 Sohbet moduna dönüldü* — yeni oturum \`${v.code}\`.\n` +
+          `Kodlar duruyor: \`${waBcWorkspace()}\`\n` +
+          `Tekrar kodlamak için: /beastcode`;
+      }
+    } else if (waBcMode.has(jid) && (cmd === 'plan' || cmd === 'build' || cmd === 'auto')) {
+      /* BeastCode modunda çalışma modu: /plan · /build · /auto */
+      const sid = waChats.get(jid);
+      const s = sid ? engine.cache.get(sid) : null;
+      if (s && s.bcCode) {
+        s.bcMode = cmd;
+        engine.cache.set(sid, s);
+        out = cmd === 'plan'
+          ? '*🔍 PLAN MODU* — dosyaları inceler, kod YAZMAZ; adım adım uygulama planı verir.'
+          : cmd === 'build'
+            ? '*🛠 BUILD MODU* — son planı uygular: dosyalar, komutlar, doğrulama.'
+            : '*⚡ AUTO MOD* — kısa plan + uygulama + doğrulama.';
+      } else {
+        out = 'Bu komut yalnız BeastCode modunda çalışır — önce /beastcode yaz.';
+      }
     } else if (cmd === 'version') {
       out = `*Beast Agent v${beastVersion()}*\nGüncelleme için: /update (kurulum hazır olunca /update now)`;
     } else {
@@ -1640,7 +1748,7 @@ async function handleWaIncoming(jid, payload, senderNum) {
     /* slash komutları: DM'de her zaman; grupta sadece bot mention edildiyse */
     const txt0 = String(payload.text || '').trim();
     if (txt0.startsWith('/') && !txt0.includes('\n') && (!isGroup || payload.mentioned)) {
-      if (await tryWaSlash(jid, txt0, senderNum)) return;
+      if (await tryWaSlash(jid, txt0, senderNum, payload)) return;
     }
 
     if (isGroup) {
@@ -1823,7 +1931,18 @@ async function processWaMessage(jid, payload, senderNum, requeues = 0) {
     engine.setSessionTools(sid, null);
   }
   engine.setSessionModel(sid, botCfg && !botCfg.admin ? (botCfg.model || null) : null);
-  waLog(`perm=${fmtPerm(perm)} bot=${botId} sid=${sid}`);
+  /* BEASTCODE MODU: sohbet uzaktan kodlama modundaysa oturumu Beast Code
+     olarak tazele — restart sonrası bcCode/workspace bayrakları dosyadan
+     yüklenmediği için masaüstü bcFlush disipliniyle her mesajda bindirilir */
+  if (waBcMode.has(jid)) {
+    const bs = engine.cache.get(sid);
+    if (bs) {
+      bs.bcCode = true;
+      bs.workspace = waBcWorkspace();
+      engine.cache.set(sid, bs);
+    }
+  }
+  waLog(`perm=${fmtPerm(perm)} bot=${botId} sid=${sid}${waBcMode.has(jid) ? ' beastcode=1' : ''}`);
 
   const participantName = payload.participant ? '+' + String(payload.participant).split('@')[0].split(':')[0] : '';
   /* GRUP GÖNDERENİ: LID çağında gerçek telefon participantAlt'ta gelir.

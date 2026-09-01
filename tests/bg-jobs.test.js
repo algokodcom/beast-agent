@@ -271,18 +271,86 @@ test('#5 eşzamanlılık limiti: fazlası kuyrukta bekler, slot boşalınca FIFO
   assert.deepEqual(st, ['queued', 'queued', 'running', 'running']);
   assert.strictEqual(sent.length, 2);
 
-  /* slot açılır → sıradaki queued iş running olur ve gönderilir */
+  /* slot açılır → sıradaki queued iş running olur ve gönderilir.
+     _bgFinish('aborted') artık üst sohbete [ARKA PLAN İPTAL + SEBEP] raporu da düşürür. */
   eng._bgFinish(ids[0], 'aborted');
   await sleep(30);
   const queued = [...eng._bgJobs.values()].filter((j) => j.status === 'queued').length;
   const running = [...eng._bgJobs.values()].filter((j) => j.status === 'running').length;
   assert.strictEqual(queued, 1);
   assert.strictEqual(running, 2);
-  assert.strictEqual(sent.length, 3);
+  /* 3 gönderim = kuyruktan başlayan iş + 1 rapor = üst sohbete düşen iptal sebebi */
+  assert.strictEqual(sent.length, 4);
+  assert.ok(eng._pendingReports.length === 0, 'iptal raporu üst sohbete düştü');
 });
 
-/* ---------- /stop anahtarı ---------- */test('stopAll: koşan turları keser, paralel ajanı aborted işaretler', async () => {
+/* ---------- İPTAL SEBEBİ DİSİPLİNİ ---------- */
+
+test('iptal SEBEBİ zorunlu: interrupt sebebi iş kaydına ve üst sohbete yazar', async () => {
   const { eng } = tmpEngine();
+  const sent = [];
+  eng.send = (sid, payload) => { sent.push({ sid, text: String((payload && payload.text) || '') }); return true; };
+  const r = eng.runBackground('pr', 'koşan iş', 'Sebep İş');
+  const id = r.backgroundId;
+  const c = new AbortController();
+  eng.ctrls.set(id, c);
+
+  eng.interrupt(id, 'kullanıcı panelden iptal etti');
+  assert.ok(c.signal.aborted, 'ctrl kesildi');
+  assert.strictEqual(eng._abortReasons.get(id), 'kullanıcı panelden iptal etti', 'sebep haritada');
+
+  /* _run catch'inin yaptığı iş: haritadan sebebi okuyup _bgFinish'e verir */
+  const why = eng._abortReasons.get(id);
+  eng._abortReasons.delete(id);
+  eng._bgFinish(id, 'aborted', why);
+
+  const j = eng._bgJobs.get(id);
+  assert.strictEqual(j.status, 'aborted');
+  assert.strictEqual(j.error, 'kullanıcı panelden iptal etti', 'sebep iş kaydına yazıldı');
+  const rep = sent.find((x) => x.sid === 'pr' && x.text.includes('[ARKA PLAN İPTAL'));
+  assert.ok(rep, 'üst sohbete İPTAL raporu düştü');
+  assert.ok(/Sebep: kullanıcı panelden/.test(rep.text), 'rapor SEBEPİ içerir');
+});
+
+test('kuyruktaki ajan interrupt ile SEBEPİYLE kesilir', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'beast-qc-'));
+  const eng = new Engine({}, { sessionsDir: dir, emit: () => {} });
+  eng._bgLimit = 0; // yapıcı min 1 kelepçeler; sıfırla → her iş queued kalır
+  eng.send = () => true;
+  const r = eng.runBackground('pq2', 'kuyruk işi', 'Kuyruk İş');
+  await sleep(80); // admit → bgLimit 0 → queued
+  assert.strictEqual(eng._bgJobs.get(r.backgroundId).status, 'queued');
+
+  assert.strictEqual(eng.interrupt(r.backgroundId, 'sıra iptal edildi'), true);
+  const j = eng._bgJobs.get(r.backgroundId);
+  assert.strictEqual(j.status, 'aborted');
+  assert.strictEqual(j.error, 'sıra iptal edildi', 'kuyruktaki işin iptal sebebi kayda geçti');
+  eng.deleteSession(r.backgroundId);
+});
+
+test('task_cancel reason ZORUNLU: sebep iş kaydına ve note mesajına düşer', async () => {
+  const { eng } = tmpEngine();
+  const r = eng.runBackground('pc', 'iş', 'İptal Edilen');
+  const id = r.backgroundId;
+  const c = new AbortController();
+  eng.ctrls.set(id, c);
+
+  const out = JSON.parse(await eng._execTool('task_cancel', { id, reason: 'yanlış kaynağa baktı' }, {}));
+  assert.ok(out.ok, 'cancel başarılı');
+  assert.ok(/yanlış kaynağa baktı/.test(out.note), 'note ceza sebep içerir');
+  assert.strictEqual(eng._abortReasons.get(id), 'yanlış kaynağa baktı');
+  assert.ok(c.signal.aborted);
+
+  /* reason verilmezse varsayılan sebep yine kayda düşer */
+  const id2 = eng.runBackground('pc', 'iş 2', 'İptal 2').backgroundId;
+  eng.ctrls.set(id2, new AbortController());
+  const out2 = JSON.parse(await eng._execTool('task_cancel', { id: id2 }, {}));
+  assert.ok(out2.ok);
+  assert.ok(eng._abortReasons.get(id2).includes('task_cancel'), 'varsayılan sebep CEO kaynağını söyler');
+});
+
+/* ---------- /stop anahtarı ---------- */
+test('stopAll: koşan turları keser, paralel ajanı aborted işaretler', async () => {  const { eng } = tmpEngine();
   const r = eng.runBackground('pS', 'koşan iş', 'Koşu');
   const id = r.backgroundId;
 

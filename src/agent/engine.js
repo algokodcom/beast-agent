@@ -1173,6 +1173,8 @@ class Engine {
     try {
       const c = this.ctrls.get(id);
       if (c) {
+        this._abortReasons = this._abortReasons || new Map();
+        this._abortReasons.set(String(id), 'oturum silindiği için tur iptal edildi');
         c.abort();
         this.ctrls.delete(id);
       }
@@ -1182,6 +1184,7 @@ class Engine {
         const j = this._bgJobs.get(String(id));
         j.revive = false;
         j.status = 'aborted';
+        j.error = j.error || 'oturum silindi — paralel ajan iptal edildi';
         this._clearKicks(id);
       }
       fs.unlinkSync(this._file(String(id)));
@@ -1316,7 +1319,7 @@ class Engine {
           'Tarayıcı eylemlerinin yanıtındaki recent günlüğü ve navigated bilgisini takip et; eylem yanıtları zaten taze snapshot içerir — refler tutarsız görünürse yeni snapshot al.',
           'CONUŞMA ODAĞI SENDE KALSIN: kullanıcı seninle konuşurken iş çıkmışsa — uzun da olsa UFACIK da (tek komutluk dizin listesi, tek dosya okuma, tek arama…) — run_background ile PARALEL ajana devret; ana sohbet hiçbir işi beklemez; bittiğinde özet otomatik düşer.',
           'Python işleri için python_run kullan: küçük betikler inline code ile; tekrarlayan işler %APPDATA%\\beast\\scripts klasöründeki dosyalarla (ör. news.py = RSS haber toplayıcı: args ["--limit","8","--json"]). Python kurulu olmasa bile ilk çağrıda taşınabilir gömülü runtime otomatik iner.',
-          'PYTHON DURUMU: makinede sistem Python\'u görünmese bile ŞAŞIRMA ve "python yok" DEME — python_run aracı kendi taşınabilir runtime\'ını (%APPDATA%\\beast\\py\\python.exe) otomatik indirir/kullanır ve bu klasör run_command PATH\'inde önceliklidir; yani run_command içinde de `python` çalışır. Ham Google/Bing scrape yerine önce web_search aracını kullan (zaten Python çoklu-motor + Exa destekli), script gerektiğinde python_run yaz.',
+            'PYTHON DURUMU: makinede sistem Python\'u görünmese bile ŞAŞIRMA ve "python yok" DEME — python_run aracı kendi taşınabilir runtime\'ını (%APPDATA%\\beast\\py\\python.exe) otomatik indirir/kullanır ve bu klasör run_command PATH\'inde önceliklidir; yani run_command içinde de `python` çalışır. Ham Google/Bing scrape yerine önce web_search aracını kullan (zaten Obscura stealth tarayıcı + TinyFish + Python çoklu-motor destekli), script gerektiğinde python_run yaz.',
           'PDF ÇIKTI KURALI: PDF üretirken pip\u2019ten pdf paketi (fpdf, fpdf2, markdown-pdf, weasyprint, reportlab vb.) KURMA/KULLANMA — bunlar Türkçe karakterleri bozar. Doğru kit Node tarafında ZATEN kurulu: `pdf-lib` + `@pdf-lib/fontkit` (Türkçe font gömme) ve `pdfkit`. python_run ile DEĞİL; write_file ile .js script yazıp run_command ile `node script.js` çalıştır. md→pdf çevirici YOKTUR ve kurulmaz: kullanıcıya rapor/özet/belge çıktısı vereceksen .md dosyası gönderme — aynı içeriği DOĞRUDAN pdf-lib/pdfkit ile PDF olarak üret ve send_file ile o PDF\u2019i gönder. Ayrıntılı örnekler: pdf skill\u2019i (SKILL.md).',
           'Eski bir hafıza kaydına ihtiyacın olursa memory_search ile ara; kalıcı bilgi/birikim için kb_search kullan, yeni bilgi öğrenirsen kb_add ile kaynak belirt.',
           'Bir oturumda 3+ kez memory_write yaptıysan iş bitince memory_hygiene çağır (duplike/eskime temizliği).',
@@ -1335,7 +1338,8 @@ class Engine {
             'Görev tanımı kendi başına YETERLİ olsun: tüm bağlam, dosya/URL yolları, kısıtlar ve beklenen çıktı görev metnine yazılır — paralel ajan senin bağlamını göremez.',
             'Birden fazla bağımsız iş varsa hepsini aynı anda ayrı run_background çağrılarıyla devret (paralel çalışsınlar).',
             'HIZ FAN-OUT: aynı işin farklı adımlarını run_background_many ile TEK SEFERDE paralel aç (örnek: haber taraması → TR / Dünya / Ekonomi ayrı ajan; araştırma+veri çekme+analiz ayrı ajan). Hepsi bitince sana TEK birleşik rapor düşer — hız dramatik artar. Bağımsız 2+ adım görürsen bunu tercih et.',
-            'Takip araçları: tasks_list (genel tablo), task_status (tek ajanın canlı dökümü), task_cancel (iptal). Kullanıcı ilerleme sorarsa buradan raporla.',
+            'Takip araçları: tasks_list (genel tablo), task_status (tek ajanın canlı dökümü), task_cancel (iptal — reason ZORUNLU). Kullanıcı ilerleme sorarsa buradan raporla.',
+            'İPTAL DİSİPLİNİ: bir paralel ajanı task_cancel ile iptal edersen ya da bir işi yarıda bırakırsan, kullanıcıya TEK CÜMLEyle MUTLAKA SEBEBİNİ yaz (neden iptal ettin, ne kayboldu, yerine ne yapacaksın). Sebepsiz iptal YASAK.',
             'Bilgi sorularını, sohbeti, planlamayı, hafıza/hatırlatıcı/izleyici kurulumunu YİNE SEN yaparsın — bunlar "iş" değildir.',
           ].join('\n')
       );
@@ -1847,7 +1851,7 @@ class Engine {
         if (j.status === 'running' || j.status === 'queued') {
           j.status = 'aborted';
           j.endedAt = new Date().toISOString();
-          j.error = String(j.error || '') || 'uygulama kapatıldı';
+          j.error = String(j.error || '') || 'uygulama kapatıldı — paralel ajan yarıda kesildi';
           migrated = true;
         }
         j._persisted = true;
@@ -1940,9 +1944,18 @@ class Engine {
       this._pendingReports = this._pendingReports || [];
       this._pendingReports.push({ parentId: job.parentId, text });
       this.flushPendingReports(job.parentId);
-    } else if (status === 'aborted' && grouped) {
-      /* iptal edilen üye gruptan düşmüş sayılır */
-      this._bgGroupRecord(job.title, 'aborted', '');
+    } else if (status === 'aborted') {
+      /* İPTAL SEBEBİ ZORUNLU: sebebi kayda yaz ve üst sohbete/gruba bildir */
+      const why = String(errorMsg || job.error || 'sebep belirtilmedi').slice(0, 300);
+      if (grouped) {
+        /* iptal edilen üye gruptan düşmüş sayılır — birleşik raporda SEBEPİYLE görünür */
+        this._bgGroupRecord(job.title, 'aborted', 'İPTAL: ' + why);
+      } else {
+        const text = `[ARKA PLAN İPTAL: ${job.title}]\nSebep: ${why}`;
+        this._pendingReports = this._pendingReports || [];
+        this._pendingReports.push({ parentId: job.parentId, text });
+        this.flushPendingReports(job.parentId);
+      }
     }
   }
 
@@ -2432,8 +2445,21 @@ class Engine {
       const aborted = e && (e.name === 'AbortError' || ctrl.signal.aborted);
       if (aborted) {
         this._clearCrash(); // kullanıcı durdurdu — kurtarma yok
-        emit({ type: 'done', aborted: true });
-        this._bgFinish(sid, 'aborted');
+        /* öz-kurtarma/superyorizon kick'i bekliyorsa bu tur BİTİŞ değildir —
+           işi aborted KAPATMA, kick mesajı yeni turu açar */
+        const kickJob = this._bgJobs && this._bgJobs.get(sid);
+        if (kickJob && kickJob.revive === true) {
+          emit({ type: 'done', aborted: true });
+        } else {
+          /* İPTAL SEBEBİ ZORUNLU: interrupt() tarafından kaydedilir */
+          const why =
+            (this._abortReasons && this._abortReasons.get(sid)) ||
+            (kickJob && kickJob.error) ||
+            'kullanıcı talebiyle iptal edildi';
+          if (this._abortReasons) this._abortReasons.delete(sid);
+          emit({ type: 'done', aborted: true, reason: why });
+          this._bgFinish(sid, 'aborted', why);
+        }
       } else {
         // FALLOUT: tüm zincir tükendi — durumu kaydet, açılışta kaldığı yerden devam edilir
         this._saveCrash(sid, e, 'chain-exhausted');
@@ -2676,7 +2702,7 @@ class Engine {
       if (!this.ctrls.has(pairId)) break;
     }
     if (this.ctrls.has(pairId)) {
-      try { this.interrupt(pairId); } catch {}
+      try { this.interrupt(pairId, 'bot DM zaman aşımına uğradı (120 sn) — tur kesildi'); } catch {}
       return { ok: false, error: 'hedef bot zaman aşımına uğradı (120 sn)' };
     }
     const after = this.cache.get(pairId) || pair;
@@ -2790,38 +2816,18 @@ class Engine {
     }
   }
 
-  /* web_search zinciri — web_search VE deep_search aynı zinciri kullanır:
-     1) dahili tarayıcı (DİREK GOOGLE — ücretsiz + AI cevabı)
-     2) TinyFish (tarayıcı sorun çıkarsa HEMEN devreye girer — anahtar girildiyse)
-     3) python çoklu-motor (ddgs / DDG+Bing+Mojeek)
-     4) Exa (anahtar girildiyse, son çare)
-     Tarayıcıda CAPTCHA/"olağandışı trafik"/boş sonuç algılanırsa 10 dk boyunca
-     tarayıcı ATLANIR — her arama TinyFish'ten başlar, süre dolunca tarayıcı geri döner. */
-  async _webSearchChain(q, n, sessionId, signal) {
-    let r = null;
-    let banned = false;
+  /* web_search zinciri — web_search VE deep_search aynı zinciri kullanır.
+     Sıra + aç/kapa Ayarlar → Web Arama'dan değiştirilir (tools.searchChainWeb):
+     varsayılan: 1) dahili tarayıcı (DİREK GOOGLE) 2) Obscura (stealth headless
+     → DuckDuckGo; otomatik kurulur, varsayılan AKTİF) 3) TinyFish (anahtar
+     girildiyse) 4) python çoklu-motor. Tarayıcı CAPTCHA/trafik verirse 10 dk
+     atlanır — sıradaki motor hemen devreye girer. */
+  _webSearchChain(q, n, sessionId, signal) {
     const browserUsable = this.browser && typeof this.browser.search === 'function';
-    if (Date.now() < (this._webSearchBrowserBanUntil || 0)) banned = true;
-    if (browserUsable && !banned) {
-      try { r = await this.browser.search(q, signal, { sessionId }); } catch {}
-      if (!r || !r.ok || !(r.results || []).length) {
-        /* tarayıcı sorunlu — 10 dk atla, alternatif zincir hemen devrede */
-        this._webSearchBrowserBanUntil = Date.now() + 10 * 60 * 1000;
-        r = null;
-        banned = true;
-      }
-    }
-    if (!r || !r.ok || !(r.results || []).length) {
-      try { r = await tools.tinyfishSearch(q, n, signal); } catch {}
-    }
-    if (!r || !r.ok || !(r.results || []).length) {
-      try {
-        r = JSON.parse(await tools.exec('web_search', { query: q, max_results: n }, { cwd: this._sessionWorkspace(sessionId), signal }));
-      } catch {}
-    }
-    const out = r || { ok: false, error: 'web arama başarısız — tüm motorlar boş döndü' };
-    if (out && out.ok && banned) out.note = 'tarayıcı araması 10 dk askıda (CAPTCHA/trafik) — TinyFish/alternatif zincir kullanıldı';
-    return out;
+    return tools.searchChainWeb(q, n, {
+      signal,
+      browser: browserUsable ? () => this.browser.search(q, signal, { sessionId }) : null,
+    });
   }
 
   /* Dahili OCR aracı: görüntüden metin çıkarır (görsel desteklemeyen modeller için).
@@ -3051,8 +3057,11 @@ class Engine {
       }
       if (name === 'task_cancel') {
         const id = String(args.id || '');
-        const ok = this.interrupt(id);
-        return JSON.stringify(ok ? { ok: true, id } : { ok: false, error: 'çalışan ajan yok: ' + id });
+        const why = String(args.reason || '').trim() || 'ana ajan (CEO) bu ajanı task_cancel ile iptal etti';
+        const ok = this.interrupt(id, why);
+        return JSON.stringify(ok
+          ? { ok: true, id, reason: why, note: 'Ajan iptal edildi — kullanıcıya MUTLAKA iptal sebebini tek cümleyle açıkla: ' + why }
+          : { ok: false, error: 'çalışan ajan yok: ' + id });
       }
       if (name === 'set_reminder') {
         if (!this.reminders || typeof this.reminders.add !== 'function') {
@@ -3174,10 +3183,8 @@ class Engine {
       }
       if (name === 'deep_search') {
         /* agentic derin araştırma: çoklu sorgu + gizli tarayıcıda sayfa okuma.
-           ARAMA zinciri web_search ile BİREBİR AYNI — eski sürüm yalnız python
-           motorlarını (ddgs/DDG/Bing) kullanıyordu; CAPTCHA/engel sonucu motorlar
-           boş dönünce "tüm motorlar boş döndü" hatası veriyordu. Artık önce
-           DAHİLİ TARAYICI (Google) denenir, sonra TinyFish → python → Exa. */
+           ARAMA zinciri web_search ile BİREBİR AYNI — sıralı zincir
+           (tarayıcı → Obscura → TinyFish → python; Ayarlar'dan değiştirilir). */
         try {
           emitSafe(this, sessionId, { type: 'status', status: 'derin araştırma: çoklu sorgu + gizli sayfa okuma' });
         } catch {}
@@ -3242,9 +3249,34 @@ class Engine {
     }
   }
 
-  interrupt(sessionId) {
-    const c = this.ctrls.get(String(sessionId));
-    if (!c) return false;
+  /* İptal SEBEBİ zorunlu: abort edilen her tur/_bgFinish bu haritadan sebebini
+     okur; ajan neden durdurulduğunu kullanıcıya MUTLAKA bildirir. */
+  _abortReason(reason) {
+    const r = String(reason || '').trim();
+    return (r || 'sebep belirtilmedi — iptal talebi').slice(0, 400);
+  }
+
+  interrupt(sessionId, reason) {
+    const sid = String(sessionId || '');
+    const why = this._abortReason(reason);
+    const c = this.ctrls.get(sid);
+    if (!c) {
+      /* koşan tur yok — kuyrukta bekleyen / öz-kurtarma kick'i bekleyen
+         paralel ajanı da SEBEPİYLE kes */
+      const j = this._bgJobs && this._bgJobs.get(sid);
+      if (j && (j.status === 'queued' || j.revive === true)) {
+        j.status = 'aborted';
+        j.revive = false;
+        j.endedAt = nowIso();
+        j.error = why;
+        this._clearKicks(sid);
+        this._bgEmit();
+        return true;
+      }
+      return false;
+    }
+    this._abortReasons = this._abortReasons || new Map();
+    this._abortReasons.set(sid, why);
     c.abort();
     return true;
   }
@@ -3254,19 +3286,22 @@ class Engine {
      main katmanında BAĞIMSIZ yaşar — /stop onlara dokunmaz. */
   stopAll() {
     let aborted = 0;
+    const why = '/stop: kullanıcı tüm ajanları ve turları durdurdu';
     /* fan-out gruplarını kapat — yarım grup artık birleşik rapor beklemesin */
     if (this._bgGroups) {
       for (const g of this._bgGroups.values()) g.dead = true;
     }
     if (this._bgPendingStart) this._bgPendingStart.clear();
+    this._abortReasons = this._abortReasons || new Map();
     for (const [sid, c] of this.ctrls) {
-      try { c.abort(); aborted++; } catch {}
+      try { this._abortReasons.set(sid, why); c.abort(); aborted++; } catch {}
       /* abort sonrası _run finally bloğu temizler; paralel ajan kaydını biz işaretleyelim */
       if (this._bgJobs.has(sid)) {
         const job = this._bgJobs.get(sid);
         if (job.status === 'running' || job.status === 'queued') {
           job.status = 'aborted';
           job.endedAt = nowIso();
+          job.error = job.error || why;
         }
         job.revive = false; // bekleyen öz-kurtarma gönderimini de öldür
         this._clearKicks(sid);
@@ -3277,6 +3312,7 @@ class Engine {
       if (j.status === 'queued') {
         j.status = 'aborted';
         j.endedAt = nowIso();
+        j.error = j.error || why;
         aborted++;
       }
     }
@@ -3648,13 +3684,15 @@ const TOOLS = [
     type: 'function',
     function: {
       name: 'task_cancel',
-      description: 'Cancel a running background agent by id (from tasks_list).',
+      description:
+        'Cancel a running background agent by id (from tasks_list). ALWAYS pass reason: a short sentence explaining WHY you are cancelling — it is recorded on the job and you must report it to the user.',
       parameters: {
         type: 'object',
         properties: {
           id: { type: 'string' },
+          reason: { type: 'string', description: 'REQUIRED: why you are cancelling this agent (one short sentence)' },
         },
-        required: ['id'],
+        required: ['id', 'reason'],
       },
     },
   },

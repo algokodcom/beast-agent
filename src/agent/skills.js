@@ -164,19 +164,27 @@ Send-MailMessage -SmtpServer smtp.gmail.com -Port 587 -UseSsl -From 'adres@gmail
     force: true,
     body: `---
 name: python-web-search
-description: VARSAYILAN web arama zinciri — 1) dahili tarayıcı DİREK GOOGLE (gerçek Chromium, bot koruması yok; Google AI cevabi 'ai' alanında hazır gelir) 2) python çoklu-motor (ddgs / DDG+Bing+Mojeek, anahtarsız) 3) Exa (son çare, anahtar varsa). Takılmama kuralları içerir.
-version: 1.3.2
+description: VARSAYILAN web arama zinciri — 1) dahili tarayıcı DİREK GOOGLE (gerçek Chromium, bot koruması yok; Google AI cevabi 'ai' alanında hazır gelir) 2) Obscura (stealth headless → DuckDuckGo; otomatik kurulur, varsayılan AKTİF) 3) TinyFish (anahtar varsa) 4) python çoklu-motor (ddgs / DDG+Bing+Mojeek, anahtarsız). Sıra Ayarlar → Web Arama'dan değiştirilir. Takılmama kuralları içerir.
+version: 1.4.0
 ---
 
 # Web Arama Zinciri (VARSAYILAN)
 
-web_search aracı çağrıldığında zincir OTOMATİK çalışır — elle motor seçmen gerekmez:
+web_search aracı çağrıldığında zincir OTOMATİK çalışır — elle motor seçmen gerekmez. Sıra Ayarlar → Web Arama sekmesinden değiştirilebilir:
 
 ## 1. Dahili tarayıcı (ilk tercih — Google AI)
 
-Gerçek Chromium olduğu için Google'a bot koruması uygulamaz. Arama aep=1 ile açılır: Google'ın KENDİ AI cevabı yanıtın 'ai' alanında HAZIR gelir — "kimdir/nedir" sorularında önce onu kullan, kaynak linkleri de 'results' alanında gelir. Sağ panelde açılır, kullanıcı da görebilir.
+Gerçek Chromium olduğu için Google'a bot koruması uygulamaz. Arama aep=1 ile açılır: Google'ın KENDİ AI cevabı yanıtın 'ai' alanında HAZIR gelir — "kimdir/nedir" sorularında önce onu kullan, kaynak linkleri de 'results' alanında gelir. Sağ panelde açılır, kullanıcı da görebilir. CAPTCHA/trafik uyarısı gelirse tarayıcı 10 dk atlanır, sıradaki motor devreye girer.
 
-## 2. Python çoklu-motor (tarayıcı sonuç vermezse)
+## 2. Obscura (stealth headless — DuckDuckGo)
+
+Rust tabanlı gizli tarayıcı: anti-detect parmak izi + V8 JS. Kurulu değilse uygulama açılışında OTOMATİK indirilir (%APPDATA%\\beast\\obscura). Varsayılan AKTİF — tarayıcı engellenirse bot korumasını aşarak DuckDuckGo'dan sonuç getirir.
+
+## 3. TinyFish API (anahtar varsa)
+
+Ayarlar → Web Arama'dan anahtar girildiyse kendi sırasında devreye girer; anahtar yoksa otomatik atlanır.
+
+## 4. Python çoklu-motor
 
 ddgs kütüphanesi (github.com/deedy5/ddgs — anti-bot korumalı metasearch) veya DuckDuckGo + Bing + Mojeek PARALEL — anahtar gerekmez. Gömülü Python runtime otomatik yönetilir.
 
@@ -186,10 +194,6 @@ web_search {"query": "sorgu", "max_results": 6}
 
 - Çoklu sorgu gerekiyorsa: aynı turda birden ÇOK web_search çağrısını PARALEL ver — toplam süre tek arama kadar olur.
 - Sonuç listesinden 1-2 URL'nin içeriğini okumak için http_fetch kullan.
-
-## 3. Exa (son çare)
-
-Yukarıdakiler boş dönerse ve Ayarlar → Web Arama'ya Exa anahtarı girildiyse devreye girer.
 
 ## Toplu / derin işler (python_run)
 
@@ -208,7 +212,7 @@ for q in ["sorgu 1", "sorgu 2", "sorgu 3"]:
 
 - Bir bilgi 2-3 farklı sorguyla bulunamıyorsa PEŞİNİ BIRAK: bulduğun kısmi bilgiyle devam et, neyi bulamadığını raporda açıkça yaz.
 - Kapalı/gizli içerik (Instagram gizli hesap, private profil, login arkası veri) ARANMAZ — bulunamayacağı belliyse hemen alternatif kaynağa/geçişe geç.
-- DDG boş/engelli dönerse "DuckDuckGo kapandı" DEME: bot koruması devrededir (~1 saatte kendiliğinden açılır) ve zincir otomatik olarak Bing/Mojeek/tarayıcıya geçer — bu normal çalışmadır.
+- DDG boş/engelli dönerse "DuckDuckGo kapandı" DEME: bot koruması devrededir (~1 saatte kendiliğinden açılır) ve zincir otomatik olarak Obscura/Bing/Mojeek/tarayıcıya geçer — bu normal çalışmadır.
 - Araştırma hedefi: ~3 dakika, 3-5 kaynak. Derinleşme = zaman kaybı.
 - Motor hata verirse bir kez farklı sorguyla dene, sonra elindekiyle raporu kapat.`,
   },

@@ -7,6 +7,7 @@ const https = require('https');
 const { execFile } = require('child_process');
 const { spawn } = require('child_process');
 const research = require('./research');
+const obscura = require('./obscura');
 
 const MAX_CMD_OUTPUT = 16000;
 const MAX_FILE_CHARS = 200000;
@@ -627,7 +628,7 @@ const definitions = [
     function: {
       name: 'web_search',
       description:
-        'FAST web search with an automatic chain: built-in browser first (real Chromium searching GOOGLE directly with AI Mode — no bot protection; the response may include an `ai` field holding Google\'s own AI answer, ideal for "who/what is X" questions), then TinyFish API (if a key is configured, used IMMEDIATELY whenever the browser hits CAPTCHA/unusual traffic — the browser is then skipped for 10 minutes), then Python multi-engine (ddgs / DuckDuckGo+Bing+Mojeek parallel), then Exa API as last resort if a key is configured (Ayarlar → Web Arama). Returns {ai?, results[{title,url,snippet}]}. Use when fresh or external info is needed; skip for things you already know.',
+        'FAST web search with an automatic chain (order is configurable in Ayarlar → Web Arama): built-in browser (real Chromium searching GOOGLE directly with AI Mode — no bot protection; the response may include an `ai` field holding Google\'s own AI answer), Obscura stealth headless browser (anti-detect; searches DuckDuckGo, installed automatically and ACTIVE by default), TinyFish API (only if a key is configured), then Python multi-engine (ddgs / DuckDuckGo+Bing+Mojeek). If the browser hits CAPTCHA/unusual traffic it is skipped for 10 minutes and the next engine takes over. Returns {ai?, results[{title,url,snippet}]}. Use when fresh or external info is needed; skip for things you already know.',
       parameters: {
         type: 'object',
         properties: {
@@ -758,13 +759,9 @@ async function exec(name, args, ctx) {
       case 'web_search': {
         const q = String(args.query || '');
         const n = Number(args.max_results) || 8;
-        /* önce ücretsiz python çoklu-motor; Exa SON ÇARE (dahili tarayıcı zincirin
-           üstünde engine._execTool'da çalışır) */
-        let r = await webSearchFast(q, { maxResults: n, signal: ctx.signal });
-        if (!r || !r.ok || !(r.results || []).length) {
-          const exa = await exaSearch(q, n, ctx.signal);
-          if (exa) return JSON.stringify(exa);
-        }
+        /* sıralı zincir (obscura/tinyfish/python — dahili tarayıcı engine
+           tarafındaki hook'tan gelir); Exa KALDIRILDI */
+        const r = await searchChainWeb(q, n, { signal: ctx.signal });
         return JSON.stringify(r);
       }
       case 'deep_search': {
@@ -772,7 +769,7 @@ async function exec(name, args, ctx) {
            Gizli tarayıcı okuması engine.research hook'undan gelir (main process). */
         const r = await research.deepSearch(
           args,
-          { search: (q) => webSearchFast(q, { maxResults: 10, signal: ctx.signal }) },
+          { search: (q) => searchChainWeb(q, 10, { signal: ctx.signal }) },
           ctx.signal
         );
         return JSON.stringify(r);
@@ -836,53 +833,101 @@ async function exec(name, args, ctx) {
   }
 }
 
-/* ---------- Exa (opsiyonel ücretli arama) ----------
-   Ayarlar → Web Arama'dan anahtar girilirse web_search ÖNCE Exa'yı dener;
-   hata/sonuç yoksa ücretsiz python çoklu-motor devreye girer. */
-let _exaKey = null;
+/* ---------- Sıralı arama zinciri (Ayarlar → Web Arama'dan değiştirilir) ----------
+   Motorlar: browser (dahili Chromium → Google) · obscura (stealth headless →
+   DuckDuckGo) · tinyfish (API, anahtar gerekir) · python (ddgs/DDG+Bing+Mojeek).
+   Sıra + aç/kapa ayarı settings.json'da (searchChain) saklanır; Obscura
+   varsayılan AKTİF. Tarayıcı CAPTCHA/trafik verirse 10 dk atlanır. */
+const SEARCH_ENGINE_IDS = ['browser', 'obscura', 'tinyfish', 'python'];
+const DEFAULT_SEARCH_CHAIN = SEARCH_ENGINE_IDS.map((id) => ({ id, on: true }));
 
-function setExaKey(key) {
-  _exaKey = String(key || '').trim() || null;
-}
+let _searchChain = DEFAULT_SEARCH_CHAIN.map((x) => ({ ...x }));
+let _obscuraEnabled = true; /* Obscura varsayılan AKTİF */
+let _browserBanUntil = 0;
 
-async function exaSearch(query, maxResults, signal) {
-  if (!_exaKey) return null;
-  try {
-    const sig =
-      signal && typeof AbortSignal !== 'undefined' && AbortSignal.any
-        ? AbortSignal.any([signal, AbortSignal.timeout(20000)])
-        : AbortSignal.timeout(20000);
-    const r = await fetch('https://api.exa.ai/search', {
-      method: 'POST',
-      headers: { 'x-api-key': _exaKey, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        query,
-        numResults: Math.max(1, Math.min(12, Number(maxResults) || 8)),
-        contents: { text: { maxCharacters: 1200 } },
-      }),
-      signal: sig,
-    });
-    if (!r.ok) return null;
-    const j = await r.json();
-    const results = (j.results || [])
-      .map((x) => ({
-        title: String(x.title || ''),
-        url: String(x.url || ''),
-        snippet: String(x.text || '').replace(/\s+/g, ' ').slice(0, 400),
-        engine: 'exa',
-      }))
-      .filter((x) => x.url && x.title);
-    if (!results.length) return null;
-    return { ok: true, engine: 'exa', query, results };
-  } catch {
-    return null;
+function normalizeSearchChain(list) {
+  const arr = Array.isArray(list) ? list : [];
+  const rows = [];
+  const seen = new Set();
+  for (const item of arr) {
+    const id = String((item && item.id) || item || '').trim();
+    if (!SEARCH_ENGINE_IDS.includes(id) || seen.has(id)) continue;
+    seen.add(id);
+    rows.push({ id, on: !(item && item.on === false) });
   }
+  for (const id of SEARCH_ENGINE_IDS) {
+    if (!seen.has(id)) rows.push({ id, on: true }); /* listede eksik motor varsayılan AÇIK */
+  }
+  /* obscura varsayılan AKTİF; zincir boş kalmasın: hepsi kapalıysa browser'ı aç */
+  if (!rows.some((r) => r.on)) {
+    const b = rows.find((r) => r.id === 'browser');
+    if (b) b.on = true;
+  }
+  return rows;
 }
 
-/* ---------- TinyFish (ücretsiz arama; anahtar girilirse ZİNCİRİN BAŞI) ----------
+function setSearchChain(list) {
+  _searchChain = normalizeSearchChain(list);
+  return _searchChain;
+}
+
+function setSearchObscuraEnabled(v) {
+  _obscuraEnabled = v !== false;
+}
+
+function getSearchChain() {
+  return _searchChain.map((x) => ({ ...x }));
+}
+
+function browserBanned() {
+  return Date.now() < _browserBanUntil;
+}
+
+function banBrowser(minutes = 10) {
+  _browserBanUntil = Date.now() + minutes * 60 * 1000;
+}
+
+/* Zinciri sırayla koştur: her motor boş/hata dönerse sıradakine geç.
+   browser motoru yalnız engine'den gelir (hook); araç-bağımsız çağrılarda atlanır. */
+async function searchChainWeb(query, maxResults, { signal, browser } = {}) {
+  const q = String(query || '').trim().slice(0, 400);
+  if (!q) return { ok: false, error: 'boş sorgu' };
+  const cap = Math.max(1, Math.min(12, Number(maxResults) || 8));
+  let out = null;
+  const banned = browserBanned();
+  for (const row of _searchChain) {
+    if (out && out.ok && (out.results || []).length) break;
+    if (!row.on) continue;
+    try {
+      if (row.id === 'browser') {
+        if (typeof browser !== 'function' || banned) continue;
+        out = await browser();
+        if (!out || !out.ok || !(out.results || []).length) {
+          banBrowser(); /* tarayıcı sorunlu — 10 dk atla, alternatifler devrede */
+          out = null;
+        }
+      } else if (row.id === 'obscura') {
+        if (!_obscuraEnabled) continue;
+        out = await obscura.obscuraSearch(q, { maxResults: cap, signal });
+      } else if (row.id === 'tinyfish') {
+        out = await tinyfishSearch(q, cap, signal);
+      } else if (row.id === 'python') {
+        out = await webSearchFast(q, { maxResults: cap, signal });
+      }
+    } catch {
+      out = null;
+    }
+    if (out && out.ok && !(out.results || []).length) out = null; /* boş → sıradaki motor */
+  }
+  if (out && out.ok && banned && (out.results || []).length) {
+    out.note = 'dahili tarayıcı 10 dk askıda (CAPTCHA/trafik) — alternatif motor kullanıldı';
+  }
+  return out || { ok: false, error: 'web arama başarısız — tüm motorlar boş döndü' };
+}
+
+/* ---------- TinyFish (anahtar girilirse zincirdeki kendi sırasında) ----------
    GET https://api.search.tinyfish.ai?query=...  ·  Header: X-API-Key
-   Ayarlar → Web Arama'dan anahtar girilirse web_search ÖNCE TinyFish'i dener;
-   hata/sonuç yoksa eski zincir (tarayıcı → python çoklu-motor → Exa) devam eder. */
+   Anahtar yoksa bu motor otomatik atlanır; sıradaki motor devreye girer. */
 let _tinyfishKey = null;
 
 function setTinyfishKey(key) {
@@ -936,10 +981,19 @@ module.exports = {
   webSearchFast,
   seedScript,
   bundledScriptPath,
-  setExaKey,
-  exaSearch,
+  /* arama zinciri (sıra + aç/kapa Ayarlar → Web Arama'dan) */
+  SEARCH_ENGINE_IDS,
+  DEFAULT_SEARCH_CHAIN,
+  setSearchChain,
+  setSearchObscuraEnabled,
+  getSearchChain,
+  searchChainWeb,
+  browserBanned,
+  banBrowser,
   setTinyfishKey,
   tinyfishSearch,
+  /* obscura geçişi */
+  obscura,
   /* python altyapısı */
   ensurePython,
   findSystemPython,

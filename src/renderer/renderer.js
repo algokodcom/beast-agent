@@ -383,6 +383,17 @@ function addErrorBubble(text) {
   scrollDown(true);
 }
 
+/* ajan durduruldu/iptal edildi — SEBEP zorunlu, sohbete sönük not olarak düşer */
+function addStopNote(reason) {
+  streamEl = null;
+  showEmpty(false);
+  const div = document.createElement('div');
+  div.className = 'msg msg-sys';
+  div.textContent = '\u23F9 Durduruldu — sebep: ' + String(reason || 'sebep belirtilmedi');
+  els.msgs.appendChild(div);
+  scrollDown(true);
+}
+
 /* ---------------- tool cards ---------------- */
 /* Ard arda gelen araç kartları TEK kutuda toplanır (.tool-box): çalışırken
    lacivert outline döner, gövde max 420px scroll'lu. Grup; tool_calls İÇEREN
@@ -738,12 +749,30 @@ async function refreshFalloutPane() {
   renderFalloutPane();
 }
 
-/* Web Arama sekmesi: TinyFish (zincirin başı) + Exa API anahtarı (maskeli) */
+/* Web Arama sekmesi: TinyFish anahtarı + Obscura (kurulum/aktiflik) + arama sırası */
 async function renderWebSearchPane() {
   const pane = $('#tab-websearch');
   if (!pane) return;
   const tf = await beast.tinyfishGet().catch(() => ({ set: false, masked: '' }));
   pane.innerHTML =
+    '<h2>' + _t('ws_h2') + '</h2>' +
+    '<div class="sub">' + _t('ws_sub') + '</div>' +
+    /* --- Obscura --- */
+    '<div class="divider"></div>' +
+    '<h2>' + _t('oc_h2') + '</h2>' +
+    '<div class="sub">' + _t('oc_sub') + '</div>' +
+    '<div id="ocStatus" class="sub" style="text-align:left;margin-top:8px"></div>' +
+    '<label class="mem-label" style="display:flex;align-items:center;gap:8px;cursor:pointer">' +
+    '<input id="ocEnabled" type="checkbox" style="width:auto" /> <span>' + _t('oc_enabled') + '</span></label>' +
+    '<div class="form-grid" style="grid-template-columns:auto auto;gap:8px;margin-top:10px">' +
+    '<button id="ocInstall" class="btn">' + _t('oc_install') + '</button></div>' +
+    /* --- Arama sırası --- */
+    '<div class="divider"></div>' +
+    '<h2>' + _t('so_h2') + '</h2>' +
+    '<div class="sub">' + _t('so_sub') + '</div>' +
+    '<div id="soList" style="margin-top:10px"></div>' +
+    /* --- TinyFish --- */
+    '<div class="divider"></div>' +
     '<h2>' + _t('tf_h2') + '</h2>' +
     '<div class="sub">' + _t('tf_sub') + '</div>' +
     '<div id="tfStatus" class="sub" style="text-align:left;margin-top:8px"></div>' +
@@ -751,26 +780,80 @@ async function renderWebSearchPane() {
     '<input id="tfKeyInp" class="inp" type="password" placeholder="tf_..." autocomplete="new-password" spellcheck="false" />' +
     '<div class="form-grid" style="grid-template-columns:auto auto;gap:8px;margin-top:8px">' +
     '<button id="tfSave" class="btn">' + _t('ws_save') + '</button>' +
-    '<button id="tfClear" class="btn ghost">' + _t('ws_clear') + '</button></div>' +
-    '<div class="divider"></div>' +
-    '<h2>' + _t('ws_h2') + '</h2>' +
-    '<div class="sub">' + _t('ws_sub') + '</div>' +
-    '<div id="exaStatus" class="sub" style="text-align:left;margin-top:10px"></div>' +
-    '<label class="mem-label">' + _t('ws_exa_label') + '</label>' +
-    '<input id="exaKeyInp" class="inp" type="password" placeholder="' + _t('ws_exa_ph') + '" autocomplete="new-password" spellcheck="false" />' +
-    '<div class="form-grid" style="grid-template-columns:auto auto;gap:8px;margin-top:8px">' +
-    '<button id="exaSave" class="btn">' + _t('ws_save') + '</button>' +
-    '<button id="exaClear" class="btn ghost">' + _t('ws_clear') + '</button></div>' +
-    '<div class="sub" style="margin-top:8px">' + _t('ws_note') + '</div>';
-  const st = $('#exaStatus');
-  const setExaSt = (r) => {
-    st.textContent = r.set ? _t('ws_status_set') + r.masked : _t('ws_status_unset');
-  };
+    '<button id="tfClear" class="btn ghost">' + _t('ws_clear') + '</button></div>';
+
+  /* --- Obscura durumu --- */
+  const ocSt = $('#ocStatus');
+  const ocChk = $('#ocEnabled');
+  const ocBtn = $('#ocInstall');
+  const oc = await beast.obscuraGet().catch(() => ({ installed: false, enabled: true, dir: '' }));
+  ocChk.checked = oc.enabled !== false;
+  ocSt.textContent = oc.installed ? _t('oc_status_ok') : _t('oc_status_missing');
+  ocChk.addEventListener('change', async () => {
+    await beast.obscuraSetEnabled(ocChk.checked).catch(() => {});
+    toast(ocChk.checked ? _t('oc_on_toast') : _t('oc_off_toast'));
+  });
+  ocBtn.addEventListener('click', async () => {
+    ocBtn.disabled = true;
+    ocBtn.textContent = _t('oc_installing');
+    ocSt.textContent = _t('oc_installing');
+    const r = await beast.obscuraInstall().catch(() => ({ ok: false, error: 'hata' }));
+    ocBtn.disabled = false;
+    ocBtn.textContent = _t('oc_install');
+    ocSt.textContent = r && r.ok ? _t('oc_status_ok') : _t('oc_install_fail') + (r && r.error ? r.error : '?');
+    toast(r && r.ok ? _t('oc_installed_toast') : _t('oc_install_fail') + (r && r.error ? r.error : '?'));
+  });
+
+  /* --- Arama sırası --- */
+  const soBox = $('#soList');
+  let rows = [];
+  const soRes = await beast.searchOrderGet().catch(() => ({ chain: [] }));
+  rows = (soRes && Array.isArray(soRes.chain) && soRes.chain.length) ? soRes.chain.map((x) => ({ id: x.id, on: x.on !== false })) : [];
+  const engName = (id) => _t('so_engine_' + id) || id;
+  function renderRows() {
+    soBox.innerHTML = '';
+    rows.forEach((row, i) => {
+      const el = document.createElement('div');
+      el.className = 'so-row' + (row.on ? '' : ' off');
+      el.style.cssText = 'display:flex;align-items:center;gap:8px;padding:6px 8px;border:1px solid var(--border);border-radius:8px;margin-bottom:6px';
+      el.innerHTML =
+        '<span class="so-idx" style="min-width:18px;color:var(--muted);font-size:12px">' + (i + 1) + '.</span>' +
+        '<input type="checkbox" class="so-chk" style="width:auto" ' + (row.on ? 'checked' : '') + ' />' +
+        '<span style="flex:1">' + escapeHtml(engName(row.id)) + '</span>' +
+        '<button class="so-up" title="Yukarı" style="width:auto;padding:2px 8px">↑</button>' +
+        '<button class="so-down" title="Aşağı" style="width:auto;padding:2px 8px">↓</button>';
+      el.querySelector('.so-chk').addEventListener('change', async (e) => {
+        row.on = e.target.checked;
+        el.classList.toggle('off', !row.on);
+        await saveOrder();
+      });
+      el.querySelector('.so-up').addEventListener('click', async () => {
+        if (i === 0) return;
+        [rows[i - 1], rows[i]] = [rows[i], rows[i - 1]];
+        renderRows();
+        await saveOrder();
+      });
+      el.querySelector('.so-down').addEventListener('click', async () => {
+        if (i >= rows.length - 1) return;
+        [rows[i + 1], rows[i]] = [rows[i], rows[i + 1]];
+        renderRows();
+        await saveOrder();
+      });
+      soBox.appendChild(el);
+    });
+  }
+  async function saveOrder() {
+    const r = await beast.searchOrderSet(rows).catch(() => null);
+    if (r && r.ok) toast(_t('so_saved_toast'));
+    else toast(_t('ws_fail_toast'));
+  }
+  if (rows.length) renderRows();
+
+  /* --- TinyFish --- */
   const tfSt = $('#tfStatus');
   const setTfSt = (r) => {
     tfSt.textContent = r.set ? _t('tf_status_set') + r.masked : _t('tf_status_unset');
   };
-  setExaSt(await beast.exaGet().catch(() => ({ set: false, masked: '' })));
   setTfSt(tf);
   $('#tfSave').addEventListener('click', async () => {
     const v = $('#tfKeyInp').value.trim();
@@ -789,24 +872,6 @@ async function renderWebSearchPane() {
     $('#tfKeyInp').value = '';
     setTfSt({ set: false, masked: '' });
     toast(_t('tf_cleared_toast'));
-  });
-  $('#exaSave').addEventListener('click', async () => {
-    const v = $('#exaKeyInp').value.trim();
-    if (!v) { toast(_t('ws_empty_toast')); return; }
-    const rr = await beast.exaSet(v).catch(() => null);
-    $('#exaKeyInp').value = '';
-    if (rr && rr.set) {
-      setExaSt(rr);
-      toast(_t('ws_saved_toast'));
-    } else {
-      toast(_t('ws_fail_toast'));
-    }
-  });
-  $('#exaClear').addEventListener('click', async () => {
-    await beast.exaClear().catch(() => {});
-    $('#exaKeyInp').value = '';
-    setExaSt({ set: false, masked: '' });
-    toast(_t('ws_cleared_toast'));
   });
 }
 
@@ -3447,7 +3512,7 @@ function renderAgentRail() {
       `<span class="ag-dot"></span>` +
       `<span class="sess-title">${escapeHtml(j.title)}</span>` +
       (j.code ? `<span class="sess-code" title="Oturum kodu">${escapeHtml(j.code)}</span>` : ``) +
-       `<span class="rj-time">${j.status === 'running' ? when + ' · ' + agentTimerHtml(j.startedAt) + ' · ' + _t('ag_working') : (agStText(j.status) === _t('ag_st_done') ? '\u2713' : (agStText(j.status) || j.status))}</span>` +
+       `<span class="rj-time">${j.status === 'running' ? when + ' · ' + agentTimerHtml(j.startedAt) + ' · ' + _t('ag_working') : (agStText(j.status) === _t('ag_st_done') ? '\u2713' : (agStText(j.status) || j.status) + (j.status === 'aborted' && j.error ? ' — ' + escapeHtml(String(j.error).slice(0, 70)) : ''))}</span>` +
        (j.status === 'running'
          ? `<button class="rj-cancel" title="${_t('ag_cancel')}">×</button>`
          : `<button class="rj-cancel" title="${_t('ag_delete')}"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M10 11v6M14 11v6"/></svg></button>`) +
@@ -3577,7 +3642,7 @@ function renderAgentsPane() {
       `<div class="ag-head">` +
       `<span class="ag-dot"></span>` +
       `<span class="ag-title">${escapeHtml(j.title)}</span>` +
-       `<span class="ag-st">${agStText(j.status) || j.status}</span>` +
+       `<span class="ag-st" title="${j.error ? escapeHtml(String(j.error)) : ''}">${agStText(j.status) || j.status}</span>` +
       `<span class="ag-time">${when}${j.status === 'running' ? ' · ' + agentTimerHtml(j.startedAt) : j.endedAt ? ` · ${fmtAgo(j.endedAt)}` : ''}</span>` +
       (j.status === 'running'
          ? `<button class="ag-btn cancel" title="${_t('ag_cancel')}">${_t('ag_cancel')}</button>`
@@ -3764,6 +3829,8 @@ function onEvent(ev) {
       break;
     case 'done':
       closeChatToolGroup();
+      /* iptal/durdurma sebebini SOHBETE yaz — sebepsiz durdurma yok */
+      if (ev.aborted) addStopNote(ev.reason);
       setBusy(false);
       setStatus(''); /* son durum balonu ("düşünüyor…" vb.) yapışmasın */
       /* cevabın SONU görünsün: markdown son render sonrası iki kez en alta kilitle */
@@ -6103,7 +6170,8 @@ function bcIngest(ev) {
       bcFlushStream();
       bcCloseToolGroup();
       bcSetBusy(false);
-      bcLine('t-dim', '(tamamlandı)');
+      /* iptal/durdurma SEBEBİ panelde de görünür */
+      bcLine(ev.aborted ? 't-err' : 't-dim', ev.aborted ? '[durduruldu — sebep: ' + (ev.reason || 'sebep belirtilmedi') + ']' : '(tamamlandı)');
       bcRefreshPreview();
       if (ideModeOn() && els.bcInput) els.bcInput.focus();
       break;

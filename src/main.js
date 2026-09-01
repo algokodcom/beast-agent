@@ -150,7 +150,9 @@ function startNpmUpdateWatch() {
   check();
   setInterval(check, 6 * 60 * 60 * 1000);
 }
-const { htmlToText, setExaKey, setTinyfishKey } = require('./agent/tools');
+const toolsMod = require('./agent/tools');
+const { htmlToText, setSearchChain, setSearchObscuraEnabled, setTinyfishKey } = toolsMod;
+const obscura = require('./agent/obscura');
 const { waToolLine } = require('./agent/watext');
 
 /* #3 merkezî log sistemine process-seviye hataları da düşsün */
@@ -219,8 +221,17 @@ let engine = null;
 let settings = loadSettings();
 ensureBeastCode();
 startHealthServer(); /* splash/boot aşamasından itibaren /health ayakta */
-try { setExaKey(settings.exaKey || null); } catch {}
+try { setSearchObscuraEnabled(settings.obscuraEnabled !== false); } catch {} /* Obscura varsayılan AKTİF */
+try { setSearchChain(settings.searchChain); } catch {}
 try { setTinyfishKey(settings.tinyfishKey || null); } catch {}
+/* kurulumda Obscura da kurulsun: yoksa ARKA PLANDA otomatik indir (UI kilitlenmez) */
+setTimeout(() => {
+  if (!obscura.obscuraInstalled()) {
+    obscura.installObscura().then((r) => {
+      console.log('[obscura]', r.ok ? 'kuruldu: ' + r.dir : 'kurulamadı: ' + (r.error || '?'));
+    }).catch((e) => console.log('[obscura] kurulamadı:', String((e && e.message) || e)));
+  }
+}, 4000).unref?.();
 let wa = null;
 let waChats = new Map(); // jid -> aktif session id
 let waHistory = new Map(); // jid -> [sid,...] bu sohbete ait tüm oturumlar
@@ -4118,7 +4129,7 @@ ipcMain.handle('agent:interrupt', (_e, sessionId) => {
       desktopQueue.delete(String(sessionId));
     }
   } catch {}
-  return engine.interrupt(sessionId);
+  return engine.interrupt(sessionId, 'kullanıcı sohbetteki durdurma (■) düğmesiyle iptal etti');
 });
 
 /* ---------- masaüstü sohbet birleştirme ----------
@@ -4482,7 +4493,9 @@ ipcMain.handle('memory:get', () => memory.loadAll());
 /* paralel ajanlar: canlı izleme (#14) */
 ipcMain.handle('agents:list', () => engine.listBgJobs());
 ipcMain.handle('agents:detail', (_e, id) => engine.bgDetail(id));
-ipcMain.handle('agents:cancel', (_e, id) => ({ ok: engine.interrupt(String(id || '')) }));
+ipcMain.handle('agents:cancel', (_e, id) => ({
+  ok: engine.interrupt(String(id || ''), 'kullanıcı Paralel Ajanlar panelinden (×) iptal etti'),
+}));
 ipcMain.handle('ceo:get', () => !!engine.ceoMode);
 ipcMain.handle('ceo:set', (_e, v) => {
   settings.ceoMode = !!v;
@@ -5190,7 +5203,7 @@ ipcMain.handle('beastcode:stop', () => {
   const sid = bcSessions.get(ideRoot());
   if (!sid) return { ok: false };
   let r = false;
-  try { r = engine.interrupt(sid); } catch {}
+  try { r = engine.interrupt(sid, 'kullanıcı Beast Code panelinden ■ ile durdurdu'); } catch {}
   return { ok: !!r };
 });
 
@@ -5211,26 +5224,38 @@ ipcMain.handle('think:set', (_e, v) => {
   return engine.publicState();
 });
 
-/* Exa web arama anahtarı (Ayarlar → Web Arama) */
-ipcMain.handle('exa:get', () => {
-  const k = settings.exaKey || '';
-  return { set: !!k, masked: k ? '••••••••' + k.slice(-4) : '' };
-});
-ipcMain.handle('exa:set', (_e, key) => {
-  const v = String(key || '').trim();
-  if (v) {
-    settings.exaKey = v;
-    saveSettings();
-    setExaKey(settings.exaKey);
+/* Obscura stealth headless tarayıcı (Ayarlar → Web Arama) */
+ipcMain.handle('obscura:get', () => ({
+  installed: obscura.obscuraInstalled(),
+  dir: obscura.obscuraDir(),
+  enabled: settings.obscuraEnabled !== false,
+}));
+ipcMain.handle('obscura:install', async () => {
+  try {
+    const r = await obscura.installObscura();
+    return { ok: !!r.ok, dir: r.dir || obscura.obscuraDir(), error: r.error || null };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
   }
-  const k = settings.exaKey || '';
-  return { ok: true, set: !!k, masked: k ? '••••••••' + k.slice(-4) : '' };
 });
-ipcMain.handle('exa:clear', () => {
-  settings.exaKey = '';
+ipcMain.handle('obscura:setEnabled', (_e, v) => {
+  settings.obscuraEnabled = v !== false;
   saveSettings();
-  setExaKey(null);
-  return { ok: true, set: false, masked: '' };
+  try { setSearchObscuraEnabled(settings.obscuraEnabled); } catch {}
+  return { ok: true, enabled: settings.obscuraEnabled };
+});
+
+/* Arama zinciri sırası (Ayarlar → Web Arama'dan değiştirilir) */
+ipcMain.handle('searchorder:get', () => ({ chain: toolsMod.getSearchChain() }));
+ipcMain.handle('searchorder:set', (_e, chain) => {
+  try {
+    const rows = setSearchChain(chain);
+    settings.searchChain = rows;
+    saveSettings();
+    return { ok: true, chain: rows };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
 });
 
 /* #TinyFish: anahtar girilirse web_search zincirinin BAŞINDA kullanılır */

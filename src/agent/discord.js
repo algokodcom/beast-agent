@@ -23,14 +23,29 @@ const INTENTS = 1 | 512 | 4096 | 32768;
 /* AĞ ARA YAZILIMI (antivirüs SSL taraması / proxy / ağ filtresi) Discord
    trafiğine araya girip SELF-SIGNED sertifika sunarsa Node varsayılan olarak
    bağlantıyı reddeder ("self signed certificate") ve bot hiç bağlanamaz.
-   Çözüm: hata tespit edilince bu köprü için TLS doğrulaması esnetilir ve
-   uyarı loglanır — YALNIZ Discord bağlantıları etkilenir, app'in geri kalanı
-   normal doğrulama kullanmaya devam eder. */
+   Çözüm iki katman:
+     1) REST istekleri ÖNCE Electron/Chromium ağ yığınından (net.fetch) geçer —
+        sistem CA + sistem proxy otomatik tanınır (tarayıcının çalıştığı yol).
+     2) Zorlanırsa Node https'e düşülür; self-signed tespit edilirse bu köprü
+        için TLS doğrulaması esnetilir — YALNIZ Discord bağlantıları etkilenir. */
 let tlsRelaxed = false;
 const CERT_ERR_RE = /self[ -]?signed|unable to verify the first certificate|depth zero|err_tls|certificate has expired|cert_has_expired|unable_to_get_issuer|self signed certificate/i;
 
 function isCertError(e) {
   return CERT_ERR_RE.test(String((e && (e.message || e.code)) || e || ''));
+}
+
+/* Electron main process'te Chromium ağ yığını (sistem CA + proxy); düz Node
+   (testler) için require('electron') path string döndürür → net tanımsız kalır */
+let _electronNet = null;
+try {
+  const el = require('electron');
+  if (el && el.net && typeof el.net.fetch === 'function') _electronNet = el.net;
+} catch {}
+
+function bodySnippet(data) {
+  const s = String(data || '').replace(/\s+/g, ' ').trim();
+  return s ? ` — gövde: ${s.slice(0, 140)}` : '';
 }
 
 class DiscordBridge {
@@ -54,18 +69,57 @@ class DiscordBridge {
     this.emit({ type: 'status', status, user: user || null });
   }
 
-  /* REST çağrısı — JSON (token: "Bot <token>"). Cert engeli tespit edilirse
-     TLS esnetilip TEK seferlik yeniden denenir. */
+  /* REST çağrısı — JSON (token: "Bot <token>").
+     Yol 1: Chromium (net.fetch — sistem CA/proxy). Yol 2: Node https (+esnek TLS). */
   api(method, path, body, attempt = 0) {
+    return this._api(method, path, body).catch((e) => {
+      if (isCertError(e) && !tlsRelaxed) {
+        tlsRelaxed = true;
+        this.emit({
+          type: 'warn',
+          text: 'ağ ara yazılımı (antivirüs/proxy) self-signed sertifikası tespit edildi — Discord bağlantısı esnek TLS ile devam ediyor',
+        });
+        if (attempt < 1) return this.api(method, path, body, attempt + 1);
+      }
+      throw e;
+    });
+  }
+
+  async _api(method, path, body) {
+    const payload = body ? JSON.stringify(body) : null;
+    const headers = { 'Content-Type': 'application/json', Authorization: 'Bot ' + this.token };
+    const url = API_BASE + path;
+
+    /* YOL 1 — Chromium ağ yığını (varsa): sistem sertifikaları + sistem proxy */
+    if (_electronNet) {
+      try {
+        const res = await _electronNet.fetch(url, {
+          method,
+          headers,
+          ...(payload ? { body: payload } : {}),
+        });
+        const data = await res.text();
+        let j = null;
+        try { j = data ? JSON.parse(data) : null; } catch {}
+        if (res.ok) return j;
+        throw new Error(
+          `discord ${path}: HTTP ${res.status}${j && j.message ? ' ' + j.message : ''}${bodySnippet(data)}`
+        );
+      } catch (e) {
+        /* kendi formatladığımız API hatasıysa yukarı taşı; transport hatasıysa
+           Node https yoluna düş (orada esnek TLS şansı var) */
+        if (/^discord /.test(String((e && e.message) || ''))) throw e;
+      }
+    }
+
+    /* YOL 2 — Node https (+ gerektiğinde esnek TLS) */
     return new Promise((resolve, reject) => {
-      const payload = body ? JSON.stringify(body) : null;
       const req = https.request(
-        `${API_BASE}${path}`,
+        url,
         {
           method,
           headers: {
-            'Content-Type': 'application/json',
-            Authorization: 'Bot ' + this.token,
+            ...headers,
             ...(payload ? { 'Content-Length': Buffer.byteLength(payload) } : {}),
           },
           timeout: 15000,
@@ -76,13 +130,14 @@ class DiscordBridge {
           res.setEncoding('utf8');
           res.on('data', (c) => (data += c));
           res.on('end', () => {
-            try {
-              const j = data ? JSON.parse(data) : null;
-              if (res.statusCode >= 200 && res.statusCode < 300) resolve(j);
-              else reject(new Error(`discord ${path}: HTTP ${res.statusCode} ${(j && j.message) || ''}`.trim()));
-            } catch {
-              reject(new Error(`discord ${path}: bozuk yanıt`));
+            const ctype = String(res.headers['content-type'] || '');
+            let j = null;
+            try { j = data ? JSON.parse(data) : null; } catch {}
+            if (res.statusCode >= 200 && res.statusCode < 300 && j !== null) return resolve(j);
+            if (res.statusCode >= 200 && res.statusCode < 300) {
+              return reject(new Error(`discord ${path}: bozuk yanıt (HTTP ${res.statusCode}${ctype ? ', ' + ctype : ''})${bodySnippet(data)}`));
             }
+            reject(new Error(`discord ${path}: HTTP ${res.statusCode} ${(j && j.message) || ''}`.trim() + bodySnippet(data)));
           });
         }
       );
@@ -90,17 +145,6 @@ class DiscordBridge {
       req.on('error', reject);
       if (payload) req.write(payload);
       req.end();
-    }).catch((e) => {
-      /* ara yazılım sertifikası tespit: esnet ve aynı isteği bir kez daha dene */
-      if (isCertError(e) && !tlsRelaxed) {
-        tlsRelaxed = true;
-        this.emit({
-          type: 'warn',
-          text: 'ağ ara yazılımı (antivirüs/proxy) self-signed sertifikası tespit edildi — Discord bağlantısı esnek TLS ile devam ediyor',
-        });
-        if (attempt < 1) return this.api(method, path, body, attempt + 1);
-      }
-      throw e;
     });
   }
 

@@ -5287,7 +5287,7 @@ function ghCard(repo, isFav) {
       </div>
       ${repo.description ? `<div class="gh-desc" title="${escapeHtml(repo.description)}">${escapeHtml(repo.description)}</div>` : ''}
       <div class="gh-actions">
-        <button class="gh-fav ${isFav ? 'on' : ''}" data-act="fav">${isFav ? '★ Favoride' : '☆ Favorile'}</button>
+        <button class="gh-fav ${isFav ? 'on' : ''}" data-act="fav">${isFav ? '★ Favori' : '☆ Favorile'}</button>
         <button data-act="chat"><svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-1px;margin-right:4px"><path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4z"/></svg>Chate at</button>
         <button data-act="copy">⧉ Kopyala</button>
       </div>
@@ -5377,7 +5377,7 @@ $('#ghSearch').addEventListener('keydown', (e) => {
   updateGhSub();
   loadGhTrend();
 });
-/* sol sekme: Trend Depolar ⇄ Tüm Repolar (eşit bölünmüş, ortalanmış) */
+/* sol sekme: Trend Repolar ⇄ Tüm Repolar (eşit bölünmüş, ortalanmış) */
 document.querySelectorAll('.gh-tab').forEach((b) =>
   b.addEventListener('click', () => {
     ghState.ghTab = b.dataset.ghtab;

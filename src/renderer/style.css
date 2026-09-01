@@ -2828,7 +2828,7 @@ body.browser-open #ghOverlay { right: var(--bw, 480px); }
   width: auto;
   text-overflow: ellipsis;
 }
-/* sol bölme sekmeleri: Trend Depolar ⇄ Tüm Repolar — eşit genişlik, ortalanmış metin */
+/* sol bölme sekmeleri: Trend Repolar ⇄ Tüm Repolar — eşit genişlik, ortalanmış metin */
 .gh-pane-tabs { display: flex; flex: none; }
 .gh-tab {
   flex: 1 1 0;

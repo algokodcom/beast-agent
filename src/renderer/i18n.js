@@ -479,7 +479,7 @@
       q_flushed: '${n} kuyruktaki mesaj gönderiliyor',
       bot_num_ro_hint: 'Numara ekleme/kişi adı Ayarlar → Entegrasyonlar (WhatsApp izin listesi) üzerinden yapılır; burada yalnızca bağlı numaralar görünür.',
       tipStore: 'Skills Store',
-      tipGithub: 'GitHub Trending — depoları favorile, chate at, ajana araştır',
+      tipGithub: 'GitHub Trending — repoları favorile, chate at, ajana araştır',
       tipIde: 'IDE Modu — dosyalar + chat + preview',
       ide_files: 'DOSYALAR',
       ide_pick: 'Klasör seç',

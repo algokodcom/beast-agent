@@ -224,13 +224,10 @@ startHealthServer(); /* splash/boot aşamasından itibaren /health ayakta */
 try { setSearchObscuraEnabled(settings.obscuraEnabled !== false); } catch {} /* Obscura varsayılan AKTİF */
 try { setSearchChain(settings.searchChain); } catch {}
 try { setTinyfishKey(settings.tinyfishKey || null); } catch {}
-/* kurulumda Obscura da kurulsun: yoksa ARKA PLANDA otomatik indir (UI kilitlenmez) */
+/* kurulumda Obscura da kurulsun: yoksa ARKA PLANDA otomatik indir (UI kilitlenmez);
+   ilerleme Ayarlar → Web Arama'dan da izlenebilir */
 setTimeout(() => {
-  if (!obscura.obscuraInstalled()) {
-    obscura.installObscura().then((r) => {
-      console.log('[obscura]', r.ok ? 'kuruldu: ' + r.dir : 'kurulamadı: ' + (r.error || '?'));
-    }).catch((e) => console.log('[obscura] kurulamadı:', String((e && e.message) || e)));
-  }
+  if (!obscura.obscuraInstalled()) startObscuraInstall();
 }, 4000).unref?.();
 let wa = null;
 let waChats = new Map(); // jid -> aktif session id
@@ -634,10 +631,24 @@ function emitWaEventSafe(ev) {
 
 
 
+/* sürüm: app.getVersion() + package.json yedeği (splash, /help, /version ortak) */
+function beastVersion() {
+  try {
+    const v = app.getVersion();
+    if (v && v !== '0.0.0') return v;
+  } catch {}
+  try {
+    return JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8')).version || '?';
+  } catch {
+    return '?';
+  }
+}
+
 function waSlashHelp() {
   return [
     '*Beast komutları*',
     '• */help* – bu liste',
+    '• */version* – Beast Agent sürümünü göster',
     '• */new* – yeni oturum aç (kod verilir)',
     '• */open* <kod> – o koddaki oturuma geç',
     '• */sessions* – bu sohbetin oturumları',
@@ -1135,6 +1146,8 @@ async function tryWaSlash(jid, rawText, senderNum) {
       out =
         `*WA:* ${wst.status}${wst.user ? ' (' + wst.user + ')' : ''}\n` +
         `*İzleyici:* ${watchers.list().length} adet\n*Cron:* ${jobs} aktif görev`;
+    } else if (cmd === 'version') {
+      out = `*Beast Agent v${beastVersion()}*\nGüncelleme için: /update (kurulum hazır olunca /update now)`;
     } else {
       out = `Bilinmeyen komut: /${cmd}\nListe için /help yaz.`;
     }
@@ -3673,7 +3686,7 @@ function createSplash() {
     const muted = dark ? '#9a9aa2' : '#707078';
     splash = new BrowserWindow({
       width: 420,
-      height: 330,
+      height: 352,
       frame: false,
       resizable: false,
       alwaysOnTop: true,
@@ -3686,6 +3699,7 @@ function createSplash() {
       body{margin:0;height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;background:${bg};font-family:'Segoe UI',sans-serif;color:${fg}}
       .logo{width:84px;height:84px;border-radius:20px;background:${fg};color:${bg};display:flex;align-items:center;justify-content:center;font-weight:900;font-size:44px}
       .t{margin-top:16px;font-size:20px;color:${fg}}.t b{font-weight:900}
+      .v{margin-top:8px;font-size:12.5px;font-weight:800;letter-spacing:.6px;color:${muted};background:${muted}22;padding:2px 12px;border-radius:9px}
       .s{margin-top:6px;font-size:12px;color:${muted}}
       .cmds{margin-top:14px;display:flex;flex-wrap:wrap;gap:6px;justify-content:center;max-width:360px}
       .cmds b{font-size:11.5px;font-weight:800;color:${fg};background:${muted}22;padding:2px 9px;border-radius:6px;letter-spacing:.3px}
@@ -3696,9 +3710,10 @@ function createSplash() {
     </style></head><body>
       <div class="logo">B</div>
       <div class="t"><b>BEAST</b> Agent</div>
-      <div class="s">hızlı · hafif · becerikli — v${app.getVersion()}</div>
+      <div class="v">v${beastVersion()}</div>
+      <div class="s">hızlı · hafif · becerikli</div>
       <div class="cmds">
-        <b>/help</b><b>/restart</b><b>/change</b><b>/think</b><b>/clear</b><b>/stop</b><b>/usage</b><b>/backup</b><b>/status</b><span>…</span>
+        <b>/help</b><b>/version</b><b>/restart</b><b>/change</b><b>/think</b><b>/clear</b><b>/stop</b><b>/usage</b><b>/backup</b><b>/status</b><span>…</span>
       </div>
       <div class="bar"><i></i></div>
     </body></html>`;
@@ -3828,6 +3843,10 @@ ipcMain.handle('agent:send', (_e, { sessionId, text }) => {
   }
   if (t === '/restart') {
     handleRestart(sessionId);
+    return true;
+  }
+  if (t === '/version') {
+    desktopEcho(sessionId, t, `**Beast Agent v${beastVersion()}**\nGüncelleme: **/update** (yeni sürüm kontrolü) · **/update now** (hemen kur)`);
     return true;
   }
   if (t === '/help') {
@@ -3979,6 +3998,7 @@ function desktopSlashHelp() {
   return [
     '**Beast komutları**',
     '**/help** – bu liste',
+    '**/version** – Beast Agent sürümünü göster',
     '**/restart** – uygulamayı yeniden başlat',
     '**/stop** – koşan işleri durdur · **/start** – devam ettir',
     '**/change [n]** – modelleri listele · n. modele geç',
@@ -4081,6 +4101,13 @@ function thinkStatusText() {
 }
 
 /* /restart: uygulama kendini yeniden başlatır (relaunch + exit) */
+function scheduleAppRestart(delayMs = 800) {
+  setTimeout(() => {
+    try { app.relaunch(); } catch {}
+    try { app.exit(0); } catch {}
+  }, delayMs);
+}
+
 function handleRestart(sessionId) {
   const sid = String(sessionId || '');  if (win && !win.isDestroyed()) {
     win.webContents.send('agent:event', { sessionId: sid, type: 'message', message: { role: 'user', content: '/restart' } });
@@ -4091,10 +4118,7 @@ function handleRestart(sessionId) {
     });
     win.webContents.send('agent:event', { sessionId: sid, type: 'done', usage: null });
   }
-  setTimeout(() => {
-    try { app.relaunch(); } catch {}
-    try { app.exit(0); } catch {}
-  }, 800);
+  scheduleAppRestart(800);
 }
 
 /* Masaüstünde /stop ve /start: engine'e gitmez; tüm sistemde etki eder ve
@@ -4240,6 +4264,10 @@ let netCheckBusy = false;
 let netFailStreak = 0;
 let chatQueueFlushing = false;
 const chatOfflineQueue = []; // { key, sessionId, text, attachments, at }
+
+/* LLM retry'ı net izleyicisinden besler: internet kopmuşsa istek,
+   bağlantı dönene kadar bekler — "fetch failed" ile görev ölmez */
+try { require('./agent/llm').setNetProbe(() => netOnline); } catch {}
 
 /* diskten yükle (app restart sonrası kuyruk korunur) */
 (function chatQueueLoad() {
@@ -5225,19 +5253,50 @@ ipcMain.handle('think:set', (_e, v) => {
 });
 
 /* Obscura stealth headless tarayıcı (Ayarlar → Web Arama) */
+
+/* kurulum durumu: ayarlardan çıkılıp dönülsa da main process'te sürer;
+   ilerleme agent:event ile panele, obscura:installState ile sekme açılışına taşınır */
+let obscuraInstallState = { running: false, pct: 0, phase: '', error: null };
+
+function pushObscuraProgress() {
+  try {
+    if (win && !win.isDestroyed()) win.webContents.send('agent:event', { type: 'obscura-progress', ...obscuraInstallState });
+  } catch {}
+}
+
+function startObscuraInstall() {
+  if (obscuraInstallState.running) return { ok: false, busy: true, ...obscuraInstallState };
+  obscuraInstallState = { running: true, pct: 0, phase: 'hazırlanıyor', error: null };
+  pushObscuraProgress();
+  obscura
+    .installObscura(null, (p) => {
+      obscuraInstallState.pct = Math.max(0, Math.min(100, Math.round(Number(p && p.pct) || 0)));
+      obscuraInstallState.phase = String((p && p.phase) || obscuraInstallState.phase || '');
+      pushObscuraProgress();
+    })
+    .then((r) => {
+      obscuraInstallState = r && r.ok
+        ? { running: false, pct: 100, phase: 'tamamlandı', error: null }
+        : { running: false, pct: 0, phase: 'hata', error: String((r && r.error) || 'bilinmeyen hata') };
+      pushObscuraProgress();
+      console.log('[obscura]', r && r.ok ? 'kuruldu: ' + r.dir : 'kurulamadı: ' + ((r && r.error) || '?'));
+    })
+    .catch((e) => {
+      obscuraInstallState = { running: false, pct: 0, phase: 'hata', error: String((e && e.message) || e) };
+      pushObscuraProgress();
+      console.log('[obscura] kurulamadı:', String((e && e.message) || e));
+    });
+  return { ok: true, started: true, ...obscuraInstallState };
+}
+
 ipcMain.handle('obscura:get', () => ({
   installed: obscura.obscuraInstalled(),
   dir: obscura.obscuraDir(),
   enabled: settings.obscuraEnabled !== false,
+  install: { ...obscuraInstallState },
 }));
-ipcMain.handle('obscura:install', async () => {
-  try {
-    const r = await obscura.installObscura();
-    return { ok: !!r.ok, dir: r.dir || obscura.obscuraDir(), error: r.error || null };
-  } catch (e) {
-    return { ok: false, error: String((e && e.message) || e) };
-  }
-});
+ipcMain.handle('obscura:install', () => startObscuraInstall());
+ipcMain.handle('obscura:installState', () => ({ ...obscuraInstallState }));
 ipcMain.handle('obscura:setEnabled', (_e, v) => {
   settings.obscuraEnabled = v !== false;
   saveSettings();
@@ -6236,8 +6295,11 @@ ipcMain.handle('bots:remove', (_e, id) => {
     saveSettings();
     syncWhitelist();
     log.info('main', `bot silindi: ${id} — bağlı numaralar botsuz (beast'e düşer)`);
+    /* bot silme sonrası sistem KİTLENİYOR (oturum/DM/servis referansları) →
+       güvenli yol: bot kaydı silindikten sonra uygulamayı temiz yeniden başlat */
+    if (String(id || '') !== 'beast') scheduleAppRestart(1200);
   }
-  return { ...r, list: r.ok ? botListWithNumbers() : null };
+  return { ...r, list: r.ok ? botListWithNumbers() : null, restarting: r.ok && String(id || '') !== 'beast' };
 });
 
 ipcMain.handle('bots:stats', () => botStats());

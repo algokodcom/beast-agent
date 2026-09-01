@@ -3,7 +3,7 @@
 require('./setup');
 const test = require('node:test');
 const assert = require('node:assert');
-const { withRetries, friendlyError, sumUsage, chatStreamAuto } = require('../src/agent/llm');
+const { withRetries, friendlyError, sumUsage, chatStreamAuto, setNetProbe, isNetworkError } = require('../src/agent/llm');
 
 test('withRetries: 503 sonrası başarılı isteği tekrarlar', async () => {
   let calls = 0;
@@ -130,6 +130,75 @@ test('chatStreamAuto: normal (stop) yanıtta hiç devam turu açılmaz', async (
     const r = await chatStreamAuto(sel, { messages: [{ role: 'user', content: 'selam' }] });
     assert.equal(r.content, 'tam cevap');
     assert.equal(calls.length, 1);
+  } finally {
+    srv.close();
+  }
+});
+
+/* ---------- ağ kopması dayanıklılığı (#retry) ---------- */
+
+test('isNetworkError sınıflandırması', () => {
+  const net = new Error('fetch failed');
+  assert.equal(isNetworkError(net), true, 'status yok → ağ hatası');
+  const http = new Error('HTTP 503');
+  http.status = 503;
+  assert.equal(isNetworkError(http), false, 'status var → HTTP hatası');
+  const abort = new Error('iptal');
+  abort.name = 'AbortError';
+  assert.equal(isNetworkError(abort), false, 'abort ağ hatası sayılmaz');
+  assert.equal(isNetworkError(null), false);
+});
+
+test('withRetries: internet kapalıyken probe bekler, dönünce başarır', async () => {
+  let online = false;
+  setNetProbe(() => online);
+  setTimeout(() => { online = true; }, 30);
+  let calls = 0;
+  const t0 = Date.now();
+  const r = await withRetries(async () => {
+    calls++;
+    if (calls === 1) throw new Error('fetch failed');
+    return 'ok';
+  });
+  assert.equal(r, 'ok');
+  assert.equal(calls, 2);
+  assert.ok(Date.now() - t0 > 2000, 'probe çevrimdışı dediği için bekledi');
+  setNetProbe(null);
+});
+
+test('akış ortasında bağlantı koparsa: kısmi metinle devam turu açılır (hata balonu yok)', async () => {
+  const http = require('node:http');
+  const calls = [];
+  const srv = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => (body += c));
+    req.on('end', () => {
+      calls.push(JSON.parse(body).messages);
+      if (calls.length === 1) {
+        /* birkaç delta yaz, sonra soketi ORTADAN kopar */
+        res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+        res.write('data: ' + JSON.stringify({ choices: [{ delta: { content: 'Merhaba du' } }] }) + '\n\n');
+        setTimeout(() => res.destroy(), 30);
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+      res.write('data: ' + JSON.stringify({ choices: [{ delta: { content: 'nya devam' } }] }) + '\n\n');
+      res.write('data: ' + JSON.stringify({ choices: [{ delta: {}, finish_reason: 'stop' }] }) + '\n\n');
+      res.write('data: [DONE]\n\n');
+      res.end();
+    });
+  });
+  await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+  try {
+    const port = srv.address().port;
+    const sel = { url: `http://127.0.0.1:${port}/v1/chat/completions`, key: 'k', model: 'm' };
+    const r = await chatStreamAuto(sel, { messages: [{ role: 'user', content: 'selam' }] });
+    assert.equal(r.content, 'Merhaba dunya devam', 'kısmi + devam birleşti');
+    assert.equal(r.finishReason, 'stop');
+    assert.equal(calls.length, 2, 'devam turu açıldı');
+    const m2 = calls[1];
+    assert.equal(m2[m2.length - 2].role, 'assistant');
+    assert.match(m2[m2.length - 1].content, /DEVAM/);
   } finally {
     srv.close();
   }

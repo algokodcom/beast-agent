@@ -40,6 +40,7 @@ const els = {
   todoPanel: $('#todoPanel'),
   browserBtn: $('#browserBtn'),
   eyeBtn: $('#eyeBtn'),
+  netDot: $('#netDot'),
   railBtn: $('#railBtn'),
   watchBtn: $('#watchBtn'),
   cronBtn: $('#cronBtn'),
@@ -199,6 +200,14 @@ let netOnline = true;
 let netQueueCount = 0;
 const netPending = []; // { key, el } — bekleyen mesaj balonları
 
+/* wifi göstergesi: bağlı = yeşil, kopuk = kırmızı */
+function paintNetDot() {
+  if (!els.netDot) return;
+  els.netDot.classList.toggle('net-on', netOnline);
+  els.netDot.classList.toggle('net-off', !netOnline);
+  els.netDot.title = _t(netOnline ? 'tip_net_online' : 'tip_net_offline');
+}
+
 function setNetBadge(el, text) {
   if (!el || !el.isConnected) return;
   let badge = el.querySelector('.q-badge');
@@ -223,6 +232,7 @@ function onNetEvent(ev) {
   if (ev.type === 'net') {
     const was = netOnline;
     netOnline = ev.online !== false;
+    paintNetDot();
     if (was !== netOnline) {
       if (netOnline) {
         toast(_t('net_online'));
@@ -749,6 +759,50 @@ async function refreshFalloutPane() {
   renderFalloutPane();
 }
 
+/* Obscura kurulum ilerlemesi: main process'te sürer — ayarlardan çıkılsa da
+   kesilmez. Panel açıksa çubuk canlı güncellenir; bitişte tek kez toast atılır. */
+let _obscuraWasRunning = false;
+function paintObscuraState(st) {
+  const ocSt = $('#ocStatus');
+  const ocProg = $('#ocProg');
+  const ocBtn = $('#ocInstall');
+  if (!ocSt || !ocProg || !ocBtn || !st || !st.phase) return;
+  const pct = Math.max(0, Math.min(100, Number(st.pct) || 0));
+  const fill = ocProg.querySelector('.oc-prog-fill');
+  const txt = ocProg.querySelector('.oc-prog-text');
+  if (st.running) {
+    ocBtn.disabled = true;
+    ocBtn.textContent = _t('oc_install_running');
+    ocProg.hidden = false;
+    if (fill) fill.style.width = pct + '%';
+    const phaseKey = ({ 'hazırlanıyor': 'prep', 'indiriliyor': 'download', 'kuruluyor': 'extract', 'doğrulanıyor': 'verify' })[st.phase];
+    if (txt) txt.textContent = (phaseKey ? _t('oc_phase_' + phaseKey) : st.phase) + ' — ' + pct + '%';
+    ocSt.textContent = _t('oc_bg_note');
+  } else if (st.phase === 'tamamlandı' && pct >= 100) {
+    ocBtn.disabled = false;
+    ocBtn.textContent = _t('oc_install');
+    ocProg.hidden = false;
+    if (fill) fill.style.width = '100%';
+    if (txt) txt.textContent = _t('oc_phase_done') + ' — 100%';
+    ocSt.textContent = _t('oc_status_ok');
+  } else if (st.phase === 'hata') {
+    ocBtn.disabled = false;
+    ocBtn.textContent = _t('oc_install');
+    ocProg.hidden = true;
+    ocSt.textContent = _t('oc_install_fail') + (st.error || '?');
+  }
+}
+
+function onObscuraProgress(ev) {
+  if (ev && ev.running) _obscuraWasRunning = true;
+  paintObscuraState(ev);
+  if (ev && !ev.running && _obscuraWasRunning) {
+    _obscuraWasRunning = false;
+    if (ev.phase === 'tamamlandı') toast(_t('oc_installed_toast'));
+    else if (ev.phase === 'hata') toast(_t('oc_install_fail') + (ev.error || '?'));
+  }
+}
+
 /* Web Arama sekmesi: TinyFish anahtarı + Obscura (kurulum/aktiflik) + arama sırası */
 async function renderWebSearchPane() {
   const pane = $('#tab-websearch');
@@ -764,7 +818,10 @@ async function renderWebSearchPane() {
     '<div id="ocStatus" class="sub" style="text-align:left;margin-top:8px"></div>' +
     '<label class="mem-label" style="display:flex;align-items:center;gap:8px;cursor:pointer">' +
     '<input id="ocEnabled" type="checkbox" style="width:auto" /> <span>' + _t('oc_enabled') + '</span></label>' +
-    '<div class="form-grid" style="grid-template-columns:auto auto;gap:8px;margin-top:10px">' +
+    '<div id="ocProg" class="oc-prog" hidden>' +
+    '<div class="oc-prog-bar"><div class="oc-prog-fill" style="width:0%"></div></div>' +
+    '<div class="oc-prog-text sub"></div></div>' +
+    '<div style="display:flex;justify-content:center;margin-top:12px">' +
     '<button id="ocInstall" class="btn">' + _t('oc_install') + '</button></div>' +
     /* --- Arama sırası --- */
     '<div class="divider"></div>' +
@@ -786,22 +843,21 @@ async function renderWebSearchPane() {
   const ocSt = $('#ocStatus');
   const ocChk = $('#ocEnabled');
   const ocBtn = $('#ocInstall');
-  const oc = await beast.obscuraGet().catch(() => ({ installed: false, enabled: true, dir: '' }));
+  const oc = await beast.obscuraGet().catch(() => ({ installed: false, enabled: true, dir: '', install: null }));
   ocChk.checked = oc.enabled !== false;
-  ocSt.textContent = oc.installed ? _t('oc_status_ok') : _t('oc_status_missing');
+  /* kurulum arka planda sürüyorsa durum panelde GERİ YÜKLENİR —
+     ayarlardan çıkıp dönsen bile ilerleme kaybolmaz */
+  const ocState = oc.install || (await beast.obscuraInstallState().catch(() => null));
+  paintObscuraState(ocState);
   ocChk.addEventListener('change', async () => {
     await beast.obscuraSetEnabled(ocChk.checked).catch(() => {});
     toast(ocChk.checked ? _t('oc_on_toast') : _t('oc_off_toast'));
   });
   ocBtn.addEventListener('click', async () => {
-    ocBtn.disabled = true;
-    ocBtn.textContent = _t('oc_installing');
-    ocSt.textContent = _t('oc_installing');
+    if (ocBtn.disabled) return;
     const r = await beast.obscuraInstall().catch(() => ({ ok: false, error: 'hata' }));
-    ocBtn.disabled = false;
-    ocBtn.textContent = _t('oc_install');
-    ocSt.textContent = r && r.ok ? _t('oc_status_ok') : _t('oc_install_fail') + (r && r.error ? r.error : '?');
-    toast(r && r.ok ? _t('oc_installed_toast') : _t('oc_install_fail') + (r && r.error ? r.error : '?'));
+    if (r && (r.ok || r.started || r.busy)) paintObscuraState(await beast.obscuraInstallState().catch(() => null));
+    else toast(_t('oc_install_fail') + ((r && r.error) || '?'));
   });
 
   /* --- Arama sırası --- */
@@ -3208,8 +3264,11 @@ function renderBotSettings(pane, b) {
     })
   );
   $('#bSave').addEventListener('click', async () => {
+    const newName = $('#bName').value.trim();
+    /* İLK HARF ZORUNLU: ad değiştirilirken de harf karakteriyle başlamalı */
+    if (newName && !/^\p{L}/u.test(newName)) { toast(_t('bot_name_letter')); $('#bName').focus(); return; }
     const patch = {
-      name: $('#bName').value.trim(),
+      name: newName,
       icon: (f.querySelector('#bIconPick button.on') || {}).dataset?.ic || b.icon,
       prompt: $('#bPrompt').value,
       seeBots: [...f.querySelectorAll('#bSee input:checked')].map((c) => c.dataset.see),
@@ -3235,8 +3294,12 @@ function renderBotSettings(pane, b) {
   if (delBtn) delBtn.addEventListener('click', async () => {
     if (!confirm(_ti('bot_confirm_del', b.name))) return;
     const r = await beast.botsRemove(b.id);
-    if (r.ok) { toast(_t('bot_deleted')); botPageId = null; await refreshBots(); renderBotPage(); }
-    else toast(r.error || _t('bot_save_fail'));
+    if (r.ok) {
+      /* bot silme sonrası main otomatik restart atar — yeniden çizmeye kalkışma */
+      toast(r.restarting ? _t('bot_deleted_restart') : _t('bot_deleted'));
+      botPageId = null;
+      if (!r.restarting) { await refreshBots(); renderBotPage(); }
+    } else toast(r.error || _t('bot_save_fail'));
   });
   /* (numara ekleme alanı kaldırıldı — Entegrasyonlar üzerinden yapılır) */
 }
@@ -3358,6 +3421,8 @@ function renderBotAdd(pane) {
   $('#bAddCreate').addEventListener('click', async () => {
     const name = $('#bAddName').value.trim();
     if (!name) { toast(_t('bot_name_req')); $('#bAddName').focus(); return; }
+    /* İLK HARF ZORUNLU: bot adı harf karakteriyle başlamalı */
+    if (!/^\p{L}/u.test(name)) { toast(_t('bot_name_letter')); $('#bAddName').focus(); return; }
     const icon = (f.querySelector('#bAddIconPick button.on') || {}).dataset?.ic || '🤖';
     const r = await beast.botsAdd({ name, icon, prompt: $('#bAddPrompt').value });
     if (r.ok) {
@@ -3715,6 +3780,8 @@ function onEvent(ev) {
   }
   /* OFFLINE MESAJ KUYRUĞU: bağlantı + kuyruk olayları (sessionId filtresinden önce) */
   if (ev.type === 'net' || ev.type === 'netQueue') { onNetEvent(ev); return; }
+  /* Obscura kurulum ilerlemesi — ayarlardan çıkıp dönülsen de main'de sürer */
+  if (ev.type === 'obscura-progress') { onObscuraProgress(ev); return; }
   /* Beast Code oturumu (IDE modu ortasındaki panel): olayları panele akıt,
      ana sohbeti kirletme */
   if (bcSessionId && ev.sessionId === bcSessionId) {
@@ -4301,6 +4368,7 @@ function autosize() {
 
 const SLASH_COMMANDS = [
   { cmd: '/help', desc: 'tüm komutları listele' },
+  { cmd: '/version', desc: 'Beast Agent sürümünü göster' },
   { cmd: '/new', desc: 'yeni oturum aç (kod verilir)' },
   { cmd: '/open ', desc: 'koddaki oturuma geç' },
   { cmd: '/sessions', desc: 'bu sohbetin oturumları' },

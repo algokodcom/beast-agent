@@ -630,10 +630,13 @@ class Engine {
           {
             signal,
             onDelta,
-            onRetry: (attempt) =>
+            onRetry: (attempt, st) =>
               emitSafe(this, session.id, {
                 type: 'status',
-                status: `sağlayıcı yanıtsız — tekrar deniyor (${attempt}/${3})`,
+                status:
+                  st === undefined || st === null
+                    ? `bağlantı sorunu — internet dönünce ya da yeniden denemeyle sürer (${attempt}/6)`
+                    : `sağlayıcı yanıtsız — tekrar deniyor (${attempt}/3)`,
               }),
           }
         );

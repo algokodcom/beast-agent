@@ -1,10 +1,51 @@
 'use strict';
 
 /* OpenAI-compatible streaming chat client with SSE parsing.
-   Geçici sağlayıcı hatalarında (5xx/429/ağ) üstel beklemeyle otomatik retry. */
+   Geçici sağlayıcı hatalarında (5xx/429) üstel beklemeyle retry; İNTERNET
+   KOPMASINDA (fetch failed) çok daha sabırlı: 6 deneme + internet dönene
+   dek bekleme (main'deki net izleyicisinden beslenir). Akış ortasında kopan
+   bağlantıda: hiç veri akmadıysa sessiz baştan dener, kısmi metin geldiyse
+   'length' gibi döner → chatStreamAuto kaldığı yerden DEVAM ETTİRİR. */
 
 const RETRYABLE_STATUS = new Set([408, 409, 425, 429, 500, 502, 503, 504]);
-const MAX_RETRIES = 3;
+const MAX_RETRIES = 3; /* sağlayıcı geçici HTTP hataları */
+const NET_MAX_RETRIES = 6; /* bağlantı kopması — daha sabırlı */
+const NET_BACKOFF = [1000, 2000, 4000, 8000, 15000, 25000]; /* ≈55 sn toplam */
+const NET_WAIT_CAP_MS = 120000; /* internet dönene dek bekleme üst sınırı */
+
+/* main process'teki net izleyicisi besler: () => boolean | Promise<boolean> */
+let _netProbe = null;
+function setNetProbe(fn) {
+  _netProbe = typeof fn === 'function' ? fn : null;
+}
+
+/* fetch failed / ENOTFOUND / ECONNRESET / socket hang up / terminated —
+   HTTP yanıtı ALINAMADI demektir (status yok) */
+function isNetworkError(e) {
+  if (!e) return false;
+  if (e.name === 'AbortError') return false;
+  if (e.status !== undefined) return false;
+  return true;
+}
+
+/* internet yoksa dönene kadar bekle (en fazla NET_WAIT_CAP_MS); probe yoksa
+   ya da durum bilinmiyorsa hemen geç */
+async function waitForNet(signal) {
+  if (!_netProbe) return true;
+  const t0 = Date.now();
+  for (;;) {
+    if (signal && signal.aborted) {
+      const e = new Error('iptal');
+      e.name = 'AbortError';
+      throw e;
+    }
+    let online;
+    try { online = await _netProbe(); } catch { online = null; }
+    if (online !== false) return true; /* false DEĞİLSE devam (bilinmiyor = iyimser) */
+    if (Date.now() - t0 > NET_WAIT_CAP_MS) return false;
+    await sleep(2000, signal);
+  }
+}
 
 const HINTS = {
   401: 'API anahtarı geçersiz',
@@ -47,8 +88,9 @@ function sleep(ms, signal) {
   });
 }
 
-/* fn: denenecek istek. Ağ hataları ve RETRYABLE_STATUS durumlarında
-   0.8s → 1.6s → 3.2s bekleyip tekrar dener. */
+/* fn: denenecek istek. Sağlayıcı geçici HTTP hatalarında 0.8s→1.6s→3.2s;
+   İNTERNET KOPMASINDA (status yok) 6 denemeye kadar 1s→2s→4s→8s→15s→25s ve
+   net izleyicisi "çevrimdışı" diyorsa internet dönene kadar bekler. */
 async function withRetries(fn, { signal, onRetry } = {}) {
   let attempt = 0;
   for (;;) {
@@ -57,14 +99,23 @@ async function withRetries(fn, { signal, onRetry } = {}) {
     } catch (e) {
       const aborted = e && (e.name === 'AbortError' || (signal && signal.aborted));
       const status = e && e.status;
-      const retriable =
-        !aborted && (status === undefined || RETRYABLE_STATUS.has(status));
-      if (!retriable || attempt >= MAX_RETRIES) throw e;
+      const netErr = !aborted && status === undefined;
+      const retriable = !aborted && (status === undefined || RETRYABLE_STATUS.has(status));
+      if (!retriable) throw e;
+      const cap = netErr ? NET_MAX_RETRIES : MAX_RETRIES;
+      if (attempt >= cap) throw e;
+      if (netErr && _netProbe) {
+        /* internet kopmuş: dönene kadar bekle — kısa kopmalarda görev ölmez */
+        await waitForNet(signal);
+      }
       attempt++;
       try {
         onRetry && onRetry(attempt, status);
       } catch {}
-      await sleep(800 * Math.pow(2, attempt - 1), signal);
+      const wait = netErr
+        ? NET_BACKOFF[Math.min(attempt - 1, NET_BACKOFF.length - 1)]
+        : 800 * Math.pow(2, attempt - 1);
+      await sleep(wait, signal);
     }
   }
 }
@@ -113,79 +164,101 @@ async function chatStream(sel, body, { signal, onDelta, onRetry } = {}) {
 }
 
 async function streamOnce(sel, body, { signal, onDelta, onRetry } = {}, omitReasoning = false) {
-  const res = await withRetries(
-    async () => {
-      const r = await openChat(sel, body, { stream: true, signal, omitReasoning });
-      if (!r.ok) {
-        let detail = '';
-        try {
-          detail = (await r.text()).slice(0, 300);
-        } catch {}
-        const err = new Error(friendlyError(r.status, r.statusText, detail));
-        err.status = r.status;
-        throw err;
-      }
-      return r;
-    },
-    { signal, onRetry }
-  );
+  /* akış durumu dışarıda tutulur: gövde okunurken bağlantı koparsa
+     ne kadarı geldiğine bakılır (kısmi metin → devam; boş/araç → baştan) */
+  const state = { content: '', reasoning: '', toolCalls: [], usage: null, finishReason: null };
+  let dropAttempt = 0;
 
-  let content = '';
-  let reasoning = '';
-  const toolCalls = [];
-  let usage = null;
-  let finishReason = null;
-
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buf = '';
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buf += decoder.decode(value, { stream: true });
-
-    let idx;
-    while ((idx = buf.indexOf('\n')) !== -1) {
-      const line = buf.slice(0, idx).trim();
-      buf = buf.slice(idx + 1);
-      if (!line.startsWith('data:')) continue;
-      const data = line.slice(5).trim();
-      if (!data || data === '[DONE]') continue;
-
-      let json;
-      try {
-        json = JSON.parse(data);
-      } catch {
-        continue;
-      }
-
-      if (json.usage) usage = json.usage;
-      const ch = json.choices && json.choices[0];
-      if (!ch) continue;
-      if (ch.finish_reason) finishReason = ch.finish_reason;
-      const d = ch.delta || {};
-      if (d.content) {
-        content += d.content;
-        onDelta && onDelta(d.content, content);
-      }
-      if (d.reasoning_content) reasoning += d.reasoning_content;
-      if (d.reasoning) reasoning += d.reasoning;
-      for (const tc of d.tool_calls || []) {
-        const i = typeof tc.index === 'number' ? tc.index : toolCalls.length;
-        while (toolCalls.length <= i) {
-          toolCalls.push({ id: '', type: 'function', function: { name: '', arguments: '' } });
+  for (;;) {
+    const res = await withRetries(
+      async () => {
+        const r = await openChat(sel, body, { stream: true, signal, omitReasoning });
+        if (!r.ok) {
+          let detail = '';
+          try {
+            detail = (await r.text()).slice(0, 300);
+          } catch {}
+          const err = new Error(friendlyError(r.status, r.statusText, detail));
+          err.status = r.status;
+          throw err;
         }
-        if (tc.id) toolCalls[i].id = tc.id;
-        if (tc.function) {
-          if (tc.function.name) toolCalls[i].function.name += tc.function.name;
-          if (tc.function.arguments) toolCalls[i].function.arguments += tc.function.arguments;
+        return r;
+      },
+      { signal, onRetry }
+    );
+
+    try {
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+
+        let idx;
+        while ((idx = buf.indexOf('\n')) !== -1) {
+          const line = buf.slice(0, idx).trim();
+          buf = buf.slice(idx + 1);
+          if (!line.startsWith('data:')) continue;
+          const data = line.slice(5).trim();
+          if (!data || data === '[DONE]') continue;
+
+          let json;
+          try {
+            json = JSON.parse(data);
+          } catch {
+            continue;
+          }
+
+          if (json.usage) state.usage = json.usage;
+          const ch = json.choices && json.choices[0];
+          if (!ch) continue;
+          if (ch.finish_reason) state.finishReason = ch.finish_reason;
+          const d = ch.delta || {};
+          if (d.content) {
+            state.content += d.content;
+            onDelta && onDelta(d.content, state.content);
+          }
+          if (d.reasoning_content) state.reasoning += d.reasoning_content;
+          if (d.reasoning) state.reasoning += d.reasoning;
+          for (const tc of d.tool_calls || []) {
+            const i = typeof tc.index === 'number' ? tc.index : state.toolCalls.length;
+            while (state.toolCalls.length <= i) {
+              state.toolCalls.push({ id: '', type: 'function', function: { name: '', arguments: '' } });
+            }
+            if (tc.id) state.toolCalls[i].id = tc.id;
+            if (tc.function) {
+              if (tc.function.name) state.toolCalls[i].function.name += tc.function.name;
+              if (tc.function.arguments) state.toolCalls[i].function.arguments += tc.function.arguments;
+            }
+          }
         }
       }
+
+      return { ...state };
+    } catch (e) {
+      /* okuma sırasında bağlantı koptu */
+      const aborted = e && (e.name === 'AbortError' || (signal && signal.aborted));
+      if (!aborted && isNetworkError(e)) {
+        if (state.content && !state.toolCalls.length) {
+          /* kısmi metin geldi, araç çağrısı yok → hata balonu YOK:
+             'length' gibi dön, chatStreamAuto CONTINUE_PROMPT ile kaldığı
+             yerden sürdürür ve metni birleştirir */
+          return { ...state, finishReason: 'length' };
+        }
+        /* hiç veri akmadı YA DA araç çağrısı yarım kaldı → BAŞTAN dene */
+        if (dropAttempt >= NET_MAX_RETRIES) throw e;
+        dropAttempt++;
+        try { onRetry && onRetry(dropAttempt, undefined); } catch {}
+        if (_netProbe) await waitForNet(signal);
+        await sleep(NET_BACKOFF[Math.min(dropAttempt - 1, NET_BACKOFF.length - 1)], signal);
+        continue; /* yeni stream — UI'daki kısmi token'lar nihai mesajla ezilir */
+      }
+      throw e;
     }
   }
-
-  return { content, reasoning, toolCalls, usage, finishReason };
 }
 
 /* usage toplama: devam turları gerçek faturalamayı yansıtsın (prompt yeniden sayılır) */
@@ -261,4 +334,13 @@ async function chatOnce(sel, body, { signal, onRetry } = {}) {
   };
 }
 
-module.exports = { chatStream, chatStreamAuto, chatOnce, withRetries, friendlyError, sumUsage };
+module.exports = {
+  chatStream,
+  chatStreamAuto,
+  chatOnce,
+  withRetries,
+  friendlyError,
+  sumUsage,
+  setNetProbe,
+  isNetworkError,
+};

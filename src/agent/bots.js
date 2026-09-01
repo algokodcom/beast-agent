@@ -199,6 +199,8 @@ function add({ name, icon, prompt }) {
   loadRegistry();
   const n = String(name || '').trim().slice(0, 40);
   if (!n) return { ok: false, error: 'bot adı zorunlu' };
+  /* İLK HARF ZORUNLU: bot adı harf karakteriyle başlamalı */
+  if (!/^\p{L}/u.test(n)) return { ok: false, error: 'bot adı harf ile başlamalı — ilk karakter harf olmalı' };
   if (REG.bots.length >= MAX_BOTS) return { ok: false, error: `en fazla ${MAX_BOTS} bot olabilir (1 admin + ${MAX_BOTS - 1} müşteri)` };
   let id = slugify(n);
   while (get(id)) id = slugify(n) + '-' + uid().slice(-4);
@@ -261,6 +263,12 @@ function update(id, patch) {
   loadRegistry();
   const b = get(id);
   if (!b) return { ok: false, error: 'bot yok' };
+  /* İLK HARF ZORUNLU: ad değişikliği harf karakteriyle başlamalı —
+     diğer alanlara dokunmadan reddet */
+  if (patch && typeof patch.name === 'string' && patch.name.trim() &&
+      !/^\p{L}/u.test(patch.name.trim())) {
+    return { ok: false, error: 'bot adı harf ile başlamalı — ilk karakter harf olmalı' };
+  }
   const changes = [];
   if (patch && typeof patch === 'object') {
     if (typeof patch.name === 'string' && patch.name.trim() && patch.name.trim() !== b.name) {

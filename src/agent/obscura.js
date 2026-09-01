@@ -20,6 +20,8 @@ const RELEASE_BASE = 'https://github.com/h4ckf0r0day/obscura/releases/latest/dow
 const WINDOWS_ZIP = 'obscura-x86_64-windows-stealth.zip';
 const MAX_ZIP_BYTES = 250 * 1024 * 1024;
 const FETCH_TIMEOUT_MS = 25000;
+/* content-length gelmezse yüzde tahmini için yaklaşık boyut (stealth zip ≈74 MB) */
+const EST_ZIP_BYTES = 74 * 1024 * 1024;
 
 function obscuraDir() {
   const base = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
@@ -58,19 +60,29 @@ function obscuraOk() {
   return _okProbe;
 }
 
-function httpsDownload(url, redirectsLeft = 5, signal) {
+function httpsDownload(url, redirectsLeft = 5, signal, onProgress) {
   return new Promise((resolve, reject) => {
     const req = https.get(url, { headers: { 'User-Agent': 'BeastAgent/1.0 (+obscura bootstrap)' } }, (res) => {
       if ([301, 302, 303, 307, 308].includes(res.statusCode) && res.headers.location && redirectsLeft > 0) {
         res.resume();
-        return resolve(httpsDownload(new URL(res.headers.location, url).toString(), redirectsLeft - 1, signal));
+        return resolve(httpsDownload(new URL(res.headers.location, url).toString(), redirectsLeft - 1, signal, onProgress));
       }
       if (res.statusCode !== 200) {
         res.resume();
         return reject(new Error(`indirme başarısız: HTTP ${res.statusCode}`));
       }
+      const total = Number(res.headers['content-length']) || EST_ZIP_BYTES;
       const chunks = [];
       let size = 0;
+      let lastPct = -1;
+      const tick = () => {
+        /* yüzdeyi INDIRME fazının %1-88 aralığına map et; %1'lik adımda bildir */
+        const pct = 1 + Math.min(88, Math.floor((size / total) * 88));
+        if (typeof onProgress === 'function' && pct !== lastPct) {
+          lastPct = pct;
+          try { onProgress({ pct, phase: 'indiriliyor', loaded: size, total }); } catch {}
+        }
+      };
       res.on('data', (c) => {
         size += c.length;
         if (size > MAX_ZIP_BYTES) {
@@ -78,8 +90,12 @@ function httpsDownload(url, redirectsLeft = 5, signal) {
           return;
         }
         chunks.push(c);
+        tick();
       });
-      res.on('end', () => resolve(Buffer.concat(chunks)));
+      res.on('end', () => {
+        tick();
+        resolve(Buffer.concat(chunks));
+      });
       res.on('error', reject);
     });
     req.on('error', reject);
@@ -114,22 +130,37 @@ function psExpand(zipPath, destDir) {
   });
 }
 
-/* Obscura'yı kur / güncelle (yeniden indirip üzerine yazar) */
-async function installObscura(signal) {
-  const dest = obscuraDir();
-  fs.mkdirSync(dest, { recursive: true });
-  const zipPath = path.join(os.tmpdir(), 'beast-obscura.zip');
-  const buf = await httpsDownload(RELEASE_BASE + WINDOWS_ZIP, 5, signal);
-  fs.writeFileSync(zipPath, buf);
-  const ok = await psExpand(zipPath, dest);
-  try { fs.unlinkSync(zipPath); } catch {}
-  if (!ok || !obscuraInstalled()) {
-    return { ok: false, error: 'obscura kurulumu başarısız (zip açılamadı)' };
+/* Obscura'yı kur / güncelle (yeniden indirip üzerine yazar).
+   onProgress({pct, phase}) — 1-88 indirme, 89-96 açma, 97-99 doğrulama. */
+async function installObscura(signal, onProgress) {
+  const tick = (pct, phase) => {
+    if (typeof onProgress === 'function') {
+      try { onProgress({ pct, phase: phase || 'indiriliyor' }); } catch {}
+    }
+  };
+  try {
+    tick(0, 'hazırlanıyor');
+    const dest = obscuraDir();
+    fs.mkdirSync(dest, { recursive: true });
+    const zipPath = path.join(os.tmpdir(), 'beast-obscura.zip');
+    const buf = await httpsDownload(RELEASE_BASE + WINDOWS_ZIP, 5, signal, onProgress);
+    tick(89, 'kuruluyor');
+    fs.writeFileSync(zipPath, buf);
+    tick(90, 'kuruluyor');
+    const ok = await psExpand(zipPath, dest);
+    try { fs.unlinkSync(zipPath); } catch {}
+    tick(97, 'doğrulanıyor');
+    if (!ok || !obscuraInstalled()) {
+      return { ok: false, error: 'obscura kurulumu başarısız (zip açılamadı)' };
+    }
+    markVariant('stealth');
+    _okProbe = null; /* yeniden doğrula */
+    const good = await obscuraOk();
+    tick(good ? 100 : 98, good ? 'tamamlandı' : 'doğrulanıyor');
+    return { ok: good, dir: dest, error: good ? null : 'obscura.exe doğrulanamadı' };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
   }
-  markVariant('stealth');
-  _okProbe = null; /* yeniden doğrula */
-  const good = await obscuraOk();
-  return { ok: good, dir: dest, error: good ? null : 'obscura.exe doğrulanamadı' };
 }
 
 /* obscura fetch — sayfa HTML'i (abort ile süreç kesilir) */

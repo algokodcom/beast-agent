@@ -72,6 +72,7 @@ contextBridge.exposeInMainWorld('beast', {
   thinkSet: (v) => ipcRenderer.invoke('think:set', v),
   obscuraGet: () => ipcRenderer.invoke('obscura:get'),
   obscuraInstall: () => ipcRenderer.invoke('obscura:install'),
+  obscuraInstallState: () => ipcRenderer.invoke('obscura:installState'),
   obscuraSetEnabled: (v) => ipcRenderer.invoke('obscura:setEnabled', v),
   searchOrderGet: () => ipcRenderer.invoke('searchorder:get'),
   searchOrderSet: (chain) => ipcRenderer.invoke('searchorder:set', chain),

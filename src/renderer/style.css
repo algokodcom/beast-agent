@@ -974,13 +974,12 @@ body.term-open #settingsOverlay { right: var(--tw, 520px); }
   user-select: none;
 }
 .diff-code { flex: 1; padding-right: 10px; }
-/* kırmızı: silinen/eski (sol) — yeşil: eklenen/yeni (sağ) */
-.diff-line.del { background: rgba(239, 68, 68, 0.13); }
-.diff-line.del .diff-code { color: #fca5a5; }
-.diff-line.del .diff-num { color: #f87171; opacity: 0.8; }
-.diff-line.add { background: rgba(34, 197, 94, 0.12); }
-.diff-line.add .diff-code { color: #86efac; }
-.diff-line.add .diff-num { color: #4ade80; opacity: 0.8; }
+/* kırmızı: silinen/eski (sol) — yeşil: eklenen/yeni (sağ)
+   YAZI rengi normal kalır (siyah) — yalnız ARKA PLAN renkli */
+.diff-line.del { background: rgba(239, 68, 68, 0.18); }
+.diff-line.del .diff-code, .diff-line.del .diff-num { color: var(--text); }
+.diff-line.add { background: rgba(34, 197, 94, 0.2); }
+.diff-line.add .diff-code, .diff-line.add .diff-num { color: var(--text); }
 .diff-line.ctx .diff-code { color: var(--muted); }
 .diff-line.space { background: rgba(128, 128, 128, 0.06); }
 .diff-more {
@@ -2218,13 +2217,15 @@ body.ide-mode #bcPanel { display: flex; }
 #bcInputRow {
   flex: none;
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   gap: 6px;
   padding: 10px 12px;
   border-top: 1px solid var(--border);
   background: var(--panel);
 }
-#bcPrompt { color: var(--accent); font-family: Consolas, monospace; font-size: 12px; font-weight: 700; flex: none; }
+#bcPrompt { color: var(--accent); font-family: Consolas, monospace; font-size: 12px; font-weight: 700; flex: none; padding-bottom: 7px; }
+/* otomatik büyüyen chat input'u: satır sonunda alt satıra iner, alan açılır;
+   tavanı (140px ≈ 6 satır) aşarsa kendi içinde scroll'a döner */
 #bcInput {
   flex: 1;
   min-width: 0;
@@ -2236,7 +2237,13 @@ body.ide-mode #bcPanel { display: flex; }
   font-family: Consolas, monospace;
   font-size: 12.5px;
   outline: none;
+  resize: none;
+  overflow-y: hidden;
+  max-height: 140px;
+  line-height: 1.45;
+  display: block;
 }
+#bcInput.expand { overflow-y: auto; }
 #bcInput:focus { border-color: var(--accent); }
 #bcStop {
   flex: none;
@@ -2248,6 +2255,7 @@ body.ide-mode #bcPanel { display: flex; }
   font-size: 11px;
   padding: 4px 8px;
   line-height: 1;
+  margin-bottom: 3px;
 }
 #bcStop[hidden] { display: none; }
 #bcStop:hover { border-color: var(--err); }

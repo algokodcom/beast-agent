@@ -6800,10 +6800,24 @@ function bcIngest(ev) {
   }
 }
 
+/* Beast Code input otomatik büyür: textarea'da satır sonuna gelince alan
+   aşağı açılır; 140px (≈6 satır) tavanını aşarsa iç scroll'a döner */
+function bcInputResize() {
+  const ta = els.bcInput;
+  if (!ta) return;
+  ta.style.height = 'auto';
+  const max = 140;
+  const h = Math.min(ta.scrollHeight, max);
+  ta.style.height = h + 'px';
+  ta.classList.toggle('expand', ta.scrollHeight > max);
+}
+
 function bcRunCurrent() {
   const msg = els.bcInput.value.trim();
   if (!msg) return;
   els.bcInput.value = '';
+  bcInputResize();
+  els.bcInput.focus();
   bcLine('t-cmd', 'code> ' + msg);
   bcHideTodos(); /* yeni sorgu = eski todo list temizlenir; agent yeniden basacak */
   bcSetBusy(true);
@@ -6830,9 +6844,13 @@ function bcRunCurrent() {
   });
 }
 
-if (els.bcInput) els.bcInput.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') { e.preventDefault(); bcRunCurrent(); }
-});
+if (els.bcInput) {
+  els.bcInput.addEventListener('input', bcInputResize);
+  els.bcInput.addEventListener('keydown', (e) => {
+    /* Enter gönderir, Shift+Enter alt satıra iner (klasik chat input'u) */
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); bcRunCurrent(); }
+  });
+}
 if (els.bcStop) els.bcStop.addEventListener('click', () => beast.beastcodeStop().catch(() => {}));
 if (els.bcClear) els.bcClear.addEventListener('click', () => {
   els.bcOut.innerHTML = '';

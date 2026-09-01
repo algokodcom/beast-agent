@@ -42,6 +42,7 @@ const els = {
   eyeBtn: $('#eyeBtn'),
   netDot: $('#netDot'),
   railBtn: $('#railBtn'),
+  railClear: $('#railClear'),
   watchBtn: $('#watchBtn'),
   cronBtn: $('#cronBtn'),
   watchOverlay: $('#watchOverlay'),
@@ -76,6 +77,7 @@ const els = {
   bcClear: $('#bcClear'),
   bcNew: $('#bcNew'),
   bcTodoWrap: $('#bcTodoWrap'),
+  bcStatus: $('#bcStatus'),
   codeTabs: $('#codeTabs'),
   codeTa: $('#codeTa'),
   codeGutter: $('#codeGutter'),
@@ -411,6 +413,176 @@ function addStopNote(reason) {
   scrollDown(true);
 }
 
+/* ---------------- opencode diff görünümü (BİREBİR port) ----------------
+   edit_file/write_file sonuçları chat'te ve Beast Code panelinde opencode'un
+   permission/diff ekranı gibi gösterilir: SOLDa kırmızı (eski/silinen),
+   SAĞDA yeşil (yeni/eklenen) — dar alanda birleşik (unified) görünüme düşer.
+   Motor: LCS tabanlı satır diff'i (opencode npm "diff" paketinin diffLines
+   karşılığı) + del/add blok eşleştirmesi (split görünüm hizalaması). */
+function diffOps(aText, bText) {
+  const a = aText ? String(aText).split('\n') : [];
+  const b = bText ? String(bText).split('\n') : [];
+  let p = 0;
+  while (p < a.length && p < b.length && a[p] === b[p]) p++;
+  let ea = a.length - 1;
+  let eb = b.length - 1;
+  while (ea >= p && eb >= p && a[ea] === b[eb]) { ea--; eb--; }
+  const ops = [];
+  for (let i = 0; i < p; i++) ops.push({ t: 'ctx', a: a[i], b: b[i] });
+  const midA = a.slice(p, ea + 1);
+  const midB = b.slice(p, eb + 1);
+  const n = midA.length;
+  const m = midB.length;
+  if (n * m > 400000 || n > 1500 || m > 1500) {
+    for (const x of midA) ops.push({ t: 'del', a: x });
+    for (const y of midB) ops.push({ t: 'add', b: y });
+  } else {
+    const w = m + 1;
+    const dp = new Int32Array((n + 1) * w);
+    for (let i = n - 1; i >= 0; i--) {
+      for (let j = m - 1; j >= 0; j--) {
+        dp[i * w + j] =
+          midA[i] === midB[j]
+            ? dp[(i + 1) * w + j + 1] + 1
+            : Math.max(dp[(i + 1) * w + j], dp[i * w + j + 1]);
+      }
+    }
+    let i = 0;
+    let j = 0;
+    while (i < n && j < m) {
+      if (midA[i] === midB[j]) { ops.push({ t: 'ctx', a: midA[i], b: midB[j] }); i++; j++; }
+      else if (dp[(i + 1) * w + j] >= dp[i * w + j + 1]) { ops.push({ t: 'del', a: midA[i] }); i++; }
+      else { ops.push({ t: 'add', b: midB[j] }); j++; }
+    }
+    while (i < n) ops.push({ t: 'del', a: midA[i++] });
+    while (j < m) ops.push({ t: 'add', b: midB[j++] });
+  }
+  for (let k = ea + 1; k < a.length; k++) ops.push({ t: 'ctx', a: a[k], b: b[k] });
+  return ops;
+}
+
+/* del/add bloklarını yan yana hizalar: split görünümde sol satır ile sağ satır
+   aynı yükseklikte durur; eksik taraf boş "space" satırla doldurulur */
+function diffSplitRows(ops, startLine) {
+  const rows = [];
+  let oldNo = Math.max(1, startLine || 1);
+  let newNo = oldNo;
+  let i = 0;
+  while (i < ops.length) {
+    const op = ops[i];
+    if (op.t === 'ctx') {
+      rows.push({ l: { no: oldNo++, text: op.a, cls: 'ctx' }, r: { no: newNo++, text: op.b, cls: 'ctx' } });
+      i++;
+      continue;
+    }
+    const dels = [];
+    const adds = [];
+    while (i < ops.length && ops[i].t !== 'ctx') {
+      if (ops[i].t === 'del') dels.push(ops[i].a);
+      else adds.push(ops[i].b);
+      i++;
+    }
+    const max = Math.max(dels.length, adds.length);
+    for (let k = 0; k < max; k++) {
+      rows.push({
+        l: k < dels.length ? { no: oldNo++, text: dels[k], cls: 'del' } : { no: '', text: '', cls: 'space' },
+        r: k < adds.length ? { no: newNo++, text: adds[k], cls: 'add' } : { no: '', text: '', cls: 'space' },
+      });
+    }
+  }
+  return rows;
+}
+
+const DIFF_RENDER_MAX_ROWS = 400; /* dev değişikliklerde DOM şişmesin */
+
+function diffLineEl(no, text, cls, sign) {
+  const line = document.createElement('div');
+  line.className = 'diff-line ' + cls;
+  const num = document.createElement('span');
+  num.className = 'diff-num';
+  num.textContent = String(no);
+  const code = document.createElement('span');
+  code.className = 'diff-code';
+  code.textContent = (sign || '') + text;
+  line.appendChild(num);
+  line.appendChild(code);
+  return line;
+}
+
+/* opencode <diff view="split|unified"> karşılığı: genişlik >= 620px ise
+   yan-yana (solda kırmızı eski / sağda yeşil yeni), dar ise birleşik */
+function buildDiffEl(diff, availWidth) {
+  const wrap = document.createElement('div');
+  wrap.className = 'diffbox';
+  const head = document.createElement('div');
+  head.className = 'diff-head';
+  const fname = document.createElement('span');
+  fname.className = 'diff-file';
+  fname.textContent = String(diff.path || '');
+  const badge = document.createElement('span');
+  badge.className = 'diff-badge';
+  const a = document.createElement('span');
+  a.className = 'diff-badge-add';
+  a.textContent = '+' + (diff.additions || 0);
+  const d = document.createElement('span');
+  d.className = 'diff-badge-del';
+  d.textContent = '−' + (diff.deletions || 0);
+  badge.appendChild(a);
+  badge.appendChild(d);
+  head.appendChild(fname);
+  head.appendChild(badge);
+  wrap.appendChild(head);
+
+  const ops = diffOps(diff.before, diff.after);
+  const split = (availWidth || 0) >= 620;
+  const view = document.createElement('div');
+  view.className = 'diff ' + (split ? 'diff-split' : 'diff-uni');
+  if (split) {
+    const rows = diffSplitRows(ops, diff.startLine);
+    const left = document.createElement('div');
+    left.className = 'diff-side old';
+    const right = document.createElement('div');
+    right.className = 'diff-side new';
+    const capped = rows.length > DIFF_RENDER_MAX_ROWS;
+    for (const row of rows.slice(0, DIFF_RENDER_MAX_ROWS)) {
+      left.appendChild(diffLineEl(row.l.no, row.l.text, row.l.cls, ''));
+      right.appendChild(diffLineEl(row.r.no, row.r.text, row.r.cls, ''));
+    }
+    view.appendChild(left);
+    view.appendChild(right);
+    if (capped) {
+      const note = document.createElement('div');
+      note.className = 'diff-more';
+      note.textContent = `… ${rows.length - DIFF_RENDER_MAX_ROWS} satır daha (dosyada gör)`;
+      view.appendChild(note);
+    }
+  } else {
+    let oldNo = Math.max(1, diff.startLine || 1);
+    let newNo = oldNo;
+    const capped = ops.length > DIFF_RENDER_MAX_ROWS;
+    for (const op of ops.slice(0, DIFF_RENDER_MAX_ROWS)) {
+      if (op.t === 'ctx') {
+        view.appendChild(diffLineEl(newNo, op.b, 'ctx', ' '));
+        oldNo++; newNo++;
+      } else if (op.t === 'del') {
+        view.appendChild(diffLineEl(oldNo, op.a, 'del', '-'));
+        oldNo++;
+      } else {
+        view.appendChild(diffLineEl(newNo, op.b, 'add', '+'));
+        newNo++;
+      }
+    }
+    if (capped) {
+      const note = document.createElement('div');
+      note.className = 'diff-more';
+      note.textContent = `… ${ops.length - DIFF_RENDER_MAX_ROWS} satır daha (dosyada gör)`;
+      view.appendChild(note);
+    }
+  }
+  wrap.appendChild(view);
+  return wrap;
+}
+
 /* ---------------- tool cards ---------------- */
 /* Ard arda gelen araç kartları TEK kutuda toplanır (.tool-box): çalışırken
    lacivert outline döner, gövde max 420px scroll'lu. Grup; tool_calls İÇEREN
@@ -425,7 +597,9 @@ function closeChatToolGroup() {
 function argSummary(name, args) {
   try {
     if (name === 'run_command') return String(args.command || '');
-    if (name === 'read_file' || name === 'write_file') return String(args.path || '');
+    if (name === 'read_file' || name === 'write_file' || name === 'edit_file') return String(args.path || '');
+    if (name === 'grep') return String(args.pattern || '');
+    if (name === 'glob') return String(args.pattern || '');
     if (name === 'list_dir') return String(args.path || '.');
     if (name === 'memory_write' || name === 'user_write') return String(args.text || '').slice(0, 80);
     return JSON.stringify(args).slice(0, 100);
@@ -468,7 +642,10 @@ function addToolCard(callId, name, args) {
   return card;
 }
 
-function finishToolCard(callId, ok, result) {
+/* opencode tool-end portu: edit/write sonucu ham JSON yerine kırmızı/yeşil
+   DIFF olarak çizilir (opencode'un permission/diff ekranı); diğer araçlar
+   eskisi gibi düz metin gösterir */
+function finishToolCard(callId, ok, result, diff) {
   const sel = callId
     ? `.tool-card[data-call-id="${CSS.escape(callId)}"]`
     : null;
@@ -479,8 +656,29 @@ function finishToolCard(callId, ok, result) {
   st.classList.add(ok ? 'ok' : 'err');
   st.textContent = ok ? 'tamam' : 'hata';
   const body = card.querySelector('.tool-body');
-  body.textContent = String(result || '(çıktı yok)').slice(0, 4000);
-  if (String(result || '').length <= 300) body.classList.add('open');
+  if (diff && diff.path) {
+    /* başlığa +/- rozetleri (opencode filediff additions/deletions) */
+    const head = card.querySelector('.tool-head');
+    if (head && !head.querySelector('.diff-badge')) {
+      const badge = document.createElement('span');
+      badge.className = 'diff-badge';
+      const a = document.createElement('span');
+      a.className = 'diff-badge-add';
+      a.textContent = '+' + (diff.additions || 0);
+      const d = document.createElement('span');
+      d.className = 'diff-badge-del';
+      d.textContent = '−' + (diff.deletions || 0);
+      badge.appendChild(a);
+      badge.appendChild(d);
+      head.insertBefore(badge, st);
+    }
+    body.textContent = '';
+    body.classList.add('open', 'diff-body');
+    body.appendChild(buildDiffEl(diff, body.clientWidth || 800));
+  } else {
+    body.textContent = String(result || '(çıktı yok)').slice(0, 4000);
+    if (String(result || '').length <= 300) body.classList.add('open');
+  }
   /* ring burada söndürülmez — iş bitene kadar (closeChatToolGroup) döner */
   if (chatToolGroup && chatToolGroup.body.contains(card)) {
     chatToolGroup.body.scrollTop = chatToolGroup.body.scrollHeight;
@@ -621,7 +819,7 @@ async function openSession(id) {
           addToolCard(tc.id, tc.function.name, args);
           const out = s.messages[i + 1];
           if (out && out.role === 'tool' && out.tool_call_id === tc.id) {
-            finishToolCard(tc.id, true, out.content);
+            finishToolCard(tc.id, true, out.content, out.diffView);
             i++;
           } else {
             finishToolCard(tc.id, false, '(sonuç yok)');
@@ -3906,11 +4104,11 @@ function onEvent(ev) {
       addToolCard(ev.callId, ev.name, ev.args);
       setStatus(ev.name + '…');
       termAgentEvent(ev);
-      /* ajan dosya yazarsa açık IDE sekmesini izlemeye al */
-      if (ev.name === 'write_file' && ev.args && ev.args.path) codeWriteWatch.set(ev.callId, ev.args.path);
+      /* ajan dosya yazarsa/editlerse açık IDE sekmesini izlemeye al */
+      if ((ev.name === 'write_file' || ev.name === 'edit_file') && ev.args && ev.args.path) codeWriteWatch.set(ev.callId, ev.args.path);
       break;
     case 'tool-end':
-      finishToolCard(ev.callId, ev.ok, ev.result);
+      finishToolCard(ev.callId, ev.ok, ev.result, ev.diff);
       setStatus('düşünüyor…');
       termAgentEvent(ev);
       if (codeWriteWatch.has(ev.callId)) {
@@ -4843,9 +5041,29 @@ async function init() {
     });
   }
   if (els.railBtn) els.railBtn.addEventListener('click', () => {
+    const willOpen = document.body.classList.contains('rail-hidden');
+    /* IDE modunda rail istenirse açık tarayıcı yerini bırakır — ikisi aynı
+       sağ dock'u paylaşır; tarayıcı kapanma olayı rail'i tekrar KAPATMASIN
+       diye railPrefBeforeBrowser=true ile bırakılır */
+    if (willOpen && ideModeOn() && document.body.classList.contains('browser-open')) {
+      railPrefBeforeBrowser = true;
+      els.bbClose.click();
+    }
     toggleRail(!document.body.classList.contains('rail-hidden'));
     railPrefBeforeBrowser = !document.body.classList.contains('rail-hidden');
   });
+  if (els.railClear) {
+    els.railClear.addEventListener('click', async () => {
+      if (!confirm('TÜM paralel ajan geçmişi silinsin mi?\n(Çalışan ajanlar da iptal edilir — geri alınamaz)')) return;
+      try {
+        const r = await beast.agentsClearAll();
+        if (r && r.ok) toast('Paralel ajan geçmişi silindi' + (r.removed ? ' — ' + r.removed + ' iş' : ''));
+        else toast('Silinemedi: ' + ((r && r.error) || '?'));
+      } catch (e) {
+        toast('Silinemedi: ' + String((e && e.message) || e));
+      }
+    });
+  }
   els.bbBack.addEventListener('click', () => beast.browserCtrl('back'));
   els.bbFwd.addEventListener('click', () => beast.browserCtrl('forward'));
   els.bbReload.addEventListener('click', () => beast.browserCtrl('reload'));
@@ -6285,6 +6503,20 @@ function bcStreamDelta(delta) {
 /* İş bitti → preview açık ve IDE modundaysa workspace sayfasını otomatik yenile */
 let bcPrevAt = 0;
 
+/* Beast Code durum balonu: düşünüyor… / araç adları / durum satırları —
+   chat inputun üstündeki balonun BC panelindeki karşılığı */
+function bcStatusShow(text) {
+  if (!els.bcStatus) return;
+  const t = String(text || '').trim();
+  if (!t) return;
+  els.bcStatus.textContent = t;
+  els.bcStatus.hidden = false;
+}
+
+function bcStatusHide() {
+  if (els.bcStatus) els.bcStatus.hidden = true;
+}
+
 function bcRefreshPreview() {
   const now = Date.now();
   if (now - bcPrevAt < 1500) return; /* done + idle çift tetiklemesin */
@@ -6369,7 +6601,7 @@ function bcToolBoxStart(callId, name, args) {
   bcBodyScroll(body);
 }
 
-function bcToolBoxEnd(callId, ok, result) {
+function bcToolBoxEnd(callId, ok, result, diff) {
   bcFlushStream();
   const t = (callId && bcTools.get(callId)) || null;
   if (callId) bcTools.delete(callId);
@@ -6380,7 +6612,27 @@ function bcToolBoxEnd(callId, ok, result) {
     sec.classList.add('done');
     if (!ok) sec.classList.add('failed');
     const pre = sec.querySelector('.bc-toolout');
-    if (out) {
+    if (diff && diff.path) {
+      /* opencode diff görünümü: başlığa +/- rozeti, gövdeye kırmızı/yeşil diff */
+      const headEl = sec.querySelector('.bc-toolhead');
+      if (headEl && !headEl.querySelector('.diff-badge')) {
+        const badge = document.createElement('span');
+        badge.className = 'diff-badge';
+        const a = document.createElement('span');
+        a.className = 'diff-badge-add';
+        a.textContent = '+' + (diff.additions || 0);
+        const d = document.createElement('span');
+        d.className = 'diff-badge-del';
+        d.textContent = '−' + (diff.deletions || 0);
+        badge.appendChild(a);
+        badge.appendChild(d);
+        headEl.appendChild(badge);
+      }
+      pre.hidden = false;
+      pre.textContent = '';
+      pre.classList.add('bc-diffview');
+      pre.appendChild(buildDiffEl(diff, pre.clientWidth || 480));
+    } else if (out) {
       pre.hidden = false;
       pre.textContent = out.length > 4000 ? out.slice(0, 4000) + '\n… (kesildi)' : out;
     } else {
@@ -6484,7 +6736,7 @@ function bcIngest(ev) {
       if ((ev.name === 'write_file' || ev.name === 'edit_file') && ev.args && ev.args.path) codeWriteWatch.set(ev.callId, ev.args.path);
       break;
     case 'tool-end':
-      bcToolBoxEnd(ev.callId, ev.ok, ev.result);
+      bcToolBoxEnd(ev.callId, ev.ok, ev.result, ev.diff);
       if (codeWriteWatch.has(ev.callId)) {
         const wp = codeWriteWatch.get(ev.callId);
         codeWriteWatch.delete(ev.callId);
@@ -6512,6 +6764,7 @@ function bcIngest(ev) {
       bcFlushStream();
       bcCloseToolGroup();
       bcSetBusy(false);
+      bcStatusHide();
       /* iptal/durdurma SEBEBİ panelde de görünür */
       bcLine(ev.aborted ? 't-err' : 't-dim', ev.aborted ? '[durduruldu — sebep: ' + (ev.reason || 'sebep belirtilmedi') + ']' : '(tamamlandı)');
       ideRefreshTree(); /* son güvenlik tazelemesi — izlenmeyen yoldan üretilen dosyalar da düşsün */
@@ -6522,6 +6775,7 @@ function bcIngest(ev) {
       bcFlushStream();
       bcCloseToolGroup();
       bcSetBusy(false);
+      bcStatusHide();
       bcLine('t-err', '[hata] ' + (ev.error || ''));
       break;
     case 'status':
@@ -6530,7 +6784,11 @@ function bcIngest(ev) {
       if (ev.status === 'idle') {
         bcCloseToolGroup();
         bcSetBusy(false);
+        bcStatusHide();
         bcRefreshPreview();
+      } else {
+        /* düşünüyor… / araç adı / bağlam durumu — input üstünde canlı balon */
+        bcStatusShow(ev.status === 'thinking' ? 'düşünüyor…' : String(ev.status || ''));
       }
       break;
   }

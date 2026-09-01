@@ -125,6 +125,7 @@ Get-Content "$env:APPDATA\\beast\\sessions\\bg-jobs.json" | ConvertFrom-Json | %
 | \`agent/engine.js\` | OTURUM MOTORU: send/_run tur döngüsü, paralel ajanlar (run_background, run_background_many, tasks_list, task_status, task_cancel — task_cancel reason ZORUNLU), superyorizon (takılan işi zorla kapatır), iptal sebep disiplini, flushPendingReports |
 | \`agent/tools.js\` | Araçlar + web_search SIRALI ZİNCİRİ (searchChain: 1 dahili tarayıcı(Google) → 2 Obscura(stealth→DuckDuckGo) → 3 TinyFish(anahtarsa) → 4 python çoklu-motor; sıra Ayarlar→Web Arama'dan değişir), run_command, read/write_file, python_run, http_fetch, deep_search |
 | \`agent/llm.js\` | Sağlayıcı çağrısı + retry: ağ kopmasında 6 deneme + internet dönene kadar bekler; akış ortası kopmada kaldığı yerden devam |
+| \`agent/agentdefs.js\` | Özel ajan tanımları: %APPDATA%\beast\agents\\*.md (frontmatter: model/tools/steps/mode + prompt gövdesi); /agent ile bağlanır, run_background(agent:) ile paralel ajana verilir |
 | \`agent/obscura.js\` | Obscura: otomatik kurulum (GitHub releases, stealth zip) + DuckDuckGo html/lite arama ayrıştırıcı |
 | \`agent/bots.js\` | Bot CRUD, 5 haneli bot kodu, izolasyon; ad-ilk-harf doğrulaması |
 | \`agent/skills.js\` | Builtin tohumlar (help, email, python-web-search, pdf, gold-trading) + SKILL.md taraması + taslaklar |

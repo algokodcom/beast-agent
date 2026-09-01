@@ -662,6 +662,7 @@ function waSlashHelp() {
     '• */notes* – bu oturumun notlarını göster',
     '• */notify* on|off – hata mail bildirimini aç/kapa',
     '• */think* <0-5> – düşünme seviyesi (0 kapalı · 1 low · 2 medium · 3 high · 4 xhigh · 5 max)',
+    '• */agent* [isim] – özel ajan bağla/listele (%APPDATA%\beast\agents)',
     '• */clear* – bu oturumun geçmişini temizle',
     '• */screenshot* – masaüstü ekran görüntüsünü gönder',
     '• */rule* <metin> – kalıcı kural ekle (*/rules*: liste)',
@@ -3925,6 +3926,32 @@ ipcMain.handle('agent:send', (_e, { sessionId, text }) => {
     desktopEcho(sessionId, t, r && r.error ? r.error : r ? r.text : thinkStatusText());
     return true;
   }
+  if (t === '/agent' || t.startsWith('/agent ')) {
+    /* opencode agent port: özel ajan tanımları (%APPDATA%\beast\agents\*.md) */
+    const arg = t.slice(6).trim();
+    if (!arg) {
+      const list = engine.listAgents();
+      desktopEcho(
+        sessionId,
+        t,
+        list.length
+          ? '**Özel ajanlar:**\n' + list.map((d) => `- **${d.name}**${d.model ? ' · ' + d.model : ''}${d.steps ? ' · ' + d.steps + ' tur' : ''}${d.tools ? ' · ' + d.tools.length + ' araç' : ''}`).join('\n') + '\n\nBağlamak için: **/agent <isim>** · ayırmak için: **/agent off**'
+          : 'Özel ajan yok — `%APPDATA%\\beast\\agents\\` klasörüne `<isim>.md` tanımı koy (örnek dosya orada).'
+      );
+      return true;
+    }
+    const r = engine.setSessionAgent(sessionId, arg);
+    desktopEcho(
+      sessionId,
+      t,
+      r.ok
+        ? r.agent
+          ? `**Ajan bağlandı: ${r.agent}**${r.model ? ' · model: ' + r.model : ''}${r.steps ? ' · ' + r.steps + ' tur' : ''}${r.tools ? ' · araçlar: ' + r.tools.join(', ') : ''}`
+          : '**Ajan bağlantısı kaldırıldı** — oturum normal akışa döndü.'
+        : r.error
+    );
+    return true;
+  }
   if (t === '/clear') {
     /* #25 artık GERÇEK silme: oturum dosyasındaki mesajlar + notlar silinir,
        kod/meta/todolar korunur. Ekran da temizlenir ('clear' olayı). */
@@ -4008,6 +4035,7 @@ function desktopSlashHelp() {
     '**/change [n]** – modelleri listele · n. modele geç',
     '**/model [isim]** – aktif modeli göster / değiştir',
     '**/think 0-5** – düşünme seviyesi (0 kapalı · 5 max)',
+    '**/agent [isim]** – özel ajan bağla / listele (%APPDATA%\\beast\\agents\\*.md)',
     '**/clear** – oturum geçmişini gerçekten sil (kod korunur)',
     '**/notes** – bu oturumun notlarını göster',
     '**/rule <metin>** – kalıcı kural ekle · **/rules** – listele',
@@ -4458,7 +4486,20 @@ ipcMain.handle('model:set', (_e, sel) => {
     saveSettings();
     engine.setModelOverride(sel);
   }
+  /* IDE/Beast Code dahil tüm paneller anlık haberdar olsun — picker +
+     durum etiketleri kapatıp açmadan güncellenir */
+  try { win && !win.isDestroyed() && win.webContents.send('agent:event', { type: 'modelChanged' }); } catch {}
   return engine.publicState();
+});
+
+/* Paralel ajan geçmişini TOPLUCA sil (rail başlığındaki çöp ikonu) */
+ipcMain.handle('agents:clearAll', () => {
+  try {
+    const removed = engine.clearAllBgJobs();
+    return { ok: true, removed };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
 });
 
 ipcMain.handle('model:role', (_e, map) => {

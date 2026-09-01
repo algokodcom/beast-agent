@@ -130,6 +130,7 @@
           </div>
           <div id="bcOut"></div>
           <div id="bcTodoWrap" hidden></div>
+          <div id="bcStatus" hidden></div>
           <div id="bcInputRow">
             <span id="bcPrompt">code&gt;</span>
             <input id="bcInput" spellcheck="false" autocomplete="off" placeholder="Beast Code mesajı yaz — Enter ile gönder…" data-i18n-ph="bc_ph" />
@@ -140,7 +141,12 @@
     </main>
 
     <aside id="rail">
-      <div id="railHead" data-i18n="labelParallel">Paralel Ajanlar</div>
+      <div id="railHead">
+        <span id="railTitle" data-i18n="labelParallel">Paralel Ajanlar</span>
+        <button id="railClear" title="Tüm paralel ajan geçmişini sil" aria-label="Tüm paralel ajan geçmişini sil">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#111" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>
+        </button>
+      </div>
       <div id="railList"></div>
       <div id="sideFoot2">
         <span class="foot-label2" data-i18n="labelParallel">Paralel Ajanlar</span>

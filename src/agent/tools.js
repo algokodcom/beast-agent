@@ -894,6 +894,414 @@ async function httpFetch(url, { maxChars = MAX_FETCH_CHARS, signal } = {}) {
   };
 }
 
+/* ================= opencode edit.ts BİREBİR PORT =================
+   Kaynak: opencode-dev/packages/opencode/src/tool/edit.ts
+   9 aşamalı replacer zinciri: Simple → LineTrimmed → BlockAnchor →
+   WhitespaceNormalized → IndentationFlexible → EscapeNormalized →
+   TrimmedBoundary → ContextAware → MultiOccurrence.
+   Modelin old_string'i ufak girinti/boşluk farkıyla tutturamadığında zincir
+   akıllı eşleşme bulur — "dosyayı baştan oku" döngüsü kökten kırılır. */
+
+function normalizeLineEndings(text) {
+  return text.replaceAll('\r\n', '\n');
+}
+function detectLineEnding(text) {
+  return text.includes('\r\n') ? '\r\n' : '\n';
+}
+function convertToLineEnding(text, ending) {
+  if (ending === '\n') return text;
+  return text.replaceAll('\n', '\r\n');
+}
+
+/* blok-anchor fallback benzerlik eşikleri (edit.ts:220-221) */
+const SINGLE_CANDIDATE_SIMILARITY_THRESHOLD = 0.65;
+const MULTIPLE_CANDIDATES_SIMILARITY_THRESHOLD = 0.65;
+
+function levenshtein(a, b) {
+  if (a === '' || b === '') return Math.max(a.length, b.length);
+  const matrix = Array.from({ length: a.length + 1 }, (_, i) =>
+    Array.from({ length: b.length + 1 }, (_, j) => (i === 0 ? j : j === 0 ? i : 0))
+  );
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      matrix[i][j] = Math.min(matrix[i - 1][j] + 1, matrix[i][j - 1] + 1, matrix[i - 1][j - 1] + cost);
+    }
+  }
+  return matrix[a.length][b.length];
+}
+
+const SimpleReplacer = function* (_content, find) {
+  yield find;
+};
+
+const LineTrimmedReplacer = function* (content, find) {
+  const originalLines = content.split('\n');
+  const searchLines = find.split('\n');
+  if (searchLines[searchLines.length - 1] === '') searchLines.pop();
+  for (let i = 0; i <= originalLines.length - searchLines.length; i++) {
+    let matches = true;
+    for (let j = 0; j < searchLines.length; j++) {
+      if (originalLines[i + j].trim() !== searchLines[j].trim()) {
+        matches = false;
+        break;
+      }
+    }
+    if (matches) {
+      let matchStartIndex = 0;
+      for (let k = 0; k < i; k++) matchStartIndex += originalLines[k].length + 1;
+      let matchEndIndex = matchStartIndex;
+      for (let k = 0; k < searchLines.length; k++) {
+        matchEndIndex += originalLines[i + k].length;
+        if (k < searchLines.length - 1) matchEndIndex += 1;
+      }
+      yield content.substring(matchStartIndex, matchEndIndex);
+    }
+  }
+};
+
+const BlockAnchorReplacer = function* (content, find) {
+  const originalLines = content.split('\n');
+  const searchLines = find.split('\n');
+  if (searchLines.length < 3) return;
+  if (searchLines[searchLines.length - 1] === '') searchLines.pop();
+  const firstLineSearch = searchLines[0].trim();
+  const lastLineSearch = searchLines[searchLines.length - 1].trim();
+  const searchBlockSize = searchLines.length;
+  const maxLineDelta = Math.max(1, Math.floor(searchBlockSize * 0.25));
+  const candidates = [];
+  for (let i = 0; i < originalLines.length; i++) {
+    if (originalLines[i].trim() !== firstLineSearch) continue;
+    for (let j = i + 2; j < originalLines.length; j++) {
+      if (originalLines[j].trim() === lastLineSearch) {
+        const actualBlockSize = j - i + 1;
+        if (Math.abs(actualBlockSize - searchBlockSize) <= maxLineDelta) {
+          candidates.push({ startLine: i, endLine: j });
+        }
+        break;
+      }
+    }
+  }
+  if (candidates.length === 0) return;
+  if (candidates.length === 1) {
+    const { startLine, endLine } = candidates[0];
+    const actualBlockSize = endLine - startLine + 1;
+    let similarity = 0;
+    const linesToCheck = Math.min(searchBlockSize - 2, actualBlockSize - 2);
+    if (linesToCheck > 0) {
+      for (let j = 1; j < searchBlockSize - 1 && j < actualBlockSize - 1; j++) {
+        const originalLine = originalLines[startLine + j].trim();
+        const searchLine = searchLines[j].trim();
+        const maxLen = Math.max(originalLine.length, searchLine.length);
+        if (maxLen === 0) continue;
+        const distance = levenshtein(originalLine, searchLine);
+        similarity += (1 - distance / maxLen) / linesToCheck;
+        if (similarity >= SINGLE_CANDIDATE_SIMILARITY_THRESHOLD) break;
+      }
+    } else {
+      similarity = 1.0;
+    }
+    if (similarity >= SINGLE_CANDIDATE_SIMILARITY_THRESHOLD) {
+      let matchStartIndex = 0;
+      for (let k = 0; k < startLine; k++) matchStartIndex += originalLines[k].length + 1;
+      let matchEndIndex = matchStartIndex;
+      for (let k = startLine; k <= endLine; k++) {
+        matchEndIndex += originalLines[k].length;
+        if (k < endLine) matchEndIndex += 1;
+      }
+      yield content.substring(matchStartIndex, matchEndIndex);
+    }
+    return;
+  }
+  let bestMatch = null;
+  let maxSimilarity = -1;
+  for (const candidate of candidates) {
+    const { startLine, endLine } = candidate;
+    const actualBlockSize = endLine - startLine + 1;
+    let similarity = 0;
+    const linesToCheck = Math.min(searchBlockSize - 2, actualBlockSize - 2);
+    if (linesToCheck > 0) {
+      for (let j = 1; j < searchBlockSize - 1 && j < actualBlockSize - 1; j++) {
+        const originalLine = originalLines[startLine + j].trim();
+        const searchLine = searchLines[j].trim();
+        const maxLen = Math.max(originalLine.length, searchLine.length);
+        if (maxLen === 0) continue;
+        const distance = levenshtein(originalLine, searchLine);
+        similarity += 1 - distance / maxLen;
+      }
+      similarity /= linesToCheck;
+    } else {
+      similarity = 1.0;
+    }
+    if (similarity > maxSimilarity) {
+      maxSimilarity = similarity;
+      bestMatch = candidate;
+    }
+  }
+  if (maxSimilarity >= MULTIPLE_CANDIDATES_SIMILARITY_THRESHOLD && bestMatch) {
+    const { startLine, endLine } = bestMatch;
+    let matchStartIndex = 0;
+    for (let k = 0; k < startLine; k++) matchStartIndex += originalLines[k].length + 1;
+    let matchEndIndex = matchStartIndex;
+    for (let k = startLine; k <= endLine; k++) {
+      matchEndIndex += originalLines[k].length;
+      if (k < endLine) matchEndIndex += 1;
+    }
+    yield content.substring(matchStartIndex, matchEndIndex);
+  }
+};
+
+const WhitespaceNormalizedReplacer = function* (content, find) {
+  const normalizeWhitespace = (text) => text.replace(/\s+/g, ' ').trim();
+  const normalizedFind = normalizeWhitespace(find);
+  const lines = content.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (normalizeWhitespace(line) === normalizedFind) {
+      yield line;
+    } else {
+      const normalizedLine = normalizeWhitespace(line);
+      if (normalizedLine.includes(normalizedFind)) {
+        const words = find.trim().split(/\s+/);
+        if (words.length > 0) {
+          const pattern = words.map((word) => word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('\\s+');
+          try {
+            const regex = new RegExp(pattern);
+            const match = line.match(regex);
+            if (match) yield match[0];
+          } catch {}
+        }
+      }
+    }
+  }
+  const findLines = find.split('\n');
+  if (findLines.length > 1) {
+    for (let i = 0; i <= lines.length - findLines.length; i++) {
+      const block = lines.slice(i, i + findLines.length);
+      if (normalizeWhitespace(block.join('\n')) === normalizedFind) {
+        yield block.join('\n');
+      }
+    }
+  }
+};
+
+const IndentationFlexibleReplacer = function* (content, find) {
+  const removeIndentation = (text) => {
+    const lines = text.split('\n');
+    const nonEmptyLines = lines.filter((line) => line.trim().length > 0);
+    if (nonEmptyLines.length === 0) return text;
+    const minIndent = Math.min(
+      ...nonEmptyLines.map((line) => {
+        const match = line.match(/^(\s*)/);
+        return match ? match[1].length : 0;
+      })
+    );
+    return lines.map((line) => (line.trim().length === 0 ? line : line.slice(minIndent))).join('\n');
+  };
+  const normalizedFind = removeIndentation(find);
+  const contentLines = content.split('\n');
+  const findLines = find.split('\n');
+  for (let i = 0; i <= contentLines.length - findLines.length; i++) {
+    const block = contentLines.slice(i, i + findLines.length).join('\n');
+    if (removeIndentation(block) === normalizedFind) yield block;
+  }
+};
+
+const EscapeNormalizedReplacer = function* (content, find) {
+  const unescapeString = (str) =>
+    str.replace(/\\(n|t|r|'|"|`|\\|\n|\$)/g, (match, capturedChar) => {
+      switch (capturedChar) {
+        case 'n': return '\n';
+        case 't': return '\t';
+        case 'r': return '\r';
+        case "'": return "'";
+        case '"': return '"';
+        case '`': return '`';
+        case '\\': return '\\';
+        case '\n': return '\n';
+        case '$': return '$';
+        default: return match;
+      }
+    });
+  const unescapedFind = unescapeString(find);
+  if (content.includes(unescapedFind)) yield unescapedFind;
+  const lines = content.split('\n');
+  const findLines = unescapedFind.split('\n');
+  for (let i = 0; i <= lines.length - findLines.length; i++) {
+    const block = lines.slice(i, i + findLines.length).join('\n');
+    if (unescapeString(block) === unescapedFind) yield block;
+  }
+};
+
+const MultiOccurrenceReplacer = function* (content, find) {
+  let startIndex = 0;
+  while (true) {
+    const index = content.indexOf(find, startIndex);
+    if (index === -1) break;
+    yield find;
+    startIndex = index + find.length;
+  }
+};
+
+const TrimmedBoundaryReplacer = function* (content, find) {
+  const trimmedFind = find.trim();
+  if (trimmedFind === find) return;
+  if (content.includes(trimmedFind)) yield trimmedFind;
+  const lines = content.split('\n');
+  const findLines = find.split('\n');
+  for (let i = 0; i <= lines.length - findLines.length; i++) {
+    const block = lines.slice(i, i + findLines.length).join('\n');
+    if (block.trim() === trimmedFind) yield block;
+  }
+};
+
+const ContextAwareReplacer = function* (content, find) {
+  const findLines = find.split('\n');
+  if (findLines.length < 3) return;
+  if (findLines[findLines.length - 1] === '') findLines.pop();
+  const contentLines = content.split('\n');
+  const firstLine = findLines[0].trim();
+  const lastLine = findLines[findLines.length - 1].trim();
+  for (let i = 0; i < contentLines.length; i++) {
+    if (contentLines[i].trim() !== firstLine) continue;
+    for (let j = i + 2; j < contentLines.length; j++) {
+      if (contentLines[j].trim() === lastLine) {
+        const blockLines = contentLines.slice(i, j + 1);
+        const block = blockLines.join('\n');
+        if (blockLines.length === findLines.length) {
+          let matchingLines = 0;
+          let totalNonEmptyLines = 0;
+          for (let k = 1; k < blockLines.length - 1; k++) {
+            const blockLine = blockLines[k].trim();
+            const findLine = findLines[k].trim();
+            if (blockLine.length > 0 || findLine.length > 0) {
+              totalNonEmptyLines++;
+              if (blockLine === findLine) matchingLines++;
+            }
+          }
+          if (totalNonEmptyLines === 0 || matchingLines / totalNonEmptyLines >= 0.5) {
+            yield block;
+            break;
+          }
+        }
+        break;
+      }
+    }
+  }
+};
+
+function isDisproportionateMatch(search, oldString) {
+  const oldLines = oldString.split('\n').length;
+  const searchLines = search.split('\n').length;
+  if (searchLines >= Math.max(oldLines + 3, oldLines * 2)) return true;
+  if (oldLines === 1) return false;
+  return search.trim().length > Math.max(oldString.trim().length + 500, oldString.trim().length * 4);
+}
+
+/* edit.ts:682-729 replace() — zinciri sırayla dener; tek eşleşme şart,
+   replaceAll'de tümünü değiştirir; hata mesajları BİREBİR opencode */
+function ocReplace(content, oldString, newString, replaceAll = false) {
+  if (oldString === newString) {
+    throw new Error('No changes to apply: oldString and newString are identical.');
+  }
+  if (oldString === '') {
+    throw new Error(
+      'oldString cannot be empty when editing an existing file. Provide the exact text to replace, or use write_file for an intentional full-file replacement.'
+    );
+  }
+  let notFound = true;
+  for (const replacer of [
+    SimpleReplacer,
+    LineTrimmedReplacer,
+    BlockAnchorReplacer,
+    WhitespaceNormalizedReplacer,
+    IndentationFlexibleReplacer,
+    EscapeNormalizedReplacer,
+    TrimmedBoundaryReplacer,
+    ContextAwareReplacer,
+    MultiOccurrenceReplacer,
+  ]) {
+    for (const search of replacer(content, oldString)) {
+      const index = content.indexOf(search);
+      if (index === -1) continue;
+      notFound = false;
+      if (isDisproportionateMatch(search, oldString)) {
+        throw new Error(
+          'Refusing replacement because the matched span is much larger than oldString. Re-read the file and provide the full exact oldString for the intended replacement.'
+        );
+      }
+      if (replaceAll) {
+        return { result: content.replaceAll(search, newString), replacements: content.split(search).length - 1 };
+      }
+      const lastIndex = content.lastIndexOf(search);
+      if (index !== lastIndex) continue;
+      return { result: content.substring(0, index) + newString + content.substring(index + search.length), replacements: 1 };
+    }
+  }
+  if (notFound) {
+    throw new Error(
+      'Could not find oldString in the file. It must match exactly, including whitespace, indentation, and line endings.'
+    );
+  }
+  throw new Error('Found multiple matches for oldString. Provide more surrounding context to make the match unique.');
+}
+
+/* ---------- opencode diff portu (npm "diff" paketinin diffLines karşılığı) ----------
+   LCS tabanlı satır diff'i: additions/deletions sayımı (edit.ts:175-180) ve
+   UI split-diff görünümü için kırpılmış bölge (trimDiff mantığı). */
+function diffLineCounts(aText, bText) {
+  /* bos metin = 0 satir (opencode npm diffLines davranisi) */
+  const a = aText ? String(aText).split('\n') : [];
+  const b = bText ? String(bText).split('\n') : [];
+  let p = 0;
+  while (p < a.length && p < b.length && a[p] === b[p]) p++;
+  let ea = a.length - 1;
+  let eb = b.length - 1;
+  while (ea >= p && eb >= p && a[ea] === b[eb]) { ea--; eb--; }
+  const midA = a.slice(p, ea + 1);
+  const midB = b.slice(p, eb + 1);
+  const n = midA.length;
+  const m = midB.length;
+  if (!n && !m) return { additions: 0, deletions: 0 };
+  if (n * m > 400000 || n > 1500 || m > 1500) return { additions: m, deletions: n };
+  const w = m + 1;
+  const dp = new Int32Array((n + 1) * w);
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) {
+      dp[i * w + j] =
+        midA[i] === midB[j]
+          ? dp[(i + 1) * w + j + 1] + 1
+          : Math.max(dp[(i + 1) * w + j], dp[i * w + j + 1]);
+    }
+  }
+  const matched = dp[0];
+  return { additions: m - matched, deletions: n - matched };
+}
+
+const DIFF_REGION_CTX = 3; /* değişiklik etrafında kaç bağlam satırı gösterilir */
+const DIFF_REGION_CAP = 3500; /* UI'ye giden bölge başına karakter tavanı */
+
+function capDiffText(s) {
+  const t = String(s || '');
+  return t.length > DIFF_REGION_CAP ? t.slice(0, DIFF_REGION_CAP) + '\n…' : t;
+}
+
+/* Değişen bölgeyi ±DIFF_REGION_CTX bağlam satırıyla kırpar (opencode trimDiff
+   mantığı — tüm dosya yerine yalnız değişen kısım UI'ye gider). */
+function diffRegion(before, after) {
+  const a = String(before || '').split('\n');
+  const b = String(after || '').split('\n');
+  let p = 0;
+  while (p < a.length && p < b.length && a[p] === b[p]) p++;
+  let ea = a.length - 1;
+  let eb = b.length - 1;
+  while (ea >= p && eb >= p && a[ea] === b[eb]) { ea--; eb--; }
+  const start = Math.max(0, p - DIFF_REGION_CTX);
+  const beforeRegion = a.slice(start, Math.min(a.length, ea + 1 + DIFF_REGION_CTX)).join('\n');
+  const afterRegion = b.slice(start, Math.min(b.length, eb + 1 + DIFF_REGION_CTX)).join('\n');
+  return { before: capDiffText(beforeRegion), after: capDiffText(afterRegion), startLine: start + 1 };
+}
+
 const definitions = [
   {
     type: 'function',
@@ -915,11 +1323,25 @@ const definitions = [
     type: 'function',
     function: {
       name: 'read_file',
-      description: 'Read a text file. Returns its content (truncated if huge).',
+      /* opencode read.txt BİREBİR port (parametre adı path olarak kaldı) */
+      description:
+        'Read a file or directory from the local filesystem. If the path does not exist, an error is returned.\n\n' +
+        'Usage:\n' +
+        '- By default, this tool returns up to 2000 lines from the start of the file.\n' +
+        '- The offset parameter is the line number to start reading from (1-indexed).\n' +
+        '- To read later sections, call this tool again with a larger offset — NEVER re-read from the start of the file.\n' +
+        '- Use the grep tool to find specific content in large files or files with long lines.\n' +
+        '- If you are unsure of the correct file path, use the glob tool to look up filenames by glob pattern.\n' +
+        '- Contents are returned with each line prefixed by its line number as `<line>: <content>`. For example, if a file has contents "foo\\n", you will receive "1: foo\\n".\n' +
+        '- Any line longer than 2000 characters is truncated.\n' +
+        '- Call this tool in parallel when you know there are multiple files you want to read.\n' +
+        '- Avoid tiny repeated slices (30 line chunks). If you need more context, read a larger window.',
       parameters: {
         type: 'object',
         properties: {
-          path: { type: 'string' },
+          path: { type: 'string', description: 'The path to the file to read' },
+          offset: { type: 'number', description: 'The line number to start reading from (1-indexed)' },
+          limit: { type: 'number', description: 'The maximum number of lines to read (defaults to 2000)' },
         },
         required: ['path'],
       },
@@ -929,12 +1351,19 @@ const definitions = [
     type: 'function',
     function: {
       name: 'write_file',
-      description: 'Write (or overwrite) a text file with content. Creates parent directories. PREFER edit_file for changing existing files — write_file is for NEW files or full rewrites only.',
+      /* opencode write.txt BİREBİR port */
+      description:
+        'Writes a file to the local filesystem.\n\n' +
+        'Usage:\n' +
+        '- This tool will overwrite the existing file if there is one at the provided path.\n' +
+        '- If this is an existing file, you MUST use the read_file tool first to read the file\'s contents. This tool will fail if you did not read the file first.\n' +
+        '- ALWAYS prefer editing existing files in the codebase with edit_file. NEVER write new files unless explicitly required.\n' +
+        '- The result includes additions/deletions counts — the change is APPLIED to disk immediately; do NOT read the file again to verify.',
       parameters: {
         type: 'object',
         properties: {
-          path: { type: 'string' },
-          content: { type: 'string' },
+          path: { type: 'string', description: 'The path to the file to write' },
+          content: { type: 'string', description: 'The content to write to the file' },
         },
         required: ['path', 'content'],
       },
@@ -944,15 +1373,24 @@ const definitions = [
     type: 'function',
     function: {
       name: 'edit_file',
+      /* opencode edit.txt BİREBİR port (parametre adları snake_case kaldı) */
       description:
-        'Performs exact string replacements in files. Usage: read the file first; pass oldString (exact text including indentation, WITHOUT line-number prefixes) and newString. FAILS if oldString is not found ("oldString not found in content") or found multiple times ("Found multiple matches...") — provide more surrounding lines to make it unique, or set replace_all:true to replace every instance. ALWAYS prefer this tool over write_file for existing files; NEVER reformat unrelated code.',
+        'Performs exact string replacements in files.\n\n' +
+        'Usage:\n' +
+        '- You must use your read_file tool at least once in the conversation before editing. This tool will error if you attempt an edit without reading the file.\n' +
+        '- When editing text from read_file output, ensure you preserve the exact indentation (tabs/spaces) as it appears AFTER the line number prefix. The line number prefix format is: line number + colon + space (e.g., `1: `). Everything after that space is the actual file content to match. Never include any part of the line number prefix in the old_string or new_string.\n' +
+        '- ALWAYS prefer editing existing files in the codebase. NEVER write new files unless explicitly required.\n' +
+        '- The edit will FAIL if `old_string` is not found in the file with an error "oldString not found in content".\n' +
+        '- The edit will FAIL if `old_string` is found multiple times in the file with an error "Found multiple matches for oldString. Provide more surrounding lines in old_string to identify the correct match." Either provide a larger string with more surrounding context to make it unique or use `replace_all` to change every instance of `old_string`.\n' +
+        '- Use `replace_all` for replacing and renaming strings across the file. This parameter is useful if you want to rename a variable for instance.\n' +
+        '- The result includes additions/deletions counts — the change is APPLIED to disk immediately; do NOT read the file again to verify.',
       parameters: {
         type: 'object',
         properties: {
-          path: { type: 'string' },
-          old_string: { type: 'string', description: 'Exact text to replace (must match file content verbatim)' },
-          new_string: { type: 'string', description: 'Replacement text (can be empty to delete)' },
-          replace_all: { type: 'boolean', description: 'Replace every occurrence instead of failing on multiple matches' },
+          path: { type: 'string', description: 'The path to the file to modify' },
+          old_string: { type: 'string', description: 'The text to replace' },
+          new_string: { type: 'string', description: 'The text to replace it with (must be different from old_string)' },
+          replace_all: { type: 'boolean', description: 'Replace all occurrences of old_string (default false)' },
         },
         required: ['path', 'old_string', 'new_string'],
       },
@@ -1102,32 +1540,54 @@ async function exec(name, args, ctx) {
         });
       }
       case 'edit_file': {
-        const abs = safeResolve(String(args.path || ''), cwd);
+        /* opencode edit.ts execute BİREBİR port — replacer zinciri + satır sonu
+           normalizasyonu + diff metadata (additions/deletions + UI diffView) */
+        const filePath = safeResolve(String(args.path || args.filePath || ''), cwd);
         const oldS = String(args.old_string ?? args.oldString ?? '');
         const newS = String(args.new_string ?? args.newString ?? '');
-        if (!oldS) return JSON.stringify({ ok: false, error: 'old_string boş olamaz' });
-        if (!fs.existsSync(abs)) return JSON.stringify({ ok: false, error: 'dosya bulunamadı: ' + abs });
-        const src = fs.readFileSync(abs, 'utf8');
-        const count = src.split(oldS).length - 1;
-        if (count === 0) {
-          return JSON.stringify({
-            ok: false,
-            error: 'oldString not found in content — dosyayı read_file ile tekrar oku; satır numarası ön ekini (ör. "1: ") EKLEME, içerik birebir olmalı',
-          });
+        try {
+          if (oldS === newS) {
+            throw new Error('No changes to apply: oldString and newString are identical.');
+          }
+          /* boş oldString = YENİ dosya oluşturma yolu (edit.ts:90-121) */
+          if (oldS === '') {
+            if (fs.existsSync(filePath)) {
+              throw new Error(
+                'oldString cannot be empty when editing an existing file. Provide the exact text to replace, or use write_file for an intentional full-file replacement.'
+              );
+            }
+            fs.mkdirSync(path.dirname(filePath), { recursive: true });
+            fs.writeFileSync(filePath, newS, 'utf8');
+            const counts = diffLineCounts('', newS);
+            const out = { ok: true, path: filePath, note: 'Edit applied successfully.', replacements: 1, ...counts };
+            if (ctx.wantDiff) out.diffView = { path: filePath, before: '', after: capDiffText(newS), startLine: 1, ...counts };
+            return JSON.stringify(out);
+          }
+          if (!fs.existsSync(filePath)) throw new Error(`File ${filePath} not found`);
+          if (fs.statSync(filePath).isDirectory()) throw new Error(`Path is a directory, not a file: ${filePath}`);
+          const contentOld = fs.readFileSync(filePath, 'utf8');
+          /* satır sonu stili dosyadan alınır, old/new buna çevrilir (edit.ts:129-131) */
+          const ending = detectLineEnding(contentOld);
+          const oldN = convertToLineEnding(normalizeLineEndings(oldS), ending);
+          const newN = convertToLineEnding(normalizeLineEndings(newS), ending);
+          const rep = ocReplace(contentOld, oldN, newN, !!(args.replace_all || args.replaceAll));
+          const contentNew = rep.result;
+          fs.writeFileSync(filePath, contentNew, 'utf8');
+          const counts = diffLineCounts(contentOld, contentNew);
+          const out = {
+            ok: true,
+            path: filePath,
+            note: 'Edit applied successfully.',
+            replacements: rep.replacements,
+            ...counts,
+          };
+          if (ctx.wantDiff) {
+            out.diffView = { path: filePath, ...diffRegion(contentOld, contentNew), ...counts };
+          }
+          return JSON.stringify(out);
+        } catch (e) {
+          return JSON.stringify({ ok: false, error: String((e && e.message) || e) });
         }
-        if (count > 1 && !args.replace_all && !args.replaceAll) {
-          return JSON.stringify({
-            ok: false,
-            error: `Found multiple matches for oldString (${count} kez). Daha fazla bağlam satırı ekleyerek benzersiz yap ya da replace_all:true ver`,
-          });
-        }
-        const out = args.replace_all || args.replaceAll ? src.split(oldS).join(newS) : src.replace(oldS, newS);
-        fs.writeFileSync(abs, out, 'utf8');
-        return JSON.stringify({
-          ok: true,
-          path: abs,
-          replacements: args.replace_all || args.replaceAll ? count : 1,
-        });
       }
       case 'read_file': {
         const abs = safeResolve(String(args.path || ''), cwd);
@@ -1184,14 +1644,31 @@ async function exec(name, args, ctx) {
           totalLines: allLines.length,
           offset,
           truncated,
+          /* opencode read.ts çıktı işaretleri portu: model devamını offset ile
+             okur — BAŞTAN okuma döngüsü kırılır */
+          ...(truncated
+            ? { note: `(Devam ediyor — toplam ${allLines.length} satır. Kalan bölüm için offset:${offset + slice.length} ile oku; dosyayı BAŞTAN okuma.)` }
+            : { note: `(End of file - total ${allLines.length} lines)` }),
           content,
         });
       }
       case 'write_file': {
+        /* opencode write.ts port: üzerine yazmadan önce eski içerik alınır,
+           sonuçta additions/deletions + UI diffView döner */
         const abs = safeResolve(String(args.path || ''), cwd);
+        const content = String(args.content ?? '');
+        const existed = fs.existsSync(abs);
+        const before = existed && !fs.statSync(abs).isDirectory() ? fs.readFileSync(abs, 'utf8') : '';
         fs.mkdirSync(path.dirname(abs), { recursive: true });
-        fs.writeFileSync(abs, String(args.content ?? ''), 'utf8');
-        return JSON.stringify({ ok: true, path: abs, bytes: Buffer.byteLength(String(args.content ?? '')) });
+        fs.writeFileSync(abs, content, 'utf8');
+        const counts = diffLineCounts(before, content);
+        const out = { ok: true, path: abs, bytes: Buffer.byteLength(content), ...counts };
+        if (ctx.wantDiff) {
+          out.diffView = existed
+            ? { path: abs, ...diffRegion(before, content), ...counts }
+            : { path: abs, before: '', after: capDiffText(content), startLine: 1, ...counts };
+        }
+        return JSON.stringify(out);
       }
       case 'list_dir': {
         const abs = args.path ? safeResolve(String(args.path), cwd) : cwd;
@@ -1477,6 +1954,21 @@ async function tinyfishSearch(query, maxResults, signal) {
 module.exports = {
   definitions,
   exec,
+  /* opencode edit.ts portu (test + dış kullanım) */
+  ocReplace,
+  diffLineCounts,
+  diffRegion,
+  ocReplacers: {
+    SimpleReplacer,
+    LineTrimmedReplacer,
+    BlockAnchorReplacer,
+    WhitespaceNormalizedReplacer,
+    IndentationFlexibleReplacer,
+    EscapeNormalizedReplacer,
+    TrimmedBoundaryReplacer,
+    ContextAwareReplacer,
+    MultiOccurrenceReplacer,
+  },
   runCommand,
   runShellCommand,
   runBashCommand,

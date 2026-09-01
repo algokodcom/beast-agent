@@ -10,6 +10,7 @@ const { chatStream, chatStreamAuto, chatOnce } = require('./llm');
 const { chatCompletionsUrl } = require('./config');
 const tools = require('./tools');
 const research = require('./research');
+const agentdefs = require('./agentdefs');
 const memory = require('./memory');
 const skills = require('./skills');
 const { estTokens, estMsgTokens } = require('./tokens');
@@ -311,6 +312,59 @@ class Engine {
     }, SUP_CHECK_MS);
     if (this._supTimer.unref) this._supTimer.unref();
     skills.seedIfEmpty();
+    agentdefs.seedIfEmpty();
+  }
+
+  /* ---------- opencode agent.ts port: özel ajanlar ---------- */
+
+  /* Oturumu bir özel ajana bağla (%APPDATA%\beast\agents\<isim>.md) —
+     o oturumun prompt/model/araç/tur limiti ajan tanımından gelir */
+  setSessionAgent(sessionId, name) {
+    const sid = String(sessionId || '');
+    if (!sid) return { ok: false, error: 'oturum yok' };
+    const n = String(name || '').trim();
+    let s;
+    try { s = this._load(sid); } catch { return { ok: false, error: 'oturum açılamadı' }; }
+    if (!n || n === 'off' || n === 'kapalı') {
+      delete s.agentName;
+      this.cache.set(sid, s);
+      try {
+        fs.appendFileSync(this._file(sid), JSON.stringify({ t: 'agent', name: null, at: nowIso() }) + '\n');
+      } catch {}
+      return { ok: true, agent: null };
+    }
+    const def = agentdefs.get(n);
+    if (!def) {
+      const have = agentdefs.list().map((d) => d.name).join(', ') || '(tanım yok)';
+      return { ok: false, error: `ajan bulunamadı: ${n} — tanımlı: ${have}` };
+    }
+    s.agentName = def.name;
+    this.cache.set(sid, s);
+    try {
+      fs.appendFileSync(this._file(sid), JSON.stringify({ t: 'agent', name: def.name, at: nowIso() }) + '\n');
+    } catch {}
+    return { ok: true, agent: def.name, model: def.model, tools: def.tools, steps: def.steps };
+  }
+
+  /* Oturumun (varsa) özel ajan tanımı — mode filtresiyle: chat oturumunda
+     mode:bg ajanı kullanılmaz, bg oturumunda mode:chat kullanılmaz */
+  _agentDefFor(session, forBg = false) {
+    const n = session && session.agentName;
+    if (!n) return null;
+    const def = agentdefs.get(n);
+    if (!def) return null;
+    if (def.mode !== 'all' && def.mode !== (forBg ? 'bg' : 'chat')) return null;
+    return def;
+  }
+
+  listAgents() {
+    return agentdefs.list().map((d) => ({
+      name: d.name,
+      model: d.model,
+      tools: d.tools,
+      steps: d.steps,
+      mode: d.mode,
+    }));
   }
 
   /* Zinciri yeniden kur: base + custom, silinenleri ayıkla */
@@ -981,6 +1035,9 @@ class Engine {
             /* opencode compaction: konuşma özeti — birebir geçmişin yerine geçmez,
                payload'da system'den sonra sabit user mesajı olarak girer */
             if (rec.text) session.summary = String(rec.text);
+          } else if (rec.t === 'agent') {
+            /* opencode agent port: oturumun bağlı olduğu özel ajan */
+            if (rec.name) session.agentName = String(rec.name);
           } else if (rec.t === 'botdm') {
             /* botlar arası DM oturumu — admin izleyebilir, sidebar'da görünmez */
             session.isBotDm = true;
@@ -1328,10 +1385,10 @@ class Engine {
         ? '# PROJE TALİMATLARI (workspace AGENTS/CLAUDE/CONTEXT dosyalarından — daima uy)\n' + proj + '\n'
         : '') +
       'WORKFLOW (her işte bu sıra):\n' +
-      '1) BAĞLAM: değiştirmeden önce ilgili dosyaları OKU — read_file satır numaralı döner (N: içerik), offset/limit ile büyük dosyayı pencerele; içerik araması için grep (regex), dosya adı araması için glob kullan; varsayım yapma, mevcut stili/konvansiyonu takip et.\n' +
+      '1) BAĞLAM: değiştirmeden önce ilgili dosyaları OKU — read_file satır numaralı döner (N: içerik); büyük dosyada devamını offset parametresiyle oku, ASLA baştan okuma; bir dosyayı aynı oturumda BİR KEZ okumak yeter — içeriği bağlamda zaten var. İçerik araması için grep (regex), dosya adı araması için glob kullan; varsayım yapma, mevcut stili/konvansiyonu takip et.\n' +
       '2) PLAN: 2+ adımlı işlerde İLK EYLEM todo_write olsun (2-6 madde); her adım bitince status:"done" ile GÜNCELLE — liste bitene kadar iş bitmiş sayılmaz.\n' +
-      '3) EDİT: VAR OLAN dosyada önce edit_file kullan (old_string/new_string ile yalnız ilgili bölümü değiştir; birden çok eşleşme varsa bağlam ekle ya da replace_all); write_file yalnız YENİ dosya ya da tam yeniden yazım için. İlgisiz yeniden biçimleme/kayıt boşluk değişikliği YAPMA.\n' +
-      '4) DOĞRULA: edit sonrası mümkünse derle/test et/lint çalıştır (run_command); hata varsa DÜZELT ve TEKRAR dene (en fazla 2 doğrulama turu) — kırmızı bırakma.\n' +
+      '3) EDİT: VAR OLAN dosyada önce edit_file kullan (old_string/new_string ile yalnız ilgili bölümü değiştir; birden çok eşleşme varsa bağlam ekle ya da replace_all); write_file yalnız YENİ dosya ya da tam yeniden yazım için. İlgisiz yeniden biçimleme/kayıt boşluk değişikliği YAPMA. edit_file/write_file sonucu additions/deletions döner ve değişiklik diske ANINDA uygulanır — doğrulamak için dosyayı TEKRAR OKUMA YASAK; sonraki editi önceki okuduğun içerik + kendi değişikliklerin üzerinden zincirle.\n' +
+      '4) DOĞRULA: edit sonrası mümkünse derle/test et/lint çalıştır (run_command); hata varsa DÜZELT ve TEKRAR dene (en fazla 2 doğrulama turu) — kırmızı bırakma. Doğrulama read_file ile DEĞİL run_command ile yapılır.\n' +
       '5) RAPOR: 1-3 satır — ne değişti + doğrulama sonucu (ör. "npm test ✓ 154/154"). Uzun açıklama yok.\n' +
       'CANLI ÖNİZLEME: web sitesi/app üretirsen son adımda ÇALIŞIR halde bırak (dev server ayakta ya da index.html yazılmış) — panel iş bitince ürettiğin şeyi dahili tarayıcıda otomatik canlı açar.\n' +
       'HIZ KURALLARI:\n' +
@@ -1384,6 +1441,12 @@ class Engine {
         '# SKILLS\nKullanmadan önce ilgili SKILL.md dosyasını read_file ile oku.\n' + sk.join('\n')
       );
     }
+    /* opencode instruction port (ajan modu): workspace AGENTS/CLAUDE/CONTEXT
+       talimatları — oturum başına bir kez okunur, epoch boyunca sabit */
+    const projChat = this._projectInstructions(session);
+    if (projChat) {
+      parts.push('# PROJE TALİMATLARI (workspace AGENTS/CLAUDE/CONTEXT dosyalarından — daima uy)\n' + projChat);
+    }
     /* Beast Code (bcCode) oturumları buildBcSystem kullanır — buraya düşmez */
     const nowD = new Date();
     const localDate = nowD.toLocaleDateString('tr-TR');
@@ -1415,7 +1478,7 @@ class Engine {
       '# ARAÇ KURALLARI\n' +
         [
           'Basit soruları araç kullanmadan doğrudan cevapla — hız önceliklidir.',
-          'Kod/dosya işlerinde: içerik araması grep (regex), dosya adı araması glob, VAR OLAN dosyayı değiştirme edit_file (write_file yalnız yeni dosya/tam yeniden yazım). read_file satır numaralı döner; offset/limit ile pencerele.',
+          'Kod/dosya işlerinde: içerik araması grep (regex), dosya adı araması glob, VAR OLAN dosyayı değiştirme edit_file (write_file yalnız yeni dosya/tam yeniden yazım). read_file satır numaralı döner; büyük dosyada devamını offset parametresiyle oku, ASLA baştan okuma; bir dosyayı aynı oturumda BİR KEZ okumak yeter. edit_file/write_file sonucu additions/deletions döner ve değişiklik diske ANINDA uygulanır — doğrulamak için dosyayı TEKRAR OKUMA; önceki okuduğun içerik + kendi değişikliklerin üzerinden devam et.',
           'Kullanıcı bir tarihte/saatte hatırlatılmasını isterse set_reminder kullan; when değerini ORTAMdaki bugüne göre hesapla (yerel saat). "Her sabah/gün/hafta" gibi tekrarlı isteklerde repeat alanını da ver (daily/weekly/monthly/weekdays veya cron).',
                     'Kullanıcı kalıcı bir arka plan takibi isterse (fiyat eşiği, pil seviyesi, sayfa değişikliği) watcher_add ile izleyici kur; kurduktan sonra watcher_list ile doğrula ve kullanıcıya koşulu + kontrol sıklığını kısaca bildir.',
           'Anlık olay takipleri için (yeni mail, fiyat eşiği, dosya değişimi, webhook) event_subscribe kullan — cron/polling gerekmez; listeyi event_list ile göster, vazgeçirirse event_unsubscribe.',
@@ -1555,8 +1618,15 @@ class Engine {
     });
     for (let k = 0; k < flat.length; k++) {
       const m = flat[k];
-      if (m.role === 'tool' && String(m.content || '').length > TOOL_OUT_KEEP * 2) {
-        flat[k] = { ...m, content: String(m.content).slice(0, TOOL_OUT_KEEP) + '\n…[kırpıldı]' };
+      if (m.role !== 'tool') continue;
+      const tooLong = String(m.content || '').length > TOOL_OUT_KEEP * 2;
+      /* diffView UI-only metadata'dır — sağlayıcıya GİTMEZ (bilinmeyen alan
+         reddi + token israfı önlenir); kırpma ile aynı kopyada birleştirilir */
+      if (tooLong || m.diffView) {
+        const rest = { ...m };
+        delete rest.diffView;
+        if (tooLong) rest.content = String(m.content).slice(0, TOOL_OUT_KEEP) + '\n…[kırpıldı]';
+        flat[k] = rest;
       }
     }
     /* opencode compaction replay (message-v2.ts:521-572): özet, system'den
@@ -1816,7 +1886,10 @@ class Engine {
       if (pruned <= PRUNE_MINIMUM) return 0;
       const marker = '[eski araç çıktısı temizlendi — özet ve son çıktılar yeterli]';
       const ids = new Map(targets.map((m) => [m.tool_call_id, marker]));
-      for (const m of targets) m.content = marker;
+      for (const m of targets) {
+        m.content = marker;
+        delete m.diffView; /* prune edilen çıktının UI diff'i de düşer */
+      }
       try {
         const file = this._file(session.id);
         const lines = fs.readFileSync(file, 'utf8').split('\n');
@@ -1826,6 +1899,7 @@ class Engine {
           try { r = JSON.parse(lines[i]); } catch { continue; }
           if (r.t === 'msg' && r.role === 'tool' && ids.has(r.tool_call_id)) {
             r.content = marker;
+            delete r.diffView;
             lines[i] = JSON.stringify({ t: 'msg', ...r });
           }
         }
@@ -2006,6 +2080,27 @@ class Engine {
     return true;
   }
 
+  /* Paralel ajan GEÇMİŞİNİ topluca sil: çalışanlar/ bekleyenler iptal edilir,
+     tüm bg oturum dosyaları + kalıcı kayıt temizlenir. Döndürür: silinen iş sayısı */
+  clearAllBgJobs() {
+    let n = 0;
+    for (const id of [...this._bgJobs.keys()]) {
+      try {
+        const j = this._bgJobs.get(id);
+        if (j && (j.status === 'running' || j.status === 'queued')) {
+          this._abortReasons = this._abortReasons || new Map();
+          this._abortReasons.set(id, 'paralel ajan geçmişi topluca temizlendi');
+          const c = this.ctrls.get(id);
+          if (c) c.abort();
+        }
+        if (this.deleteSession(id)) n++;
+      } catch {}
+    }
+    try { fs.unlinkSync(this._bgJobsFile); } catch {}
+    this._bgEmit();
+    return n;
+  }
+
   /* #14 paralel ajanlar: ANA oturumu hiç bloklamayan arka plan çalıştırıcı.
      Ayrı gizli oturum açar, işi orada koşturur; bitince özet bildirim
      istenen sohbete düşer. Birden fazla iş aynı anda paralel koşabilir —
@@ -2019,6 +2114,11 @@ class Engine {
     const bg = this._load(this.createSession().id);
     bg.messages = bg.messages || [];
     bg.bgJob = true; // arka plan oturumu: auto-memory/kalibrasyon kapalı
+    /* opencode agent port: iş özel ajana bağlıysa prompt/model/araç/steps ondan */
+    if (opts.agent) {
+      const adef = agentdefs.get(String(opts.agent));
+      if (adef && (adef.mode === 'bg' || adef.mode === 'all')) bg.agentName = adef.name;
+    }
     this.cache.set(bg.id, bg);
     const ttl = String(title || t).replace(/\s+/g, ' ').trim().slice(0, 80) || 'arka plan görevi';
     /* #17 cache'teki nesneye de işaret koy — listSessions temiz başlık göstersin */
@@ -2030,12 +2130,16 @@ class Engine {
         this._file(bg.id),
         JSON.stringify({ t: 'meta2', bgOf: parent, title: ttl, at: new Date().toISOString() }) + '\n'
       );
+      if (bg.agentName) {
+        fs.appendFileSync(this._file(bg.id), JSON.stringify({ t: 'agent', name: bg.agentName, at: nowIso() }) + '\n');
+      }
     } catch {}
     this._bgJobs.set(bg.id, {
       id: bg.id,
       code: bg.code,
       title: ttl,
       task: t.slice(0, 500),
+      agent: bg.agentName || null,
       parentId: parent,
       groupId: opts.groupId || null,
       status: 'running', // queued | running | done | error | aborted
@@ -2120,7 +2224,10 @@ class Engine {
     for (const item of list) {
       const task = String((item && item.task) || item || '').trim();
       if (!task) continue;
-      const r = this.runBackground(parent, task, (item && item.title) || `${groupTitle || 'grup'} #${++n}`, { groupId });
+      const r = this.runBackground(parent, task, (item && item.title) || `${groupTitle || 'grup'} #${++n}`, {
+        groupId,
+        agent: (item && item.agent) || null,
+      });
       if (r.ok) ids.push(r.backgroundId);
     }
     if (!ids.length) {
@@ -2548,10 +2655,14 @@ class Engine {
      → her turda çok daha az prompt tokeni = hızlı ön-bellek + düşük maliyet */
   buildBgSystem(session) {
     const job = (session && this._bgJobs.get(String(session.id))) || {};
+    /* opencode instruction port (bg ajanlar): workspace talimatları + genel ajan disiplini */
+    const proj = this._projectInstructions(session);
     return (
       `Sen odaklı bir ARKA PLAN ajanısın. Tek görevini baştan sona bitir.\n` +
       (job.task ? `GÖREV: ${job.task}\n` : '') +
       `Ortam: Windows + PowerShell; çalışma klasörü: ${this.workspace}\n` +
+      `GENEL AJAN DİSİPLİNİ: görevi A'dan Z'ye yürüt — bağlam topla, uygula, DOĞRULA; yarım bırakma; doğrulama sonucunu rapora yaz.\n` +
+      (proj ? `PROJE TALİMATLARI (workspace AGENTS/CLAUDE/CONTEXT — daima uy):\n${proj}\n` : '') +
       `HIZ KURALLARI:\n` +
       `- Döngülü işleri (çok URL/dosya/sayfa, tekrarlı parse-hesap) TEK python_run betiğinde topluca bitir.\n` +
       `- Web için web_search kullan (zincir dahili tarayıcıyla başlar — gerçek Chromium ile Google); tek aramada bulunamazsa veya çok kaynaklı derin araştırma gerekiyorsa deep_search kullan (çoklu sorgu paralel + gizli tarayıcıda tam sayfa okuma). Sayfa açma/göstermenin VARSAYILANI DAHİLİ tarayıcıdır: browser_open → browser_snapshot → browser_click/type/read. Kullanıcı açıkça dış tarayıcı (chrome/firefox/başka/normal/kendi tarayıcım) istediyse run_command ile \`start "" <url>\` çalıştır. Görseli göremiyorsan metni ocr_read ile oku (source:"browser").\n` +
@@ -2592,6 +2703,8 @@ class Engine {
   }
 
   async _chatTurn(session, signal, onDelta, toolsList = TOOLS) {
+    /* opencode agent.ts port: özel ajan tanımı — prompt/model/araç/steps */
+    const adef = this._agentDefFor(session, !!session.bgJob);
     /* Beast Code: todo_write açıklaması "3+ adım" kısıtı içerir ve model küçük
        işlerde atlar — bcCode oturumunda HER işte İLK araç olacak şekilde değiştir */
     if (session && session.bcCode) {
@@ -2639,6 +2752,11 @@ class Engine {
       /* opencode plan agent: salt-okur zorlaması — araç seti GERÇEKten daralır */
       activeTools = activeTools.filter((t) => PLAN_ALLOW_TOOLS.has(t.function.name));
     }
+    if (adef && adef.tools) {
+      /* özel ajan araç beyaz listesi — tanımda olmayan araç görünmez */
+      const allow = new Set(adef.tools);
+      activeTools = activeTools.filter((t) => allow.has(t.function.name));
+    }
     if (perms.length === 1 && perms[0] === 'chat') {
       system +=
         '\n\n# KISITLI MOD\nTüm araçların (komut, dosya, web, tarayıcı, hafıza) kapalı. Sadece yazarak cevap ver. ' +
@@ -2658,6 +2776,9 @@ class Engine {
       system +=
         `\n\n# OTURUM NOTLARI (oturum ${session.code || '?'} — bu oturumun önceki konuşma özeti; birebir geçmişi buradan hatırla)\n` +
         session.notes;
+    }
+    if (adef && adef.prompt) {
+      system += `\n\n# AJAN: ${adef.name}\n${adef.prompt}`;
     }
     /* önek-cache disiplini (opencode request.ts:184): araç sırası oturum
        boyunca sabit olmalı — alfabetik sıralama sağlayıcı önbelleğini bozmaz */
@@ -2679,6 +2800,11 @@ class Engine {
     if (!role) {
       const ssel = this.sessionModel.get(String(session.id));
       if (ssel) sel = ssel;
+    }
+    /* özel ajan model override — en son söz ajan tanımının */
+    if (adef && adef.model) {
+      const am = this._resolveRole(String(adef.model));
+      if (am) sel = am;
     }
     if (role && this.roleModels[role]) {
       emitSafe(this, session.id, { type: 'status', status: `rol: ${role} → ${sel.providerName} · ${sel.model}` });
@@ -2786,14 +2912,17 @@ class Engine {
       let wrapNudged = false; // tur limitine yaklaşınca zarif kapanış (bg ajanlar)
       let usageTotal = 0; // en yüksek görülen total_tokens — compaction tetiği
       let compacted = false; // run başına en fazla 1 compaction
+      /* opencode agent.steps port: özel ajanın kendi tur limiti (2-60) */
+      const runDef = this._agentDefFor(session, !!session.bgJob);
+      const maxTurns = Math.max(2, Math.min(60, (runDef && runDef.steps) || MAX_TURNS));
       const recentSigs = []; // doom-loop dedektörü: son araç imzaları
       /* Beast Code canlı önizleme: run boyunca üretilen eserleri topla —
          iş bitince dahili tarayıcıda CANLI açılır (site/dev server/HTML) */
       const bcArtifacts = session.bcCode ? { html: [], serverUrl: null } : null;
-      for (let turn = 0; turn < MAX_TURNS; turn++) {
+      for (let turn = 0; turn < maxTurns; turn++) {
         /* SÜRE SINIRI YOK — ama sonsuz tur da yok: bg ajan son 3 tura gelirken
-           "raporu yaz ve bitir" uyarısı alır; MAX_TURNS sert tavan olarak kalır. */
-        if (session.bgJob && turn === MAX_TURNS - 3 && !wrapNudged) {
+           "raporu yaz ve bitir" uyarısı alır; maxTurns sert tavan olarak kalır. */
+        if (session.bgJob && turn === maxTurns - 3 && !wrapNudged) {
           wrapNudged = true;
           const wmsg = {
             role: 'user',
@@ -2808,7 +2937,7 @@ class Engine {
         }
         /* opencode port (prompt.ts:1281): ana oturumda son turda zorunlu
            nihai cevap — tur limiti sessizce dolup boş 'done' dönmesin */
-        if (!session.bgJob && turn === MAX_TURNS - 1 && !wrapNudged) {
+        if (!session.bgJob && turn === maxTurns - 1 && !wrapNudged) {
           wrapNudged = true;
           const wmsg = {
             role: 'user',
@@ -2968,20 +3097,28 @@ class Engine {
             }
             // Ekran görüntüsü gibi araçlar görseli sonraki tura enjekte eder
             let injectedImage = null;
+            /* opencode ctx.metadata portu: edit/write sonucundaki diffView, LLM
+               bağlamından AYRI tutulur — yalnız UI'ye gider (kırmızı/yeşil diff) */
+            let diffView = null;
             try {
               const obj = JSON.parse(out);
               if (obj && obj.__injectImage) {
                 injectedImage = String(obj.__injectImage);
                 delete obj.__injectImage;
-                out = JSON.stringify(obj);
               }
+              if (obj && obj.diffView) {
+                diffView = obj.diffView;
+                delete obj.diffView;
+              }
+              if (injectedImage || diffView) out = JSON.stringify(obj);
             } catch {}
             const toolMsg = { role: 'tool', tool_call_id: tc.id, name, content: out.slice(0, TOOL_OUT_KEEP * 6) };
+            if (diffView) toolMsg.diffView = diffView; /* oturum dosyasına da düşer — geçmiş açılınca diff yeniden çizilir */
             session.messages.push(toolMsg);
             try {
               this._append(session, toolMsg);
             } catch {}
-            emit({ type: 'tool-end', callId: tc.id, ok: !/"error"/.test(out.slice(0, 200)), result: out.slice(0, 4000) });
+            emit({ type: 'tool-end', callId: tc.id, ok: !/"error"/.test(out.slice(0, 200)), result: out.slice(0, 4000), diff: diffView });
             if (injectedImage) {
               const imgMsg = {
                 role: 'user',
@@ -2998,7 +3135,7 @@ class Engine {
         );
       }
       emit({ type: 'done', usage: null });
-      this._bgFinish(sid, 'error', 'tur limiti doldu (MAX_TURNS)');    } catch (e) {
+      this._bgFinish(sid, 'error', 'tur limiti doldu (maxTurns)');    } catch (e) {
       const aborted = e && (e.name === 'AbortError' || ctrl.signal.aborted);
       if (aborted) {
         this._clearCrash(); // kullanıcı durdurdu — kurtarma yok
@@ -3449,7 +3586,9 @@ class Engine {
         });
       }
       if (name === 'ocr_read') return JSON.stringify(await this._ocrRead(args || {}, signal));
-      if (!(name === 'run_command' || name === 'read_file' || name === 'write_file' || name === 'list_dir' ||
+      /* opencode general-agent portu: alt-ajan da edit/grep/glob kullanır */
+      if (!(name === 'run_command' || name === 'read_file' || name === 'write_file' || name === 'edit_file' ||
+            name === 'list_dir' || name === 'grep' || name === 'glob' ||
             name === 'web_search' || name === 'http_fetch' || name === 'python_run')) {
         return JSON.stringify({ ok: false, error: `unknown tool ${name}` });
       }
@@ -3461,8 +3600,9 @@ class Engine {
 
   /* ---------- tool dispatch ---------- */
 
-  /* Onay gerektiren araçlar — tepkiyle onay kapısına takılır */
-  static RISKY_TOOLS = new Set(['run_command', 'write_file', 'python_run', 'email_send', 'watcher_add']);
+  /* Onay gerektiren araçlar — tepkiyle onay kapısına takılır.
+     opencode'da edit+write aynı "edit" iznine takılır — burada da ikisi birlikte */
+  static RISKY_TOOLS = new Set(['run_command', 'write_file', 'edit_file', 'python_run', 'email_send', 'watcher_add']);
 
   /* ANA KOD KİLİDİ: yıkıcı işlem desenleri (korumalı yol + bu desen = engel) */
   static DESTRUCTIVE_RE =
@@ -3498,6 +3638,7 @@ class Engine {
           'Okumak serbesttir; kod yalnızca kullanıcının kendi eliyle, dışarıdan değiştirilebilir.',
       });
     if (name === 'write_file' && this._isProtectedPath(args.path)) return deny('yazma');
+    if (name === 'edit_file' && this._isProtectedPath(args.path)) return deny('düzenleme');
     if (name === 'run_command' && this._cmdTouchesProtected(String(args.command || ''))) return deny('komutla değiştirme');
     if (name === 'python_run' && this._cmdTouchesProtected(String(args.code || ''))) return deny('betikle değiştirme');
     return null;
@@ -3599,7 +3740,15 @@ class Engine {
         return JSON.stringify(r);
       }
       if (name === 'run_background') {
-        const r = this.runBackground(sessionId, args.task, args.title);
+        if (args.agent && !agentdefs.get(String(args.agent))) {
+          return JSON.stringify({
+            ok: false,
+            error:
+              `ajan tanımı bulunamadı: ${args.agent} — tanımlı ajanlar: ` +
+              (agentdefs.list().map((d) => d.name).join(', ') || '(yok)'),
+          });
+        }
+        const r = this.runBackground(sessionId, args.task, args.title, { agent: args.agent ? String(args.agent) : null });
         return JSON.stringify({
           ...r,
           note: 'paralel ajan başladı — ana sohbet açık; bittiğinde özet otomatik gelir',
@@ -3608,7 +3757,7 @@ class Engine {
       if (name === 'run_background_many') {
         const rawList = Array.isArray(args.tasks) ? args.tasks : [];
         const tasks = rawList
-          .map((t) => ({ title: String((t && t.title) || ''), task: String((t && t.task) || t || '') }))
+          .map((t) => ({ title: String((t && t.title) || ''), task: String((t && t.task) || t || ''), agent: (t && t.agent) ? String(t.agent) : null }))
           .filter((t) => t.task.trim());
         const r = tasks.length
           ? this.runBackgroundMany(sessionId, tasks, String(args.title || ''))
@@ -3809,11 +3958,14 @@ class Engine {
         const r = await this.browser.act(name.slice(8), args, signal, { sessionId });
         return JSON.stringify(r);
       }
-      if (!(name === 'run_command' || name === 'read_file' || name === 'write_file' || name === 'list_dir' ||
+      /* opencode tool registry portu: edit_file/grep/glob ana ajanın da araçları —
+         bunlar olmadan model write_file + tam dosya okuma döngüsüne düşer */
+      if (!(name === 'run_command' || name === 'read_file' || name === 'write_file' || name === 'edit_file' ||
+            name === 'list_dir' || name === 'grep' || name === 'glob' ||
             name === 'web_search' || name === 'http_fetch' || name === 'python_run')) {
         return JSON.stringify({ ok: false, error: `unknown tool ${name}` });
       }
-      return await tools.exec(name, args, { cwd: this._sessionWorkspace(sessionId), signal });
+      return await tools.exec(name, args, { cwd: this._sessionWorkspace(sessionId), signal, wantDiff: true });
     } catch (e) {
       return JSON.stringify({ ok: false, error: String((e && e.message) || e) });
     }
@@ -4178,6 +4330,7 @@ const TOOLS = [
         properties: {
           task: { type: 'string', description: 'Self-contained task description with ALL needed context (paths, URLs, constraints, expected output) — the agent cannot see your context.' },
           title: { type: 'string', description: 'Short label shown in the agents tab and notification.' },
+          agent: { type: 'string', description: 'Optional custom agent name (defined in %APPDATA%\\beast\\agents\\*.md) — that agent\u2019s prompt/model/tools/step-limit apply.' },
         },
         required: ['task'],
       },
@@ -4210,6 +4363,7 @@ const TOOLS = [
               properties: {
                 title: { type: 'string', description: 'Short label of this step' },
                 task: { type: 'string', description: 'Self-contained instruction with all context' },
+                agent: { type: 'string', description: 'Optional custom agent name for this step (%APPDATA%\\beast\\agents\\*.md)' },
               },
               required: ['task'],
             },

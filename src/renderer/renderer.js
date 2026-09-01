@@ -1498,7 +1498,8 @@ async function renderIntegrationsPane() {
       </div>
       <div style="height:14px"></div>
       <label class="lock-row"><input type="checkbox" id="waGroupsOn" ${g.enabled ? 'checked' : ''}/><span>${_t('it_groups_on')}</span></label>
-      <label class="lock-row" style="${g.enabled ? '' : 'opacity:.45'}"><input type="checkbox" id="waGroupsAll" ${g.mentionOnly === false ? 'checked' : ''}/><span>${_t('it_groups_all')}</span></label>
+      <label class="lock-row" style="${g.enabled ? '' : 'opacity:.45'}"><input type="radio" name="waGroupMode" id="waGroupsMention" ${g.mentionOnly !== false ? 'checked' : ''}/><span>${_t('it_groups_mention')}</span></label>
+      <label class="lock-row" style="${g.enabled ? '' : 'opacity:.45'}"><input type="radio" name="waGroupMode" id="waGroupsAll" ${g.mentionOnly === false ? 'checked' : ''}/><span>${_t('it_groups_all')}</span></label>
       <div class="divider"></div>
       <label class="mem-label" style="margin-top:0">${_t('it_allow_label')}</label>
       <div id="waAllowChips" class="chips-inline"></div>
@@ -1571,16 +1572,25 @@ async function renderIntegrationsPane() {
     </div>`;
 
   const waGroupsOn = $('#waGroupsOn');
+  const waGroupsMention = $('#waGroupsMention');
   const waGroupsAll = $('#waGroupsAll');
+  /* iki mod BİRBİRİNE HARIÇTİR: ya @mention ya her mesaja karışma (radio) */
+  const syncGroupMode = () => {
+    const op = waGroupsOn.checked ? '' : '.45';
+    if (waGroupsMention) waGroupsMention.parentElement.style.opacity = op;
+    if (waGroupsAll) waGroupsAll.parentElement.style.opacity = op;
+  };
   const saveGroups = async () => {
     const r = await beast.waSetGroups({ enabled: waGroupsOn.checked, mentionOnly: !waGroupsAll.checked });
     toast(r.enabled ? (r.mentionOnly ? 'Gruplar açık — @mention bekler' : 'Gruplar açık — tüm mesajlara karışır') : 'Gruplar kapalı');
   };
   waGroupsOn.addEventListener('change', async () => {
-    waGroupsAll.parentElement.style.opacity = waGroupsOn.checked ? '' : '.45';
+    syncGroupMode();
     await saveGroups();
   });
+  waGroupsMention.addEventListener('change', saveGroups);
   waGroupsAll.addEventListener('change', saveGroups);
+  syncGroupMode();
 
   $('#waStartBtn').addEventListener('click', async () => {
     toast('Bağlanıyor…');

@@ -337,8 +337,20 @@ class WhatsAppBridge {
   async _processIncoming(msg) {
     try {
       const jid = msg.key && msg.key.remoteJid;
-      if (!jid || msg.key.fromMe) return;
+      if (!jid) return;
       if (jid === 'status@broadcast' || jid.endsWith('@newsletter')) return;
+      /* botun kendi kimliği: telefon base'i + LID base'i (LID dönemi) */
+      const meBase = String(this._userIdRaw || '').split('@')[0].split(':')[0];
+      const lidBase = String((this.sock && this.sock.user && this.sock.user.lid) || '').split('@')[0].split(':')[0];
+      /* KENDİ KENDİNE SOHBET (Saved Messages): kullanıcı kendi numarasını izinliye
+         ekleyip kendi sohbetinden bota yazabilsin. Bu sohbetteki HER mesaj fromMe
+         gelir; botun KENDİ gönderdiği mesajlar (_tracked) filtrelenir → döngü yok.
+         Diğer sohbetlerdeki elle yazılan fromMe mesajları bot etkilenmesin diye yutulur. */
+      const selfChat = !!(meBase && (jid === meBase + '@s.whatsapp.net' || (lidBase && jid === lidBase + '@lid')));
+      if (msg.key.fromMe) {
+        if (this._tracked.has(String(msg.key.id))) return; // botun kendi cevabı — echo
+        if (!selfChat) return;
+      }
       const isGroup = jid.endsWith('@g.us');
       const participantJid = isGroup && msg.key.participant ? String(msg.key.participant) : '';
       const mm = msg.message || {};
@@ -351,20 +363,35 @@ class WhatsAppBridge {
       const t = String(text || '').trim();
 
       // gruplarda bot'un kendisi @mention edilmiş mi
+      /* LİD DÖNEMİ UYARISI: mentionedJid artık çoğu zaman botun @lid numarasıyla
+         gelir (telefon JID'i DEĞİL) — bu yüzden yalnız meBase ile karşılaştırma
+         mention'ı ıskalıyordu. Şimdi: botun telefon base'i + LID base'i ikisiyle
+         de eşitlik aranır; contextInfo görsel/video/belge caption'larından da alınır. */
       let mentioned = false;
       if (isGroup) {
-        const ci = mm.extendedTextMessage && mm.extendedTextMessage.contextInfo;
+        const ci =
+          (mm.extendedTextMessage && mm.extendedTextMessage.contextInfo) ||
+          (mm.imageMessage && mm.imageMessage.contextInfo) ||
+          (mm.videoMessage && mm.videoMessage.contextInfo) ||
+          (mm.documentMessage && mm.documentMessage.contextInfo) ||
+          null;
         const men = (ci && ci.mentionedJid) || [];
-        const meBase = String(this._userIdRaw || '').split('@')[0].split(':')[0];
+        const baseOf = (j) => String(j || '').split('?')[0].split(':')[0].split('@')[0];
         for (const m of men) {
-          if (meBase && String(m).split('?')[0].split(':')[0].includes(meBase)) {
+          const base = baseOf(m);
+          if (base && ((meBase && base === meBase) || (lidBase && base === lidBase))) {
             mentioned = true;
             break;
           }
         }
-        if (!mentioned && ci && ci.participant && meBase && String(ci.participant).includes(meBase)) {
-          mentioned = true; // mesajımıza reply verilmiş
+        if (!mentioned && ci && ci.participant) {
+          const pBase = baseOf(ci.participant);
+          if ((meBase && pBase === meBase) || (lidBase && pBase === lidBase)) {
+            mentioned = true; // mesajımıza reply verilmiş
+          }
         }
+        /* metin yedeği: @<bot numarası> elle yazılmışsa da mention sayılır */
+        if (!mentioned && meBase && t.includes('@' + meBase)) mentioned = true;
       }
 
       // medya çıkarımı (varsa)
@@ -406,6 +433,9 @@ class WhatsAppBridge {
         senderNum = (participantJid || jid).split('@')[0].split(':')[0];
         if (!/^\d+$/.test(senderNum)) senderNum = '';
       }
+      /* kendi kendine sohbette gönderen = botun telefon numarası — izin listesi
+         telefon numarasıyla eşleşsin (LID self-chat'te jid @lid olur) */
+      if (selfChat && meBase) senderNum = meBase;
       this.onIncoming(jid, {
         text: t,
         media,

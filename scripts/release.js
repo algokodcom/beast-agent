@@ -108,7 +108,17 @@ step('5/5 OneDrive yedek (beast-v' + next + ')');
 try {
   const dest = path.join(ONE_DRIVE_DIR, 'beast-v' + next);
   fs.mkdirSync(dest, { recursive: true });
-  run(`robocopy "${ROOT}" "${dest}" /E /XD node_modules dist "beast agent web" .git /NFL /NDL /NJH`);
+  /* robocopy 0-7 arası TÜM çıkış kodları başarıdır (1 = dosya kopyalandı);
+     execSync 0 dışını hata sanır — kodu burada yut, gerçek hatada (>7) dur */
+  try {
+    execSync(
+      `robocopy "${ROOT}" "${dest}" /E /XD node_modules dist "beast agent web" .git /NFL /NDL /NJH`,
+      { cwd: ROOT, stdio: 'pipe' }
+    );
+  } catch (e) {
+    const code = e && e.status;
+    if (!(typeof code === 'number' && code < 8)) throw e;
+  }
   const info = path.join(dest, `YEDEK-BILGI-v${next}.txt`);
   fs.writeFileSync(info, `BEAST AGENT v${next} — ${new Date().toLocaleString('tr-TR')}\nKaynak: ${ROOT}\nGitHub: https://github.com/algokodcom/beast-agent/releases/tag/${tag}\nnpm: https://www.npmjs.com/package/beast-agent\n`);
   ok(dest);

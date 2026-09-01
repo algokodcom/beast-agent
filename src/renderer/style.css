@@ -1857,6 +1857,18 @@ body.browser-open #settingsDialog { width: min(70vw, calc(100vw - var(--bw, 480p
 }
 #botChip:hover { border-color: var(--accent); }
 
+/* bot ikonları: tek renkli SVG — currentColor ile temaya uyar */
+#botChip svg,
+.bot-ico svg,
+.ico svg,
+.skill-name svg,
+.icon-pick button svg {
+  display: inline-block;
+  vertical-align: -2.5px;
+}
+#botHeadIcon svg { vertical-align: -4px; }
+.icon-pick button svg { display: block; margin: 0 auto; }
+
 #botBar {
   flex: none;
   max-height: 45%;

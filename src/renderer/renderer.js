@@ -2473,7 +2473,7 @@ async function renderWaAllow() {
     `<select class="perm-select" title="${_t('bot_bind_title')}">` +
     `<option value="">${_t('bot_sel_empty')}</option>` +
     botChoices
-      .map((bb) => `<option value="${bb.id}" ${cur === bb.id ? 'selected' : ''}>${bb.icon} ${escapeHtml(bb.name)}</option>`)
+      .map((bb) => `<option value="${bb.id}" ${cur === bb.id ? 'selected' : ''}>${escapeHtml(bb.name)}</option>`)
       .join('') +
     `</select>`;
   wrap.innerHTML = '';
@@ -2654,7 +2654,7 @@ async function renderWaAllow() {
     botSel.innerHTML =
       `<option value="">${_t('bot_sel_empty')}</option>` +
       botChoices
-        .map((bb) => `<option value="${bb.id}">${bb.icon} ${escapeHtml(bb.name)}${bb.admin ? ' (admin)' : ''}</option>`)
+        .map((bb) => `<option value="${bb.id}">${escapeHtml(bb.name)}${bb.admin ? ' (admin)' : ''}</option>`)
         .join('');
     if (prev) botSel.value = prev; // render'lar arası seçim korunur
   }
@@ -2819,7 +2819,7 @@ async function renderTgAllow() {
         for (const bb of botChoices) {
           const o = document.createElement('option');
           o.value = bb.id;
-          o.textContent = `${bb.icon} ${bb.name}`;
+          o.textContent = bb.name;
           if ((typeof entry === 'object' && entry.bot_id) === bb.id) o.selected = true;
           sel.appendChild(o);
         }
@@ -2888,7 +2888,7 @@ async function renderTgAllow() {
     botSel.innerHTML =
       `<option value="">${_t('bot_sel_empty')}</option>` +
       botChoices
-        .map((bb) => `<option value="${bb.id}">${bb.icon} ${escapeHtml(bb.name)}${bb.admin ? ' (admin)' : ''}</option>`)
+        .map((bb) => `<option value="${bb.id}">${escapeHtml(bb.name)}${bb.admin ? ' (admin)' : ''}</option>`)
         .join('');
     if (prev) botSel.value = prev;
   }
@@ -3017,7 +3017,7 @@ async function renderDcAllow() {
         for (const bb of botChoices) {
           const o = document.createElement('option');
           o.value = bb.id;
-          o.textContent = `${bb.icon} ${bb.name}`;
+          o.textContent = bb.name;
           if ((typeof entry === 'object' && entry.bot_id) === bb.id) o.selected = true;
           sel.appendChild(o);
         }
@@ -3084,7 +3084,7 @@ async function renderDcAllow() {
     botSel.innerHTML =
       `<option value="">${_t('bot_sel_empty')}</option>` +
       botChoices
-        .map((bb) => `<option value="${bb.id}">${bb.icon} ${escapeHtml(bb.name)}${bb.admin ? ' (admin)' : ''}</option>`)
+        .map((bb) => `<option value="${bb.id}">${escapeHtml(bb.name)}${bb.admin ? ' (admin)' : ''}</option>`)
         .join('');
     if (prev) botSel.value = prev;
   }
@@ -3118,7 +3118,86 @@ async function renderDcAllow() {
    Sol panel altında bot kartları; her bot için sohbet geçmişi + sekmeli yönetim.
    İlk bot hep Beast (admin, silinemez). Max 5 bot. */
 
-const BOT_ICONS = ['🦁', '🚀', '💎', '⭐', '🔥', '🧮', '📊', '🤖', '🦊', '🐼', '🎯', '🛠️'];
+/* Bot ikonları: tek renkli SVG (stroke: currentColor — monokrom temaya uyar).
+   Anahtar isimler data-ic/bot.icon olarak saklanır; eski botlardaki emoji
+   LEGACY_BOT_ICONS ile otomatik yeni ikona eşlenir (görüntüde de, seçicide de). */
+const BOT_ICONS = ['lion', 'rocket', 'diamond', 'star', 'flame', 'calc', 'chart', 'robot', 'fox', 'panda', 'target', 'wrench'];
+const BOT_ICON_PATHS = {
+  lion:
+    '<circle cx="12" cy="12" r="7.2"/>' +
+    '<path d="M12 4.8V2.6M12 21.4v-2.2M4.8 12H2.6M21.4 12h-2.2M6.8 6.8 5.2 5.2M18.8 5.2l-1.6 1.6M6.8 17.2l-1.6 1.6M18.8 18.8l-1.6-1.6"/>' +
+    '<path d="M9.2 10.6h.01M14.8 10.6h.01M12 13.2l-1.2 1.4h2.4z"/>',
+  rocket:
+    '<path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"/>' +
+    '<path d="m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z"/>' +
+    '<path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0"/>' +
+    '<path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5"/>',
+  diamond:
+    '<path d="M6 3h12l4 6-10 13L2 9z"/>' +
+    '<path d="M11 3 8 9l4 13 4-13-3-6"/>' +
+    '<path d="M2 9h20"/>',
+  star: '<polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>',
+  flame:
+    '<path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 0 0 2.5 2.5z"/>',
+  calc:
+    '<rect width="16" height="20" x="4" y="2" rx="2"/>' +
+    '<line x1="8" x2="16" y1="6" y2="6"/>' +
+    '<path d="M16 14h.01M16 18h.01M12 10h.01M12 14h.01M12 18h.01M8 10h.01M8 14h.01M8 18h.01"/>',
+  chart:
+    '<path d="M3 3v18h18"/>' +
+    '<path d="M18 17V9"/>' +
+    '<path d="M13 17V5"/>' +
+    '<path d="M8 17v-3"/>',
+  robot:
+    '<path d="M12 8V4H8"/>' +
+    '<rect width="16" height="12" x="4" y="8" rx="2"/>' +
+    '<path d="M2 14h2"/>' +
+    '<path d="M20 14h2"/>' +
+    '<path d="M15 13v2"/>' +
+    '<path d="M9 13v2"/>',
+  fox:
+    '<path d="M5 4l4 3a6.5 6.5 0 0 1 6 0l4-3v7.5c0 4.6-3.1 8.5-7 8.5s-7-3.9-7-8.5z"/>' +
+    '<path d="M9.4 12.8h.01"/>' +
+    '<path d="M14.6 12.8h.01"/>' +
+    '<path d="M12 15.6l-1.1 1.2h2.2z"/>',
+  panda:
+    '<circle cx="12" cy="13" r="7.4"/>' +
+    '<circle cx="5.2" cy="6" r="2.1"/>' +
+    '<circle cx="18.8" cy="6" r="2.1"/>' +
+    '<ellipse cx="9.4" cy="12.6" rx="1.4" ry="1.8" transform="rotate(-14 9.4 12.6)"/>' +
+    '<ellipse cx="14.6" cy="12.6" rx="1.4" ry="1.8" transform="rotate(14 14.6 12.6)"/>' +
+    '<path d="M12 15.8v1.2"/>' +
+    '<path d="M10.8 18.2c.7.6 1.7.6 2.4 0"/>',
+  target:
+    '<circle cx="12" cy="12" r="9"/>' +
+    '<circle cx="12" cy="12" r="5"/>' +
+    '<circle cx="12" cy="12" r="1.5"/>',
+  wrench:
+    '<path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>',
+};
+const LEGACY_BOT_ICONS = {
+  '🦁': 'lion', '🚀': 'rocket', '💎': 'diamond', '⭐': 'star', '🔥': 'flame', '🧮': 'calc',
+  '📊': 'chart', '🤖': 'robot', '🦊': 'fox', '🐼': 'panda', '🎯': 'target', '🛠️': 'wrench', '🛠': 'wrench',
+};
+
+/* ikon anahtarını normalize et: eski emoji → yeni anahtar; bilinmiyorsa '' */
+function normIconKey(icon) {
+  const k = String(icon || '').trim();
+  return LEGACY_BOT_ICONS[k] || (BOT_ICON_PATHS[k] ? k : '');
+}
+
+/* bot ikonu HTML'i: bilinen anahtar → monokrom SVG; eski/emoji → düz metin (geriye uyum) */
+function botIconSvg(icon, size = 15) {
+  let key = normIconKey(icon);
+  if (!key && !String(icon || '').trim()) key = 'robot';
+  if (!key) return escapeHtml(String(icon));
+  return (
+    `<svg class="bot-svg" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" ` +
+    'stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+    BOT_ICON_PATHS[key] +
+    '</svg>'
+  );
+}
 const BOT_SKILLS = [
   ['email', 'E-posta'],
   ['browser', 'Dahili tarayıcı'],
@@ -3164,7 +3243,7 @@ function renderBotCards() {
     row.className = 'bot-card' + (b.id === activeBotId ? ' active' : '');
     row.title = _t('bot_switch_hint');
     row.innerHTML =
-      `<span class="bot-ico">${b.icon || '🤖'}</span>` +
+      `<span class="bot-ico">${botIconSvg(b.icon)}</span>` +
       `<span class="bot-nm">${escapeHtml(b.name)}</span>` +
       `<span class="bot-gear" title="${_t('bot_manage')}">⚙</span>` +
       `<span class="bot-tag">${b.admin ? 'ADMIN' : 'BOT'}</span>` +
@@ -3183,8 +3262,8 @@ function renderBotCards() {
 function updateBotChip() {
   const chip = $('#botChip');
   if (!chip) return;
-  const b = botsCache.find((x) => x.id === activeBotId) || { icon: '🦁', name: 'Beast' };
-  chip.textContent = (b.icon || '🤖') + ' ' + b.name;
+  const b = botsCache.find((x) => x.id === activeBotId) || { icon: 'lion', name: 'Beast' };
+  chip.innerHTML = botIconSvg(b.icon, 14) + ' ' + escapeHtml(b.name);
 }
 
 /* BOTLAR ARASI GEÇİŞ: kart tıklaması SADECE aktif botu değiştirir —
@@ -3216,7 +3295,7 @@ async function switchBot(id) {
   } catch {}
   /* picker, aktif botun kendi modelini göstersin */
   applyState();
-  toast((b.icon || '🤖') + ' ' + b.name + (b.admin ? '' : ' — ' + _t('bot_switched')));
+  toast(b.name + (b.admin ? '' : ' — ' + _t('bot_switched')));
 }
 
 function botOverlaySetOpen(open) {
@@ -3260,7 +3339,7 @@ function renderBotPage() {
   }
   const b = botsCache.find((x) => x.id === botPageId);
   if (!b) { botPageId = null; renderBotPage(); return; }
-  head.querySelector('#botHeadIcon').textContent = b.icon || '🤖';
+  head.querySelector('#botHeadIcon').innerHTML = botIconSvg(b.icon, 22);
   head.querySelector('#botHeadName').textContent = b.name;
   $('#botHeadTag').textContent = b.admin ? 'ADMIN' : 'BOT';
   /* DM Log sekmesi yalnız admin botta görünür — botlar arası tüm trafiği o izler */
@@ -3331,7 +3410,7 @@ async function renderBotNotes(pane, b) {
     const card = document.createElement('div');
     card.className = 'notes-card';
     card.innerHTML =
-      `<div class="notes-head"><div class="skill-name">${escapeHtml((b.icon || '') + ' ' + (n.code || '?'))} — ${escapeHtml(n.title || '')}</div>` +
+      `<div class="notes-head"><div class="skill-name">${botIconSvg(b.icon)} ${escapeHtml(n.code || '?')} — ${escapeHtml(n.title || '')}</div>` +
       `<div class="notes-meta">${escapeHtml(when)} · ${n.count || 0} ${_t('bot_stat_msgs')}</div></div>` +
       `<div class="notes-body">${escapeHtml(String(n.notes || '').slice(0, 4000))}</div>` +
       `<div style="margin-top:8px"><button class="btn ghost notes-del">${_t('notes_del')}</button></div>`;
@@ -3354,7 +3433,7 @@ function renderBotOverview(pane) {
     const row = document.createElement('div');
     row.className = 'bot-ov-row';
     row.innerHTML =
-      `<span class="ico">${b.icon || '🤖'}</span>` +
+      `<span class="ico">${botIconSvg(b.icon, 17)}</span>` +
       `<span class="nm">${escapeHtml(b.name)}${b.admin ? ' <span class="bot-tag">ADMIN</span>' : ''}</span>` +
       `<span class="m">${_t('bot_stat_numbers')}: ${st.numbers || 0}</span>` +
       `<span class="m">${_t('bot_stat_sessions')}: ${st.sessions || 0}</span>` +
@@ -3429,10 +3508,13 @@ function renderBotSettings(pane, b) {
   pane.innerHTML = '';
   const f = document.createElement('div');
   f.className = 'bot-form';
-  const iconBtns = BOT_ICONS.map((ic) => `<button type="button" data-ic="${ic}" class="${ic === b.icon ? 'on' : ''}">${ic}</button>`).join('');
+  const iconBtns = BOT_ICONS.map(
+    (ic) =>
+      `<button type="button" data-ic="${ic}" title="${ic}" class="${normIconKey(b.icon) === ic ? 'on' : ''}">${botIconSvg(ic, 16)}</button>`
+  ).join('');
   const otherBots = botsCache.filter((x) => x.id !== b.id);
   const seeChecks = otherBots
-    .map((x) => `<label><input type="checkbox" data-see="${x.id}" ${((b.seeBots || []).includes(x.id)) ? 'checked' : ''}/> ${x.icon} ${escapeHtml(x.name)}</label>`)
+    .map((x) => `<label><input type="checkbox" data-see="${x.id}" ${((b.seeBots || []).includes(x.id)) ? 'checked' : ''}/> ${botIconSvg(x.icon)} ${escapeHtml(x.name)}</label>`)
     .join('') || `<span class="sub">${_t('bot_no_other')}</span>`;
   const skillChecks = BOT_SKILLS
     .map(([k, lbl]) => `<label><input type="checkbox" data-skill="${k}" ${(b.skills || {})[k] ? 'checked' : ''}/> ${lbl}</label>`)
@@ -3663,7 +3745,10 @@ function renderBotAdd(pane) {
   pane.innerHTML = '';
   const f = document.createElement('div');
   f.className = 'bot-form';
-  const iconBtns = BOT_ICONS.map((ic, i) => `<button type="button" data-ic="${ic}" class="${i === 7 ? 'on' : ''}">${ic}</button>`).join('');
+  const iconBtns = BOT_ICONS.map(
+    (ic, i) =>
+      `<button type="button" data-ic="${ic}" title="${ic}" class="${i === 7 ? 'on' : ''}">${botIconSvg(ic, 16)}</button>`
+  ).join('');
   f.innerHTML = `
     <label class="mem-label">${_t('bot_name')}</label>
     <input id="bAddName" class="inp" placeholder="${_t('bot_name_ph')}" maxlength="40"/>
@@ -3698,7 +3783,7 @@ function renderBotAdd(pane) {
     if (!name) { toast(_t('bot_name_req')); $('#bAddName').focus(); return; }
     /* İLK HARF ZORUNLU: bot adı harf karakteriyle başlamalı */
     if (!/^\p{L}/u.test(name)) { toast(_t('bot_name_letter')); $('#bAddName').focus(); return; }
-    const icon = (f.querySelector('#bAddIconPick button.on') || {}).dataset?.ic || '🤖';
+    const icon = (f.querySelector('#bAddIconPick button.on') || {}).dataset?.ic || 'robot';
     const r = await beast.botsAdd({ name, icon, prompt: $('#bAddPrompt').value });
     if (r.ok) {
       toast(_t('bot_created') + ' ' + r.bot.name);

@@ -1302,6 +1302,25 @@ function diffRegion(before, after) {
   return { before: capDiffText(beforeRegion), after: capDiffText(afterRegion), startLine: start + 1 };
 }
 
+/* ---------- read_file disk-cache (opencode file-state portu) ----------
+   mtime+size değişmemişse dosya yeniden diskten OKUNMAZ — cache'ten döner.
+   edit_file/write_file kendi yazdıklarından sonra cache'i düşürür; böylece
+   sonraki okuma daima güncel içerik verir. */
+const _readCache = new Map(); /* abs → { mtimeMs, size, raw } */
+
+function readCacheGet(abs, st) {
+  const hit = _readCache.get(abs);
+  if (hit && hit.mtimeMs === st.mtimeMs && hit.size === st.size) return hit.raw;
+  const raw = fs.readFileSync(abs, 'utf8');
+  if (_readCache.size > 200) _readCache.delete(_readCache.keys().next().value);
+  _readCache.set(abs, { mtimeMs: st.mtimeMs, size: st.size, raw });
+  return raw;
+}
+
+function readCacheDrop(abs) {
+  _readCache.delete(abs);
+}
+
 const definitions = [
   {
     type: 'function',
@@ -1558,6 +1577,7 @@ async function exec(name, args, ctx) {
             }
             fs.mkdirSync(path.dirname(filePath), { recursive: true });
             fs.writeFileSync(filePath, newS, 'utf8');
+            readCacheDrop(filePath);
             const counts = diffLineCounts('', newS);
             const out = { ok: true, path: filePath, note: 'Edit applied successfully.', replacements: 1, ...counts };
             if (ctx.wantDiff) out.diffView = { path: filePath, before: '', after: capDiffText(newS), startLine: 1, ...counts };
@@ -1573,6 +1593,7 @@ async function exec(name, args, ctx) {
           const rep = ocReplace(contentOld, oldN, newN, !!(args.replace_all || args.replaceAll));
           const contentNew = rep.result;
           fs.writeFileSync(filePath, contentNew, 'utf8');
+          readCacheDrop(filePath); /* sonraki read_file taze içerik okusun */
           const counts = diffLineCounts(contentOld, contentNew);
           const out = {
             ok: true,
@@ -1612,7 +1633,7 @@ async function exec(name, args, ctx) {
             return JSON.stringify({ ok: false, error: 'pdf okuma hata: ' + String((e2 && e2.message) || e2) });
           }
         }
-        let raw = fs.readFileSync(abs, 'utf8');
+        let raw = readCacheGet(abs, st);
         /* opencode read.ts port: satır numaralı çıktı (`N: içerik`), offset/limit
            penceresi (1-indexed), 2000 satır varsayılan, uzun satır kırpma */
         const allLines = raw.split('\n');
@@ -1661,6 +1682,7 @@ async function exec(name, args, ctx) {
         const before = existed && !fs.statSync(abs).isDirectory() ? fs.readFileSync(abs, 'utf8') : '';
         fs.mkdirSync(path.dirname(abs), { recursive: true });
         fs.writeFileSync(abs, content, 'utf8');
+        readCacheDrop(abs); /* sonraki read_file taze içerik okusun */
         const counts = diffLineCounts(before, content);
         const out = { ok: true, path: abs, bytes: Buffer.byteLength(content), ...counts };
         if (ctx.wantDiff) {

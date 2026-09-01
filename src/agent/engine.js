@@ -1385,7 +1385,7 @@ class Engine {
         ? '# PROJE TALİMATLARI (workspace AGENTS/CLAUDE/CONTEXT dosyalarından — daima uy)\n' + proj + '\n'
         : '') +
       'WORKFLOW (her işte bu sıra):\n' +
-      '1) BAĞLAM: değiştirmeden önce ilgili dosyaları OKU — read_file satır numaralı döner (N: içerik); büyük dosyada devamını offset parametresiyle oku, ASLA baştan okuma; bir dosyayı aynı oturumda BİR KEZ okumak yeter — içeriği bağlamda zaten var. İçerik araması için grep (regex), dosya adı araması için glob kullan; varsayım yapma, mevcut stili/konvansiyonu takip et.\n' +
+      '1) BAĞLAM: değiştirmeden önce ilgili dosyaları OKU — read_file satır numaralı döner (N: içerik); büyük dosyada devamını offset parametresiyle oku, ASLA baştan okuma; bir dosyayı aynı oturumda BİR KEZ okumak yeter — içeriği sonraki turlarda da bağlamda KALIR, edit yaptıktan sonra dosyayı yeniden okuma (güncel durum = son okuma + kendi editlerin). İçerik araması için grep (regex), dosya adı için glob kullan; varsayım yapma, mevcut stili/konvansiyonu takip et.\n' +
       '2) PLAN: 2+ adımlı işlerde İLK EYLEM todo_write olsun (2-6 madde); her adım bitince status:"done" ile GÜNCELLE — liste bitene kadar iş bitmiş sayılmaz.\n' +
       '3) EDİT: VAR OLAN dosyada önce edit_file kullan (old_string/new_string ile yalnız ilgili bölümü değiştir; birden çok eşleşme varsa bağlam ekle ya da replace_all); write_file yalnız YENİ dosya ya da tam yeniden yazım için. İlgisiz yeniden biçimleme/kayıt boşluk değişikliği YAPMA. edit_file/write_file sonucu additions/deletions döner ve değişiklik diske ANINDA uygulanır — doğrulamak için dosyayı TEKRAR OKUMA YASAK; sonraki editi önceki okuduğun içerik + kendi değişikliklerin üzerinden zincirle.\n' +
       '4) DOĞRULA: edit sonrası mümkünse derle/test et/lint çalıştır (run_command); hata varsa DÜZELT ve TEKRAR dene (en fazla 2 doğrulama turu) — kırmızı bırakma. Doğrulama read_file ile DEĞİL run_command ile yapılır.\n' +
@@ -1616,16 +1616,51 @@ class Engine {
       }
       return m;
     });
+    /* opencode file-state portu: read_file sonuçları bağlamda YAŞAR —
+       1200 char'a kırpma modeli "unuttu" diye tekrar tekrar okumaya
+       zorluyordu. Her dosyanın yalnız EN SON okuması tam tutulur (diskte
+       zaten TOOL_OUT_KEEP*6 ile sınırlı); daha eski okumalar stub'a iner. */
+    const READ_KEEP = TOOL_OUT_KEEP * 6; /* depolama tavanıyla hizalı */
+    const readPathOf = (m) => {
+      const s = String(m.content || '');
+      try {
+        const j = JSON.parse(s);
+        if (j && j.path) return String(j.path);
+      } catch {}
+      const mm = /"path"\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(s.slice(0, 600));
+      return mm ? mm[1] : null;
+    };
+    const lastRead = new Map(); /* dosya yolu → flat'teki en son okuma indeksi */
+    for (let k = 0; k < flat.length; k++) {
+      const m = flat[k];
+      if (m.role === 'tool' && m.name === 'read_file') {
+        const p = readPathOf(m);
+        if (p) lastRead.set(p, k);
+      }
+    }
     for (let k = 0; k < flat.length; k++) {
       const m = flat[k];
       if (m.role !== 'tool') continue;
-      const tooLong = String(m.content || '').length > TOOL_OUT_KEEP * 2;
-      /* diffView UI-only metadata'dır — sağlayıcıya GİTMEZ (bilinmeyen alan
-         reddi + token israfı önlenir); kırpma ile aynı kopyada birleştirilir */
-      if (tooLong || m.diffView) {
+      const len = String(m.content || '').length;
+      let content;
+      if (m.name === 'read_file') {
+        const p = readPathOf(m);
+        if (p && lastRead.get(p) !== k) {
+          content =
+            '[aynı dosyanın daha YENİ bir okuması bağlamda — bu ESKİ okuma bağlam tasarrufu için kırpıldı; en son okumayı esas al]';
+        } else if (len > READ_KEEP) {
+          content = String(m.content).slice(0, READ_KEEP) + '\n…[kırpıldı — devam için offset ile oku]';
+        } else {
+          content = null; /* TAM KORUNUR — kırpma yok */
+        }
+      } else {
+        content = len > TOOL_OUT_KEEP * 2 ? String(m.content).slice(0, TOOL_OUT_KEEP) + '\n…[kırpıldı]' : null;
+      }
+      /* diffView UI-only metadata'dır — sağlayıcıya GİTMEZ */
+      if (content !== null || m.diffView) {
         const rest = { ...m };
         delete rest.diffView;
-        if (tooLong) rest.content = String(m.content).slice(0, TOOL_OUT_KEEP) + '\n…[kırpıldı]';
+        if (content !== null) rest.content = content;
         flat[k] = rest;
       }
     }

@@ -3845,12 +3845,18 @@ function renderAgentRail() {
     const when = j.startedAt
       ? new Date(j.startedAt).toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' })
       : '';
+    /* iptal sebebi LİSTEDE yazmaz (yatay scroll çıkarır) — tooltip + açınca
+       detaydaki .ag-err satırında görünür */
+    const abortTip =
+      j.status === 'aborted' && j.error
+        ? ` title="İptal sebebi: ${escapeHtml(String(j.error).slice(0, 200))}"`
+        : '';
     row.innerHTML =
       `<div class="rj-head">` +
       `<span class="ag-dot"></span>` +
       `<span class="sess-title">${escapeHtml(j.title)}</span>` +
       (j.code ? `<span class="sess-code" title="Oturum kodu">${escapeHtml(j.code)}</span>` : ``) +
-       `<span class="rj-time">${j.status === 'running' ? when + ' · ' + agentTimerHtml(j.startedAt) + ' · ' + _t('ag_working') : (agStText(j.status) === _t('ag_st_done') ? '\u2713' : (agStText(j.status) || j.status) + (j.status === 'aborted' && j.error ? ' — ' + escapeHtml(String(j.error).slice(0, 70)) : ''))}</span>` +
+       `<span class="rj-time"${abortTip}>${j.status === 'running' ? when + ' · ' + agentTimerHtml(j.startedAt) + ' · ' + _t('ag_working') : (agStText(j.status) === _t('ag_st_done') ? '\u2713' : (agStText(j.status) || j.status))}</span>` +
        (j.status === 'running'
          ? `<button class="rj-cancel" title="${_t('ag_cancel')}">×</button>`
          : `<button class="rj-cancel" title="${_t('ag_delete')}"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M10 11v6M14 11v6"/></svg></button>`) +

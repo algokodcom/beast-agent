@@ -1770,7 +1770,7 @@ body.browser-open #settingsDialog { width: min(70vw, calc(100vw - var(--bw, 480p
 #railClear svg { display: block; }
 }
 
-#railList { flex: 1; overflow-y: auto; padding: 4px 8px; }
+#railList { flex: 1; overflow-y: auto; overflow-x: hidden; padding: 4px 8px; }
 
 .rail-empty {
   color: var(--muted);
@@ -1788,13 +1788,23 @@ body.browser-open #settingsDialog { width: min(70vw, calc(100vw - var(--bw, 480p
   border-radius: 7px;
   cursor: pointer;
   color: var(--muted);
+  min-width: 0;
+  overflow: hidden;
   margin-bottom: 2px;
 }
 .rj:hover { background: var(--panel2); color: var(--text); }
 .rj.open { background: var(--panel2); color: var(--text); }
 .rj-head { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .rj .sess-title { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 13px; }
-.rj-time { font-size: 10.5px; color: var(--muted); flex: none; }
+.rj-time {
+  font-size: 10.5px;
+  color: var(--muted);
+  flex: 0 1 auto;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .rj.st-done .rj-time { color: #43c463; font-weight: 700; }
 .rj-cancel {
   visibility: hidden;

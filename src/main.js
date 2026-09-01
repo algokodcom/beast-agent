@@ -5607,6 +5607,26 @@ ipcMain.handle('ide:preview', () => {  try {
   }
 });
 
+/* BEAST CODE otomatik canlı önizleme: iş bitince üretilen site/app dahili
+   tarayıcıda GÖRÜNÜR açılır. Yalnız localhost + file:// kabul edilir —
+   dış adresler güvenlik için reddedilir. */
+ipcMain.handle('ide:previewUrl', (_e, url) => {
+  try {
+    const u = String(url || '');
+    const okUrl =
+      /^https?:\/\/(?:localhost|127\.0\.0\.1)(?::\d{2,5})?(?:\/|$)/i.test(u) ||
+      /^file:\/\/\//i.test(u);
+    if (!okUrl) return { ok: false, error: 'yalnız localhost/file:// adresleri önizlenebilir' };
+    /* forceVisible: preview'a basmaya gerek kalmasın — otomatik ve GÖRÜNÜR açılır */
+    setBrowserOpen(true, true);
+    browser.view.webContents.loadURL(u).catch(() => {});
+    browserEmit({ open: true, width: browser.width, url: u });
+    return { ok: true, url: u };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+});
+
 ipcMain.handle('custom:set', (_e, list) => {
   settings.customProviders = Array.isArray(list) ? list : [];
   saveSettings();

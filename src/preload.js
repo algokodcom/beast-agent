@@ -179,6 +179,7 @@ contextBridge.exposeInMainWorld('beast', {
   ideWrite: (rel, content) => ipcRenderer.invoke('ide:write', { rel, content }),
   idePreview: () => ipcRenderer.invoke('ide:preview'),
   idePreviewFile: (rel) => ipcRenderer.invoke('ide:previewFile', rel),
+  idePreviewUrl: (url) => ipcRenderer.invoke('ide:previewUrl', url),
   ideDelete: (rel) => ipcRenderer.invoke('ide:delete', rel),
   onWaEvent: (cb) => ipcRenderer.on('wa:event', (_e, ev) => cb(ev)),
   onEvent: (cb) => ipcRenderer.on('agent:event', (_e, ev) => cb(ev)),

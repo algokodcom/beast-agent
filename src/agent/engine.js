@@ -1333,6 +1333,7 @@ class Engine {
       '3) EDİT: VAR OLAN dosyada önce edit_file kullan (old_string/new_string ile yalnız ilgili bölümü değiştir; birden çok eşleşme varsa bağlam ekle ya da replace_all); write_file yalnız YENİ dosya ya da tam yeniden yazım için. İlgisiz yeniden biçimleme/kayıt boşluk değişikliği YAPMA.\n' +
       '4) DOĞRULA: edit sonrası mümkünse derle/test et/lint çalıştır (run_command); hata varsa DÜZELT ve TEKRAR dene (en fazla 2 doğrulama turu) — kırmızı bırakma.\n' +
       '5) RAPOR: 1-3 satır — ne değişti + doğrulama sonucu (ör. "npm test ✓ 154/154"). Uzun açıklama yok.\n' +
+      'CANLI ÖNİZLEME: web sitesi/app üretirsen son adımda ÇALIŞIR halde bırak (dev server ayakta ya da index.html yazılmış) — panel iş bitince ürettiğin şeyi dahili tarayıcıda otomatik canlı açar.\n' +
       'HIZ KURALLARI:\n' +
       '- Kodu ve dosyaları DOĞRUDAN write_file ile yaz; basit dosya oluşturma/düzenleme için Python scripti yazma; python_run yalnız gerçek hesap/veri işleme gerekiyorsa.\n' +
       '- Bağımsız araç çağrılarını AYNI TURDA paralel ver (birden çok read_file tek turda).\n' +
@@ -2786,6 +2787,9 @@ class Engine {
       let usageTotal = 0; // en yüksek görülen total_tokens — compaction tetiği
       let compacted = false; // run başına en fazla 1 compaction
       const recentSigs = []; // doom-loop dedektörü: son araç imzaları
+      /* Beast Code canlı önizleme: run boyunca üretilen eserleri topla —
+         iş bitince dahili tarayıcıda CANLI açılır (site/dev server/HTML) */
+      const bcArtifacts = session.bcCode ? { html: [], serverUrl: null } : null;
       for (let turn = 0; turn < MAX_TURNS; turn++) {
         /* SÜRE SINIRI YOK — ama sonsuz tur da yok: bg ajan son 3 tura gelirken
            "raporu yaz ve bitir" uyarısı alır; MAX_TURNS sert tavan olarak kalır. */
@@ -2872,6 +2876,20 @@ class Engine {
           this._clearCrash();
           this._maybeCompact(sid);
           this._pruneSession(session); // opencode port: eski araç çıktıları temizlenir (fork edilen prune)
+          /* Beast Code canlı önizleme: iş bitince üretilen site/app dahili
+             tarayıcıda otomatik açılır (dev server öncelikli, sonra HTML) */
+          if (bcArtifacts && (bcArtifacts.serverUrl || bcArtifacts.html.length)) {
+            const url =
+              bcArtifacts.serverUrl ||
+              'file:///' +
+                path
+                  .resolve(
+                    this._sessionWorkspace(sid),
+                    bcArtifacts.html[bcArtifacts.html.length - 1]
+                  )
+                  .replace(/\\/g, '/');
+            emit({ type: 'bc-preview', url });
+          }
           emit({ type: 'done', usage: res.usage || null, meta: res.meta || null });
           this._bgFinish(sid, 'done');
           this.flushPendingReports(sid);
@@ -2919,6 +2937,34 @@ class Engine {
               emitSafe(this, sid, { type: 'status', status: `⛔ doom-loop: ${name} tekrarı engellendi` });
             } else {
               out = await this._execTool(name, args, ctrl.signal, sid);
+            }
+            /* Beast Code eser takibi: yazılan HTML + başlatılan dev server */
+            if (bcArtifacts) {
+              try {
+                if (
+                  (name === 'write_file' || name === 'edit_file') &&
+                  args && args.path && /\.html?$/i.test(String(args.path))
+                ) {
+                  bcArtifacts.html.push(String(args.path));
+                }
+                if (name === 'run_command') {
+                  const cmdStr = String((args && args.command) || '');
+                  const hay = cmdStr + '\n' + String(out || '').slice(0, 6000);
+                  const m = /https?:\/\/(?:localhost|127\.0\.0\.1)(?::\d{2,5})?[^\s'"<>]*/i.exec(hay);
+                  if (m) {
+                    bcArtifacts.serverUrl = m[0].replace(/[)\].,;:'"]+$/, '');
+                  } else {
+                    let port = 0;
+                    const hs = /python\s+-m\s+http\.server(?:[^\n]*?(\d{2,5}))?/i.exec(cmdStr);
+                    if (hs) port = Number(hs[1]) || 8000;
+                    else if (/\bvite\b/i.test(cmdStr)) port = 5173;
+                    else if (/\bnext dev\b/i.test(cmdStr)) port = 3000;
+                    else if (/\bng serve\b/i.test(cmdStr)) port = 4200;
+                    else if (/\b(npm (run )?(dev|start)|npx serve|live-server)\b/i.test(cmdStr)) port = 3000;
+                    if (port) bcArtifacts.serverUrl = 'http://localhost:' + port;
+                  }
+                }
+              } catch {}
             }
             // Ekran görüntüsü gibi araçlar görseli sonraki tura enjekte eder
             let injectedImage = null;

@@ -6278,6 +6278,25 @@ function bcRefreshPreview() {
   beast.idePreview().catch(() => {});
 }
 
+/* BEAST CODE canlı önizleme: engine iş sonunda eser tespit ederse
+   (dev server / HTML) dahili tarayıcı otomatik GÖRÜNÜR açılır —
+   kullanıcı preview tuşuna basmak zorunda kalmaz */
+function bcAutoPreview(url) {
+  const u = String(url || '');
+  if (
+    !u ||
+    !(
+      /^https?:\/\/(?:localhost|127\.0\.0\.1)(?::\d{2,5})?(?:\/|$)/i.test(u) ||
+      /^file:\/\/\//i.test(u)
+    )
+  ) {
+    return;
+  }
+  bcPrevAt = Date.now(); /* ardından gelen done/idle çift yenilemesin */
+  beast.idePreviewUrl(u).catch(() => {});
+  bcLine('t-dim', '[canlı önizleme açıldı — ' + u + ']');
+}
+
 /* ---------- Beast Code araç kutuları ----------
    Ard arda gelen araç çağrıları TEK kutuda toplanır. Kural: engine mesajı
    tool_calls İÇERİYORSA (iş turu) grup AÇIK kalır — aradaki ara yazılar kutu
@@ -6456,6 +6475,10 @@ function bcIngest(ev) {
         codeWriteWatch.delete(ev.callId);
         codeReloadIfOpen(wp);
       }
+      break;
+    case 'bc-preview':
+      /* iş bitince üretilen site/app dahili tarayıcıda CANLI açılır */
+      bcAutoPreview(ev.url);
       break;
     case 'bc-mode':
       /* OpenCode disiplini çalışma modu: başlıkta rozet + panelde bilgi satırı */

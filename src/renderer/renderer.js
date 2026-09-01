@@ -1473,7 +1473,7 @@ const WA_STATUS_TEXT = {
 
 async function renderIntegrationsPane() {
   const pane = $('#tab-integrations');
-  const g = await beast.waGetGroups().catch(() => ({ enabled: false, mentionOnly: true }));
+  const g = await beast.waGetGroups().catch(() => ({ enabled: false, mentionOnly: true, seeAll: false }));
   pane.innerHTML =
     '<h2>' + _t('it_h2') + '</h2><div class="sub">' + _t('it_sub') + '</div>' +
     `<div class="wa-card">
@@ -1500,6 +1500,7 @@ async function renderIntegrationsPane() {
       <label class="lock-row"><input type="checkbox" id="waGroupsOn" ${g.enabled ? 'checked' : ''}/><span>${_t('it_groups_on')}</span></label>
       <label class="lock-row" style="${g.enabled ? '' : 'opacity:.45'}"><input type="radio" name="waGroupMode" id="waGroupsMention" ${g.mentionOnly !== false ? 'checked' : ''}/><span>${_t('it_groups_mention')}</span></label>
       <label class="lock-row" style="${g.enabled ? '' : 'opacity:.45'}"><input type="radio" name="waGroupMode" id="waGroupsAll" ${g.mentionOnly === false ? 'checked' : ''}/><span>${_t('it_groups_all')}</span></label>
+      <label class="lock-row" id="waSeeAllRow" style="${g.enabled && g.mentionOnly !== false ? '' : 'opacity:.45'}"><input type="checkbox" id="waGroupsSeeAll" ${g.seeAll ? 'checked' : ''}/><span>${_t('it_groups_seeall')}</span></label>
       <div class="divider"></div>
       <label class="mem-label" style="margin-top:0">${_t('it_allow_label')}</label>
       <div id="waAllowChips" class="chips-inline"></div>
@@ -1574,22 +1575,41 @@ async function renderIntegrationsPane() {
   const waGroupsOn = $('#waGroupsOn');
   const waGroupsMention = $('#waGroupsMention');
   const waGroupsAll = $('#waGroupsAll');
-  /* iki mod BİRBİRİNE HARIÇTİR: ya @mention ya her mesaja karışma (radio) */
+  const waGroupsSeeAll = $('#waGroupsSeeAll');
+  const waSeeAllRow = $('#waSeeAllRow');
+  /* iki mod BİRBİRİNE HARIÇTİR: ya @mention ya her mesaja karışma (radio)
+     seeAll yalnız mention modunda anlamlı — o mod seçiliyken aktifleşir */
   const syncGroupMode = () => {
     const op = waGroupsOn.checked ? '' : '.45';
     if (waGroupsMention) waGroupsMention.parentElement.style.opacity = op;
     if (waGroupsAll) waGroupsAll.parentElement.style.opacity = op;
+    if (waSeeAllRow) waSeeAllRow.style.opacity = waGroupsOn.checked && waGroupsMention && waGroupsMention.checked ? '' : '.45';
   };
   const saveGroups = async () => {
-    const r = await beast.waSetGroups({ enabled: waGroupsOn.checked, mentionOnly: !waGroupsAll.checked });
-    toast(r.enabled ? (r.mentionOnly ? 'Gruplar açık — @mention bekler' : 'Gruplar açık — tüm mesajlara karışır') : 'Gruplar kapalı');
+    const r = await beast.waSetGroups({ enabled: waGroupsOn.checked, mentionOnly: !waGroupsAll.checked, seeAll: !!(waGroupsSeeAll && waGroupsSeeAll.checked) });
+    toast(
+      r.enabled
+        ? r.mentionOnly
+          ? r.seeAll
+            ? 'Gruplar açık — tüm konuşmalar bağlam olarak okunuyor, sadece @mention\'a cevap verir'
+            : 'Gruplar açık — @mention bekler'
+          : 'Gruplar açık — tüm mesajlara karışır'
+        : 'Gruplar kapalı'
+    );
   };
   waGroupsOn.addEventListener('change', async () => {
     syncGroupMode();
     await saveGroups();
   });
-  waGroupsMention.addEventListener('change', saveGroups);
-  waGroupsAll.addEventListener('change', saveGroups);
+  waGroupsMention.addEventListener('change', () => {
+    syncGroupMode();
+    saveGroups();
+  });
+  waGroupsAll.addEventListener('change', () => {
+    syncGroupMode();
+    saveGroups();
+  });
+  if (waGroupsSeeAll) waGroupsSeeAll.addEventListener('change', saveGroups);
   syncGroupMode();
 
   $('#waStartBtn').addEventListener('click', async () => {

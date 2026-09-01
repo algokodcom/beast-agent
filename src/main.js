@@ -7,7 +7,7 @@ const http = require('http');
 const dns = require('dns');
 const crypto = require('crypto');
 const { spawn } = require('child_process');
-const Engine = require('./agent/engine');
+const { Engine, OBSERVE_MARK } = require('./agent/engine');
 const { loadBeastConfig, beastDir } = require('./agent/config');
 const bots = require('./agent/bots');
 const mqueue = require('./agent/mqueue');
@@ -1199,6 +1199,75 @@ async function waFlush(jid) {
   }
 }
 
+/* Grup göndereninin kimlik etiketi + SAHİP olup olmadığı.
+   Sıra: izin listesindeki isim → @kullanıcı adı → gerçek PN → LID base.
+   hitP.owner → bu kişi izin listesinde SAHİP olarak işaretli. */
+function waGroupSenderInfo(payload) {
+  const pnDigits = String(payload.participantPn || '').split('@')[0].split(':')[0];
+  const hitP = /^\d+$/.test(pnDigits) ? waFind(pnDigits) : null;
+  const uname = String(payload.participantUsername || '').trim();
+  let label;
+  if (hitP && hitP.name) label = `${hitP.name} (+${pnDigits})`;
+  else if (uname) label = `@${uname}${/^\d+$/.test(pnDigits) ? ' (+' + pnDigits + ')' : ''}`;
+  else if (/^\d+$/.test(pnDigits)) label = '+' + pnDigits;
+  else label = payload.participant ? '+' + String(payload.participant).split('@')[0].split(':')[0] : '';
+  return { label, name: (hitP && hitP.name) || '', isOwner: !!(hitP && hitP.owner) };
+}
+
+/* Oturum yoksa oluştur (processWaMessage ile aynı kalıp) */
+function ensureWaSession(jid) {
+  let sid = waChats.get(jid);
+  if (!sid) {
+    const v = engine.createSession();
+    sid = v.id;
+    waChats.set(jid, sid);
+    saveWaChats();
+    if (wa) wa.setWatchJids([...waChats.keys()]);
+  } else {
+    waRememberSession(jid, sid);
+  }
+  return sid;
+}
+
+/* ---------- GRUP BAĞLAM AKIŞI (mentionOnly + seeAll) ----------
+   Bot grubun tüm konuşmasını okur ama CEVAP ÜRETMEZ; mesajlar sessizce
+   oturum geçmişine bağlam olarak düşer. @mention gelince bot tüm bu
+   bağlamı görerek konuşur. Anti-spam: aynı birleştirme penceresi. */
+const waCtxQueue = new Map(); // jid -> { timer, payloads[] }
+
+function waGroupObserve(jid, payload, senderNum) {
+  let q = waCtxQueue.get(jid);
+  if (!q) {
+    q = { payloads: [] };
+    waCtxQueue.set(jid, q);
+  }
+  q.payloads.push({ payload, senderNum });
+  clearTimeout(q.timer);
+  waLog(`grup bağlam: kuyruğa girdi jid=${waPrettyJid(jid)} toplam=${q.payloads.length}`);
+  q.timer = setTimeout(() => {
+    waCtxFlush(jid).catch((e) => waLog(`ctx flush KRASİ: ${String((e && e.stack) || e)}`));
+  }, WA_DEBOUNCE_MS);
+}
+
+async function waCtxFlush(jid) {
+  const q = waCtxQueue.get(jid);
+  if (!q) return;
+  waCtxQueue.delete(jid);
+  const sid = ensureWaSession(jid);
+  /* her satır gönderen etiketli olur — ajan kimin ne yazdığını izleyebilsin */
+  const lines = [];
+  for (const { payload } of q.payloads) {
+    if (!payload || !payload.text) continue;
+    const gi = waGroupSenderInfo(payload);
+    const who = gi.label || '?';
+    lines.push(`${who}: ${String(payload.text).slice(0, 1500)}`);
+  }
+  if (!lines.length) return;
+  const text = `${OBSERVE_MARK} — WhatsApp grup konuşması (cevap verme, sadece bilgi olarak sakla)]\n` + lines.join('\n').slice(0, 6000);
+  engine.observe(sid, text);
+  waLog(`grup bağlam: oturuma işlendi sid=${sid} satır=${lines.length}`);
+}
+
 /* ---------- WA'dan skill kurulumu ----------
    SKILL.md (veya *.skill.md) belgesi atılırsa skills altına kurulur. */
 
@@ -1549,7 +1618,15 @@ async function handleWaIncoming(jid, payload, senderNum) {
     if (isGroup) {
       const g = settings.waGroups || {};
       if (!g.enabled) return;
-      if (g.mentionOnly !== false && !payload.mentioned) return;
+      const mentionMode = g.mentionOnly !== false;
+      /* MENTION MODU + seeAll: bot grubun TÜM konuşmasını BAĞLAM olarak görür
+         ama yalnız @mention'da cevap üretir. seeAll VARSAYILAN KAPALI —
+         mention'sız mesajlar tamamen yutulur (gizlilik). */
+      if (mentionMode && !payload.mentioned && g.seeAll) {
+        waGroupObserve(jid, payload, senderNum);
+        return;
+      }
+      if (mentionMode && !payload.mentioned) return;
       waLog(`grup mesajı jid=${waPrettyJid(jid)} participant=+${senderNum || '?'} mention=${!!payload.mentioned}`);
     } else {
       const hit = waFind(senderNum);
@@ -1725,22 +1802,21 @@ async function processWaMessage(jid, payload, senderNum, requeues = 0) {
      Kimlik çözümleme sırası: izin listesindeki isim → @kullanıcı adı → gerçek PN → LID.
      Ajan böylece grubun içinde mesajın KİMDEN geldiğini görür. */
   let groupSender = '';
+  let groupSenderOwner = false;
   if (isGroup) {
-    const pnDigits = String(payload.participantPn || '').split('@')[0].split(':')[0];
-    const hitP = /^\d+$/.test(pnDigits) ? waFind(pnDigits) : null;
-    const uname = String(payload.participantUsername || '').trim();
-    if (hitP && hitP.name) groupSender = `${hitP.name} (+${pnDigits})`;
-    else if (uname) groupSender = `@${uname}${/^\d+$/.test(pnDigits) ? ' (+' + pnDigits + ')' : ''}`;
-    else if (/^\d+$/.test(pnDigits)) groupSender = '+' + pnDigits;
-    else groupSender = participantName || '';
+    const gi = waGroupSenderInfo(payload);
+    groupSender = gi.label || participantName;
+    groupSenderOwner = gi.isOwner;
   }
-  /* #v13.1 rol: SAHİP vs MİSAFİR — ajan kime konuştuğunu net bilsin */
+  /* #v13.1 rol: SAHİP vs MİSAFİR — ajan kime konuştuğunu net bilsin.
+     GRUPLARDA DA: gönderen izin listesinde SAHİP olarak işaretliyse ajan
+     bunu görür — sahibinin grup içi talepleri misafir sözünden önceliklidir. */
   const isOwner = !isGroup && !!hit.owner;
-  const roleTag = isOwner
+  const roleTag = isOwner || groupSenderOwner
     ? 'SAHİBİN (talepleri önceliklidir)'
     : 'MİSAFİR (izinli ama sahibin sözü önceliklidir)';
   const label = isGroup
-    ? `Grup ${jid.split('@')[0]}${groupSender ? ' — gönderen: ' + groupSender : ''}`
+    ? `Grup ${jid.split('@')[0]}${groupSender ? ` — gönderen: ${groupSender} — ${groupSenderOwner ? 'SAHİBİN' : 'MİSAFİR (grup üyesi)'}` : ''}`
     : hit.name
       ? `${hit.name} (+${senderNum || '?'}) — ${roleTag}`
       : `+${senderNum || '?'} — ${roleTag}`;
@@ -1748,7 +1824,9 @@ async function processWaMessage(jid, payload, senderNum, requeues = 0) {
   if (!isGroup && !isOwner) {
     text += `\n[NOT: Bu kişi SAHİP DEĞİL, misafirdir. Sahibin ayarlarını/verilerini değiştirme; kalıcı hafızaya misafire özel bilgi yazma.]`;
   } else if (isGroup) {
-    text += `\n[NOT: Grup mesajı — gönderen grubun üyesidir, izin listendeki kişi olmayabilir. Grup üyelerine karşı temkinli konuş.]`;
+    text += groupSenderOwner
+      ? `\n[NOT: Grup mesajı ama gönderen SAHİBİN — talepleri önceliklidir, misafir gibi temkinli konuşmana gerek yok.]`
+      : `\n[NOT: Grup mesajı — gönderen grubun üyesidir, izin listendeki kişi olmayabilir. Grup üyelerine karşı temkinli konuş.]`;
   }
   const attachments = [];
 
@@ -4551,12 +4629,16 @@ ipcMain.handle('wherewasi:set', (_e, cfg) => {
   return settings.whereWasI;
 });
 
-/* WhatsApp grup ayarı: { enabled, mentionOnly } */
-ipcMain.handle('wa:groups:get', () => settings.waGroups || { enabled: false, mentionOnly: true });
+/* WhatsApp grup ayarı: { enabled, mentionOnly, seeAll }
+   seeAll: yalnız mentionOnly modunda anlamlı — bot grubun TÜM konuşmasını
+   bağlam olarak okur ama yine SADECE @mention'da cevap verir.
+   VARSAYILAN KAPALI: herkesin konuşmasını görmesi istenmeyebilir. */
+ipcMain.handle('wa:groups:get', () => settings.waGroups || { enabled: false, mentionOnly: true, seeAll: false });
 ipcMain.handle('wa:groups:set', (_e, cfg) => {
   settings.waGroups = {
     enabled: !!(cfg && cfg.enabled),
     mentionOnly: !(cfg && cfg.mentionOnly === false),
+    seeAll: !!(cfg && cfg.seeAll),
   };
   saveSettings();
   return settings.waGroups;

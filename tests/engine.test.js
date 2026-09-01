@@ -113,28 +113,91 @@ test('eski görseller metne indirilir, son mesajın görseli korunur', () => {
   assert.ok(Array.isArray(lastUser.content));
 });
 
-/* ---------- oturum notlar� (ge�ici haf�za) ---------- */
+/* ---------- oturum notlar� (ge�ici haf�za) ---------- */
 
-test('oturum notlar�: dosyadan y�klenir, mesaj listesine kar��maz', () => {
+test('oturum notlar�: dosyadan y�klenir, mesaj listesine kar��maz', () => {
   const eng = makeEngine();
   const id = eng.createSession().id;
   for (let i = 0; i < 5; i++) {
     fs.appendFileSync(eng._file(id), JSON.stringify({ t: 'msg', role: 'user', content: 'mesaj ' + i }) + '\n');
   }
-  fs.appendFileSync(eng._file(id), JSON.stringify({ t: 'notes', text: 'hedef: v7 �al�smas�', at: 3 }) + '\n');
-  eng.cache.delete(id); // diskten taze y�kle
+  fs.appendFileSync(eng._file(id), JSON.stringify({ t: 'notes', text: 'hedef: v7 �al�smas�', at: 3 }) + '\n');
+  eng.cache.delete(id); // diskten taze y�kle
   const s = eng._load(id);
-  assert.equal(s.notes, 'hedef: v7 �al�smas�');
+  assert.equal(s.notes, 'hedef: v7 �al�smas�');
   assert.equal(s.notesAt, 3);
   assert.equal(s.messages.length, 5);
 });
 
-test('oturum notlar� varken payload s�k�la��r', () => {
+test('oturum notlar� varken payload s�k�la��r', () => {
   const eng = makeEngine({ historyTokenBudget: 100000 });
   const msgs = [];
   for (let i = 0; i < 30; i++) msgs.push({ role: 'user', content: 'kisa mesaj #' + i });
   const withoutNotes = eng._buildPayload('sys', msgs, null);
-  const withNotes = eng._buildPayload('sys', msgs, '�zet: test');
+  const withNotes = eng._buildPayload('sys', msgs, '�zet: test');
   assert.ok(withNotes.length < withoutNotes.length);
-  assert.equal(withNotes[withNotes.length - 1].content, 'kisa mesaj #29'); // son mesaj hep kal�r
+  assert.equal(withNotes[withNotes.length - 1].content, 'kisa mesaj #29'); // son mesaj hep kal�r
+});
+
+/* ---------- observe(): sessiz bağlam enjeksiyonu ---------- */
+
+test('observe: mesaj geçmişe düşer ama run tetiklenmez', async () => {
+  const events = [];
+  const eng = makeEngine({ emit: (ev) => events.push(ev) });
+  const id = eng.createSession().id;
+  const ok = eng.observe(id, '[BAĞLAM — grup] ali: selam');
+  assert.ok(ok);
+  const s = eng._load(id);
+  assert.equal(s.messages.length, 1);
+  assert.equal(s.messages[0].role, 'user');
+  assert.ok(s.messages[0].content.startsWith('[BAĞLAM'));
+  // _run tetiklenmedi: LLM hatası/done olayı yok
+  await new Promise((r) => setTimeout(r, 60));
+  assert.ok(!events.some((e) => e.type === 'error' || e.type === 'done'));
+  // observe olayı yayıldı
+  assert.ok(events.some((e) => e.type === 'observe' && e.sessionId === id));
+  // boş metin false
+  assert.equal(eng.observe(id, '   '), false);
+});
+
+test('observe: ardışık bağlam mesajları tek mesajda birleşir', () => {
+  const eng = makeEngine();
+  const id = eng.createSession().id;
+  eng.observe(id, '[BAĞLAM — grup] ali: selam');
+  eng.observe(id, '[BAĞLAM — grup] ayşe: nasılsın');
+  const s = eng._load(id);
+  assert.equal(s.messages.length, 1);
+  assert.ok(s.messages[0].content.includes('ali: selam'));
+  assert.ok(s.messages[0].content.includes('ayşe: nasılsın'));
+  // dosyaya da tek satır yazıldı
+  const lines = fs.readFileSync(eng._file(id), 'utf8').split('\n').filter((l) => l.trim());
+  const msgLines = lines.filter((l) => { try { return JSON.parse(l).t === 'msg'; } catch { return false; } });
+  assert.equal(msgLines.length, 1);
+});
+
+test('observe: normal user mesajıyla birleşmez', () => {
+  const eng = makeEngine();
+  const id = eng.createSession().id;
+  const s = eng._load(id);
+  s.messages.push({ role: 'user', content: 'gerçek soru' });
+  fs.appendFileSync(eng._file(id), JSON.stringify({ t: 'msg', role: 'user', content: 'gerçek soru' }) + '\n');
+  eng.observe(id, '[BAĞLAM — grup] ali: selam');
+  assert.equal(s.messages.length, 2);
+  assert.equal(s.messages[0].content, 'gerçek soru');
+  assert.ok(s.messages[1].content.startsWith('[BAĞLAM'));
+});
+
+test('send: mention mesajı bekleyen bağlam mesajıyla birleşir ve run başlar', async () => {
+  const events = [];
+  const eng = makeEngine({ emit: (ev) => events.push(ev) });
+  const id = eng.createSession().id;
+  eng.observe(id, '[BAĞLAM — grup] ali: selam\nayşe: nasılsın');
+  eng.send(id, { text: '@beast bana bugün hava nasıl?' });
+  const s = eng._load(id);
+  assert.equal(s.messages.length, 1);
+  assert.ok(s.messages[0].content.includes('ayşe: nasılsın'));
+  assert.ok(s.messages[0].content.includes('@beast bana bugün hava nasıl?'));
+  // run başladı → sağlayıcı yoksa hata olayı düşer (tetiklenme kanıtı)
+  await new Promise((r) => setTimeout(r, 120));
+  assert.ok(events.some((e) => e.type === 'error' || e.type === 'done'));
 });

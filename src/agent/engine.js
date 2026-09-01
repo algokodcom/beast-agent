@@ -19,6 +19,9 @@ const SUB_MAX_TURNS = 8;
 const HISTORY_TOKEN_BUDGET = 18000;
 const TOOL_OUT_KEEP = 1200;
 const USER_MAX = 8000;
+/* observe() ile enjekte edilen bağlam mesajlarının öneki — ardışık bağlam
+   mesajlarının tek mesajda birleşmesi bu işaretle anlaşılır */
+const OBSERVE_MARK = '[BAĞLAM';
 
 /* Oturum notları (geçici hafıza): eski mesajlar bütçeden düşülmeden önce
    önemli noktalar çıkarılır, sistem promptuna küçük blok olarak girer. */
@@ -1608,6 +1611,38 @@ class Engine {
     this.emit({ type: 'message', sessionId: s.id, message: msg });
     this.emit({ type: 'sessions' });
     this._run(s).catch(() => {});
+    return true;
+  }
+
+  /* SESSİZ BAĞLAM ENJEKSİYONU: metin oturum geçmişine düşer ama _run()
+     TETİKLENMEZ — ajan "görür", cevap ÜRETMEZ. WhatsApp gruplarında
+     @mention moduyla kullanılır: grubun tüm konuşması bağlam olarak
+     birikir, bot yalnız mention gelince konuşur. Ardışık bağlam
+     mesajları işaret önekli tek user mesajında birleşir (bazı sağlayıcılar
+     art arda user mesajını reddettiği için). */
+  observe(sessionId, text) {
+    const s = this._load(String(sessionId));
+    if (!s) return false;
+    const body = String(text || '').slice(0, USER_MAX);
+    if (!body.trim()) return false;
+    const lastMsg = s.messages[s.messages.length - 1];
+    if (
+      lastMsg && lastMsg.role === 'user' &&
+      typeof lastMsg.content === 'string' &&
+      lastMsg.content.startsWith(OBSERVE_MARK)
+    ) {
+      /* önceki bağlam mesajının devamı — tek mesajda birleştir */
+      lastMsg.content = (lastMsg.content + '\n' + body).slice(0, USER_MAX);
+      this._rewriteLastMsg(s.id, lastMsg.content);
+    } else {
+      const msg = { role: 'user', content: body };
+      s.messages.push(msg);
+      try {
+        this._append(s, msg);
+      } catch {}
+    }
+    this.emit({ type: 'observe', sessionId: s.id });
+    this.emit({ type: 'sessions' });
     return true;
   }
 
@@ -3850,3 +3885,4 @@ module.exports.BG_HIDDEN_TOOLS = BG_HIDDEN_TOOLS;
 module.exports.PERM_TOOL_SETS = PERM_TOOL_SETS;
 module.exports.PERM_LEVELS = PERM_LEVELS;
 module.exports.normalizePerms = normalizePerms;
+module.exports.OBSERVE_MARK = OBSERVE_MARK;

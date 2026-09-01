@@ -6834,6 +6834,13 @@ function bcNoteStream(delta) {
 /* Beast Code oturumunun engine olayları → panel çıktısı */
 function bcIngest(ev) {
   switch (ev.type) {
+    case 'wa-user':
+      /* WhatsApp'tan gelen kullanıcı mesajı panelde görünür — ajan cevabı
+         zaten akar; bu olay kullanıcının KENDİ yazdığını gösterir */
+      bcFlushStream();
+      bcCloseToolGroup();
+      bcLine('t-cmd', '📱 ' + (ev.from || 'WhatsApp') + '» ' + (ev.text || ''));
+      break;
     case 'token':
       /* grup açıksa ara not (kutu içi); değilse normal akış */
       if (bcNoteStream(ev.delta)) break;

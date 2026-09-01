@@ -2009,6 +2009,29 @@ async function processWaMessage(jid, payload, senderNum, requeues = 0) {
   }
 
   if (payload.text) text += `\n${String(payload.text).slice(0, 6000)}`;
+  /* BEASTCODE MODU: WA'dan gelen kullanıcı mesajını masaüstü panelde de göster.
+     Ajan cevabı engine olaylarıyla zaten panele akar ama KULLANICI mesajı için
+     engine olay üretmez (panel kendi input'undan "code>" satırı basar) — bu
+     yüzden açıkça bildiriyoruz; yoksa WhatsApp'tan yazılanlar panelde görünmez. */
+  if (waBcMode.has(jid) && win && !win.isDestroyed()) {
+    const waEcho = [];
+    if (payload.text) waEcho.push(String(payload.text).slice(0, 6000));
+    if (attachments.length) {
+      waEcho.push(
+        '[' +
+          attachments
+            .map((a) => (a.type === 'image' ? 'resim' : 'dosya: ' + (a.name || '?')))
+            .join(', ') +
+          ']'
+      );
+    }
+    win.webContents.send('agent:event', {
+      sessionId: sid,
+      type: 'wa-user',
+      from: isGroup ? (groupSender || 'grup üyesi') : (hit && hit.name) || '+' + (senderNum || '?'),
+      text: waEcho.join('\n'),
+    });
+  }
   engine.send(sid, { text: text.slice(0, 8000), attachments });
 }
 

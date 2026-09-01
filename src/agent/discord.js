@@ -48,6 +48,20 @@ function bodySnippet(data) {
   return s ? ` — gövde: ${s.slice(0, 140)}` : '';
 }
 
+/* Ağ engel sayfası tespiti: Discord API her zaman JSON döner — text/html veya
+   erişim-engelle sayfası gelirse ağ seviyesinde blok var demektir (Türkiye'de
+   Discord erişimi zaman zaman engellenir). Kullanıcıya net VPN yönlendirmesi. */
+const VPN_HINT = 'Discord bu ağdan ERİŞİME ENGELLİ görünüyor — VPN açıp tekrar dene (engel sayfası döndü)';
+
+function looksBlocked(ctype, data) {
+  const ct = String(ctype || '');
+  const body = String(data || '').slice(0, 4000);
+  return (
+    ct.includes('text/html') ||
+    /erisime[_ ]?engelle|erişime engelle|blocked|block_page/i.test(body)
+  );
+}
+
 class DiscordBridge {
   constructor({ token, emit, onIncoming }) {
     this.token = String(token || '').trim();
@@ -101,14 +115,17 @@ class DiscordBridge {
         const data = await res.text();
         let j = null;
         try { j = data ? JSON.parse(data) : null; } catch {}
-        if (res.ok) return j;
+        if (res.ok && j !== null) return j;
+        if (j === null && looksBlocked(res.headers.get('content-type'), data)) {
+          throw new Error(VPN_HINT + bodySnippet(data));
+        }
         throw new Error(
           `discord ${path}: HTTP ${res.status}${j && j.message ? ' ' + j.message : ''}${bodySnippet(data)}`
         );
       } catch (e) {
         /* kendi formatladığımız API hatasıysa yukarı taşı; transport hatasıysa
            Node https yoluna düş (orada esnek TLS şansı var) */
-        if (/^discord /.test(String((e && e.message) || ''))) throw e;
+        if (/^discord |Discord bu ağ/.test(String((e && e.message) || ''))) throw e;
       }
     }
 
@@ -134,6 +151,9 @@ class DiscordBridge {
             let j = null;
             try { j = data ? JSON.parse(data) : null; } catch {}
             if (res.statusCode >= 200 && res.statusCode < 300 && j !== null) return resolve(j);
+            if (looksBlocked(ctype, data)) {
+              return reject(new Error(VPN_HINT + bodySnippet(data)));
+            }
             if (res.statusCode >= 200 && res.statusCode < 300) {
               return reject(new Error(`discord ${path}: bozuk yanıt (HTTP ${res.statusCode}${ctype ? ', ' + ctype : ''})${bodySnippet(data)}`));
             }

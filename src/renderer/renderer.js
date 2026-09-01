@@ -1557,6 +1557,7 @@ async function renderIntegrationsPane() {
       <div class="wa-actions" style="margin-top:6px">
         <button id="dcStopBtn" class="btn ghost">${_t('it_disconnect')}</button>
       </div>
+      <div class="sub" style="margin-top:6px">ⓘ ${_t('it_dc_vpn')}</div>
       <div class="divider"></div>
       <label class="mem-label" style="margin-top:0">${_t('it_allow_label')} — Discord</label>
       <div id="dcAllowChips" class="chips-inline"></div>

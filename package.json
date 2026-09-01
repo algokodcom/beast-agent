@@ -1,7 +1,7 @@
 {
     "name": "beast-agent",
     "productName": "Beast Agent",
-    "version": "0.30.0",
+    "version": "1.0.0",
     "description": "Ultra-fast local agent shell for Windows.",
     "author": "algokodcom (AlgoKod)",
     "license": "MIT",
@@ -28,6 +28,10 @@
         "beast-agent": "bin/beast-agent.js",
         "beast": "bin/beast-agent.js"
     },
+    "files": [
+        "src/**/*",
+        "assets/**/*"
+    ],
     "scripts": {
         "start": "electron .",
         "dist": "electron-builder --win nsis portable",
@@ -73,8 +77,7 @@
         ],
         "files": [
             "src/**/*",
-            "assets/**/*",
-            "!tests/**"
+            "assets/**/*"
         ],
         "win": {
             "target": [

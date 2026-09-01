@@ -153,6 +153,9 @@ function startNpmUpdateWatch() {
 const toolsMod = require('./agent/tools');
 const { htmlToText, setSearchChain, setSearchObscuraEnabled, setTinyfishKey } = toolsMod;
 const obscura = require('./agent/obscura');
+/* OpenCode köprüsü KALDIRILDI: Beast Code artık tamamen BEAST motoruyla
+   çalışır — opencode'in döngü mantığı (compaction, prune, cache disiplini,
+   doom-loop, yetim onarım) engine.js'e native port edildi. */
 const { waToolLine } = require('./agent/watext');
 
 /* #3 merkezî log sistemine process-seviye hataları da düşsün */
@@ -2758,6 +2761,7 @@ app.whenReady().then(() => {
     app.on('before-quit', () => {
       app.isQuitting = true;
       flushBrowserStorage(); // x.com/google oturumları (cookies) diske yazılsın
+      try { toolsMod.disposeShellSessions(); } catch {} // kalıcı shell oturumlarını kapat
     });
 
     if (process.argv.includes('--smoke')) {
@@ -5211,25 +5215,35 @@ function bcGetSession(folder) {
   return s;
 }
 
-ipcMain.handle('beastcode:send', (_e, payload) => {
+/* Beast Code motoru: TAMAMEN BEAST MOTORU — opencode'in döngü mantığı
+   (compaction, prune, prompt-cache, doom-loop, yetim onarım, proje
+   talimatları) engine.js'e native port edildi; köprü/alt süreç yok. */
+
+function bcPanelEvent(sid, ev) {
+  try {
+    if (win && !win.isDestroyed()) win.webContents.send('agent:event', { sessionId: sid, ...ev });
+  } catch {}
+}
+
+ipcMain.handle('beastcode:send', async (_e, payload) => {
   const text = String((payload && payload.msg) || '').trim();
   if (!text) return { ok: false, error: 'boş mesaj' };
   if (!engine) return { ok: false, error: 'ajan hazır değil' };
-  if (!engine.publicState().hasModel) return { ok: false, error: 'model yok — Ayarlar → Provider sekmesinden ekle' };
   const ws = ideRoot();
+  const modeM = /^\/(plan|build|auto)\b/i.exec(text);
+
+  if (!engine.publicState().hasModel) return { ok: false, error: 'model yok — Ayarlar → Provider sekmesinden ekle' };
   if (engine.isBusy(bcSessions.get(ws))) return { ok: false, busy: true, error: 'önceki mesaj sürüyor — ■ ile durdurabilirsin' };
   const s = bcGetSession(ws);
   s.workspace = ws; /* soldaki klasörde çalış */
   s.bcCode = true; /* todo disiplini + iş sonu hızlı kapanış (engine) */
-  /* OpenCode disiplini — çalışma modu: /plan (incele+planla) · /build (uygula) · /auto */
-  const m = /^\/(plan|build|auto)\b/i.exec(text);
-  if (m) {
-    s.bcMode = m[1].toLowerCase();
+  if (modeM) {
+    s.bcMode = modeM[1].toLowerCase();
     engine.cache.set(s.id, s);
     if (win && !win.isDestroyed()) {
-      const body = m[1].toLowerCase() === 'plan'
+      const body = modeM[1].toLowerCase() === 'plan'
         ? 'PLAN MODU — dosyaları okuyup inceler, KOD YAZMAZ; adım adım uygulama planı verir.'
-        : m[1].toLowerCase() === 'build'
+        : modeM[1].toLowerCase() === 'build'
           ? 'BUILD MODU — son planı UYGULAR: dosyaları düzenler, komutları çalıştırır, doğrular.'
           : 'OTOMATİK MOD — önce kısa plan, sonra uygulama + doğrulama (OpenCode disiplini).';
       win.webContents.send('agent:event', { sessionId: s.id, type: 'bc-mode', mode: s.bcMode, body });
@@ -5242,15 +5256,16 @@ ipcMain.handle('beastcode:send', (_e, payload) => {
   return { ok: true, sessionId: s.id };
 });
 
-ipcMain.handle('beastcode:stop', () => {
-  const sid = bcSessions.get(ideRoot());
+ipcMain.handle('beastcode:stop', async () => {
+  const ws = ideRoot();
+  const sid = bcSessions.get(ws);
   if (!sid) return { ok: false };
   let r = false;
   try { r = engine.interrupt(sid, 'kullanıcı Beast Code panelinden ■ ile durdurdu'); } catch {}
   return { ok: !!r };
 });
 
-ipcMain.handle('beastcode:new', () => {
+ipcMain.handle('beastcode:new', async () => {
   const ws = ideRoot();
   const sid = bcSessions.get(ws);
   if (sid && engine.isBusy(sid)) return { ok: false, error: 'mesaj sürüyor — önce ■ ile durdur' };

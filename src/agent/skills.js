@@ -1,4 +1,4 @@
-'use strict';
+﻿'use strict';
 
 /* Beast skills: %APPDATA%\beast\skills\**\SKILL.md
    Only name+description go into the system prompt (few tokens).
@@ -236,7 +236,7 @@ Gerçek Chromium olduğu için Google'a bot koruması uygulamaz. Arama aep=1 ile
 
 ## 2. Obscura (stealth headless — DuckDuckGo)
 
-Rust tabanlı gizli tarayıcı: anti-detect parmak izi + V8 JS. Kurulu değilse uygulama açılışında OTOMATİK indirilir (%APPDATA%\\beast\\obscura). Varsayılan AKTİF — tarayıcı engellenirse bot korumasını aşarak DuckDuckGo'dan sonuç getirir.
+Rust tabanlı gizli tarayıcı: anti-detect parmak izi + V8 JS. Beast Agent PAKETİNDE hazır gelir — ilk açılışta %APPDATA%\\beast\\obscura'ya açılır (indirme yok). Varsayılan AKTİF — tarayıcı engellenirse bot korumasını aşarak DuckDuckGo'dan sonuç getirir.
 
 ## 3. TinyFish API (anahtar varsa)
 

@@ -23,6 +23,12 @@ const FETCH_TIMEOUT_MS = 25000;
 /* content-length gelmezse yüzde tahmini için yaklaşık boyut (stealth zip ≈74 MB) */
 const EST_ZIP_BYTES = 74 * 1024 * 1024;
 
+/* Beast Agent PAKETİNE gömülü zip (vendor/) — varsa HİÇ indirme yapılmaz */
+function bundledZip() {
+  const p = path.join(__dirname, '..', '..', 'vendor', 'obscura.zip');
+  try { return fs.existsSync(p) ? p : null; } catch { return null; }
+}
+
 function obscuraDir() {
   const base = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
   return path.join(base, 'beast', 'obscura');
@@ -130,8 +136,8 @@ function psExpand(zipPath, destDir) {
   });
 }
 
-/* Obscura'yı kur / güncelle (yeniden indirip üzerine yazar).
-   onProgress({pct, phase}) — 1-88 indirme, 89-96 açma, 97-99 doğrulama. */
+/* Obscura'yı kur / güncelle. SIRA: pakete gömülü vendor zip'i (network YOK,
+     anında) → yoksa GitHub'dan indir. onProgress({pct, phase}). */
 async function installObscura(signal, onProgress) {
   const tick = (pct, phase) => {
     if (typeof onProgress === 'function') {
@@ -142,14 +148,23 @@ async function installObscura(signal, onProgress) {
     tick(0, 'hazırlanıyor');
     const dest = obscuraDir();
     fs.mkdirSync(dest, { recursive: true });
-    const zipPath = path.join(os.tmpdir(), 'beast-obscura.zip');
-    const buf = await httpsDownload(RELEASE_BASE + WINDOWS_ZIP, 5, signal, onProgress);
-    tick(89, 'kuruluyor');
-    fs.writeFileSync(zipPath, buf);
-    tick(90, 'kuruluyor');
-    const ok = await psExpand(zipPath, dest);
-    try { fs.unlinkSync(zipPath); } catch {}
-    tick(97, 'doğrulanıyor');
+    const bundled = bundledZip();
+    let ok = false;
+    if (bundled) {
+      /* PAKET İÇİ kurulum — indirme yok, saniyeler sürer */
+      tick(30, 'kuruluyor');
+      ok = await psExpand(bundled, dest);
+      tick(97, 'doğrulanıyor');
+    } else {
+      const zipPath = path.join(os.tmpdir(), 'beast-obscura.zip');
+      const buf = await httpsDownload(RELEASE_BASE + WINDOWS_ZIP, 5, signal, onProgress);
+      tick(89, 'kuruluyor');
+      fs.writeFileSync(zipPath, buf);
+      tick(90, 'kuruluyor');
+      ok = await psExpand(zipPath, dest);
+      try { fs.unlinkSync(zipPath); } catch {}
+      tick(97, 'doğrulanıyor');
+    }
     if (!ok || !obscuraInstalled()) {
       return { ok: false, error: 'obscura kurulumu başarısız (zip açılamadı)' };
     }
@@ -265,6 +280,7 @@ module.exports = {
   ENGINE: 'obscura',
   RELEASE_BASE,
   WINDOWS_ZIP,
+  bundledZip,
   obscuraDir,
   obscuraExe,
   obscuraInstalled,

@@ -63,6 +63,38 @@ const THINK_LEVELS = [
   { v: 5, label: 'Max', effort: 'max' },
 ];
 
+/* ---------- opencode motoru port: bağlam bütçesi + compaction + prune ----------
+   Kaynak: opencode-dev/packages/opencode/src/session/{overflow,compaction}.ts
+   Sabitler birebir alınmıştır (COMPACTION_BUFFER 20k, PRUNE_PROTECT 40k,
+   PRUNE_MINIMUM 20k, DOOM_LOOP 3, özet çıktı kırpma 2000 karakter). */
+const COMPACTION_BUFFER = 20000; // overflow.ts:8 — özet turu için ayrılan pay
+const OUTPUT_TOKEN_MAX = 32000; // transform.ts:18 — çıktı tavanı (rezerv hesabı)
+const PRUNE_PROTECT = 40000; // compaction.ts:29 — en yeni araç çıktısı koruması
+const PRUNE_MINIMUM = 20000; // compaction.ts:28 — bu kadar kazanç yoksa dokunma
+const SUMMARY_OUT_KEEP = 2000; // compaction.ts:30 — özetteki araç çıktısı kırpma
+const MIN_PRESERVE_RECENT = 2000; // compaction.ts:32 — korunan kuyruk alt sınırı
+const MAX_PRESERVE_RECENT = 15000; // compaction.ts:33 — korunan kuyruk üst sınırı
+const DOOM_LOOP_THRESHOLD = 3; // processor.ts:29 — aynı araç+argüman sınırı
+const HISTORY_BUDGET_MAX = 80000; // dinamik bütçe tavanı (cache'siz sağlayıcı koruması)
+
+/* Bilinen model ailelerinin bağlam penceresi (models.dev değerleri).
+   Eşleşmezse 128k varsayılır — asla gerçek limitin üstünü tahmin etme. */
+const MODEL_CONTEXT_TABLE = [
+  [/gemini-[23]/i, 1000000],
+  [/gpt-5|gpt-4\.1|gpt-4o|o[134]-/i, 400000],
+  [/glm-4\.[67]/i, 200000],
+  [/claude/i, 200000],
+  [/grok-[34]/i, 256000],
+  [/kimi/i, 256000],
+  [/qwen.*coder/i, 256000],
+  [/deepseek|qwen|glm|llama|mistral|minimax/i, 131072],
+];
+function modelContextOf(sel) {
+  const s = String((sel && sel.model) || '');
+  for (const [re, ctx] of MODEL_CONTEXT_TABLE) if (re.test(s)) return ctx;
+  return 131072;
+}
+
 /* Çıktı biçimi kuralı: # ve * karakteri yasak (tüm ajanlar için ortak metin) */
 const FORMAT_RULES =
   'ÇIKTI BİÇİMİ (ZORUNLU):\n' +
@@ -83,11 +115,20 @@ const PERM_TOOL_SETS = {
   read: new Set([
     'web_search', 'http_fetch', 'deep_search',
     'browser_open', 'browser_read', 'browser_snapshot',
-    'list_dir', 'read_file',
+    'list_dir', 'read_file', 'grep', 'glob',
   ]),
   chat: new Set([]), // sadece sohbet
 };
 const PERM_LEVELS = ['all', 'web', 'read', 'chat'];
+
+/* opencode plan agent portu: PLAN modu PROMPT düzeyinde değil GERÇEKten
+   salt-okurdur — yazma/çalıştırma araçları setten düşer, sadece plan çıkar */
+const PLAN_ALLOW_TOOLS = new Set([
+  'read_file', 'list_dir', 'grep', 'glob',
+  'web_search', 'http_fetch', 'deep_search',
+  'browser_open', 'browser_read', 'browser_snapshot',
+  'todo_write', 'memory_search', 'kb_search', 'ocr_read',
+]);
 
 /* İzin değerini normalize eder: 'all' → ['all'], 'web' → ['web'],
    'web,read' / ['web','read'] → ['web','read'] (sıra PERM_LEVELS'e göre dizilir).
@@ -103,7 +144,7 @@ function normalizePerms(p) {
    Bunların hepsi run_background ile paralel ajana devredilir — CEO sadece
    konuşur, planlar, emir verir ve takip eder. */
 const CEO_EXEC_TOOLS = new Set([
-  'run_command', 'read_file', 'write_file', 'list_dir',
+  'run_command', 'read_file', 'write_file', 'edit_file', 'list_dir',
   'python_run',
   'web_search', 'http_fetch', 'deep_search',
   'browser_open', 'browser_read', 'browser_screenshot', 'browser_snapshot',
@@ -629,7 +670,14 @@ class Engine {
         }
         const res = await chatStreamAuto(
           c,
-          { messages: msgs, tools: activeTools, reasoningEffort: this._thinkEffortFor(session) },
+          {
+            messages: msgs,
+            tools: activeTools,
+            reasoningEffort: this._thinkEffortFor(session),
+            /* opencode cache disiplini (transform.ts:1270): oturum-sabit
+               önbellek anahtarı — destekleyen sağlayıcıda önek cache'i tutar */
+            cacheKey: String(session.id || ''),
+          },
           {
             signal,
             onDelta,
@@ -929,6 +977,10 @@ class Engine {
           } else if (rec.t === 'notes') {
             session.notes = String(rec.text || '');
             session.notesAt = Number(rec.at) || 0;
+          } else if (rec.t === 'summary') {
+            /* opencode compaction: konuşma özeti — birebir geçmişin yerine geçmez,
+               payload'da system'den sonra sabit user mesajı olarak girer */
+            if (rec.text) session.summary = String(rec.text);
           } else if (rec.t === 'botdm') {
             /* botlar arası DM oturumu — admin izleyebilir, sidebar'da görünmez */
             session.isBotDm = true;
@@ -1129,6 +1181,7 @@ class Engine {
     s.messages = [];
     delete s.notes;
     delete s.notesAt;
+    delete s.summary; // özet de sıfırlanır — taze başlangıç
     this.todos.set(sid, []);
     this.emit({ type: 'sessions' });
     return true;
@@ -1224,6 +1277,30 @@ class Engine {
 
   /* ---------- prompt assembly (the frugal part) ---------- */
 
+  /* opencode instruction.ts port: workspace'teki proje talimatları (AGENTS.md,
+     CLAUDE.md, CONTEXT.md) Beast Code system promptuna girer. Oturum başına
+     BİR KEZ okunup session'da saklanır — system promptu epoch boyunca sabit
+     kalır, önek cache bozulmaz (dosya sonradan değişse bile). */
+  _projectInstructions(session) {
+    if (!session) return '';
+    if (session._projCtx !== undefined) return session._projCtx;
+    let out = '';
+    try {
+      const ws = (session && session.workspace) || this.workspace;
+      for (const name of ['AGENTS.md', 'CLAUDE.md', 'CONTEXT.md']) {
+        let txt = '';
+        try { txt = fs.readFileSync(path.join(ws, name), 'utf8'); } catch {}
+        txt = String(txt || '').trim();
+        if (!txt) continue;
+        out += (out ? '\n\n' : '') + `--- ${name} ---\n` + txt.slice(0, 6000);
+        if (out.length >= 8000) break;
+      }
+    } catch {}
+    out = out.slice(0, 9000);
+    session._projCtx = out;
+    return out;
+  }
+
   /* Beast Code (IDE paneli): VS Code hızında çalışsın diye SECMET prompt.
      OpenCode kodlama disiplini gömülü: bağlam → plan → küçük diff → doğrula.
      Hafıza embedding araması, skills taraması, kişilik/kural blokları YOK —
@@ -1231,7 +1308,9 @@ class Engine {
   buildBcSystem(session) {
     const nowD = new Date();
     const localDate = nowD.toLocaleDateString('tr-TR');
-    const localTime = nowD.toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' });
+    /* önek-cache disiplini (opencode Context Epoch): dakika yerine saat —
+       system prompt her dakika değişse sağlayıcı önbelleği sürekli bozulur */
+    const localTime = String(nowD.getHours()).padStart(2, '0') + ':00';
     const mode = String((session && session.bcMode) || 'auto').toLowerCase();
     const modeBlock =
       mode === 'plan'
@@ -1239,22 +1318,26 @@ class Engine {
         : mode === 'build'
           ? 'ÇALIŞMA MODU: BUILD 🛠 — son planı SOHBETTEKİ bağlamdan al ve UYGULA: dosyaları düzenle, komutları çalıştır, doğrula. Yeni plan açma; en fazla 1 cümlelik yön gösterimi + uygulama.'
           : 'ÇALIŞMA MODU: OTOMATİK ⚡ — önce 2-4 satırlık mini plan (todo_write), sonra hemen uygula + doğrula.';
+    const proj = this._projectInstructions(session);
     return (
       'Sen BEAST CODE\u2019sun — IDE panelinde çalışan, OpenCode disiplinli hızlı bir kodlama ajanı. VS Code gibi çevik ol.\n' +
       `Çalışma klasörü: ${(session && session.workspace) || this.workspace}\n` +
       `Yerel zaman: ${localDate} ${localTime}\n` +
       `${modeBlock}\n` +
+      (proj
+        ? '# PROJE TALİMATLARI (workspace AGENTS/CLAUDE/CONTEXT dosyalarından — daima uy)\n' + proj + '\n'
+        : '') +
       'WORKFLOW (her işte bu sıra):\n' +
-      '1) BAĞLAM: değiştirmeden önce ilgili dosyaları OKU (read_file / list_dir / grep mantığıyla hedefli ara) — varsayım yapma, mevcut stili/konvansiyonu takip et.\n' +
+      '1) BAĞLAM: değiştirmeden önce ilgili dosyaları OKU — read_file satır numaralı döner (N: içerik), offset/limit ile büyük dosyayı pencerele; içerik araması için grep (regex), dosya adı araması için glob kullan; varsayım yapma, mevcut stili/konvansiyonu takip et.\n' +
       '2) PLAN: 2+ adımlı işlerde İLK EYLEM todo_write olsun (2-6 madde); her adım bitince status:"done" ile GÜNCELLE — liste bitene kadar iş bitmiş sayılmaz.\n' +
-      '3) EDİT: küçük, HEDEFLİ diff\u2019ler yaz (write_file ile yalnız ilgili bölümü etkile); dosyayı baştan yazma; ilgisiz yeniden biçimleme/kayıt boşluk değişikliği YAPMA.\n' +
+      '3) EDİT: VAR OLAN dosyada önce edit_file kullan (old_string/new_string ile yalnız ilgili bölümü değiştir; birden çok eşleşme varsa bağlam ekle ya da replace_all); write_file yalnız YENİ dosya ya da tam yeniden yazım için. İlgisiz yeniden biçimleme/kayıt boşluk değişikliği YAPMA.\n' +
       '4) DOĞRULA: edit sonrası mümkünse derle/test et/lint çalıştır (run_command); hata varsa DÜZELT ve TEKRAR dene (en fazla 2 doğrulama turu) — kırmızı bırakma.\n' +
       '5) RAPOR: 1-3 satır — ne değişti + doğrulama sonucu (ör. "npm test ✓ 154/154"). Uzun açıklama yok.\n' +
       'HIZ KURALLARI:\n' +
       '- Kodu ve dosyaları DOĞRUDAN write_file ile yaz; basit dosya oluşturma/düzenleme için Python scripti yazma; python_run yalnız gerçek hesap/veri işleme gerekiyorsa.\n' +
       '- Bağımsız araç çağrılarını AYNI TURDA paralel ver (birden çok read_file tek turda).\n' +
       '- Dosyayı kullanıcı söylememişse list_dir ile yapıyı görüp kendin karar ver.\n' +
-      '- Run_command PowerShell ortamında çalışır (Windows).\n' +
+      '- Run_command PowerShell ortamında çalışır (Windows): KALICI oturum — cd ve $env değişkenleri çağrılar arasında korunur; büyük çıktıda tam çıktı geçici dosyaya düşer, read_file ile oku. shell:"bash" verirsen git-bash ile bash sözdizimi koşar.\n' +
       '- Soru sorma, sohbet etme; uygulayıp özetle. Kullanıcı /plan /build /auto ile modu değiştirir.\n' +
       FORMAT_RULES
     );
@@ -1303,7 +1386,9 @@ class Engine {
     /* Beast Code (bcCode) oturumları buildBcSystem kullanır — buraya düşmez */
     const nowD = new Date();
     const localDate = nowD.toLocaleDateString('tr-TR');
-    const localTime = nowD.toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' });
+    /* önek-cache disiplini (opencode Context Epoch): dakika yerine saat —
+       system prompt her dakika değişse sağlayıcı önbelleği sürekli bozulur */
+    const localTime = String(nowD.getHours()).padStart(2, '0') + ':00';
     let tz = '';
     try {
       tz = Intl.DateTimeFormat().resolvedOptions().timeZone || '';
@@ -1329,6 +1414,7 @@ class Engine {
       '# ARAÇ KURALLARI\n' +
         [
           'Basit soruları araç kullanmadan doğrudan cevapla — hız önceliklidir.',
+          'Kod/dosya işlerinde: içerik araması grep (regex), dosya adı araması glob, VAR OLAN dosyayı değiştirme edit_file (write_file yalnız yeni dosya/tam yeniden yazım). read_file satır numaralı döner; offset/limit ile pencerele.',
           'Kullanıcı bir tarihte/saatte hatırlatılmasını isterse set_reminder kullan; when değerini ORTAMdaki bugüne göre hesapla (yerel saat). "Her sabah/gün/hafta" gibi tekrarlı isteklerde repeat alanını da ver (daily/weekly/monthly/weekdays veya cron).',
                     'Kullanıcı kalıcı bir arka plan takibi isterse (fiyat eşiği, pil seviyesi, sayfa değişikliği) watcher_add ile izleyici kur; kurduktan sonra watcher_list ile doğrula ve kullanıcıya koşulu + kontrol sıklığını kısaca bildir.',
           'Anlık olay takipleri için (yeni mail, fiyat eşiği, dosya değişimi, webhook) event_subscribe kullan — cron/polling gerekmez; listeyi event_list ile göster, vazgeçirirse event_unsubscribe.',
@@ -1393,7 +1479,34 @@ class Engine {
     return 0;
   }
 
-  _buildPayload(system, messages, notes) {
+  /* ---------- opencode port: bağlam matematiği (overflow.ts) ---------- */
+
+  /* Seçili model için özet payı düşülmüş kullanılabilir girdi alanı */
+  _usableContext(sel) {
+    const ctx = modelContextOf(sel);
+    if (!ctx) return 0;
+    /* overflow.ts:14-19: reserved = min(COMPACTION_BUFFER, maxOutput) */
+    const reserved = Math.min(COMPACTION_BUFFER, OUTPUT_TOKEN_MAX);
+    return Math.max(0, ctx - reserved);
+  }
+
+  /* Dinamik geçmiş bütçesi: model bağlamı genişse 18k sabitinin ÜSTÜNE çıkar
+     (asla altına inmez); cache'siz sağlayıcılarda şişmeyi HISTORY_BUDGET_MAX sınırlar */
+  _historyBudget(sel) {
+    const usable = this._usableContext(sel);
+    if (!usable) return this.historyTokenBudget;
+    return Math.max(this.historyTokenBudget, Math.min(Math.floor(usable * 0.85), HISTORY_BUDGET_MAX));
+  }
+
+  /* Geçmiş + sistem + araç şemaları için kaba toplam token tahmini */
+  _contextEstimate(session, sel) {
+    const msgs = session.messages.reduce((a, m) => a + estMsgTokens(m), 0);
+    const toolsCost = TOOLS.length ? estTokens(JSON.stringify(TOOLS)) : 0;
+    return Math.ceil((msgs + toolsCost + 3500) * this.tokRatio); // 3500 ≈ system payı
+  }
+
+  /* assistant(tool_calls) + sonuç tool mesajlarını BÖLMEYEN birimler */
+  _msgUnits(messages) {
     const units = [];
     let i = 0;
     while (i < messages.length) {
@@ -1408,19 +1521,22 @@ class Engine {
         i++;
       }
     }
-    const budget = this.historyTokenBudget;
+    return units;
+  }
+
+  _buildPayload(system, messages, notes, budget, summary) {
+    const units = this._msgUnits(messages);
+    const B = Math.max(2000, Number(budget) || this.historyTokenBudget);
     const maxUnits = notes ? NOTES_MAX_UNITS : units.length; // notlar varken pencereyi sıkılaştır
     const picked = [];
     let used = 0;
     for (let u = units.length - 1; u >= 0; u--) {
       if (picked.length >= maxUnits) break;
       const cost = units[u].reduce(
-        (a, m) =>
-          a +
-          clamp(Math.ceil(estMsgTokens(m) * this.tokRatio), 1, this.historyTokenBudget),
+        (a, m) => a + clamp(Math.ceil(estMsgTokens(m) * this.tokRatio), 1, B),
         0
       );
-      if (picked.length && used + cost > budget) break;
+      if (picked.length && used + cost > B) break;
       picked.unshift(units[u]);
       used += cost;
     }
@@ -1442,7 +1558,20 @@ class Engine {
         flat[k] = { ...m, content: String(m.content).slice(0, TOOL_OUT_KEEP) + '\n…[kırpıldı]' };
       }
     }
-    return [{ role: 'system', content: system }, ...flat];
+    /* opencode compaction replay (message-v2.ts:521-572): özet, system'den
+       HEMEN sonra sabit user mesajı olarak girer → önek cache'e uygun
+       (compaction sonrası yalnız eklemeli büyür, system bir daha değişmez) */
+    const head = [];
+    if (summary) {
+      head.push({
+        role: 'user',
+        content:
+          '[ÖNCEKİ KONUŞMANIN ÖZETİ — birebir geçmişi buradan hatırla]\n' +
+          summary +
+          '\n[Konuşma aşağıdaki mesajlarla DEVAM EDİYOR]',
+      });
+    }
+    return [{ role: 'system', content: system }, ...head, ...flat];
   }
 
   _lastUserText(session) {
@@ -1505,11 +1634,208 @@ class Engine {
         if (seen++ >= keepFrom) msgLines.push(line);
       }
       out.push(...msgLines);
+      out.push(JSON.stringify({ t: 'summary', text: session.summary || '', at: 0 }));
       out.push(JSON.stringify({ t: 'compacted', at: nowIso(), droppedBefore: keepFrom, noteBased: true }));
       const tmp = file + '.tmp';
       fs.writeFileSync(tmp, out.join('\n') + '\n');
       fs.renameSync(tmp, file);
     } catch {}
+  }
+
+  /* ---------- opencode port: gerçek compaction + prune (compaction.ts) ---------- */
+
+  /* Head bölgesini düz metne serileştirir (compaction.ts:54-85 port).
+     Araç çıktıları SUMMARY_OUT_KEEP ile kırpılır — özet çağrısı küçük kalır. */
+  _serializeHead(msgs) {
+    const lines = [];
+    for (const m of msgs) {
+      if (m.role === 'user') {
+        lines.push('[Kullanıcı]: ' + this._plainText(m).slice(0, 1500));
+      } else if (m.role === 'assistant') {
+        const txt = this._plainText(m).trim();
+        if (txt) lines.push('[Asistan]: ' + txt.slice(0, 1200));
+        for (const tc of m.tool_calls || []) {
+          let args = '';
+          try {
+            args = JSON.stringify(JSON.parse((tc.function && tc.function.arguments) || '{}'));
+          } catch {
+            args = String((tc.function && tc.function.arguments) || '');
+          }
+          lines.push(`[Araç çağrısı]: ${tc.function && tc.function.name}(${args.slice(0, 800)})`);
+        }
+      } else if (m.role === 'tool') {
+        const out = String(m.content || '');
+        lines.push(
+          '[Araç sonucu]: ' + (out.length <= SUMMARY_OUT_KEEP ? out : out.slice(0, SUMMARY_OUT_KEEP) + '\n[kırpıldı]')
+        );
+      }
+    }
+    return lines.filter(Boolean).join('\n');
+  }
+
+  /* compaction.ts:319-557 port. Bağlam taşarsa: kuyruk (son ~%25) birebir
+     korunur, baş metne serileştirilip TEK küçük model çağrısıyla özetlenir,
+     geçmiş [özet + kuyruk] olarak yeniden yazılır. Döndürür: compact oldu mu */
+  async _compactHistory(session, sel, signal) {
+    try {
+      const usable = this._usableContext(sel) || this.historyTokenBudget * 2;
+      const budget = clamp(Math.floor(usable * 0.25), MIN_PRESERVE_RECENT, MAX_PRESERVE_RECENT);
+      const units = this._msgUnits(session.messages);
+      if (units.length < 3) return false;
+      let keepIdx = 0;
+      let used = 0;
+      for (let u = units.length - 1; u >= 0; u--) {
+        const cost = units[u].reduce((a, m) => a + Math.ceil(estMsgTokens(m) * this.tokRatio), 0);
+        if (used + cost > budget) break;
+        keepIdx = u;
+        used += cost;
+      }
+      if (keepIdx <= 0) return false; // özetlenecek head yok
+      const headMsgs = units.slice(0, keepIdx).flat();
+      const transcript = this._serializeHead(headMsgs);
+      if (!transcript.trim()) return false;
+
+      /* core/session/compaction.ts:16-56 şablonu (Türkçe başlıklarla) */
+      const prev = session.summary
+        ? `<önceki-özet>\n${session.summary}\n</önceki-özet>\n\n` +
+          'önceki-özet, konuşmadan önceki her şeyi özetler: ikisini BİRLEŞTİREREK yeni özet çıkar. ' +
+          'önceki-özet bu birleşimden sonra atılır — yeni özete taşımadığın her şey KAYBOLUR. ' +
+          'Konuşma daha yenidir; çelişkide konuşma kazanır. Biten işleri "Aktif"ten "Tamamlanan"a taşı.\n\n'
+        : '';
+      const prompt =
+        'Aşağıdaki <konuşma> etiketindeki sohbet geçmişinden, işe başka bir ajan devam edecek şekilde özet çıkar.\n' +
+        'Tam olarak <şablon> içindeki Markdown yapısını koru; şablon etiketlerini yanıtına yazma.\n' +
+        '<şablon>\n' +
+        '## Amaç\n- [kullanıcının ne yapmaya çalıştığı, 1-2 cümle]\n\n' +
+        '## Önemli Detaylar\n- [kısıtlar, kararlar ve gerekçeleri, önemli olgular, kesin yollar/sayılar; yoksa "(yok)"]\n\n' +
+        '## İş Durumu\n### Tamamlanan\n- [biten işler, doğrulanan olgular; yoksa "(yok)"]\n\n' +
+        '### Aktif\n- [sürüyen işler, yarım değişiklikler; yoksa "(yok)"]\n\n' +
+        '### Engelli\n- [hatalar, bilinmeyenler; yoksa "(yok)"]\n\n' +
+        '## Sonraki Adım\n1. [somut ilk eylem; yoksa "(yok)"]\n\n' +
+        '## İlgili Dosyalar\n- [dosya/klasör yolu: neden önemli; yoksa "(yok)"]\n' +
+        '</şablon>\n\n' +
+        'Kurallar:\n- Boş olsa bile her bölümü koru.\n- Kısa madde maddeler yaz, paragraf kurma.\n' +
+        '- Dosya yollarını, komutları, hata metinlerini, URL\u2019leri BİREBİR aktar.\n' +
+        '- Özetleme yaptığını asla belirtme.\n\n' +
+        prev +
+        `<konuşma>\n${transcript}\n</konuşma>`;
+
+      emitSafe(this, session.id, {
+        type: 'status',
+        status: `⇩ bağlam doldu — opencode tarzı özetleme devrede (head ${headMsgs.length} mesaj, kuyruk ${session.messages.length - headMsgs.length} korunuyor)`,
+      });
+      const small = this.modelFor('subagent') || sel || this.sel;
+      const res = await chatOnce(
+        small,
+        { messages: [{ role: 'user', content: prompt }], temperature: 0.2 },
+        { signal }
+      );
+      const text = String(res.content || '').replace(/```(?:markdown)?/gi, '').trim();
+      if (!text) return false;
+      session.summary = text.slice(0, 12000);
+      const tail = units.slice(keepIdx).flat();
+      session.messages = tail;
+      session.notesAt = clamp(session.notesAt || 0, 0, tail.length);
+      this._persistCompaction(session);
+      emitSafe(this, session.id, {
+        type: 'status',
+        status: `✓ bağlam özeti yazıldı — geçmiş ${headMsgs.length + tail.length} → ${tail.length} mesaj, önek cache tazelendi`,
+      });
+      return true;
+    } catch {
+      return false; // compaction asla sohbeti bozmasın
+    }
+  }
+
+  /* Compaction sonrası disk yeniden yazımı: meta/bot/todo/notes/summary +
+     kuyruk mesajları. Atomik — patlarsa eski dosya sağlam kalır. */
+  _persistCompaction(session) {
+    try {
+      const file = this._file(session.id);
+      let meta = null, meta2 = null, bot = null, todo = null;
+      for (const line of fs.readFileSync(file, 'utf8').split('\n')) {
+        if (!line.trim()) continue;
+        let r;
+        try { r = JSON.parse(line); } catch { continue; }
+        if (r.t === 'meta') meta = line;
+        else if (r.t === 'meta2') meta2 = line;
+        else if (r.t === 'bot') bot = line;
+        else if (r.t === 'todo') todo = line; // append-only: son satır kazanır
+      }
+      const out = [];
+      if (meta) out.push(meta);
+      else out.push(JSON.stringify({ t: 'meta', id: session.id, code: session.code, createdAt: session.createdAt }));
+      if (meta2) out.push(meta2);
+      if (bot) out.push(bot);
+      if (todo) out.push(todo);
+      out.push(JSON.stringify({ t: 'notes', text: session.notes || '', at: session.notesAt || 0 }));
+      out.push(JSON.stringify({ t: 'summary', text: session.summary || '', at: nowIso() }));
+      for (const m of session.messages) out.push(JSON.stringify({ t: 'msg', ...m }));
+      out.push(JSON.stringify({ t: 'compacted', at: nowIso(), summary: true }));
+      const tmp = file + '.tmp';
+      fs.writeFileSync(tmp, out.join('\n') + '\n');
+      fs.renameSync(tmp, file);
+    } catch {}
+  }
+
+  /* Taşma kontrolü (overflow.ts:22-34): gerçek usage varsa onu esas al,
+     yoksa tahmini kullan. usable'ın %95'i dolunca compaction tetiklenir. */
+  _overContext(session, sel, lastUsageTotal) {
+    const usable = this._usableContext(sel);
+    if (!usable) return false;
+    const total =
+      lastUsageTotal ||
+      session.messages.reduce((a, m) => a + estMsgTokens(m), 0) * this.tokRatio + 6000;
+    return total >= usable * 0.95;
+  }
+
+  /* compaction.ts:273-317 prune port: sondan geriye yürür, en yeni kullanıcı
+     turunu korur; PRUNE_PROTECT (40k) aşan eski araç çıktılarını temizler.
+     En az PRUNE_MINIMUM (20k) kazanç yoksa hiç dokunmaz. tool_call_id çiftleri
+     korunur — sadece içerik temizlenir, önek cache bozulmaz. Döndürür: kazanılan token */
+  _pruneSession(session) {
+    try {
+      if (this.ctrls.has(session.id)) return 0;
+      const msgs = session.messages;
+      let total = 0, pruned = 0, turns = 0;
+      const targets = [];
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        const m = msgs[i];
+        if (m.role === 'user') turns++;
+        if (turns < 2) continue; // en yeni tur dokunulmaz
+        if (m.role === 'tool' && typeof m.content === 'string' && m.content.length > 400) {
+          const est = Math.ceil(estTokens(m.content) * this.tokRatio);
+          total += est;
+          if (total > PRUNE_PROTECT) {
+            pruned += est;
+            targets.push(m);
+          }
+        }
+      }
+      if (pruned <= PRUNE_MINIMUM) return 0;
+      const marker = '[eski araç çıktısı temizlendi — özet ve son çıktılar yeterli]';
+      const ids = new Map(targets.map((m) => [m.tool_call_id, marker]));
+      for (const m of targets) m.content = marker;
+      try {
+        const file = this._file(session.id);
+        const lines = fs.readFileSync(file, 'utf8').split('\n');
+        for (let i = 0; i < lines.length; i++) {
+          if (!lines[i].trim()) continue;
+          let r;
+          try { r = JSON.parse(lines[i]); } catch { continue; }
+          if (r.t === 'msg' && r.role === 'tool' && ids.has(r.tool_call_id)) {
+            r.content = marker;
+            lines[i] = JSON.stringify({ t: 'msg', ...r });
+          }
+        }
+        const tmp = file + '.tmp';
+        fs.writeFileSync(tmp, lines.join('\n'));
+        fs.renameSync(tmp, file);
+      } catch {}
+      return pruned;
+    } catch {
+      return 0;
+    }
   }
 
   /* Cevap verildikten sonra çağrılır: son not update'ten bu yana NOTES_EVERY
@@ -2308,6 +2634,10 @@ class Engine {
       /* CEO: uygulayıcı araçlar kapalı — her şey paralel ajana devredilir */
       activeTools = activeTools.filter((t) => !CEO_EXEC_TOOLS.has(t.function.name));
     }
+    if (session.bcCode && session.bcMode === 'plan') {
+      /* opencode plan agent: salt-okur zorlaması — araç seti GERÇEKten daralır */
+      activeTools = activeTools.filter((t) => PLAN_ALLOW_TOOLS.has(t.function.name));
+    }
     if (perms.length === 1 && perms[0] === 'chat') {
       system +=
         '\n\n# KISITLI MOD\nTüm araçların (komut, dosya, web, tarayıcı, hafıza) kapalı. Sadece yazarak cevap ver. ' +
@@ -2328,7 +2658,15 @@ class Engine {
         `\n\n# OTURUM NOTLARI (oturum ${session.code || '?'} — bu oturumun önceki konuşma özeti; birebir geçmişi buradan hatırla)\n` +
         session.notes;
     }
-    let payload = this._buildPayload(system, session.messages, session.notes);
+    /* önek-cache disiplini (opencode request.ts:184): araç sırası oturum
+       boyunca sabit olmalı — alfabetik sıralama sağlayıcı önbelleğini bozmaz */
+    activeTools = [...activeTools].sort((a, b) =>
+      String(a.function.name).localeCompare(String(b.function.name))
+    );
+    /* opencode port: model bağlamına göre dinamik bütçe + compaction özeti */
+    const selEarly = this.sessionModel.get(String(session.id)) || this.modelFor(null) || this.sel;
+    const dynBudget = this._historyBudget(selEarly);
+    let payload = this._buildPayload(system, session.messages, session.notes, dynBudget, session.summary);
     // Vision model sadece mesajda görsel varsa devreye girer; terminal ise prompt'un
     // shell/command işi olduğunda. Aksi halde ana model kullanılır.
     let role = this._lastUserHasImage(session) ? 'vision' : null;
@@ -2375,7 +2713,7 @@ class Engine {
         type: 'status',
         status: `\u{1F5BC} bu model görüntü girişini desteklemiyor — sohbetten ${removed} görsel kaldırıldı, mesaj görüntüsüz yanıtlanıyor (/change ile görsel destekli modele geçebilirsin)`,
       });
-      payload = this._buildPayload(system, session.messages, session.notes);
+      payload = this._buildPayload(system, session.messages, session.notes, dynBudget, session.summary);
       res = await this._streamWithFallbacks(
         session,
         payload,
@@ -2398,6 +2736,38 @@ class Engine {
     return res;
   }
 
+  /* opencode port (prompt.ts:96-100 + processor cleanup): önceki tur yarıda
+     kesildiyse (abort/hata), sonucu gelmeyen tool çağrılarına sentetik hata
+     yanıtı yazılır — katı sağlayıcıdaki "messages illegal" (400) önlenir */
+  _repairOrphanTools(session) {
+    try {
+      const msgs = session.messages;
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        const m = msgs[i];
+        if (m.role === 'user') return; // temiz sınır — sorun yok
+        if (m.role === 'assistant' && Array.isArray(m.tool_calls) && m.tool_calls.length) {
+          const answered = new Set();
+          for (let j = i + 1; j < msgs.length; j++) {
+            if (msgs[j].role === 'tool') answered.add(msgs[j].tool_call_id);
+          }
+          for (const tc of m.tool_calls) {
+            if (!tc || !tc.id || answered.has(tc.id)) continue;
+            const toolMsg = {
+              role: 'tool',
+              tool_call_id: tc.id,
+              name: (tc.function && tc.function.name) || '',
+              content:
+                '[araç çalıştırması kesildi — tur iptal/kesinti nedeniyle tamamlanamadı; gerekiyorsa yeniden çağır]',
+            };
+            msgs.push(toolMsg);
+            try { this._append(session, toolMsg); } catch {}
+          }
+          return;
+        }
+      }
+    } catch {}
+  }
+
   async _run(session) {
     const ctrl = new AbortController();
     this.ctrls.set(session.id, ctrl);
@@ -2406,8 +2776,16 @@ class Engine {
     try {
       if (!this.sel && !this.sessionModel.get(String(session.id))) throw new Error('Model yapılandırılmadı — %APPDATA%\\beast\\config.yaml ve .env kontrol et');
 
+      /* opencode port: yetim tool_calls onarımı — önceki tur iptal/kesintiye
+         uğradıysa sonuç bekleyen araç çağrılarına sentetik hata yanıtı yazılır;
+         yoksa katı sağlayıcılar sonraki istekte 400 verir */
+      this._repairOrphanTools(session);
+
       let nudged = false; // görev listesi disiplini: run başına en fazla 1 hatırlatma
       let wrapNudged = false; // tur limitine yaklaşınca zarif kapanış (bg ajanlar)
+      let usageTotal = 0; // en yüksek görülen total_tokens — compaction tetiği
+      let compacted = false; // run başına en fazla 1 compaction
+      const recentSigs = []; // doom-loop dedektörü: son araç imzaları
       for (let turn = 0; turn < MAX_TURNS; turn++) {
         /* SÜRE SINIRI YOK — ama sonsuz tur da yok: bg ajan son 3 tura gelirken
            "raporu yaz ve bitir" uyarısı alır; MAX_TURNS sert tavan olarak kalır. */
@@ -2424,11 +2802,40 @@ class Engine {
           } catch {}
           emit({ type: 'message', message: wmsg });
         }
+        /* opencode port (prompt.ts:1281): ana oturumda son turda zorunlu
+           nihai cevap — tur limiti sessizce dolup boş 'done' dönmesin */
+        if (!session.bgJob && turn === MAX_TURNS - 1 && !wrapNudged) {
+          wrapNudged = true;
+          const wmsg = {
+            role: 'user',
+            content:
+              '[SON TUR] Tur limitine ulaşıldı: YENİ araç çağırma — eldeki bilgilerle NİHAİ cevabını şimdi ver. Eksikler varsa açıkça belirt.',
+          };
+          session.messages.push(wmsg);
+          try {
+            this._append(session, wmsg);
+          } catch {}
+          emit({ type: 'message', message: wmsg });
+        }
+        /* opencode port (prompt.ts:1161 + overflow.ts): bağlam dolduysa
+           compaction checkpoint — kuyruk korunur, baş özetlenir */
+        const selNow = this.sessionModel.get(String(sid)) || this.modelFor(null) || this.sel;
+        if (!compacted && this._overContext(session, selNow, usageTotal)) {
+          compacted = true;
+          await this._compactHistory(session, selNow, ctrl.signal);
+        }
         this._bgTrim(session); // #21 bg geçmişini olabildiğince ince tut
         emit({ type: 'status', status: 'thinking' });
         const res = await this._chatTurn(session, ctrl.signal, (delta) =>
           emit({ type: 'token', delta })
         );
+        /* opencode port (processor.ts:477-482): step-finish usage'ı compaction
+           tetiğine besle — gerçek toplam biliniyorsa tahmine gerek kalmaz */
+        const uTot =
+          res.usage &&
+          (res.usage.total_tokens ||
+            (res.usage.prompt_tokens || 0) + (res.usage.completion_tokens || 0));
+        if (uTot > usageTotal) usageTotal = uTot;
 
         const assistant = { role: 'assistant', content: res.content || '' };
         if (res.toolCalls && res.toolCalls.length) assistant.tool_calls = res.toolCalls;
@@ -2464,6 +2871,7 @@ class Engine {
              Not/memory/skill bakımı artık arka planda (_postRunHousekeeping). */
           this._clearCrash();
           this._maybeCompact(sid);
+          this._pruneSession(session); // opencode port: eski araç çıktıları temizlenir (fork edilen prune)
           emit({ type: 'done', usage: res.usage || null, meta: res.meta || null });
           this._bgFinish(sid, 'done');
           this.flushPendingReports(sid);
@@ -2473,16 +2881,45 @@ class Engine {
 
         // Paralel yürütme — bağımsız çağrılar beklemesin
         session.toolsSinceReflect = (session.toolsSinceReflect || 0) + res.toolCalls.length;
+        if (!this._knownToolNames) this._knownToolNames = new Set(TOOLS.map((t) => t.function.name));
         await Promise.all(
           res.toolCalls.map(async (tc) => {
-            const name = tc.function && tc.function.name;
+            let name = tc.function && tc.function.name;
+            /* opencode port (llm.ts:296-312 repairToolCall): model aracı adını
+               yanlış yazdıysa büyük/küçük harf normalizasyonuyle onar — tur kaybı yok */
+            if (name && !this._knownToolNames.has(name)) {
+              const fixed = TOOLS.find((t) => t.function.name.toLowerCase() === String(name).trim().toLowerCase());
+              if (fixed) {
+                emitSafe(this, sid, {
+                  type: 'status',
+                  status: `🔧 araç adı düzeltildi: ${name} → ${fixed.function.name}`,
+                });
+                name = fixed.function.name;
+              }
+            }
             let args = {};
             try {
               args = JSON.parse((tc.function && tc.function.arguments) || '{}');
             } catch {}
             emit({ type: 'tool-start', callId: tc.id, name, args });
             emit({ type: 'status', status: name });
-            let out = await this._execTool(name, args, ctrl.signal, sid);
+            /* opencode port (processor.ts:29 + 356-380): aynı araç + birebir
+               aynı argüman 3 kez koştuysa 4.'yü çalıştırma — döngüye para/hız
+               akıtma; modele hata bildirimiyle yol göster */
+            const sig = name + '\u0000' + String((tc.function && tc.function.arguments) || '');
+            const dups = recentSigs.reduce((a, s) => a + (s === sig ? 1 : 0), 0);
+            recentSigs.push(sig);
+            let out;
+            if (dups >= DOOM_LOOP_THRESHOLD) {
+              out = JSON.stringify({
+                error:
+                  `doom-loop: ${name} aynı argümanlarla ${DOOM_LOOP_THRESHOLD} kez çalıştı ve hep aynı sonucu verdi. ` +
+                  'Aynı çağrıyı tekrarlamak işe yaramaz — farklı bir yöntem/argüman dene ya da eldeki bilgilerle nihai cevabı ver.',
+              });
+              emitSafe(this, sid, { type: 'status', status: `⛔ doom-loop: ${name} tekrarı engellendi` });
+            } else {
+              out = await this._execTool(name, args, ctrl.signal, sid);
+            }
             // Ekran görüntüsü gibi araçlar görseli sonraki tura enjekte eder
             let injectedImage = null;
             try {
@@ -2853,7 +3290,7 @@ class Engine {
         t.function.name !== 'delegate_task' &&
         t.function.name !== 'set_reminder' &&
         !t.function.name.startsWith('email_')
-    );
+    ).sort((a, b) => String(a.function.name).localeCompare(String(b.function.name))); // önek-cache: sabit sıra
     const role = 'subagent';
     const sel = this.modelFor(role) || this.sel;
     if (this.roleModels[role]) {
@@ -2875,7 +3312,12 @@ class Engine {
       for (let turn = 0; turn < SUB_MAX_TURNS; turn++) {
         const res = await chatStreamAuto(
           sel,
-          { messages: [{ role: 'system', content: system }, ...msgs.slice(1)], tools: subTools, reasoningEffort: this._thinkEffort() },
+          {
+            messages: [{ role: 'system', content: system }, ...msgs.slice(1)],
+            tools: subTools,
+            reasoningEffort: this._thinkEffort(),
+            cacheKey: String(sessionId || 'subagent'),
+          },
           { signal: ctrl.signal }
         );
         const assistant = { role: 'assistant', content: res.content || '' };

@@ -1,4 +1,4 @@
-'use strict';
+﻿'use strict';
 
 /* Hafif i18n (TR/EN):
    - data-i18n      → textContent
@@ -267,9 +267,9 @@
       ws_h2: 'Web Arama',
       ws_sub: 'Arama zinciri: 1) dahili tarayıcı (direk Google) 2) Obscura (stealth headless → DuckDuckGo) 3) TinyFish (anahtar varsa) 4) python çoklu-motor (ddgs / DDG+Bing+Mojeek) — otomatik. Sıra ve aç/kapa aşağıdan değiştirilir.',
       oc_h2: 'Obscura (Stealth Tarayıcı)',
-      oc_sub: 'Rust tabanlı gizli headless tarayıcı (anti-detect + V8, Chromium\u2019suz). Kurulu değilse ilk açılışta otomatik indirilir (%APPDATA%\\beast\\obscura); DuckDuckGo aramasını bot korumasını aşarak yapar.',
+      oc_sub: 'Rust tabanlı gizli headless tarayıcı (anti-detect + V8, Chromium\u2019suz). Paket içinde hazır gelir; ilk açılışta %APPDATA%\\beast\\obscura\'ya açılır; DuckDuckGo aramasını bot korumasını aşarak yapar.',
       oc_status_ok: 'Obscura kurulu ve hazır.',
-      oc_status_missing: 'Obscura kurulu değil — ilk açılışta otomatik indirilir (≈74 MB).',
+      oc_status_missing: 'Obscura paket içinde hazır — ilk açılışta otomatik kurulur.',
       oc_install: 'Kur / Güncelle',
       oc_install_running: 'Kuruluyor…',
       oc_installing: 'İndiriliyor… (≈74 MB, bağlantıya göre birkaç dakika)',
@@ -325,7 +325,7 @@
       us_where_off_toast: 'Açılış özeti kapandı',
       ws_h2: 'Web Arama',
       oc_status_ok: 'Obscura kurulu ve hazır.',
-      oc_status_missing: 'Obscura kurulu değil — ilk açılışta otomatik indirilir.',
+      oc_status_missing: 'Obscura paket içinde hazır — ilk açılışta otomatik kurulur.',
       ws_save: 'Kaydet',
       ws_clear: 'Anahtarı Sil',
       ws_key_note: 'Anahtar maskeli tutulur; yenisini yazıp kaydettiğinde eskisinin yerine geçer. Boş kaydet: mevcut anahtar korunur.',
@@ -822,9 +822,9 @@
       ws_h2: 'Web Search',
       ws_sub: 'Search chain: 1) built-in browser (direct Google) 2) Obscura (stealth headless → DuckDuckGo) 3) TinyFish (if a key is set) 4) python multi-engine (ddgs / DDG+Bing+Mojeek) — automatic. Order and on/off are editable below.',
       oc_h2: 'Obscura (Stealth Browser)',
-      oc_sub: 'Rust-based stealth headless browser (anti-detect + V8, no Chromium). If not installed it is auto-downloaded at first launch (%APPDATA%\\beast\\obscura); it searches DuckDuckGo past bot protection.',
+      oc_sub: 'Rust-based stealth headless browser (anti-detect + V8, no Chromium). It ships inside the package and is extracted to %APPDATA%\\beast\\obscura at first launch; it searches DuckDuckGo past bot protection.',
       oc_status_ok: 'Obscura is installed and ready.',
-      oc_status_missing: 'Obscura is not installed — it is auto-downloaded at first launch (≈74 MB).',
+      oc_status_missing: 'Obscura ships inside the package — it is extracted automatically at first launch.',
       oc_install: 'Install / Update',
       oc_install_running: 'Installing…',
       oc_installing: 'Downloading… (≈74 MB, may take a few minutes)',
@@ -942,7 +942,7 @@
       us_where_off_toast: 'Startup summary off',
       ws_h2: 'Web Search',
       oc_status_ok: 'Obscura is installed and ready.',
-      oc_status_missing: 'Obscura is not installed — it is auto-downloaded at first launch.',
+      oc_status_missing: 'Obscura ships inside the package — it is extracted automatically at first launch.',
       ws_save: 'Save',
       ws_clear: 'Delete Key',
       ws_key_note: 'Key is kept masked; saving a new one replaces the old. Save empty: existing key kept.',

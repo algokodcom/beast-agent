@@ -78,7 +78,10 @@ test('exec write/read/list turu', async () => {
   const w = JSON.parse(await tools.exec('write_file', { path: 'alt/dosya.txt', content: 'içerik' }, { cwd }));
   assert.ok(w.ok);
   const r = JSON.parse(await tools.exec('read_file', { path: 'alt/dosya.txt' }, { cwd }));
-  assert.equal(r.content, 'içerik');
+  /* opencode read.ts port: içerik satır numaralı döner (N: içerik) */
+  assert.equal(r.content, '1: içerik');
+  assert.equal(r.totalLines, 1);
+  assert.ok(!r.truncated);
   const l = JSON.parse(await tools.exec('list_dir', {}, { cwd }));
   assert.ok(l.entries.split('\n')[0].includes('alt'));
 });

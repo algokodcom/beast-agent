@@ -22,6 +22,284 @@ function truncateMiddle(s, cap) {
   );
 }
 
+/* ---------- opencode port: truncate.ts ----------
+   MAX_LINES 2000 / MAX_BYTES 50KB aşarsa TAM çıktı geçici dosyaya yazılır;
+   modele sınırlı önizleme + dosya yolu döner (Model Tool Output bounding).
+   Böylece hiçbir araç çıktısı KAYBOLMAZ — ajan read_file ile kalanını okur. */
+const TRUNC_MAX_LINES = 2000;
+const TRUNC_MAX_BYTES = 50 * 1024;
+const TRUNC_PREVIEW_CHARS = 6000; /* engine'in 7200'lik dilimi içinde ipucu kalsın */
+
+function toolOutputDir() {
+  const d = path.join(os.tmpdir(), 'beast-tool-output');
+  try { fs.mkdirSync(d, { recursive: true }); } catch {}
+  return d;
+}
+
+function boundToolOutput(text) {
+  const s = String(text || '');
+  const bytes = Buffer.byteLength(s, 'utf8');
+  const lines = s.split('\n').length;
+  if (bytes <= TRUNC_MAX_BYTES && lines <= TRUNC_MAX_LINES) return { text: s };
+  const file = path.join(
+    toolOutputDir(),
+    `tool_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}.txt`
+  );
+  try {
+    fs.writeFileSync(file, s);
+  } catch {
+    return { text: s.slice(0, TRUNC_PREVIEW_CHARS) + '\n…[kırpıldı]' };
+  }
+  return {
+    text:
+      s.slice(0, TRUNC_PREVIEW_CHARS) +
+      `\n\n[çıktı kırpıldı: ${lines} satır / ${bytes} byte — TAM ÇIKTI: ${file}\nread_file'ı offset/limit ile kullanarak kalan bölümleri oku]`,
+    outputFile: file,
+  };
+}
+
+/* ---------- opencode port: shell.ts + shell/prompt.ts ----------
+   Workspace başına KALICI PowerShell oturumu: cd/env çağrılar arasında
+   korunur, her çağrıda process spawn maliyeti yoktur. Komut bitişi benzersiz
+   işaretle algılanır (prompt senkronizasyonu). Paralel çağrılar oturum
+   başına sıraya girer (opencode ile aynı: oturum başına sıralı yürütme). */
+const SHELL_QUEUE_CAP = 6; /* en fazla bu kadar ayrı workspace oturumu */
+const SHELL_IDLE_MS = 10 * 60 * 1000; /* 10 dk boşta kalan oturum kapatılır */
+const _shSessions = new Map(); // cwd → session
+
+/* boşta reaper: unref'li zamanlayıcı — event loop'u tek başına tutmaz */
+const _shellReaper = setInterval(() => {
+  const now = Date.now();
+  for (const [k, sess] of _shSessions) {
+    if (!sess.busy && now - (sess.lastUsed || 0) > SHELL_IDLE_MS) {
+      _shellDispose(sess);
+      _shSessions.delete(k);
+    }
+  }
+}, 60000);
+if (_shellReaper.unref) _shellReaper.unref();
+
+function _shellDispose(sess) {
+  try {
+    if (sess.proc && sess.proc.pid) {
+      spawn('taskkill', ['/pid', String(sess.proc.pid), '/T', '/F'], { windowsHide: true });
+    }
+  } catch {}
+  try { sess.proc && sess.proc.kill(); } catch {}
+  sess.dead = true;
+}
+
+function disposeShellSessions() {
+  for (const sess of _shSessions.values()) _shellDispose(sess);
+  _shSessions.clear();
+}
+
+function _spawnShell(cwd) {
+  const proc = spawn(
+    'powershell.exe',
+    ['-NoProfile', '-NoExit', '-Command', '-'],
+    { cwd: cwd || process.cwd(), windowsHide: true, env: envWithPathPrefix() }
+  );
+  const sess = {
+    proc,
+    cwd,
+    buf: '',
+    err: '',
+    seq: 0,
+    busy: false,
+    queue: [], // {command, resolve, timer, signal, onAbort}
+    dead: false,
+  };
+  /* Node 22: child + stdio stream'leri event loop'a bağlanmaz — test/CLI'da
+     bekleyen oturum sürecin çıkmasını ENGELLEMEZ; uygulama kapanışında
+     disposeShellSessions() yine de temiz kapatır */
+  try {
+    proc.unref && proc.unref();
+    proc.stdin.unref && proc.stdin.unref();
+    proc.stdout.unref && proc.stdout.unref();
+    proc.stderr.unref && proc.stderr.unref();
+  } catch {}
+  proc.stdin.on && proc.stdin.on('error', () => {}); // EPIPE yut — oturum ölünce yazma patlamasın
+  proc.stdout.setEncoding('utf8');
+  proc.stderr.setEncoding('utf8');
+  proc.stdout.on('data', (d) => {
+    sess.buf += d;
+    _shellPump(sess);
+  });
+  proc.stderr.on('data', (d) => {
+    sess.err += d;
+    if (sess.err.length > MAX_CMD_OUTPUT * 4) sess.err = sess.err.slice(-MAX_CMD_OUTPUT * 2);
+  });
+  proc.on('exit', () => {
+    sess.dead = true;
+    /* bekleyen komutları ölü oturumda düşür — yeni çağrı taze oturum açar */
+    while (sess.queue.length) {
+      const w = sess.queue.shift();
+      clearTimeout(w.timer);
+      w.resolve({ ok: false, code: null, output: sess.buf.slice(-2000) + '\n[beast] shell oturumu kapandı' });
+    }
+    sess.busy = false;
+    if (_shSessions.get(cwd) === sess) _shSessions.delete(cwd);
+  });
+  proc.on('error', () => {
+    sess.dead = true;
+  });
+  return sess;
+}
+
+function _shellPump(sess) {
+  const w = sess.queue[0];
+  if (!w || !w.dispatched) return;
+  const marker = `${SHELL_MARKER_PREFIX}${w.n}_`;
+  const mi = sess.buf.indexOf(marker);
+  if (mi < 0) return;
+  const lineEnd = sess.buf.indexOf('\n', mi);
+  if (lineEnd < 0) return; /* işaret satırı tam gelmedi — daha fazla veri bekle */
+  const markerLine = sess.buf.slice(mi, lineEnd).trim();
+  let out = sess.buf.slice(0, mi);
+  sess.buf = sess.buf.slice(lineEnd + 1);
+  sess.queue.shift();
+  sess.busy = sess.queue.length > 0;
+  clearTimeout(w.timer);
+  const codeM = /_(\-?\d+)\s*$/.exec(markerLine);
+  const exitCode = codeM ? Number(codeM[1]) : null;
+  if (out.length > MAX_CMD_OUTPUT * 4) out = out.slice(-MAX_CMD_OUTPUT * 2);
+  const errPart = sess.err.trim();
+  sess.err = '';
+  w.resolve({
+    ok: exitCode === 0,
+    code: exitCode,
+    output:
+      (out.trim() || '') +
+      (errPart ? (out.trim() ? '\n[stderr] ' : '') + errPart : ''),
+  });
+  sess.lastUsed = Date.now();
+  if (sess.queue.length) _shellDispatch(sess);
+}
+
+const SHELL_MARKER_PREFIX = '__BEAST_DONE_';
+
+function _shellDispatch(sess) {
+  const w = sess.queue[0];
+  if (!w || w.dispatched) return;
+  w.dispatched = true;
+  w.n = ++sess.seq;
+  const cmd = w.command;
+  const marker = `${SHELL_MARKER_PREFIX}${w.n}_$LASTEXITCODE`;
+  /* $LASTEXITCODE sıfırlanır: yalnız cmdlet koşan komutlar da ok:true dönsün;
+     native exe hata verirse gerçek kod işaret satırına yazılır */
+  sess.proc.stdin.write(`$global:LASTEXITCODE = 0\n${cmd}${cmd.endsWith('\n') ? '' : '\n'}Write-Output "${marker}"\n`);
+  const finishTimeout = () => {
+    _shellDispose(sess);
+    if (_shSessions.get(sess.cwd) === sess) _shSessions.delete(sess.cwd);
+    sess.busy = false;
+    while (sess.queue.length) {
+      const x = sess.queue.shift();
+      clearTimeout(x.timer);
+      x.resolve({ ok: false, code: null, output: '[beast] shell komutu zaman aşımı — oturum tazelendi' });
+    }
+  };
+  w.timer = setTimeout(finishTimeout, w.timeoutMs);
+  if (w.signal) {
+    if (w.signal.aborted) return finishTimeout();
+    w.signal.addEventListener('abort', finishTimeout, { once: true });
+  }
+}
+
+function runShellCommand(command, cwd, timeoutMs = 90000, signal) {
+  return new Promise((resolve) => {
+    let sess = _shSessions.get(cwd);
+    if (!sess || sess.dead) {
+      try {
+        sess = _spawnShell(cwd);
+        _shSessions.set(cwd, sess);
+        while (_shSessions.size > SHELL_QUEUE_CAP) {
+          const [k, old] = _shSessions.entries().next().value;
+          if (k === cwd) break;
+          _shellDispose(old);
+          _shSessions.delete(k);
+        }
+      } catch {
+        /* kalıcı oturum açılamadı → tek seferlik klasik yol */
+        return runCommand(command, cwd, timeoutMs, signal).then(resolve);
+      }
+    }
+    sess.queue.push({ command, resolve, timeoutMs, signal, dispatched: false });
+    sess.lastUsed = Date.now();
+    if (!sess.busy) {
+      sess.busy = true;
+      _shellDispatch(sess);
+    }
+  });
+}
+
+/* --- core/shell.ts gitbash() port: Windows'ta bash çözümleme sırası --- */
+function gitbash() {
+  const cands = [];
+  if (process.env.ProgramFiles) cands.push(path.join(process.env.ProgramFiles, 'Git', 'bin', 'bash.exe'));
+  if (process.env['ProgramFiles(x86)']) cands.push(path.join(process.env['ProgramFiles(x86)'], 'Git', 'bin', 'bash.exe'));
+  if (process.env.LOCALAPPDATA) cands.push(path.join(process.env.LOCALAPPDATA, 'Programs', 'Git', 'bin', 'bash.exe'));
+  for (const c of cands) {
+    try { if (fs.existsSync(c)) return c; } catch {}
+  }
+  return 'bash'; /* PATH'te aranır; yoksa spawn ENOENT → net hata mesajı */
+}
+
+function runBashCommand(command, cwd, timeoutMs = 90000, signal) {
+  return new Promise((resolve) => {
+    let settled = false;
+    let out = '';
+    let err = '';
+    const finish = (code, killed) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      const text = (out ? out.trim() : '') + (err ? (out ? '\n[stderr] ' : '') + err.trim() : '');
+      resolve({ ok: !killed && code === 0, code, output: truncateMiddle(text || '(no output)', MAX_CMD_OUTPUT) });
+    };
+    let child;
+    try {
+      child = spawn(gitbash(), ['-lc', command], {
+        cwd: cwd || process.cwd(),
+        windowsHide: true,
+        env: envWithPathPrefix(),
+      });
+    } catch {
+      resolve({ ok: false, code: null, output: 'bash bulunamadı — Git for Windows kur ya da PowerShell kullan' });
+      return;
+    }
+    const timer = setTimeout(() => {
+      try { spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true }); } catch {}
+      err += '\n[beast] command timed out';
+      finish(null, true);
+    }, timeoutMs);
+    if (signal) {
+      if (signal.aborted) return finish(null, true);
+      signal.addEventListener('abort', () => {
+        try { spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true }); } catch {}
+        finish(null, true);
+      }, { once: true });
+    }
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (d) => { out += d; });
+    child.stderr.on('data', (d) => { err += d; });
+    child.on('error', (e) => {
+      clearTimeout(timer);
+      settled = true;
+      const msg = String((e && e.message) || '');
+      resolve({
+        ok: false,
+        code: null,
+        output: /ENOENT/i.test(msg)
+          ? 'bash bulunamadı — Git for Windows kur ya da PowerShell kullan'
+          : msg,
+      });
+    });
+    child.on('close', (code) => finish(code, false));
+  });
+}
+
 function runCommand(command, cwd, timeoutMs = 90000, signal) {
   return new Promise((resolve) => {
     let settled = false;
@@ -84,6 +362,59 @@ function runCommand(command, cwd, timeoutMs = 90000, signal) {
 function safeResolve(p, cwd) {
   const abs = path.isAbsolute(p) ? p : path.join(cwd || process.cwd(), p);
   return path.normalize(abs);
+}
+
+/* ---------- opencode port: grep/glob altyapısı ----------
+   ripgrep gitignore'u izler; Beast'te bağımlılık olmasın diye ağır klasörler
+   statik atlanır (node_modules, .git, derleme çıktıları…). */
+const SKIP_DIRS = new Set([
+  'node_modules', '.git', '__pycache__', '.venv', 'venv', 'env',
+  'dist', 'build', 'out', 'coverage', '.next', '.turbo', '.cache',
+]);
+
+/* mini glob → regex: ** → her şey, * → / içermeyen her şey, ? → tek karakter */
+function globToRegExp(glob) {
+  const g = String(glob || '').trim();
+  if (!g) return null;
+  let re = '';
+  for (let i = 0; i < g.length; i++) {
+    const c = g[i];
+    if (c === '*') {
+      if (g[i + 1] === '*') {
+        re += '.*';
+        i++;
+        if (g[i + 1] === '/') i++; /* yıldız-yıldız-slash: üst klasörler opsiyonel */
+      } else re += '[^/\\\\]*';
+    } else if (c === '?') re += '[^/\\\\]';
+    else re += c.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+  }
+  try {
+    return new RegExp('^' + re + '$', 'i');
+  } catch {
+    return null;
+  }
+}
+
+/* Sıralı dosya yürüyüşü; cb true dönerse erken durur */
+function walkFiles(dir, includeRe, cb, depth = 0) {
+  if (depth > 24) return false;
+  let entries = [];
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return false;
+  }
+  for (const e of entries) {
+    const full = path.join(dir, e.name);
+    if (e.isDirectory()) {
+      if (SKIP_DIRS.has(e.name) || e.name.startsWith('.') && e.name !== '.opencode') continue;
+      if (walkFiles(full, includeRe, cb, depth + 1)) return true;
+    } else if (e.isFile()) {
+      if (includeRe && !includeRe.test(e.name)) continue;
+      if (cb(full)) return true;
+    }
+  }
+  return false;
 }
 
 /* ---------- Python altyapısı (#18) ----------
@@ -598,7 +929,7 @@ const definitions = [
     type: 'function',
     function: {
       name: 'write_file',
-      description: 'Write (or overwrite) a text file with content. Creates parent directories.',
+      description: 'Write (or overwrite) a text file with content. Creates parent directories. PREFER edit_file for changing existing files — write_file is for NEW files or full rewrites only.',
       parameters: {
         type: 'object',
         properties: {
@@ -606,6 +937,57 @@ const definitions = [
           content: { type: 'string' },
         },
         required: ['path', 'content'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'edit_file',
+      description:
+        'Performs exact string replacements in files. Usage: read the file first; pass oldString (exact text including indentation, WITHOUT line-number prefixes) and newString. FAILS if oldString is not found ("oldString not found in content") or found multiple times ("Found multiple matches...") — provide more surrounding lines to make it unique, or set replace_all:true to replace every instance. ALWAYS prefer this tool over write_file for existing files; NEVER reformat unrelated code.',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string' },
+          old_string: { type: 'string', description: 'Exact text to replace (must match file content verbatim)' },
+          new_string: { type: 'string', description: 'Replacement text (can be empty to delete)' },
+          replace_all: { type: 'boolean', description: 'Replace every occurrence instead of failing on multiple matches' },
+        },
+        required: ['path', 'old_string', 'new_string'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'grep',
+      description:
+        'Fast content search tool that works with any codebase size. Searches file contents using regular expressions; supports full regex syntax (eg. "log.*Error", "function\\s+\\w+"). Filter files by pattern with include (eg. "*.js", "*.{ts,tsx}"). Returns file paths, line numbers and matching lines. node_modules/.git and similar dirs are skipped. Use this to find where functions/symbols/errors live before editing.',
+      parameters: {
+        type: 'object',
+        properties: {
+          pattern: { type: 'string', description: 'Regular expression' },
+          path: { type: 'string', description: 'File or directory to search; defaults to workspace root' },
+          include: { type: 'string', description: 'Glob filter like "*.js" or "*.{ts,tsx}"' },
+        },
+        required: ['pattern'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'glob',
+      description:
+        'Fast file pattern matching tool that works with any codebase size. Supports glob patterns like "**/*.js" or "src/**/*.ts". Returns matching file paths. Use when you need to find files by name patterns; batch multiple speculative searches in one turn.',
+      parameters: {
+        type: 'object',
+        properties: {
+          pattern: { type: 'string', description: 'Glob pattern, e.g. "src/**/*.ts"' },
+          path: { type: 'string', description: 'Directory to search; defaults to workspace root' },
+        },
+        required: ['pattern'],
       },
     },
   },
@@ -706,8 +1088,46 @@ async function exec(name, args, ctx) {
     switch (name) {
       case 'run_command': {
         const t = Number(args.timeout_ms) || 90000;
-        const r = await runCommand(String(args.command || ''), cwd, t, ctx.signal);
-        return JSON.stringify(r);
+        const shell = String(args.shell || 'powershell').toLowerCase();
+        const r =
+          shell === 'bash' || shell === 'sh'
+            ? await runBashCommand(String(args.command || ''), cwd, t, ctx.signal)
+            : await runShellCommand(String(args.command || ''), cwd, t, ctx.signal);
+        const b = boundToolOutput((r && r.output) || '');
+        return JSON.stringify({
+          ok: !!(r && r.ok),
+          code: r && r.code,
+          output: b.text,
+          ...(b.outputFile ? { outputFile: b.outputFile } : {}),
+        });
+      }
+      case 'edit_file': {
+        const abs = safeResolve(String(args.path || ''), cwd);
+        const oldS = String(args.old_string ?? args.oldString ?? '');
+        const newS = String(args.new_string ?? args.newString ?? '');
+        if (!oldS) return JSON.stringify({ ok: false, error: 'old_string boş olamaz' });
+        if (!fs.existsSync(abs)) return JSON.stringify({ ok: false, error: 'dosya bulunamadı: ' + abs });
+        const src = fs.readFileSync(abs, 'utf8');
+        const count = src.split(oldS).length - 1;
+        if (count === 0) {
+          return JSON.stringify({
+            ok: false,
+            error: 'oldString not found in content — dosyayı read_file ile tekrar oku; satır numarası ön ekini (ör. "1: ") EKLEME, içerik birebir olmalı',
+          });
+        }
+        if (count > 1 && !args.replace_all && !args.replaceAll) {
+          return JSON.stringify({
+            ok: false,
+            error: `Found multiple matches for oldString (${count} kez). Daha fazla bağlam satırı ekleyerek benzersiz yap ya da replace_all:true ver`,
+          });
+        }
+        const out = args.replace_all || args.replaceAll ? src.split(oldS).join(newS) : src.replace(oldS, newS);
+        fs.writeFileSync(abs, out, 'utf8');
+        return JSON.stringify({
+          ok: true,
+          path: abs,
+          replacements: args.replace_all || args.replaceAll ? count : 1,
+        });
       }
       case 'read_file': {
         const abs = safeResolve(String(args.path || ''), cwd);
@@ -732,10 +1152,40 @@ async function exec(name, args, ctx) {
             return JSON.stringify({ ok: false, error: 'pdf okuma hata: ' + String((e2 && e2.message) || e2) });
           }
         }
-        let content = fs.readFileSync(abs, 'utf8');
-        const truncated = content.length > MAX_FILE_CHARS;
-        if (truncated) content = content.slice(0, MAX_FILE_CHARS);
-        return JSON.stringify({ ok: true, path: abs, truncated, content });
+        let raw = fs.readFileSync(abs, 'utf8');
+        /* opencode read.ts port: satır numaralı çıktı (`N: içerik`), offset/limit
+           penceresi (1-indexed), 2000 satır varsayılan, uzun satır kırpma */
+        const allLines = raw.split('\n');
+        const offset = Math.max(1, Math.floor(Number(args.offset) || 1));
+        const limit = Math.min(2000, Math.max(1, Math.floor(Number(args.limit) || 2000)));
+        let slice = allLines
+          .slice(offset - 1, offset - 1 + limit)
+          .map((l, i) => {
+            const line = l.length > 2000 ? l.slice(0, 2000) + '…[satır kırpıldı]' : l;
+            return `${offset + i}: ${line}`;
+          });
+        let truncated = offset - 1 + limit < allLines.length;
+        let content = slice.join('\n');
+        /* byte tavanı: 200k karakteri aşan pencereler satır bazında kırpılır */
+        if (content.length > MAX_FILE_CHARS) {
+          const keep = [];
+          let used = 0;
+          for (const l of slice) {
+            if (used + l.length > MAX_FILE_CHARS) break;
+            keep.push(l);
+            used += l.length + 1;
+          }
+          content = keep.join('\n');
+          truncated = true;
+        }
+        return JSON.stringify({
+          ok: true,
+          path: abs,
+          totalLines: allLines.length,
+          offset,
+          truncated,
+          content,
+        });
       }
       case 'write_file': {
         const abs = safeResolve(String(args.path || ''), cwd);
@@ -755,6 +1205,61 @@ async function exec(name, args, ctx) {
           }
         });
         return JSON.stringify({ ok: true, path: abs, count: rows.length, entries: rows.join('\n') });
+      }
+      case 'grep': {
+        const pattern = String(args.pattern || '');
+        let re;
+        try {
+          re = new RegExp(pattern, 'i');
+        } catch (e) {
+          return JSON.stringify({ ok: false, error: 'geçersiz regex: ' + String((e && e.message) || e) });
+        }
+        const root = args.path ? safeResolve(String(args.path), cwd) : cwd;
+        if (!fs.existsSync(root)) return JSON.stringify({ ok: false, error: 'yol bulunamadı: ' + root });
+        const incRe = globToRegExp(String(args.include || ''));
+        const matches = [];
+        const MAX_MATCHES = 200;
+        walkFiles(root, incRe, (file) => {
+          if (matches.length >= MAX_MATCHES) return true; // dur
+          let text = '';
+          try {
+            const st = fs.statSync(file);
+            if (st.size > 2 * 1024 * 1024) return false; // dev dosyayı atla
+            text = fs.readFileSync(file, 'utf8');
+          } catch {
+            return false;
+          }
+          const lines = text.split('\n');
+          for (let i = 0; i < lines.length && matches.length < MAX_MATCHES; i++) {
+            if (re.test(lines[i])) {
+              matches.push(`${file}:${i + 1}: ${lines[i].trim().slice(0, 300)}`);
+            }
+          }
+          return false;
+        });
+        return JSON.stringify({
+          ok: true,
+          pattern,
+          count: matches.length,
+          capped: matches.length >= MAX_MATCHES,
+          matches: matches.join('\n'),
+        });
+      }
+      case 'glob': {
+        const pat = String(args.pattern || '');
+        if (!pat.trim()) return JSON.stringify({ ok: false, error: 'pattern boş olamaz' });
+        const root = args.path ? safeResolve(String(args.path), cwd) : cwd;
+        if (!fs.existsSync(root)) return JSON.stringify({ ok: false, error: 'yol bulunamadı: ' + root });
+        const re = globToRegExp(pat);
+        const out = [];
+        walkFiles(root, null, (file) => {
+          const rel = path.relative(root, file).split(path.sep).join('/');
+          if (re.test(rel) || re.test(path.basename(file))) {
+            out.push(path.join(root, rel));
+          }
+          return out.length >= 500; // dur
+        });
+        return JSON.stringify({ ok: true, pattern: pat, count: out.length, files: out });
       }
       case 'web_search': {
         const q = String(args.query || '');
@@ -973,6 +1478,13 @@ module.exports = {
   definitions,
   exec,
   runCommand,
+  runShellCommand,
+  runBashCommand,
+  gitbash,
+  disposeShellSessions,
+  boundToolOutput,
+  globToRegExp,
+  walkFiles,
   assertPublicHttpUrl,
   parseDdgResults,
   htmlToText,

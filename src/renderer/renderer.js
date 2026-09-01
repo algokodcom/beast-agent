@@ -78,6 +78,7 @@ const els = {
   bcTodoWrap: $('#bcTodoWrap'),
   codeTabs: $('#codeTabs'),
   codeTa: $('#codeTa'),
+  codeGutter: $('#codeGutter'),
   codePath: $('#codePath'),
   codeSave: $('#codeSave'),
   ideRow: $('#ideRow'),
@@ -890,7 +891,7 @@ async function renderWebSearchPane() {
     '<h2>' + _t('oc_h2') + '</h2>' +
     '<div class="sub">' + _t('oc_sub') + '</div>' +
     '<div id="ocStatus" class="sub" style="text-align:left;margin-top:8px"></div>' +
-    '<label class="mem-label" style="display:flex;align-items:center;gap:8px;cursor:pointer">' +
+    '<label class="mem-label" style="display:flex;align-items:center;justify-content:center;gap:8px;cursor:pointer">' +
     '<input id="ocEnabled" type="checkbox" style="width:auto" /> <span>' + _t('oc_enabled') + '</span></label>' +
     '<div id="ocProg" class="oc-prog" hidden>' +
     '<div class="oc-prog-bar"><div class="oc-prog-fill" style="width:0%"></div></div>' +
@@ -3905,11 +3906,18 @@ function onEvent(ev) {
       addToolCard(ev.callId, ev.name, ev.args);
       setStatus(ev.name + '…');
       termAgentEvent(ev);
+      /* ajan dosya yazarsa açık IDE sekmesini izlemeye al */
+      if (ev.name === 'write_file' && ev.args && ev.args.path) codeWriteWatch.set(ev.callId, ev.args.path);
       break;
     case 'tool-end':
       finishToolCard(ev.callId, ev.ok, ev.result);
       setStatus('düşünüyor…');
       termAgentEvent(ev);
+      if (codeWriteWatch.has(ev.callId)) {
+        const wp = codeWriteWatch.get(ev.callId);
+        codeWriteWatch.delete(ev.callId);
+        codeReloadIfOpen(wp);
+      }
       break;
     case 'todos':
       renderTodos(ev.todos);
@@ -5692,6 +5700,7 @@ async function setIdeMode(on) {
     ideSplitRestore();
     await loadIdeTree();
     bcBanner();
+    codeGutterRender(); /* dosya açık olmasa bile rakamlar görünür */
   }
 }
 
@@ -5823,8 +5832,102 @@ async function renderFileTree() {
    Dosya tıklaması MODAL değil, codePane içinde SEKME açar.
    Yanında Beast Code chat'i, onun sağındaki preview tarayıcı durur. */
 
-const codeTabs = []; /* { rel, content, dirty } */
+const codeTabs = []; /* { rel, content, dirty, base } — base: temiz (disk) içerik, diff bununla */
 let codeActive = -1;
+
+/* ---------- editör gutter: satır numaraları + değişiklik işaretleri ---------- */
+/* base ↔ mevcut içerik diff'i: eklenen/değişen satırlar YEŞİL, silinenler
+   kısmen/kırmızı çizgiyle (VS Code gutter stili). LCS; satır adedi aşılırsa
+   bölge-bütününü değişmiş sayar (büyük dosyalarda takılmaz). */
+function codeDiffLines(baseText, curText) {
+  const added = new Set();
+  const dels = new Map();
+  if (typeof baseText !== 'string') return { added, dels };
+  const a = baseText.split('\n');
+  const b = String(curText || '').split('\n');
+  let p = 0;
+  while (p < a.length && p < b.length && a[p] === b[p]) p++;
+  let ea = a.length - 1;
+  let eb = b.length - 1;
+  while (ea >= p && eb >= p && a[ea] === b[eb]) { ea--; eb--; }
+  const midA = a.slice(p, ea + 1);
+  const midB = b.slice(p, eb + 1);
+  const n = midA.length;
+  const m = midB.length;
+  if (!n && !m) return { added, dels };
+  const pushDel = (at, count) => {
+    if (!count) return;
+    const line = Math.min(Math.max(1, at), b.length || 1);
+    dels.set(line, (dels.get(line) || 0) + count);
+  };
+  if (n * m > 400000 || n > 1500 || m > 1500) {
+    for (let k = 0; k < m; k++) added.add(p + k + 1);
+    pushDel(p + m + 1, n);
+    return { added, dels };
+  }
+  const w = m + 1;
+  const dp = new Int32Array((n + 1) * w);
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) {
+      dp[i * w + j] =
+        midA[i] === midB[j]
+          ? dp[(i + 1) * w + j + 1] + 1
+          : Math.max(dp[(i + 1) * w + j], dp[i * w + j + 1]);
+    }
+  }
+  let i = 0;
+  let j = 0;
+  let pendingDel = 0;
+  while (i < n && j < m) {
+    if (midA[i] === midB[j]) {
+      pushDel(p + j + 1, pendingDel);
+      pendingDel = 0;
+      i++; j++;
+    } else if (dp[(i + 1) * w + j] >= dp[i * w + j + 1]) {
+      pendingDel++; i++;
+    } else {
+      pushDel(p + j + 1, pendingDel);
+      pendingDel = 0;
+      added.add(p + j + 1);
+      j++;
+    }
+  }
+  while (i < n) { pendingDel++; i++; }
+  while (j < m) {
+    pushDel(p + j + 1, pendingDel);
+    pendingDel = 0;
+    added.add(p + j + 1);
+    j++;
+  }
+  pushDel(p + m + 1, pendingDel);
+  return { added, dels };
+}
+
+function codeGutterRender() {
+  const g = els.codeGutter;
+  const ta = els.codeTa;
+  if (!g || !ta) return;
+  const hasFile = codeActive >= 0 && codeTabs[codeActive];
+  const t = hasFile ? codeTabs[codeActive] : null;
+  const diff = hasFile ? codeDiffLines(t.base, ta.value) : null;
+  /* dosya açık olmasa bile rakamlar HEP görünür (boş editörde 50 satır iskeleti) */
+  const count = hasFile
+    ? ta.value.split('\n').length
+    : 50;
+  let html = '';
+  for (let i = 1; i <= count; i++) {
+    const isAdd = diff && diff.added.has(i);
+    const delN = diff && diff.dels.get(i);
+    html +=
+      `<div class="cl${isAdd ? ' add' : ''}${delN ? ' del' : ''}${hasFile ? '' : ' idle'}"` +
+      (delN ? ` title="${delN} satır silindi"` : '') +
+      `>${i}</div>`;
+  }
+  g.innerHTML = html;
+  g.scrollTop = ta.scrollTop;
+}
+
+let codeGutterTimer = null;
 
 function codeRenderTabs() {
   const bar = els.codeTabs;
@@ -5860,6 +5963,7 @@ function codeActivate(i) {
     els.codeTa.value = '';
     els.codePath.textContent = '\u2014';
     codeRenderTabs();
+    codeGutterRender();
     return;
   }
   codeActive = i;
@@ -5868,6 +5972,7 @@ function codeActivate(i) {
   els.codePath.textContent = t.rel;
   els.codePath.title = (ideState.path || '') + '\\' + t.rel.replace(/\//g, '\\');
   codeRenderTabs();
+  codeGutterRender();
 }
 
 async function codeOpen(rel) {
@@ -5881,7 +5986,7 @@ async function codeOpen(rel) {
     toast((r && r.error) || 'okunamad\u0131');
     return;
   }
-  codeTabs.push({ rel, content: r.content || '', dirty: false });
+  codeTabs.push({ rel, content: r.content || '', dirty: false, base: r.content || '' });
   codeActivate(codeTabs.length - 1);
   els.codeTa.focus();
 }
@@ -5913,11 +6018,42 @@ async function codeSave() {
   const r = await beast.ideWrite(t.rel, t.content).catch(() => null);
   if (r && r.ok) {
     t.dirty = false;
+    t.base = t.content; /* kaydedildi → diff sıfırlanır (VS Code davranışı) */
     codeRenderTabs();
+    codeGutterRender();
     toast(_t('ide_saved'));
   } else {
     toast((r && r.error) || 'kaydedilemedi');
   }
+}
+
+/* ajan dosyayı YAZINCA açık sekmeyi tazele: eski içerik base olur →
+   ajanın değiştirdiği satırlar gutter'da yeşil/kırmızı görünür */
+const codeWriteWatch = new Map(); /* callId → path */
+async function codeReloadIfOpen(p) {
+  const abs = String(p || '').replace(/\//g, '\\');
+  const root = String(ideState.path || '').replace(/\//g, '\\').replace(/\\+$/, '');
+  let rel = null;
+  if (root && abs.toLowerCase().startsWith(root.toLowerCase() + '\\')) {
+    rel = abs.slice(root.length + 1).replace(/\\/g, '/');
+  } else {
+    const cand = abs.toLowerCase();
+    const hit = codeTabs.find((t) => cand.endsWith('\\' + t.rel.replace(/\//g, '\\').toLowerCase()) || cand === t.rel.replace(/\//g, '\\').toLowerCase());
+    if (!hit) return;
+    rel = hit.rel;
+  }
+  const i = codeTabs.findIndex((t) => t.rel === rel);
+  if (i < 0) return;
+  const t = codeTabs[i];
+  if (t.dirty) return; /* kullanıcının kaydedilmemiş düzenlemesini EZME */
+  const r = await beast.ideRead(t.rel).catch(() => null);
+  if (!r || !r.ok) return;
+  t.base = t.content;           /* eski disk içeriği = diff tabanı */
+  t.content = r.content || '';  /* ajanın yazdığı yeni içerik */
+  if (i === codeActive) {
+    els.codeTa.value = t.content;
+  }
+  codeGutterRender();
 }
 
 $('#ideBtn').addEventListener('click', () => setIdeMode(!ideModeOn()));
@@ -5946,6 +6082,12 @@ if (els.codeTa) {
     codeTabs[codeActive].dirty = true;
     const el = els.codeTabs.children[codeActive];
     if (el) el.classList.add('dirty');
+    /* gutter diff'i hafif gecikmeli — her tuşta LCS koşmasın */
+    clearTimeout(codeGutterTimer);
+    codeGutterTimer = setTimeout(codeGutterRender, 120);
+  });
+  els.codeTa.addEventListener('scroll', () => {
+    if (els.codeGutter) els.codeGutter.scrollTop = els.codeTa.scrollTop;
   });
   els.codeTa.addEventListener('keydown', (e) => {
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
@@ -6304,9 +6446,16 @@ function bcIngest(ev) {
       break;
     case 'tool-start':
       bcToolBoxStart(ev.callId, ev.name, ev.args);
+      /* ajan dosya yazarsa açık IDE sekmesini izlemeye al */
+      if (ev.name === 'write_file' && ev.args && ev.args.path) codeWriteWatch.set(ev.callId, ev.args.path);
       break;
     case 'tool-end':
       bcToolBoxEnd(ev.callId, ev.ok, ev.result);
+      if (codeWriteWatch.has(ev.callId)) {
+        const wp = codeWriteWatch.get(ev.callId);
+        codeWriteWatch.delete(ev.callId);
+        codeReloadIfOpen(wp);
+      }
       break;
     case 'bc-mode':
       /* OpenCode disiplini çalışma modu: başlıkta rozet + panelde bilgi satırı */
@@ -6334,7 +6483,7 @@ function bcIngest(ev) {
       break;
     case 'status':
       /* 'idle' = engine oturumu GERÇEKTEN bıraktı (finally bloğu, her yolda gelir) —
-         done kaçsa bile panel kilitli kalmaz, ■ otomatik kalkar, ring durur */
+         done kaçsa bile panel kilitli kalmaz, ⏳ otomatik kalkar, ring durur */
       if (ev.status === 'idle') {
         bcCloseToolGroup();
         bcSetBusy(false);

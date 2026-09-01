@@ -291,11 +291,15 @@ body.browser-open #topbar { width: auto; }
 /* göz ikonu: gizli modda çapraz çizgi + soluk, görünür modda normal */
 #eyeBtn .eye-slash { display: none; }
 #eyeBtn:not(.on) .eye-slash { display: block; }
-#eyeBtn:not(.on) { opacity: 0.55; }
 #eyeBtn.on { background: var(--accent-dim); color: var(--accent); }
 
-/* internet göstergesi (topbar sağ uç): bağlı = YEŞİL wifi, kopuk = KIRMIZI */
-#netDot { cursor: default; }
+/* internet göstergesi (sol alt sideFoot satırında, ortalanmış): bağlı = YEŞİL wifi, kopuk = KIRMIZI */
+#netDot {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 7px;
+  cursor: default;
+}
 #netDot.net-on { color: #22c55e; }
 #netDot.net-off { color: #ef4444; }
 #netDot.net-off .net-slash { display: block; }
@@ -2439,6 +2443,41 @@ body.ide-mode #codePane { display: flex; }
   line-height: 1.4;
 }
 #codeSave:hover { color: var(--accent); border-color: var(--accent); background: var(--panel2); }
+#codeBody { flex: 1; display: flex; min-height: 0; }
+#codeGutter {
+  flex: none;
+  width: 56px;
+  overflow: hidden;
+  user-select: none;
+  font-family: Consolas, "Cascadia Mono", monospace;
+  font-size: 12.5px;
+  line-height: 20px;
+  padding: 12px 0;
+  background: var(--panel);
+  border-right: 1px solid var(--border);
+  text-align: right;
+  color: var(--muted);
+}
+#codeGutter .cl { height: 20px; padding-right: 8px; position: relative; }
+/* VS Code tarzı değişiklik işaretleri: değişen satır YEŞİL, silinen kırmızı çizgi */
+#codeGutter .cl.add {
+  background: rgba(34, 197, 94, 0.16);
+  box-shadow: inset 2px 0 0 #22c55e;
+  color: #16a34a;
+  font-weight: 700;
+}
+#codeGutter .cl.del { box-shadow: inset 2px 0 0 #ef4444; }
+#codeGutter .cl.del::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  background: #ef4444;
+}
+/* dosya açık değilken boş editör iskelet rakamları daha sönük */
+#codeGutter .cl.idle { opacity: 0.45; }
 #codeTa {
   flex: 1;
   resize: none;
@@ -2449,7 +2488,9 @@ body.ide-mode #codePane { display: flex; }
   padding: 12px 14px;
   font-family: Consolas, "Cascadia Mono", monospace;
   font-size: 12.5px;
-  line-height: 1.55;
+  line-height: 20px;
+  white-space: pre;
+  overflow: auto;
 }
 /* dikey scrollbar hep görünür, tutulabilir ve imleç değişsin */
 #codeTa::-webkit-scrollbar {

@@ -70,6 +70,38 @@ function friendlyError(status, statusText, detail) {
   return msg;
 }
 
+/* opencode cache disiplini (provider/transform.ts:1262-1276 port): destekleyen
+   sağlayıcılara oturum-sabit önbellek anahtarı gönderilir — aynı önek tekrar
+   kullanıldığında girdi tokenleri cache'ten okunur (~%90 ucuz + hızlı TTFT) */
+const CACHE_KEY_PROVIDER_RE = /openai|azure|xai|deepseek|cerebras|deepinfra|mistral|venice/i;
+const CACHE_KEY_MODEL_RE = /openai|gpt-|^o[134]|xai|grok|deepseek|cerebras|deepinfra|mistral|venice/i;
+function wantsCacheKey(sel) {
+  if (!sel) return false;
+  return (
+    CACHE_KEY_PROVIDER_RE.test(String(sel.providerId || '')) ||
+    CACHE_KEY_MODEL_RE.test(String(sel.model || ''))
+  );
+}
+
+/* Retry-After başlığı: saniye ("2"), milisaniye ("120ms" / retry-after-ms)
+   ya da HTTP-tarih olabilir (opencode session/retry.ts port) */
+function parseRetryAfter(v) {
+  if (v == null) return null;
+  const s = String(v).trim();
+  if (!s) return null;
+  const ms = /^(\d+)\s*ms$/i.exec(s);
+  if (ms) return Number(ms[1]);
+  if (/^\d+(\.\d+)?$/.test(s)) return Number(s) * 1000;
+  const d = Date.parse(s);
+  if (!Number.isNaN(d)) return Math.max(0, d - Date.now());
+  return null;
+}
+
+const RETRY_AFTER_CAP_MS = 30000; /* opencode retry.ts:39 — headersız bekleme tavanı */
+function clampMs(v) {
+  return Math.min(RETRY_AFTER_CAP_MS, Math.max(0, Number(v) || 0));
+}
+
 function sleep(ms, signal) {
   return new Promise((resolve, reject) => {
     const t = setTimeout(resolve, ms);
@@ -112,9 +144,14 @@ async function withRetries(fn, { signal, onRetry } = {}) {
       try {
         onRetry && onRetry(attempt, status);
       } catch {}
-      const wait = netErr
-        ? NET_BACKOFF[Math.min(attempt - 1, NET_BACKOFF.length - 1)]
-        : 800 * Math.pow(2, attempt - 1);
+      /* sağlayıcı retry-after dediye: backoff yerine ona uy (30 sn tavan);
+         opencode session/retry.ts:26-31 ile aynı politika */
+      let wait;
+      if (e.retryAfterMs) wait = clampMs(e.retryAfterMs);
+      else
+        wait = netErr
+          ? NET_BACKOFF[Math.min(attempt - 1, NET_BACKOFF.length - 1)]
+          : 800 * Math.pow(2, attempt - 1);
       await sleep(wait, signal);
     }
   }
@@ -132,6 +169,10 @@ async function openChat(sel, body, { stream, signal, omitReasoning } = {}) {
      OpenRouter ve GPT-5 ailesi dahil uyumlu sağlayıcılar kabul eder. */
   if (body.reasoningEffort && !omitReasoning) {
     payload.reasoning_effort = String(body.reasoningEffort);
+  }
+  /* prompt cache anahtarı: oturum başına sabit → sağlayıcı önek önbelleği tutar */
+  if (body.cacheKey && wantsCacheKey(sel)) {
+    payload.prompt_cache_key = String(body.cacheKey);
   }
   return fetch(sel.url, {
     method: 'POST',
@@ -180,6 +221,9 @@ async function streamOnce(sel, body, { signal, onDelta, onRetry } = {}, omitReas
           } catch {}
           const err = new Error(friendlyError(r.status, r.statusText, detail));
           err.status = r.status;
+          err.retryAfterMs = parseRetryAfter(
+            r.headers && (r.headers.get('retry-after-ms') || r.headers.get('retry-after'))
+          );
           throw err;
         }
         return r;
@@ -317,6 +361,9 @@ async function chatOnce(sel, body, { signal, onRetry } = {}) {
         } catch {}
         const err = new Error(friendlyError(r.status, r.statusText, detail));
         err.status = r.status;
+        err.retryAfterMs = parseRetryAfter(
+          r.headers && (r.headers.get('retry-after-ms') || r.headers.get('retry-after'))
+        );
         throw err;
       }
       return r;
@@ -343,4 +390,6 @@ module.exports = {
   sumUsage,
   setNetProbe,
   isNetworkError,
+  wantsCacheKey,
+  parseRetryAfter,
 };

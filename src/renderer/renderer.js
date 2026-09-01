@@ -5828,6 +5828,21 @@ async function renderFileTree() {
   await build('', 0, tree);
 }
 
+/* Ağaç otomatik tazeleme: ajan dosya/klasör ürettikçe soldaki panel KENDİ
+   kendisi yenilenir — elle yenileme yok. Açık klasörler (ideState.open)
+   korunur; debounce paralel araç patlamalarını tek çizime indirir. */
+let ideTreeTimer = null;
+function ideRefreshTree() {
+  if (ideTreeTimer) return;
+  ideTreeTimer = setTimeout(() => {
+    ideTreeTimer = null;
+    try {
+      ideState.cache.clear();
+      renderFileTree().catch(() => {});
+    } catch {}
+  }, 600);
+}
+
 /* ---------- sekmeli kod editörü (VS Code düzeni) ----------
    Dosya tıklaması MODAL değil, codePane içinde SEKME açar.
    Yanında Beast Code chat'i, onun sağındaki preview tarayıcı durur. */
@@ -6465,8 +6480,8 @@ function bcIngest(ev) {
       break;
     case 'tool-start':
       bcToolBoxStart(ev.callId, ev.name, ev.args);
-      /* ajan dosya yazarsa açık IDE sekmesini izlemeye al */
-      if (ev.name === 'write_file' && ev.args && ev.args.path) codeWriteWatch.set(ev.callId, ev.args.path);
+      /* ajan dosya yazarsa/editlerse açık IDE sekmesini izlemeye al */
+      if ((ev.name === 'write_file' || ev.name === 'edit_file') && ev.args && ev.args.path) codeWriteWatch.set(ev.callId, ev.args.path);
       break;
     case 'tool-end':
       bcToolBoxEnd(ev.callId, ev.ok, ev.result);
@@ -6474,6 +6489,10 @@ function bcIngest(ev) {
         const wp = codeWriteWatch.get(ev.callId);
         codeWriteWatch.delete(ev.callId);
         codeReloadIfOpen(wp);
+      }
+      /* dosya/klasör üreten araçlardan sonra soldaki ağaç otomatik tazelensin */
+      if (ev.name === 'write_file' || ev.name === 'edit_file' || ev.name === 'run_command' || ev.name === 'python_run') {
+        ideRefreshTree();
       }
       break;
     case 'bc-preview':
@@ -6495,6 +6514,7 @@ function bcIngest(ev) {
       bcSetBusy(false);
       /* iptal/durdurma SEBEBİ panelde de görünür */
       bcLine(ev.aborted ? 't-err' : 't-dim', ev.aborted ? '[durduruldu — sebep: ' + (ev.reason || 'sebep belirtilmedi') + ']' : '(tamamlandı)');
+      ideRefreshTree(); /* son güvenlik tazelemesi — izlenmeyen yoldan üretilen dosyalar da düşsün */
       bcRefreshPreview();
       if (ideModeOn() && els.bcInput) els.bcInput.focus();
       break;

@@ -1327,7 +1327,7 @@ const definitions = [
     function: {
       name: 'run_command',
       description:
-        'Run a PowerShell command on the user\'s Windows machine in the workspace directory and return combined stdout/stderr. Use for shell tasks, builds, git, installs, etc.',
+        'Executes a given PowerShell command on the user\'s Windows machine in the workspace directory and returns combined stdout/stderr. Use this tool for terminal operations like builds, git, npm installs, docker, etc. DO NOT use it for file operations (reading, writing, editing, searching, finding files) - use the specialized tools for this instead: read_file, write_file, edit_file, grep, glob.',
       parameters: {
         type: 'object',
         properties: {
@@ -1354,7 +1354,8 @@ const definitions = [
         '- Contents are returned with each line prefixed by its line number as `<line>: <content>`. For example, if a file has contents "foo\\n", you will receive "1: foo\\n".\n' +
         '- Any line longer than 2000 characters is truncated.\n' +
         '- Call this tool in parallel when you know there are multiple files you want to read.\n' +
-        '- Avoid tiny repeated slices (30 line chunks). If you need more context, read a larger window.',
+        '- Avoid tiny repeated slices (30 line chunks). If you need more context, read a larger window.\n' +
+        '- File contents you read STAY in your context for the WHOLE session. Do NOT re-read a file you already read: chain edits from your previous read plus your own edit_file/write_file results. Re-reading the same file (same or overlapping range) wastes turns and is forbidden unless the file actually changed on disk outside your own edits.',
       parameters: {
         type: 'object',
         properties: {
@@ -1402,7 +1403,8 @@ const definitions = [
         '- The edit will FAIL if `old_string` is not found in the file with an error "oldString not found in content".\n' +
         '- The edit will FAIL if `old_string` is found multiple times in the file with an error "Found multiple matches for oldString. Provide more surrounding lines in old_string to identify the correct match." Either provide a larger string with more surrounding context to make it unique or use `replace_all` to change every instance of `old_string`.\n' +
         '- Use `replace_all` for replacing and renaming strings across the file. This parameter is useful if you want to rename a variable for instance.\n' +
-        '- The result includes additions/deletions counts — the change is APPLIED to disk immediately; do NOT read the file again to verify.',
+        '- The result includes additions/deletions counts — the change is APPLIED to disk immediately; do NOT read the file again to verify.\n' +
+        '- Chain follow-up edits from what you already read plus your own previous edits — do NOT re-read the file between edits. Multiple edit_file calls to different files can be issued in PARALLEL in one turn.',
       parameters: {
         type: 'object',
         properties: {

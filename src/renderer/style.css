@@ -2492,6 +2492,26 @@ body.ide-mode #codePane { display: flex; }
   background: var(--border);
   opacity: 0.55;
 }
+/* editör kapatılabilir: kod bölmesi + ayırıcı gizlenir, Beast Code tam genişlik */
+body.ide-mode.editor-hidden #codePane,
+body.ide-mode.editor-hidden #ideSplit { display: none; }
+body.ide-mode.editor-hidden #ideRow #bcPanel { flex: 1 1 auto; min-width: 0; }
+#codeHide {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 1;
+}
+#codeHide:hover { color: var(--text); border-color: var(--accent); background: var(--panel2); }
+#bcHead #codeShow { width: 26px; padding: 0; }
+#codeShow[hidden] { display: none; }
 #codeTabsBar {
   flex: none;
   display: flex;

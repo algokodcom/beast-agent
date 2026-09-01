@@ -83,6 +83,8 @@ const els = {
   codeGutter: $('#codeGutter'),
   codePath: $('#codePath'),
   codeSave: $('#codeSave'),
+  codeHide: $('#codeHide'),
+  codeShow: $('#codeShow'),
   ideRow: $('#ideRow'),
   ideSplit: $('#ideSplit'),
   bcPanel: $('#bcPanel'),
@@ -4167,6 +4169,8 @@ function onEvent(ev) {
       break;
     }
     case 'status':
+      /* kuyruktan tetiklenen yeni iş: kilitle kendiliğinden açılmışsa geri kapat */
+      if (ev.status !== 'idle' && !busy) setBusy(true);
       if (!busy) break;
       setStatus(ev.status === 'idle' ? (busy ? 'düşünüyor…' : '') : ev.status === 'thinking' ? 'düşünüyor…' : ev.status + '…');
       break;
@@ -5922,11 +5926,28 @@ async function setIdeMode(on) {
   }
   if (on) {
     ideSplitRestore();
+    setEditorHidden(localStorage.getItem('beast.editorHidden') === '1');
     await loadIdeTree();
     bcBanner();
     codeGutterRender(); /* dosya açık olmasa bile rakamlar görünür */
   }
 }
+
+/* ---------- editör panelini kapat/göster ----------
+   Kapatınca kod bölmesi gider, Beast Code tam genişlik alır; tercih
+   localStorage'da kalıcıdır. Dosya ağacından dosya açınca geri açılır. */
+function editorHiddenOn() {
+  return document.body.classList.contains('editor-hidden');
+}
+
+function setEditorHidden(h) {
+  document.body.classList.toggle('editor-hidden', !!h);
+  if (els.codeShow) els.codeShow.hidden = !h;
+  try { localStorage.setItem('beast.editorHidden', h ? '1' : '0'); } catch {}
+}
+
+if (els.codeHide) els.codeHide.addEventListener('click', () => setEditorHidden(true));
+if (els.codeShow) els.codeShow.addEventListener('click', () => setEditorHidden(false));
 
 /* ---------- editor/chat ayırıcı (VS Code gibi sürükle-bırak) ----------
    Orantılı model: kaydedilen, Beast Code'un ideRow içindeki PAYI'dır (0-1).
@@ -6215,6 +6236,7 @@ function codeActivate(i) {
 }
 
 async function codeOpen(rel) {
+  if (editorHiddenOn()) setEditorHidden(false); /* dosya açılınca editör geri gelir */
   const idx = codeTabs.findIndex((t) => t.rel === rel);
   if (idx >= 0) {
     codeActivate(idx);
@@ -6737,6 +6759,7 @@ function bcIngest(ev) {
       bcRenderTodos(ev.todos);
       break;
     case 'tool-start':
+      bcSetBusy(true); /* kuyruktan tetiklenen işte panel kendini kilitler */
       bcToolBoxStart(ev.callId, ev.name, ev.args);
       /* ajan dosya yazarsa/editlerse açık IDE sekmesini izlemeye al */
       if ((ev.name === 'write_file' || ev.name === 'edit_file') && ev.args && ev.args.path) codeWriteWatch.set(ev.callId, ev.args.path);
@@ -6793,7 +6816,9 @@ function bcIngest(ev) {
         bcStatusHide();
         bcRefreshPreview();
       } else {
-        /* düşünüyor… / araç adı / bağlam durumu — input üstünde canlı balon */
+        /* düşünüyor… / araç adı / bağlam durumu — input üstünde canlı balon;
+           kuyruktan tetiklenen yeni işte kilit geri kapanır */
+        bcSetBusy(true);
         bcStatusShow(ev.status === 'thinking' ? 'düşünüyor…' : String(ev.status || ''));
       }
       break;
@@ -6827,10 +6852,17 @@ function bcRunCurrent() {
     if (r && r.ok && r.mode) {
       /* /plan · /build · /auto: mod değişimi — tur AÇILMAZ, kilit anında açılır
          (bilgi satırı bc-mode olayıyla düşer, başlık rozeti güncellenir) */
-      bcSessionId = r.sessionId;
+      if (r.sessionId) bcSessionId = r.sessionId;
       bcSetBusy(false);
+    } else if (r && r.ok && r.queued) {
+      /* ajan çalışıyor → mesaj kuyrukta; iş bitince toplu gönderilir */
+      if (r.sessionId) bcSessionId = r.sessionId;
+      bcLine('t-dim', '⏳ kuyrukta (' + r.count + ') — iş bitince gönderilir');
+    } else if (r && r.ok && r.pending) {
+      /* boşta: kısa birleşme penceresi — aynı penceredeki mesajlar tek işte gider */
+      if (r.sessionId) bcSessionId = r.sessionId;
     } else if (r && r.ok) {
-      bcSessionId = r.sessionId;
+      if (r.sessionId) bcSessionId = r.sessionId;
     } else if (r && r.busy) {
       /* iş gerçekten sürüyor — kilit açılmaz, bilgi satırı düşer */
       bcLine('t-dim', (r && r.error) || 'mesaj sürüyor');
@@ -6851,7 +6883,15 @@ if (els.bcInput) {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); bcRunCurrent(); }
   });
 }
-if (els.bcStop) els.bcStop.addEventListener('click', () => beast.beastcodeStop().catch(() => {}));
+if (els.bcStop) els.bcStop.addEventListener('click', () => {
+  beast.beastcodeStop().then((r) => {
+    /* kuyrukta bekleyen mesajlar da silindi; engine boştaysa kilidi aç */
+    if (r && r.ok && r.wasBusy === false) {
+      bcSetBusy(false);
+      bcStatusHide();
+    }
+  }).catch(() => {});
+});
 if (els.bcClear) els.bcClear.addEventListener('click', () => {
   els.bcOut.innerHTML = '';
   bcTools.clear();

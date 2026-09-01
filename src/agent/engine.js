@@ -16,10 +16,14 @@ const skills = require('./skills');
 const { estTokens, estMsgTokens } = require('./tokens');
 const log = require('./logger');
 
-const MAX_TURNS = 25;
+const MAX_TURNS = 40;
 const SUB_MAX_TURNS = 8;
 const HISTORY_TOKEN_BUDGET = 18000;
 const TOOL_OUT_KEEP = 1200;
+/* read_file sonuçları dosya HAFIZASI'dır: 7200 char'a kırpma modeli aynı
+   dosyayı offset offset tekrar okuyor → tur limiti doluyordu. Son okuma
+   oturum sonuna kadar tam tutulur (yaklaşık 48k char ≈ orta boy kaynak dosya). */
+const READ_OUT_KEEP = 48000;
 const USER_MAX = 8000;
 /* observe() ile enjekte edilen bağlam mesajlarının öneki — ardışık bağlam
    mesajlarının tek mesajda birleşmesi bu işaretle anlaşılır */
@@ -1385,9 +1389,9 @@ class Engine {
         ? '# PROJE TALİMATLARI (workspace AGENTS/CLAUDE/CONTEXT dosyalarından — daima uy)\n' + proj + '\n'
         : '') +
       'WORKFLOW (her işte bu sıra):\n' +
-      '1) BAĞLAM: değiştirmeden önce ilgili dosyaları OKU — read_file satır numaralı döner (N: içerik); büyük dosyada devamını offset parametresiyle oku, ASLA baştan okuma; bir dosyayı aynı oturumda BİR KEZ okumak yeter — içeriği sonraki turlarda da bağlamda KALIR, edit yaptıktan sonra dosyayı yeniden okuma (güncel durum = son okuma + kendi editlerin). İçerik araması için grep (regex), dosya adı için glob kullan; varsayım yapma, mevcut stili/konvansiyonu takip et.\n' +
+      '1) BAĞLAM: değiştirmeden önce ilgili dosyaları OKU — read_file satır numaralı döner (N: içerik); büyük dosyada devamını offset parametresiyle oku, ASLA baştan okuma; bir dosyayı aynı oturumda BİR KEZ okumak yeter — okuduğun içerik oturum SONUNA KADAR bağlamda KALIR, edit yaptıktan sonra dosyayı yeniden okuma YASAK (güncel durum = son okuma + kendi editlerin). İçerik araması için grep (regex), dosya adı için glob kullan; varsayım yapma, mevcut stili/konvansiyonu takip et.\n' +
       '2) PLAN: 2+ adımlı işlerde İLK EYLEM todo_write olsun (2-6 madde); her adım bitince status:"done" ile GÜNCELLE — liste bitene kadar iş bitmiş sayılmaz.\n' +
-      '3) EDİT: VAR OLAN dosyada önce edit_file kullan (old_string/new_string ile yalnız ilgili bölümü değiştir; birden çok eşleşme varsa bağlam ekle ya da replace_all); write_file yalnız YENİ dosya ya da tam yeniden yazım için. İlgisiz yeniden biçimleme/kayıt boşluk değişikliği YAPMA. edit_file/write_file sonucu additions/deletions döner ve değişiklik diske ANINDA uygulanır — doğrulamak için dosyayı TEKRAR OKUMA YASAK; sonraki editi önceki okuduğun içerik + kendi değişikliklerin üzerinden zincirle.\n' +
+      '3) EDİT: VAR OLAN dosyada önce edit_file kullan (old_string/new_string ile yalnız ilgili bölümü değiştir; birden çok eşleşme varsa bağlam ekle ya da replace_all); write_file yalnız YENİ dosya ya da tam yeniden yazım için. Dosya işlemleri için ÖZEL ARAÇLARI kullan (edit_file/write_file/read_file/grep/glob); run_command terminal işlerindir (build, git, kurulum, paket) — dosya düzenlemeyi komut/scripte yedirme, edit_file ile yap. İlgisiz yeniden biçimleme/kayıp boşluk değişikliği YAPMA. edit_file/write_file sonucu additions/deletions döner ve değişiklik diske ANINDA uygulanır — doğrulamak için dosyayı TEKRAR OKUMA YASAK; sonraki editi önceki okuduğun içerik + kendi değişikliklerin üzerinden zincirle.\n' +
       '4) DOĞRULA: edit sonrası mümkünse derle/test et/lint çalıştır (run_command); hata varsa DÜZELT ve TEKRAR dene (en fazla 2 doğrulama turu) — kırmızı bırakma. Doğrulama read_file ile DEĞİL run_command ile yapılır.\n' +
       '5) RAPOR: 1-3 satır — ne değişti + doğrulama sonucu (ör. "npm test ✓ 154/154"). Uzun açıklama yok.\n' +
       'CANLI ÖNİZLEME: web sitesi/app üretirsen son adımda ÇALIŞIR halde bırak (dev server ayakta ya da index.html yazılmış) — panel iş bitince ürettiğin şeyi dahili tarayıcıda otomatik canlı açar.\n' +
@@ -1478,13 +1482,13 @@ class Engine {
       '# ARAÇ KURALLARI\n' +
         [
           'Basit soruları araç kullanmadan doğrudan cevapla — hız önceliklidir.',
-          'Kod/dosya işlerinde: içerik araması grep (regex), dosya adı araması glob, VAR OLAN dosyayı değiştirme edit_file (write_file yalnız yeni dosya/tam yeniden yazım). read_file satır numaralı döner; büyük dosyada devamını offset parametresiyle oku, ASLA baştan okuma; bir dosyayı aynı oturumda BİR KEZ okumak yeter. edit_file/write_file sonucu additions/deletions döner ve değişiklik diske ANINDA uygulanır — doğrulamak için dosyayı TEKRAR OKUMA; önceki okuduğun içerik + kendi değişikliklerin üzerinden devam et.',
+          'Kod/dosya işlerinde: içerik araması grep (regex), dosya adı araması glob, VAR OLAN dosyayı değiştirme edit_file (write_file yalnız yeni dosya/tam yeniden yazım). read_file satır numaralı döner; büyük dosyada devamını offset parametresiyle oku, ASLA baştan okuma; bir dosyayı aynı oturumda BİR KEZ okumak yeter — okunan içerik oturum sonuna kadar bağlamda kalır, dosyayı tekrar okuma. Dosya işlemlerinde özel araçları kullan (edit_file/write_file/read_file/grep/glob); run_command terminal işlerindir (build, git, kurulum, paket) — dosya düzenlemeyi komutla değil edit_file ile yap. edit_file/write_file sonucu additions/deletions döner ve değişiklik diske ANINDA uygulanır — doğrulamak için dosyayı TEKRAR OKUMA; önceki okuduğun içerik + kendi değişikliklerin üzerinden devam et.',
           'Kullanıcı bir tarihte/saatte hatırlatılmasını isterse set_reminder kullan; when değerini ORTAMdaki bugüne göre hesapla (yerel saat). "Her sabah/gün/hafta" gibi tekrarlı isteklerde repeat alanını da ver (daily/weekly/monthly/weekdays veya cron).',
                     'Kullanıcı kalıcı bir arka plan takibi isterse (fiyat eşiği, pil seviyesi, sayfa değişikliği) watcher_add ile izleyici kur; kurduktan sonra watcher_list ile doğrula ve kullanıcıya koşulu + kontrol sıklığını kısaca bildir.',
           'Anlık olay takipleri için (yeni mail, fiyat eşiği, dosya değişimi, webhook) event_subscribe kullan — cron/polling gerekmez; listeyi event_list ile göster, vazgeçirirse event_unsubscribe.',
         'Kullanıcı "artık hep böyle yap / bunu unutma" tarzı kalıcı talimat verirse kural olarak kaydet: sohbette /rule <metin> kullanmasını söyle VEYA kullanıcı isterse event_subscribe ile olaya bağlan (mail/fiyat/dosya/webhook).',
           'Kullanıcının mesajında 2+ ayrı iş/hedef varsa (örn "X yap ve sonra Y\u2019i kontrol et") KODLAMAYA/İŞE BAŞLAMADAN önce todo_write ile plan çıkar ve sırayla yürüt; her adımı tamamlarken güncelle. LİSTE DİSİPLİNİ: her adım bittiği AN status:"done" yap; son cevabını vermeden önce tüm maddeler done olmalı — yapılmayacaksa listeden düş. Listeyi yarım bırakma.',
-          'HIZ KURALI: Bağımsız işleri AYNI turda birden çok tool_calls ile PARALEL ver. Küçük işleri tek tek çağırma — her ayrı araç turu 5-15 sn LLM gecikmesidir: 3+ küçük komutu TEK run_command\u2019te `;` ile zincirle (örn `git status; node -v; dir`), döngülü/çoklu işleri TEK python_run betiğinde topla, çok dosyalık değişikliği TEK script ile yap. Her küçük işlem için ayrı araç çağrısı açmak yavaşlığın 1 numaralı sebebidir.',
+          'HIZ KURALI: Bağımsız işleri AYNI turda birden çok tool_calls ile PARALEL ver. Küçük işleri tek tek çağırma — her ayrı araç turu 5-15 sn LLM gecikmesidir: 3+ küçük komutu TEK run_command\u2019te `;` ile zincirle (örn `git status; node -v; dir`), döngülü/çoklu işleri TEK python_run betiğinde topla, çok dosyalık değişikliği TEK script ile DEĞİL AYNI turda PARALEL edit_file çağrılarıyla yap (dosya düzenlemeyi komut/scripte yedirme). Her küçük işlem için ayrı araç çağrısı açmak yavaşlığın 1 numaralı sebebidir.',
           this.ceoMode
             ? 'Bağımsız alt-işleri run_background ile PARALEL ajana devret; işi KENDİN YÜRÜTME — emri ver, takip et, raporla.'
             : 'Bağımsız alt-işleri delegate_task ile devret; kendi başına halledebileceğin işleri devretme.',
@@ -1617,42 +1621,18 @@ class Engine {
       return m;
     });
     /* opencode file-state portu: read_file sonuçları bağlamda YAŞAR —
-       1200 char'a kırpma modeli "unuttu" diye tekrar tekrar okumaya
-       zorluyordu. Her dosyanın yalnız EN SON okuması tam tutulur (diskte
-       zaten TOOL_OUT_KEEP*6 ile sınırlı); daha eski okumalar stub'a iner. */
-    const READ_KEEP = TOOL_OUT_KEEP * 6; /* depolama tavanıyla hizalı */
-    const readPathOf = (m) => {
-      const s = String(m.content || '');
-      try {
-        const j = JSON.parse(s);
-        if (j && j.path) return String(j.path);
-      } catch {}
-      const mm = /"path"\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(s.slice(0, 600));
-      return mm ? mm[1] : null;
-    };
-    const lastRead = new Map(); /* dosya yolu → flat'teki en son okuma indeksi */
-    for (let k = 0; k < flat.length; k++) {
-      const m = flat[k];
-      if (m.role === 'tool' && m.name === 'read_file') {
-        const p = readPathOf(m);
-        if (p) lastRead.set(p, k);
-      }
-    }
+       kırpma modeli "unuttu" diye tekrar tekrar okumaya zorluyordu.
+       opencode'ta araç çıktıları tam tutulur; eski okumalar stub'a inmez —
+       bütçe dolunca en eski birimler doğal olarak pencere dışı kalır
+       (opencode prune mantığıyla aynı). Okumalar READ_OUT_KEEP ile sınırlı. */
+    const READ_KEEP = READ_OUT_KEEP; /* depolama tavanıyla hizalı */
     for (let k = 0; k < flat.length; k++) {
       const m = flat[k];
       if (m.role !== 'tool') continue;
       const len = String(m.content || '').length;
       let content;
       if (m.name === 'read_file') {
-        const p = readPathOf(m);
-        if (p && lastRead.get(p) !== k) {
-          content =
-            '[aynı dosyanın daha YENİ bir okuması bağlamda — bu ESKİ okuma bağlam tasarrufu için kırpıldı; en son okumayı esas al]';
-        } else if (len > READ_KEEP) {
-          content = String(m.content).slice(0, READ_KEEP) + '\n…[kırpıldı — devam için offset ile oku]';
-        } else {
-          content = null; /* TAM KORUNUR — kırpma yok */
-        }
+        content = len > READ_KEEP ? String(m.content).slice(0, READ_KEEP) + '\n…[kırpıldı — devam için offset ile oku]' : null; /* TAM KORUNUR */
       } else {
         content = len > TOOL_OUT_KEEP * 2 ? String(m.content).slice(0, TOOL_OUT_KEEP) + '\n…[kırpıldı]' : null;
       }
@@ -1905,10 +1885,28 @@ class Engine {
       const msgs = session.messages;
       let total = 0, pruned = 0, turns = 0;
       const targets = [];
+      /* her dosyanın EN SON read_file sonucu asla prune edilmez — dosya
+         hafızası oturum sonuna kadar yaşar; eski okumalar serbest */
+      const readPathOf = (m) => {
+        const s = String(m.content || '');
+        const mm = /"path"\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(s.slice(0, 600));
+        return mm ? mm[1] : null;
+      };
+      const lastReadId = new Map();
+      for (const m of msgs) {
+        if (m.role === 'tool' && m.name === 'read_file' && m.tool_call_id) {
+          const p = readPathOf(m);
+          if (p) lastReadId.set(p, m.tool_call_id);
+        }
+      }
       for (let i = msgs.length - 1; i >= 0; i--) {
         const m = msgs[i];
         if (m.role === 'user') turns++;
         if (turns < 2) continue; // en yeni tur dokunulmaz
+        if (
+          m.role === 'tool' && m.name === 'read_file' && m.tool_call_id &&
+          readPathOf(m) && lastReadId.get(readPathOf(m)) === m.tool_call_id
+        ) continue; // son dosya okuması korumalı
         if (m.role === 'tool' && typeof m.content === 'string' && m.content.length > 400) {
           const est = Math.ceil(estTokens(m.content) * this.tokRatio);
           total += est;
@@ -2697,6 +2695,7 @@ class Engine {
       (job.task ? `GÖREV: ${job.task}\n` : '') +
       `Ortam: Windows + PowerShell; çalışma klasörü: ${this.workspace}\n` +
       `GENEL AJAN DİSİPLİNİ: görevi A'dan Z'ye yürüt — bağlam topla, uygula, DOĞRULA; yarım bırakma; doğrulama sonucunu rapora yaz.\n` +
+      `DOSYA KURALI: dosya işlemlerinde özel araçları kullan — VAR OLAN dosyayı edit_file ile düzenle, yeniyi write_file ile yaz, okuma/arama read_file/grep/glob; run_command terminal işlerindir (build, git, kurulum). Bir dosyayı BİR KEZ oku — içerik bağlamda kalır, tekrar okuma.\n` +
       (proj ? `PROJE TALİMATLARI (workspace AGENTS/CLAUDE/CONTEXT — daima uy):\n${proj}\n` : '') +
       `HIZ KURALLARI:\n` +
       `- Döngülü işleri (çok URL/dosya/sayfa, tekrarlı parse-hesap) TEK python_run betiğinde topluca bitir.\n` +
@@ -2711,7 +2710,7 @@ class Engine {
 
   /* uzun bg işlerinde geçmiş şişer → payload büyür, hız düşer. Son N mesaj kalsın
      (+ asıl görev mesajı); kopuk tool çifti sınırı hizalanır */
-  static BG_KEEP_MSGS = 24;
+  static BG_KEEP_MSGS = 48;
   _bgTrim(session) {
     const max = Engine.BG_KEEP_MSGS;
     const msgs = session.messages;
@@ -2946,17 +2945,23 @@ class Engine {
       let nudged = false; // görev listesi disiplini: run başına en fazla 1 hatırlatma
       let wrapNudged = false; // tur limitine yaklaşınca zarif kapanış (bg ajanlar)
       let usageTotal = 0; // en yüksek görülen total_tokens — compaction tetiği
-      let compacted = false; // run başına en fazla 1 compaction
-      /* opencode agent.steps port: özel ajanın kendi tur limiti (2-60) */
+      let lastCompactTurn = -99; // opencode: compaction run başına 1 DEĞİL — her taşmada tekrar eder
+      /* opencode agent.steps port: özel ajanın kendi tur limiti (2-60).
+         ANA OTURUMDA SERT TUR LİMİTİ YOK (opencode birebir): bağlam dolunca
+         compaction özetler ve işin ORTASINDA devam eder; sonsuz döngüyü
+         doom-loop koruması + kullanıcı ■ kırar. bg ajanlarda kapanış
+         disiplini için tavan kalır. */
       const runDef = this._agentDefFor(session, !!session.bgJob);
-      const maxTurns = Math.max(2, Math.min(60, (runDef && runDef.steps) || MAX_TURNS));
+      const maxTurns = session.bgJob
+        ? Math.max(2, Math.min(60, (runDef && runDef.steps) || MAX_TURNS))
+        : Infinity;
       const recentSigs = []; // doom-loop dedektörü: son araç imzaları
       /* Beast Code canlı önizleme: run boyunca üretilen eserleri topla —
          iş bitince dahili tarayıcıda CANLI açılır (site/dev server/HTML) */
       const bcArtifacts = session.bcCode ? { html: [], serverUrl: null } : null;
       for (let turn = 0; turn < maxTurns; turn++) {
-        /* SÜRE SINIRI YOK — ama sonsuz tur da yok: bg ajan son 3 tura gelirken
-           "raporu yaz ve bitir" uyarısı alır; maxTurns sert tavan olarak kalır. */
+        /* SÜRE SINIRI YOK. Ana oturum sınırsız tur koşar (opencode birebir);
+           yalnız bg ajan son 3 tura gelirken "raporu yaz ve bitir" uyarısı alır. */
         if (session.bgJob && turn === maxTurns - 3 && !wrapNudged) {
           wrapNudged = true;
           const wmsg = {
@@ -2970,26 +2975,16 @@ class Engine {
           } catch {}
           emit({ type: 'message', message: wmsg });
         }
-        /* opencode port (prompt.ts:1281): ana oturumda son turda zorunlu
-           nihai cevap — tur limiti sessizce dolup boş 'done' dönmesin */
-        if (!session.bgJob && turn === maxTurns - 1 && !wrapNudged) {
-          wrapNudged = true;
-          const wmsg = {
-            role: 'user',
-            content:
-              '[SON TUR] Tur limitine ulaşıldı: YENİ araç çağırma — eldeki bilgilerle NİHAİ cevabını şimdi ver. Eksikler varsa açıkça belirt.',
-          };
-          session.messages.push(wmsg);
-          try {
-            this._append(session, wmsg);
-          } catch {}
-          emit({ type: 'message', message: wmsg });
-        }
-        /* opencode port (prompt.ts:1161 + overflow.ts): bağlam dolduysa
-           compaction checkpoint — kuyruk korunur, baş özetlenir */
+        /* opencode port (prompt.ts:1161 + overflow.ts + processor.ts "compact"):
+           bağlam dolduysa compaction — kuyruk korunur, baş özetlenir ve işin
+           ORTASINDA devam edilir. Run içinde TEKRAR EDELİR; taze compaction'dan
+           hemen sonra hâlâ taşarsa opencode ContextOverflowError gibi güvenli dur. */
         const selNow = this.sessionModel.get(String(sid)) || this.modelFor(null) || this.sel;
-        if (!compacted && this._overContext(session, selNow, usageTotal)) {
-          compacted = true;
+        if (this._overContext(session, selNow, usageTotal)) {
+          if (turn - lastCompactTurn < 4) {
+            throw new Error('ContextOverflow: compaction sonrası bağlam hâlâ model limitinin üstünde — oturum çok büyük');
+          }
+          lastCompactTurn = turn;
           await this._compactHistory(session, selNow, ctrl.signal);
         }
         this._bgTrim(session); // #21 bg geçmişini olabildiğince ince tut
@@ -3147,7 +3142,7 @@ class Engine {
               }
               if (injectedImage || diffView) out = JSON.stringify(obj);
             } catch {}
-            const toolMsg = { role: 'tool', tool_call_id: tc.id, name, content: out.slice(0, TOOL_OUT_KEEP * 6) };
+            const toolMsg = { role: 'tool', tool_call_id: tc.id, name, content: out.slice(0, name === 'read_file' ? READ_OUT_KEEP : TOOL_OUT_KEEP * 6) };
             if (diffView) toolMsg.diffView = diffView; /* oturum dosyasına da düşer — geçmiş açılınca diff yeniden çizilir */
             session.messages.push(toolMsg);
             try {
@@ -3169,8 +3164,10 @@ class Engine {
           })
         );
       }
+      /* yalnız bg ajanlar tavanla buraya düşebilir — ana oturum sınırsız koşar */
       emit({ type: 'done', usage: null });
-      this._bgFinish(sid, 'error', 'tur limiti doldu (maxTurns)');    } catch (e) {
+      this._bgFinish(sid, 'error', 'bg görevi tur limitine ulaştı (maxTurns)');
+    } catch (e) {
       const aborted = e && (e.name === 'AbortError' || ctrl.signal.aborted);
       if (aborted) {
         this._clearCrash(); // kullanıcı durdurdu — kurtarma yok

@@ -2439,6 +2439,7 @@ function reloadBackend() {
     emit: (ev) => {
       if (win && !win.isDestroyed()) win.webContents.send('agent:event', ev);
       flushDesktopOnDone(ev); /* biriken desktop mesajlarını sıraya bas */
+      bcFlushOnDone(ev); /* Beast Code kuyruğunu iş bitiminde boşalt */
       /* WA canlı iş takibi: oturum bir WhatsApp sohbetine bağlıysa araç
          hareketlerini (terminal, web, dosya…) kısa satırla bildir.
          Spam olmasın: sohbet başına en az 7 sn'de bir tek satır. */
@@ -5266,6 +5267,66 @@ function bcPanelEvent(sid, ev) {
   } catch {}
 }
 
+/* Beast Code mesaj kuyruğu: ajan çalışırken gelen mesajlar birikir, iş bitince
+   TEK pakette (metinler \n ile birleşik) gönderilir. Boştayken de kısa pencere
+   (debounce) vardır — ard arda hızlı mesajlar tek işte birleşir. */
+const BC_DEBOUNCE_MS = 900;
+const bcQueue = new Map(); /* klasör yolu → { timer, msgs[] } */
+
+function bcQueuePush(ws, text) {
+  let q = bcQueue.get(ws);
+  if (!q) {
+    q = { timer: null, msgs: [] };
+    bcQueue.set(ws, q);
+  }
+  q.msgs.push({ text });
+  return q;
+}
+
+function bcFlush(folder) {
+  const q = bcQueue.get(folder);
+  if (!q || !q.msgs.length) return;
+  const s = bcGetSession(folder); /* oturum yoksa oluşturur */
+  if (engine.isBusy(s.id)) return; /* hâlâ çalışıyor — done/error eventini bekle */
+  let merged = '';
+  for (const m of q.msgs) if (m.text) merged += (merged ? '\n' : '') + m.text;
+  if (!merged.trim()) {
+    bcQueue.delete(folder);
+    clearTimeout(q.timer);
+    return;
+  }
+  s.workspace = folder;
+  s.bcCode = true;
+  engine.cache.set(s.id, s);
+  if (engine.send(s.id, merged)) {
+    bcQueue.delete(folder);
+    clearTimeout(q.timer);
+  } else {
+    /* yarış: az önce meşgul oldu — kuyruk korunur, kısa süre sonra tekrar denenir */
+    q.retries = (q.retries || 0) + 1;
+    if (q.retries > 5) {
+      bcQueue.delete(folder);
+      clearTimeout(q.timer);
+      try {
+        if (win && !win.isDestroyed()) {
+          win.webContents.send('agent:event', { sessionId: s.id, type: 'error', error: 'Beast Code mesajı gönderilemedi — panele tekrar yaz' });
+        }
+      } catch {}
+      return;
+    }
+    setTimeout(() => { try { bcFlush(folder); } catch {} }, 800);
+  }
+}
+
+function bcFlushOnDone(ev) {
+  if (!ev || (ev.type !== 'done' && ev.type !== 'error') || !ev.sessionId) return;
+  for (const [folder, sid] of bcSessions) {
+    if (String(sid) === String(ev.sessionId) && bcQueue.has(folder)) {
+      setTimeout(() => { try { bcFlush(folder); } catch {} }, 150);
+    }
+  }
+}
+
 ipcMain.handle('beastcode:send', async (_e, payload) => {
   const text = String((payload && payload.msg) || '').trim();
   if (!text) return { ok: false, error: 'boş mesaj' };
@@ -5274,13 +5335,16 @@ ipcMain.handle('beastcode:send', async (_e, payload) => {
   const modeM = /^\/(plan|build|auto)\b/i.exec(text);
 
   if (!engine.publicState().hasModel) return { ok: false, error: 'model yok — Ayarlar → Provider sekmesinden ekle' };
-  if (engine.isBusy(bcSessions.get(ws))) return { ok: false, busy: true, error: 'önceki mesaj sürüyor — ■ ile durdurabilirsin' };
+  /* oturumu HEMEN aç: cevap daima gerçek sessionId taşır — renderer paneli bu id ile
+     eşler; boşta/kuyrukta olsa bile id yoksa panel olayları eşleyemez ve ölü kalır */
   const s = bcGetSession(ws);
   s.workspace = ws; /* soldaki klasörde çalış */
   s.bcCode = true; /* todo disiplini + iş sonu hızlı kapanış (engine) */
+  engine.cache.set(s.id, s);
+  const busy = engine.isBusy(s.id);
   if (modeM) {
+    /* mod değişimi anında uygulanır — meşgulken de (yalnız bayrak; engine çakışmaz) */
     s.bcMode = modeM[1].toLowerCase();
-    engine.cache.set(s.id, s);
     if (win && !win.isDestroyed()) {
       const body = modeM[1].toLowerCase() === 'plan'
         ? 'PLAN MODU — dosyaları okuyup inceler, KOD YAZMAZ; adım adım uygulama planı verir.'
@@ -5291,25 +5355,44 @@ ipcMain.handle('beastcode:send', async (_e, payload) => {
     }
     return { ok: true, sessionId: s.id, mode: s.bcMode };
   }
-  engine.cache.set(s.id, s);
-  const ok = engine.send(s.id, text);
-  if (!ok) return { ok: false, error: 'mesaj gönderilemedi' };
-  return { ok: true, sessionId: s.id };
+  if (busy) {
+    /* ajan çalışıyor → kuyruğa al; iş bitince (done/error) toplu gider */
+    const q = bcQueuePush(ws, text);
+    return { ok: true, queued: true, count: q.msgs.length, sessionId: s.id };
+  }
+  /* boşta: kısa pencere — hızlı ard arda mesajlar tek işte birleşir */
+  const q = bcQueuePush(ws, text);
+  clearTimeout(q.timer);
+  q.timer = setTimeout(() => { try { bcFlush(ws); } catch {} }, BC_DEBOUNCE_MS);
+  return { ok: true, sessionId: s.id, pending: true };
 });
 
 ipcMain.handle('beastcode:stop', async () => {
   const ws = ideRoot();
   const sid = bcSessions.get(ws);
-  if (!sid) return { ok: false };
+  /* durdurma: bekleyen kuyruğu da boşalt (kullanıcı vazgeçti) */
+  const q = bcQueue.get(ws);
+  if (q) {
+    clearTimeout(q.timer);
+    bcQueue.delete(ws);
+  }
+  const wasBusy = sid ? engine.isBusy(sid) : false;
   let r = false;
-  try { r = engine.interrupt(sid, 'kullanıcı Beast Code panelinden ■ ile durdurdu'); } catch {}
-  return { ok: !!r };
+  if (wasBusy) {
+    try { r = engine.interrupt(sid, 'kullanıcı Beast Code panelinden ■ ile durdurdu'); } catch {}
+  }
+  return { ok: true, wasBusy, interrupted: r };
 });
 
 ipcMain.handle('beastcode:new', async () => {
   const ws = ideRoot();
   const sid = bcSessions.get(ws);
   if (sid && engine.isBusy(sid)) return { ok: false, error: 'mesaj sürüyor — önce ■ ile durdur' };
+  const q = bcQueue.get(ws);
+  if (q) {
+    clearTimeout(q.timer);
+    bcQueue.delete(ws);
+  }
   if (sid) {
     try { engine.deleteSession(sid); } catch {}
     bcSessions.delete(ws);

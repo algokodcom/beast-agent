@@ -2240,6 +2240,7 @@ function ensureDc() {
       token: settings.dcToken || '',
       emit: (ev) => {
         if (ev.type === 'status') dcLog(`status=${ev.status}${ev.user ? ' user=' + ev.user : ''}`);
+        if (ev.type === 'warn') dcLog('⚠ ' + String(ev.text || ''));
         if (win && !win.isDestroyed()) win.webContents.send('dc:event', ev);
       },
       onIncoming: handleDcIncoming,

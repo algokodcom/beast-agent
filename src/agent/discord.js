@@ -20,6 +20,19 @@ const SEND_CHUNK = 1900; // Discord mesaj sınırı 2000 — güvenli pay
 /* GUILDS(1) | GUILD_MESSAGES(512) | DIRECT_MESSAGES(4096) | MESSAGE_CONTENT(32768) */
 const INTENTS = 1 | 512 | 4096 | 32768;
 
+/* AĞ ARA YAZILIMI (antivirüs SSL taraması / proxy / ağ filtresi) Discord
+   trafiğine araya girip SELF-SIGNED sertifika sunarsa Node varsayılan olarak
+   bağlantıyı reddeder ("self signed certificate") ve bot hiç bağlanamaz.
+   Çözüm: hata tespit edilince bu köprü için TLS doğrulaması esnetilir ve
+   uyarı loglanır — YALNIZ Discord bağlantıları etkilenir, app'in geri kalanı
+   normal doğrulama kullanmaya devam eder. */
+let tlsRelaxed = false;
+const CERT_ERR_RE = /self[ -]?signed|unable to verify the first certificate|depth zero|err_tls|certificate has expired|cert_has_expired|unable_to_get_issuer|self signed certificate/i;
+
+function isCertError(e) {
+  return CERT_ERR_RE.test(String((e && (e.message || e.code)) || e || ''));
+}
+
 class DiscordBridge {
   constructor({ token, emit, onIncoming }) {
     this.token = String(token || '').trim();
@@ -41,8 +54,9 @@ class DiscordBridge {
     this.emit({ type: 'status', status, user: user || null });
   }
 
-  /* REST çağrısı — JSON (token: "Bot <token>") */
-  api(method, path, body) {
+  /* REST çağrısı — JSON (token: "Bot <token>"). Cert engeli tespit edilirse
+     TLS esnetilip TEK seferlik yeniden denenir. */
+  api(method, path, body, attempt = 0) {
     return new Promise((resolve, reject) => {
       const payload = body ? JSON.stringify(body) : null;
       const req = https.request(
@@ -55,6 +69,7 @@ class DiscordBridge {
             ...(payload ? { 'Content-Length': Buffer.byteLength(payload) } : {}),
           },
           timeout: 15000,
+          rejectUnauthorized: !tlsRelaxed,
         },
         (res) => {
           let data = '';
@@ -75,6 +90,17 @@ class DiscordBridge {
       req.on('error', reject);
       if (payload) req.write(payload);
       req.end();
+    }).catch((e) => {
+      /* ara yazılım sertifikası tespit: esnet ve aynı isteği bir kez daha dene */
+      if (isCertError(e) && !tlsRelaxed) {
+        tlsRelaxed = true;
+        this.emit({
+          type: 'warn',
+          text: 'ağ ara yazılımı (antivirüs/proxy) self-signed sertifikası tespit edildi — Discord bağlantısı esnek TLS ile devam ediyor',
+        });
+        if (attempt < 1) return this.api(method, path, body, attempt + 1);
+      }
+      throw e;
     });
   }
 
@@ -102,7 +128,7 @@ class DiscordBridge {
     clearInterval(this._hbTimer);
     this._hbTimer = null;
     let identified = false;
-    const ws = new WebSocket(GATEWAY_URL);
+    const ws = new WebSocket(GATEWAY_URL, { rejectUnauthorized: !tlsRelaxed });
     this._ws = ws;
 
     ws.on('message', (raw) => {
@@ -193,8 +219,16 @@ class DiscordBridge {
       setTimeout(() => this._connect(), wait);
     });
 
-    ws.on('error', () => {
-      /* close tetiklenir — yeniden bağlanma orada */
+    ws.on('error', (e) => {
+      /* gateway TLS'i de ara yazılımdan etkilenebilir — esnet ve close sonrası
+         yeniden bağlanma zaten relaxed ile kurar */
+      if (isCertError(e) && !tlsRelaxed) {
+        tlsRelaxed = true;
+        this.emit({
+          type: 'warn',
+          text: 'ağ ara yazılımı (antivirüs/proxy) self-signed sertifikası tespit edildi — Discord bağlantısı esnek TLS ile devam ediyor',
+        });
+      }
     });
   }
 

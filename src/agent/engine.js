@@ -216,6 +216,7 @@ function sanitizeTodoItems(items) {
   return out;
 }
 
+
 function customChain(list) {
   const out = [];
   for (const p of Array.isArray(list) ? list : []) {
@@ -269,6 +270,11 @@ class Engine {
     this._customProviders = opts.customProviders || [];
     this.cache = new Map();
     this.ctrls = new Map();
+    /* /STOP KAPISI: stopAll sonrası SİSTEM tetikli gönderimler (rapor, kick,
+       self-heal, cron, izleyici, olay merkezi, bg kuyruk) engellenir — ajan
+       kendi kendine yeni sorgu açamaz. Gerçek kullanıcı mesajı (userAction)
+       veya /start (clearStop) kapıyı açar. */
+    this._stopped = false;
     this.todos = new Map(); // sessionId -> [{title,status}]
     this.tokRatio = 1; // gerçek prompt_tokens ile kalibre edilir
     this._codeIndex = new Map(); // kısa oturum kodu -> session id
@@ -946,7 +952,7 @@ class Engine {
 
   /* Oturum dosyasındaki son 'msg' satırını (user) güncel içerikle değiştir —
      yanıtsız kalmış user mesajıyla yeni mesaj birleştirildiğinde kullanılır */
-  _rewriteLastMsg(id, content) {
+  _rewriteLastMsg(id, content, attachments) {
     try {
       const file = this._file(String(id));
       const lines = fs.readFileSync(file, 'utf8').split('\n');
@@ -955,7 +961,9 @@ class Engine {
         let r;
         try { r = JSON.parse(lines[i]); } catch { continue; }
         if (r.t === 'msg' && r.role === 'user') {
-          lines[i] = JSON.stringify({ t: 'msg', role: 'user', content: String(content || '') });
+          const out = { t: 'msg', role: 'user', content: String(content || '') };
+          if (Array.isArray(attachments) && attachments.length) out.attachments = attachments;
+          lines[i] = JSON.stringify(out);
           break;
         }
       }
@@ -1394,7 +1402,8 @@ class Engine {
       '3) EDİT: VAR OLAN dosyada önce edit_file kullan (old_string/new_string ile yalnız ilgili bölümü değiştir; birden çok eşleşme varsa bağlam ekle ya da replace_all); write_file yalnız YENİ dosya ya da tam yeniden yazım için. Dosya işlemleri için ÖZEL ARAÇLARI kullan (edit_file/write_file/read_file/grep/glob); run_command terminal işlerindir (build, git, kurulum, paket) — dosya düzenlemeyi komut/scripte yedirme, edit_file ile yap. İlgisiz yeniden biçimleme/kayıp boşluk değişikliği YAPMA. edit_file/write_file sonucu additions/deletions döner ve değişiklik diske ANINDA uygulanır — doğrulamak için dosyayı TEKRAR OKUMA YASAK; sonraki editi önceki okuduğun içerik + kendi değişikliklerin üzerinden zincirle.\n' +
       '4) DOĞRULA: edit sonrası mümkünse derle/test et/lint çalıştır (run_command); hata varsa DÜZELT ve TEKRAR dene (en fazla 2 doğrulama turu) — kırmızı bırakma. Doğrulama read_file ile DEĞİL run_command ile yapılır.\n' +
       '5) RAPOR: 1-3 satır — ne değişti + doğrulama sonucu (ör. "npm test ✓ 154/154"). Uzun açıklama yok.\n' +
-      'CANLI ÖNİZLEME: web sitesi/app üretirsen son adımda ÇALIŞIR halde bırak (dev server ayakta ya da index.html yazılmış) — panel iş bitince ürettiğin şeyi dahili tarayıcıda otomatik canlı açar.\n' +
+      'CANLI ÖNİZLEME: panel Preview\u2019da DAHİLİ STATİK SUNUCUYU kendisi yönetir — statik site için sunucu başlatma DENEME (python -m http.server vs. GEREKMEZ); index.html\u2019i hazır bırak, kullanıcı Preview\u2019a basınca site sunucudan canlı açılır ve sana observe ile haber verilir. Yalnızca gerçek dev-server/build gerektiren projelerde (React/Vite/Next/Expo) kendi sunucunu BLOKLAMADAN arka planda başlat ve çalışan adresi (http://localhost:PORT) raporda yaz. file:// protokolü ASLA kullanılmaz.\n' +
+      'MOBİL UYGULAMA: React Native/Expo ile yap — `npx create-expo-app <ad>` + `npx expo start` (BLOKLAMADAN arka planda; başlangıç çıktısında http://localhost:8081 görünür, panel Telefon Modunda canlı açar, dosya kaydında hot reload çalışır). APK: `npx expo prebuild` + android\\gradlew assembleDebug; iOS: Windows\u2019ta simülatör YOK — gerçek cihazda Expo Go (QR) veya EAS cloud build kullan.\n' +
       'HIZ KURALLARI:\n' +
       '- Kodu ve dosyaları DOĞRUDAN write_file ile yaz; basit dosya oluşturma/düzenleme için Python scripti yazma; python_run yalnız gerçek hesap/veri işleme gerekiyorsa.\n' +
       '- Bağımsız araç çağrılarını AYNI TURDA paralel ver (birden çok read_file tek turda).\n' +
@@ -1593,7 +1602,37 @@ class Engine {
   }
 
   _buildPayload(system, messages, notes, budget, summary) {
-    const units = this._msgUnits(messages);
+    /* DOSYA EK ENJEKSİYONU (payload-only): kullanıcı mesajlarındaki dosya
+       ekleri SADECE burada, LLM isteğine metin olarak eklenir. Oturum
+       mesajı/ekran temiz kalır — chat'te yalnız dosya kartı görünür. */
+    let payloadSrc = messages;
+    const withFiles = messages.map((m) => {
+      if (!m || m.role !== 'user' || !Array.isArray(m.attachments)) return m;
+      const docs = m.attachments.filter((a) => a && a.type === 'file' && a.content);
+      if (!docs.length) return m;
+      const extra = docs
+        .map((f) => `[Ek dosya: ${f.name}]\n${String(f.content || '')}`)
+        .join('\n\n');
+      const { attachments: _drop, ...rest } = m;
+      if (typeof rest.content === 'string') {
+        rest.content = (rest.content + (rest.content ? '\n\n' : '') + extra).trim();
+      } else if (Array.isArray(rest.content)) {
+        let hit = false;
+        rest.content = rest.content.map((p) => {
+          if (p && p.type === 'text' && !hit) {
+            hit = true;
+            return { ...p, text: ((p.text || '') + (p.text ? '\n\n' : '') + extra).trim() };
+          }
+          return p;
+        });
+        if (!hit) rest.content = [...rest.content, { type: 'text', text: extra }];
+      } else {
+        rest.content = extra;
+      }
+      return rest;
+    });
+    payloadSrc = withFiles;
+    const units = this._msgUnits(payloadSrc);
     const B = Math.max(2000, Number(budget) || this.historyTokenBudget);
     const maxUnits = notes ? NOTES_MAX_UNITS : units.length; // notlar varken pencereyi sıkılaştır
     const picked = [];
@@ -1656,6 +1695,13 @@ class Engine {
           summary +
           '\n[Konuşma aşağıdaki mesajlarla DEVAM EDİYOR]',
       });
+    }
+    /* emniyet: sağlayıcıya GİDEN hiçbir mesajda `attachments` alanı olmasın */
+    for (let k = 0; k < flat.length; k++) {
+      if (flat[k] && flat[k].attachments) {
+        const { attachments: _drop, ...rest } = flat[k];
+        flat[k] = rest;
+      }
     }
     return [{ role: 'system', content: system }, ...head, ...flat];
   }
@@ -2009,14 +2055,16 @@ class Engine {
     const sid = session.id;
     if (session.bgJob || session.bcCode || session.isBotDm) return;
     if (prevSignal && prevSignal.aborted) return;
+    /* /stop kapısı: not/memory/yansıma bakımı YENİ LLM SORGUSU açmaz */
+    if (this._stopped) return;
     if (!this._housekeepingTail) this._housekeepingTail = new Map();
     const job = this._housekeepingTail.get(sid) || Promise.resolve();
     const next = job.catch(() => {}).then(async () => {
       const ctl = new AbortController();
       try { await this._updateSessionNotes(session, ctl.signal); } catch {}
-      if (ctl.signal.aborted || this.ctrls.has(sid)) return;
+      if (ctl.signal.aborted || this._stopped || this.ctrls.has(sid)) return;
       try { await this._autoMemory(session, ctl.signal); } catch {}
-      if (this.reflection.enabled && !ctl.signal.aborted && !this.ctrls.has(sid)) {
+      if (this.reflection.enabled && !ctl.signal.aborted && !this._stopped && !this.ctrls.has(sid)) {
         try { await this._maybeReflectSkill(session); } catch {}
       }
       try { memory.calibratePersona(); } catch {}
@@ -2026,7 +2074,12 @@ class Engine {
 
   /* ---------- agent loop ---------- */
 
-  send(sessionId, payload) {
+  send(sessionId, payload, opts = {}) {
+    const userAction = !!(opts && opts.userAction);
+    /* /stop kapısı: sistem tetikli gönderim durdurulur; kullanıcının kendi
+       mesajı (userAction) kapıyı kaldırır — "devam için bir şeyler yaz" */
+    if (this._stopped && !userAction) return false;
+    if (userAction) this._stopped = false;
     const s = this._load(String(sessionId));
     if (!s || this.ctrls.has(s.id)) return false;
 
@@ -2037,17 +2090,28 @@ class Engine {
       const text = String((payload && payload.text) || '').slice(0, USER_MAX);
       const atts = Array.isArray(payload && payload.attachments) ? payload.attachments : [];
       const imgs = atts.filter((a) => a.type === 'image' && a.dataUrl).slice(0, 4);
-      const files = atts.filter((a) => a.type === 'file');
-      let extra = '';
-      for (const f of files) {
-        extra += `\n\n[Ek dosya: ${f.name}]\n${String(f.content || '').slice(0, 20000)}`;
-      }
+      /* DOSYA EKLERİ İÇERİĞE GÖMÜLMEZ: mesajda `attachments` alanında taşınır —
+         chat ekranında DOSYA KARTI olarak görünür, içerik ekrana yazılmaz.
+         İçeriği yalnızca _buildPayload LLM isteğine enjekte eder. */
+      const files = atts
+        .filter((a) => a.type === 'file')
+        .map((a) => ({ name: String(a.name || 'dosya'), content: String(a.content || '').slice(0, 20000) }));
+      const body = (text.trim() || (files.length || imgs.length ? '[dosya ekleri]' : '(ek)')).slice(0, USER_MAX);
       if (imgs.length) {
-        const parts = [{ type: 'text', text: (text + extra).trim() }];
+        const parts = [{ type: 'text', text: body }];
         for (const im of imgs) parts.push({ type: 'image_url', image_url: { url: im.dataUrl } });
         msg = { role: 'user', content: parts };
       } else {
-        msg = { role: 'user', content: ((text + extra).trim() || '(ek)').slice(0, USER_MAX + extra.length) };
+        msg = { role: 'user', content: body };
+      }
+      if (imgs.length || files.length) {
+        /* UI dosya kartları + payload enjeksiyonu buradan beslenir:
+           dosyalar İÇERİKLE birlikte `attachments`ta yaşar (görüntüler yalnız
+           ad taşır — veri content parçalarındadır). Chat ekranı yalnız ADI basar. */
+        msg.attachments = [
+          ...imgs.map((im) => ({ type: 'image', name: String(im.name || 'resim') })),
+          ...files,
+        ];
       }
     }
 
@@ -2067,8 +2131,11 @@ class Engine {
       typeof msg.content === 'string'
     ) {
       lastMsg.content = lastMsg.content + '\n' + msg.content;
+      if (msg.attachments || lastMsg.attachments) {
+        lastMsg.attachments = [...(lastMsg.attachments || []), ...(msg.attachments || [])];
+      }
       msg = lastMsg;
-      this._rewriteLastMsg(s.id, lastMsg.content);
+      this._rewriteLastMsg(s.id, lastMsg.content, lastMsg.attachments);
     } else {
       s.messages.push(msg);
       try {
@@ -2141,6 +2208,8 @@ class Engine {
   runBackground(parentSessionId, task, title, opts = {}) {
     const t = String(task || '').trim();
     if (!t) return { ok: false, error: 'görev boş' };
+    /* /stop kapısı: durdurulmuş sistemde yeni arka plan işi başlamaz */
+    if (this._stopped) return { ok: false, error: '/stop aktif — arka plan işi başlatılamadı' };
     const parent = String(parentSessionId || '');
     /* createSession() view döndürür (messages yok) — tam oturumu cache'ten al.
        Aksi halde send() s.messages.push'da sessizce patlardı ve iş koşmazdı. */
@@ -2203,6 +2272,8 @@ class Engine {
 
   _bgAdmit(sid, fullTask) {
     try {
+      /* /stop kapısı: kuyruğa alma ve başlatma durdurulur */
+      if (this._stopped) return;
       const j = this._bgJobs.get(String(sid));
       if (!j || j.status !== 'running' || j.slot) return;
       if (this._runningBgCount() >= this._bgLimit) {
@@ -2221,6 +2292,9 @@ class Engine {
   }
 
   _bgResumeQueue() {
+    /* /stop kapısı: sıradaki iş BAŞLATILMAZ (status mutate edilmeden dönülür —
+       hayalet 'running' kaydı oluşmasın) */
+    if (this._stopped) return;
     while (this._runningBgCount() < this._bgLimit) {
       let next = null;
       for (const j of this._bgJobs.values()) {
@@ -2274,6 +2348,7 @@ class Engine {
 
   /* #17 kalıcı arka plan hatası → owner'a tek seferlik uyarı maili (fire-and-forget) */
   _notifyOwnerTaskFailed(job, msg) {
+    if (this._stopped) return; /* /stop: durdurulan iş için mail UYANDIRMA */
     if (this.notifyOwnerFail === false) return;
     if (!this.email || typeof this.email.send !== 'function') return;
     if (job._mailed) return;
@@ -2597,6 +2672,8 @@ class Engine {
 
   _bgKickSend(sid, text) {
     try {
+      /* /stop kapısı: durdurulan işe kurtarma kick'i GİTMEZ */
+      if (this._stopped) return;
       const j = this._bgJobs.get(String(sid));
       /* silinmiş/durdurulmuş işe geri dönüş yok — hayalet dosya yaratma */
       if (!j || j.revive !== true) return;
@@ -2672,6 +2749,12 @@ class Engine {
      send başarısızsa (aniden meşgul oldu) rapor sırada kalır, sonra denenir. */
   flushPendingReports(sessionId) {
     if (!this._pendingReports || !this._pendingReports.length) return;
+    /* /stop kapısı: abort edilen işlerin iptal raporları ebeveynde YENİ SORGU
+       başlatmasın — bekleyen raporlar düşürülür */
+    if (this._stopped) {
+      this._pendingReports = [];
+      return;
+    }
     const rest = [];
     for (const r of this._pendingReports) {
       if (r.parentId !== sessionId) { rest.push(r); continue; }
@@ -2960,6 +3043,13 @@ class Engine {
          iş bitince dahili tarayıcıda CANLI açılır (site/dev server/HTML) */
       const bcArtifacts = session.bcCode ? { html: [], serverUrl: null } : null;
       for (let turn = 0; turn < maxTurns; turn++) {
+        /* /STOP: abort edilmişse yeni tur/araç döngüsü AÇILMAZ — hemen
+           AbortError fırlat, catch bloğu done(aborted) basar */
+        if (ctrl.signal.aborted) {
+          const e = new Error('iptal');
+          e.name = 'AbortError';
+          throw e;
+        }
         /* SÜRE SINIRI YOK. Ana oturum sınırsız tur koşar (opencode birebir);
            yalnız bg ajan son 3 tura gelirken "raporu yaz ve bitir" uyarısı alır. */
         if (session.bgJob && turn === maxTurns - 3 && !wrapNudged) {
@@ -3214,6 +3304,8 @@ class Engine {
      teşhis görevini AYNI oturuma düşürür; agent kendi hatasını analiz eder. */
   _maybeSelfHeal(sid, err) {
     try {
+      /* /stop kapısı: durdurulan oturuma teşhis sorgusu AÇILMAZ */
+      if (this._stopped) return;
       const key = String(sid);
       this._errCount = this._errCount || new Map();
       const n = (this._errCount.get(key) || 0) + 1;
@@ -3701,6 +3793,8 @@ class Engine {
           });
         }
       }
+      /* GERİ ALMA GÜNLÜĞÜ: dosya yazımından ÖNCE eski içerik kayda geçer */
+      this._journalBefore(sessionId, name, args);
       if (name === 'memory_write') {
         /* bot oturumu → botun KENDİ MEMORY.md'sine yaz (global Beast hafızasına değil) */
         const bctx = this._sessionBotCtx(sessionId ? this.cache.get(String(sessionId)) : null);
@@ -3736,6 +3830,7 @@ class Engine {
       }
       if (name === 'todo_write') {
         const items = sanitizeTodoItems(args.items);
+        this._tagTodoIds(sessionId, items); /* her madde kalıcı ID taşır — geri alma buna bağlanır */
         this.todos.set(sessionId, items);
         try {
           fs.appendFileSync(
@@ -4041,6 +4136,10 @@ class Engine {
   stopAll() {
     let aborted = 0;
     const why = '/stop: kullanıcı tüm ajanları ve turları durdurdu';
+    /* STOP KAPISI: abort sonrası rapor/kick/kurtarma zincirleri YENİ SORGU
+       AÇAMAZ — kullanıcı gerçek bir mesaj yazana ya da /start deyinceye dek
+       ajan faaliyeti tamamen durur */
+    this._stopped = true;
     /* fan-out gruplarını kapat — yarım grup artık birleşik rapor beklemesin */
     if (this._bgGroups) {
       for (const g of this._bgGroups.values()) g.dead = true;
@@ -4075,6 +4174,11 @@ class Engine {
     }
     this._bgEmit();
     return aborted;
+  }
+
+  /* /stop kapısını kaldır (/start ya da gerçek kullanıcı mesajıyla) */
+  clearStop() {
+    this._stopped = false;
   }
 
   isBusy(sessionId) {
@@ -4669,6 +4773,126 @@ const TOOLS = [
     },
   },
 ];
+
+/* ---------- GÖREV (TODO) ID + GERİ ALMA SİSTEMİ ----------
+   todo_write maddelerine kalıcı ID (T1, T2…) atanır; write_file/edit_file
+   ÖNCESİ dosyanın eski içeriği günlüğe yazılır. Panel bir maddenin
+   değişikliklerini TEK TUŞLA önceki kod tabanına döndürebilir. */
+
+Engine.prototype._tagTodoIds = function (sid, items) {
+  const key = String(sid || '');
+  this._todoSeq = this._todoSeq || new Map();
+  this._todoIds = this._todoIds || new Map();
+  const map = this._todoIds.get(key) || new Map();
+  let seq = this._todoSeq.get(key) || 0;
+  for (const it of items || []) {
+    const t = String((it && it.title) || '').trim();
+    if (!t) continue;
+    if (!map.has(t)) map.set(t, 'T' + (++seq));
+    it.id = map.get(t);
+  }
+  this._todoIds.set(key, map);
+  this._todoSeq.set(key, seq);
+  return items;
+};
+
+Engine.prototype._journalBefore = function (sid, name, args) {
+  try {
+    if (name !== 'write_file' && name !== 'edit_file') return;
+    const rel = String((args && args.path) || '').trim();
+    if (!rel) return;
+    const ws = this._sessionWorkspace(String(sid || ''));
+    const abs = path.isAbsolute(rel) ? path.resolve(rel) : path.resolve(ws, rel);
+    let before = null;
+    try { before = fs.readFileSync(abs, 'utf8'); } catch {}
+    const todos = this.todos.get(String(sid || '')) || [];
+    const cur = todos.find((t) => t && t.status !== 'done') || null;
+    const key = String(sid || '');
+    this._undoJournal = this._undoJournal || new Map();
+    const j = this._undoJournal.get(key) || [];
+    j.push({
+      todoId: (cur && cur.id) || 'T0',
+      title: (cur && cur.title) || '(görev listesi dışı)',
+      path: abs,
+      before,
+      at: nowIso(),
+    });
+    while (j.length > 120) j.shift();
+    this._undoJournal.set(key, j);
+  } catch {}
+};
+
+Engine.prototype.todoUndoInfo = function (sid) {
+  const key = String(sid || '');
+  this._undoJournal = this._undoJournal || new Map();
+  const todos = this.todos.get(key) || [];
+  const j = this._undoJournal.get(key) || [];
+  const counts = new Map();
+  for (const e of j) counts.set(e.todoId, (counts.get(e.todoId) || 0) + 1);
+  return {
+    ok: true,
+    sessionId: key,
+    todos,
+    undo: todos.map((t) => ({ id: t.id, files: counts.get(t.id) || 0 })),
+    lastTodoId: j.length ? j[j.length - 1].todoId : null,
+    busy: this.ctrls.has(key),
+  };
+};
+
+Engine.prototype.undoTodo = function (sid, todoId) {
+  const key = String(sid || '');
+  const id = String(todoId || '');
+  if (this.ctrls.has(key)) {
+    return { ok: false, error: 'ajan şu an çalışıyor — önce ■ ile durdur, sonra geri al' };
+  }
+  this._undoJournal = this._undoJournal || new Map();
+  const j = this._undoJournal.get(key) || [];
+  if (!j.some((e) => e.todoId === id)) {
+    return { ok: false, error: 'bu görev için kayıtlı değişiklik yok' };
+  }
+  const done = [];
+  /* sondan başa geri sar — en son yazım önce restore edilir */
+  for (let i = j.length - 1; i >= 0; i--) {
+    const e = j[i];
+    if (e.todoId !== id) continue;
+    try {
+      if (e.before === null) {
+        fs.rmSync(e.path, { force: true }); /* madde bu dosyayı YARATMIŞ → sil */
+      } else {
+        fs.mkdirSync(path.dirname(e.path), { recursive: true });
+        fs.writeFileSync(e.path, e.before);
+      }
+      done.push(e.path);
+      j.splice(i, 1);
+    } catch {}
+  }
+  /* madde listede 'pending' kalır — ajan yeniden ele alabilir */
+  const todos = this.todos.get(key) || [];
+  for (const t of todos) {
+    if (t && t.id === id && t.status === 'done') t.status = 'pending';
+  }
+  this.todos.set(key, todos);
+  try {
+    fs.appendFileSync(this._file(key), JSON.stringify({ t: 'todo', items: todos }) + '\n');
+  } catch {}
+  emitSafe(this, key, { type: 'todos', sessionId: key, todos });
+  return {
+    ok: true,
+    todoId: id,
+    reverted: done.length,
+    paths: [...new Set(done)],
+    note: done.length
+      ? 'görev geri alındı — dosyalar önceki kod tabanına döndü'
+      : 'geri alınacak dosya yok',
+  };
+};
+
+Engine.prototype.undoLastTodo = function (sid) {
+  this._undoJournal = this._undoJournal || new Map();
+  const j = this._undoJournal.get(String(sid || '')) || [];
+  if (!j.length) return { ok: false, error: 'geri alınacak değişiklik yok' };
+  return this.undoTodo(sid, j[j.length - 1].todoId);
+};
 
 module.exports = Engine;
 module.exports.Engine = Engine;

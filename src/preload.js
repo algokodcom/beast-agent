@@ -4,6 +4,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('beast', {
   getState: () => ipcRenderer.invoke('app:state'),
+  appVersion: () => ipcRenderer.invoke('app:version'),
   logsGet: () => ipcRenderer.invoke('logs:get'),
   logsClear: () => ipcRenderer.invoke('logs:clear'),
   listSessions: () => ipcRenderer.invoke('sessions:list'),
@@ -66,7 +67,9 @@ contextBridge.exposeInMainWorld('beast', {
   terminalToggle: () => ipcRenderer.invoke('terminal:toggle'),
   terminalRun: (cmd, shell) => ipcRenderer.invoke('terminal:run', { cmd, shell }),
   terminalStop: () => ipcRenderer.invoke('terminal:stop'),
-  beastcodeSend: (msg) => ipcRenderer.invoke('beastcode:send', { msg }),
+  beastcodeSend: (msg, attachments) => ipcRenderer.invoke('beastcode:send', { msg, attachments }),
+  bcTodos: (sessionId) => ipcRenderer.invoke('bc:todos', { sessionId }),
+  bcUndo: (sessionId, todoId) => ipcRenderer.invoke('bc:undo', { sessionId, todoId }),
   beastcodeStop: () => ipcRenderer.invoke('beastcode:stop'),
   beastcodeNew: () => ipcRenderer.invoke('beastcode:new'),
   thinkSet: (v) => ipcRenderer.invoke('think:set', v),
@@ -83,6 +86,7 @@ contextBridge.exposeInMainWorld('beast', {
   tinyfishClear: () => ipcRenderer.invoke('tinyfish:clear'),
   browserNavigate: (url) => ipcRenderer.invoke('browser:navigate', url),
   browserCtrl: (action) => ipcRenderer.invoke('browser:ctrl', action),
+  browserPhone: (on) => ipcRenderer.invoke('browser:phone', on),
   browserSetWidth: (w) => ipcRenderer.invoke('browser:setWidth', w),
   browserSetIgnoreMouse: (flag) => ipcRenderer.invoke('browser:setIgnoreMouse', flag),
   browserScreenshot: () => ipcRenderer.invoke('browser:screenshot'),

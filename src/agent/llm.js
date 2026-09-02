@@ -235,53 +235,76 @@ async function streamOnce(sel, body, { signal, onDelta, onRetry } = {}, omitReas
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buf = '';
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buf += decoder.decode(value, { stream: true });
-
-        let idx;
-        while ((idx = buf.indexOf('\n')) !== -1) {
-          const line = buf.slice(0, idx).trim();
-          buf = buf.slice(idx + 1);
-          if (!line.startsWith('data:')) continue;
-          const data = line.slice(5).trim();
-          if (!data || data === '[DONE]') continue;
-
-          let json;
+      /* SERT İPTAL: abort gelirse gövdeyi fiziksel kapat (reader.cancel) —
+         sağlayıcı/fetch abort'u gövdeye taşımasa bile okuma döngüsü ANINDA
+         biter, token akışı kesilir */
+      let onAbort = null;
+      if (signal) {
+        onAbort = () => {
           try {
-            json = JSON.parse(data);
-          } catch {
-            continue;
+            const p = reader.cancel();
+            if (p && typeof p.catch === 'function') p.catch(() => {});
+          } catch {}
+        };
+        signal.addEventListener('abort', onAbort, { once: true });
+      }
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (signal && signal.aborted) {
+            const e = new Error('iptal');
+            e.name = 'AbortError';
+            throw e;
           }
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
 
-          if (json.usage) state.usage = json.usage;
-          const ch = json.choices && json.choices[0];
-          if (!ch) continue;
-          if (ch.finish_reason) state.finishReason = ch.finish_reason;
-          const d = ch.delta || {};
-          if (d.content) {
-            state.content += d.content;
-            onDelta && onDelta(d.content, state.content);
-          }
-          if (d.reasoning_content) state.reasoning += d.reasoning_content;
-          if (d.reasoning) state.reasoning += d.reasoning;
-          for (const tc of d.tool_calls || []) {
-            const i = typeof tc.index === 'number' ? tc.index : state.toolCalls.length;
-            while (state.toolCalls.length <= i) {
-              state.toolCalls.push({ id: '', type: 'function', function: { name: '', arguments: '' } });
+          let idx;
+          while ((idx = buf.indexOf('\n')) !== -1) {
+            const line = buf.slice(0, idx).trim();
+            buf = buf.slice(idx + 1);
+            if (!line.startsWith('data:')) continue;
+            const data = line.slice(5).trim();
+            if (!data || data === '[DONE]') continue;
+
+            let json;
+            try {
+              json = JSON.parse(data);
+            } catch {
+              continue;
             }
-            if (tc.id) state.toolCalls[i].id = tc.id;
-            if (tc.function) {
-              if (tc.function.name) state.toolCalls[i].function.name += tc.function.name;
-              if (tc.function.arguments) state.toolCalls[i].function.arguments += tc.function.arguments;
+
+            if (json.usage) state.usage = json.usage;
+            const ch = json.choices && json.choices[0];
+            if (!ch) continue;
+            if (ch.finish_reason) state.finishReason = ch.finish_reason;
+            const d = ch.delta || {};
+            if (d.content) {
+              state.content += d.content;
+              onDelta && onDelta(d.content, state.content);
+            }
+            if (d.reasoning_content) state.reasoning += d.reasoning_content;
+            if (d.reasoning) state.reasoning += d.reasoning;
+            for (const tc of d.tool_calls || []) {
+              const i = typeof tc.index === 'number' ? tc.index : state.toolCalls.length;
+              while (state.toolCalls.length <= i) {
+                state.toolCalls.push({ id: '', type: 'function', function: { name: '', arguments: '' } });
+              }
+              if (tc.id) state.toolCalls[i].id = tc.id;
+              if (tc.function) {
+                if (tc.function.name) state.toolCalls[i].function.name += tc.function.name;
+                if (tc.function.arguments) state.toolCalls[i].function.arguments += tc.function.arguments;
+              }
             }
           }
         }
-      }
 
-      return { ...state };
+        return { ...state };
+      } finally {
+        if (signal && onAbort) {
+          try { signal.removeEventListener('abort', onAbort); } catch {}
+        }
+      }
     } catch (e) {
       /* okuma sırasında bağlantı koptu */
       const aborted = e && (e.name === 'AbortError' || (signal && signal.aborted));

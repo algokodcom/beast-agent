@@ -863,10 +863,15 @@ function stopEverything() {
 }
 
 function resumeServices() {
-  if (!servicesPaused) return;
+  if (!servicesPaused) {
+    /* /stop kapısı burada da kalkar — /start VE kullanıcının kendi mesajı canlandırır */
+    try { engine.clearStop(); } catch {}
+    return;
+  }
   try { cron.init({ onFire: cronFire }); } catch {}
   try { watchers.start({ onTrigger: watcherFire }); } catch {}
   try { startEventBus(); } catch {}
+  try { engine.clearStop(); } catch {}
   servicesPaused = false;
 }
 
@@ -1100,7 +1105,7 @@ async function tryWaSlash(jid, rawText, senderNum, payload0) {
       const stopped = stopEverything();
       out =
         `*Durdu* — ${stopped} koşan iş kesildi.\n` +
-        `Paralel ajanlar ve bekleyen kuyruklar temizlendi. Cron, izleyici ve olay merkezi çalışmaya devam ediyor.\n` +
+        `Sürüyen sorgular, akıştaki cevaplar ve ajan faaliyetleri ANINDA kesildi; ajan yeni sorgu da açamaz.\n` +
         `Devam için bir şeyler yaz ya da /start`;
     } else if (cmd === 'start') {
       if (servicesPaused) {
@@ -2032,7 +2037,7 @@ async function processWaMessage(jid, payload, senderNum, requeues = 0) {
       text: waEcho.join('\n'),
     });
   }
-  engine.send(sid, { text: text.slice(0, 8000), attachments });
+  engine.send(sid, { text: text.slice(0, 8000), attachments }, { userAction: true });
 }
 
 function ensureWa() {
@@ -2241,7 +2246,7 @@ async function processTgMessage(chatId, payload, requeues = 0) {
     text += `\n[NOT: Bu kişi SAHİP DEĞİL, misafirdir. Sahibin ayarlarını/verilerini değiştirme; kalıcı hafızaya misafire özel bilgi yazma.]`;
   }
   text += `\n${String(payload.text || '').slice(0, 6000)}`;
-  engine.send(sid, { text: text.slice(0, 8000), attachments: [] });
+  engine.send(sid, { text: text.slice(0, 8000), attachments: [] }, { userAction: true });
 }
 
 async function sendTgSafe(chatId, text) {
@@ -2459,7 +2464,7 @@ async function processDcMessage(channelId, payload) {
     text += `\n[NOT: Bu kişi SAHİP DEĞİL, misafirdir. Sahibin ayarlarını/verilerini değiştirme; kalıcı hafızaya misafire özel bilgi yazma.]`;
   }
   text += `\n${String(payload.text || '').slice(0, 6000)}`;
-  engine.send(sid, { text: text.slice(0, 8000), attachments: [] });
+  engine.send(sid, { text: text.slice(0, 8000), attachments: [] }, { userAction: true });
 }
 
 async function sendDcSafe(channelId, text) {
@@ -2572,6 +2577,11 @@ function reloadBackend() {
       if (win && !win.isDestroyed()) win.webContents.send('agent:event', ev);
       flushDesktopOnDone(ev); /* biriken desktop mesajlarını sıraya bas */
       bcFlushOnDone(ev); /* Beast Code kuyruğunu iş bitiminde boşalt */
+      /* BC canlı önizleme: ajan bir dev server başlattıysa adresi yakala —
+         preview butonu ve otomatik açılış DAİMA bu sunucuyu öncelikli kullanır */
+      if (ev.type === 'bc-preview' && /^https?:\/\/(?:localhost|127\.0\.0\.1)(?::\d{2,5})?/i.test(String(ev.url || ''))) {
+        bcLastServerUrl = String(ev.url);
+      }
       /* WA canlı iş takibi: oturum bir WhatsApp sohbetine bağlıysa araç
          hareketlerini (terminal, web, dosya…) kısa satırla bildir.
          Spam olmasın: sohbet başına en az 7 sn'de bir tek satır. */
@@ -2688,6 +2698,32 @@ function reloadBackend() {
                 const lastA = [...s.messages].reverse().find((m) => m.role === 'assistant' && m.content);
                 const txt = typeof (lastA && lastA.content) === 'string' ? lastA.content : '';
                 if (txt.trim()) await sendDcSafe(dchid, txt);
+              }
+            } catch {}
+          })();
+        }
+      }
+      /* CRON → TÜM AKTİF ENTEGRASYONLAR: cron işi bittiğinde cevap (ya da
+         hata) sahibin bağlı olduğu her kanala yansıtılır — WA + Telegram +
+         Discord. Aynı kanal hem cron oturumuna bağlıysa TEK cevap alır. */
+      if ((ev.type === 'done' || ev.type === 'error') && cronAnswerPending.has(String(ev.sessionId))) {
+        const cjob = cronAnswerPending.get(String(ev.sessionId));
+        cronAnswerPending.delete(String(ev.sessionId));
+        if (!ev.aborted) {
+          (async () => {
+            try {
+              let txt = '';
+              if (ev.type === 'error') {
+                txt = '⚠️ [cron: ' + String((cjob && cjob.name) || 'görev') + ']\nHata: ' + String(ev.error || '').slice(0, 200);
+              } else {
+                const s = engine.openSession(ev.sessionId);
+                const lastA = [...s.messages].reverse().find((m) => m.role === 'assistant' && m.content);
+                txt = typeof (lastA && lastA.content) === 'string' ? lastA.content : '';
+                if (txt.trim()) txt = '⏰ [cron: ' + String((cjob && cjob.name) || 'görev') + ']\n' + txt;
+              }
+              if (!txt.trim()) return;
+              for (const m of cronMirrorTargets(String(ev.sessionId))) {
+                try { await m.send(txt); } catch {}
               }
             } catch {}
           })();
@@ -2855,6 +2891,7 @@ app.whenReady().then(() => {
     cron.init({ onFire: cronFire });
     watchers.start({ onTrigger: watcherFire });
     startEventBus();
+    ideWatchStart(); // soldaki dosya ağacı canlı izlemede
     maybeRunWhereWasI();
     falloutResume();
     startAutoUpdater(); // #3 sessiz güncelleme
@@ -2938,16 +2975,55 @@ function showWin() {
 
 const BROWSER_TOOLBAR_H = 46;
 const BROWSER_START_URL = 'https://www.google.com/';
+/* TELEFON MODU: mobil UA + dar dock → sitelerin mobil versiyonu canlı izlenir;
+   Expo/Metro dev sunucularında otomatik devreye girer */
+const PHONE_UA =
+  'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/' +
+  process.versions.chrome +
+  ' Mobile Safari/537.36';
 /* Tarayıcı state: visible=false → ajanlar GİZLİ kullanır (headless);
    göz ikonuyla görünür mod açılır. open=view aktif, visible=panelde görünürlük */
-const browser = { view: null, open: false, visible: false, width: 0, attached: false, started: false };
+const browser = { view: null, open: false, visible: false, width: 0, attached: false, started: false, phone: false, desktopUA: '' };
 
 function browserEmit(payload) {
-  if (win && !win.isDestroyed()) win.webContents.send('agent:event', { type: 'browser', visible: browser.visible, ...payload });
+  if (win && !win.isDestroyed()) win.webContents.send('agent:event', { type: 'browser', visible: browser.visible, phone: browser.phone, ...payload });
 }
 
 function browserWidthFor(w) {
   return Math.max(380, Math.min(800, Math.floor(w * 0.46)));
+}
+
+function browserShownWidth(w) {
+  /* telefon modunda dock genişliği KORUNUR — 390x844 telefon ekranı
+     görüntünün ORTASINDA, cihaz çerçevesiyle gösterilir (DevTools gibi) */
+  return Math.min(browser.width, Math.max(320, w - 320));
+}
+
+/* telefon modu görüntü parametreleri: mobil ekran emülasyonu + sığma ölçeği */
+function applyPhoneEmulation() {
+  try {
+    const wc = browser.view && browser.view.webContents;
+    if (!wc) return;
+    if (!browser.phone) {
+      wc.disableDeviceEmulation();
+      return;
+    }
+    let w = 800;
+    let h = 900;
+    try { [w, h] = win.getContentSize(); } catch {}
+    const viewW = browserShownWidth(w);
+    const viewH = Math.max(240, h - BROWSER_TOOLBAR_H - 8);
+    const PW = 390;
+    const PH = 844;
+    const scale = Math.max(0.3, Math.min(1, (viewW - 20) / PW, (viewH - 12) / PH));
+    wc.enableDeviceEmulation({
+      screenPosition: 'mobile',
+      screenOrientation: { type: 'portraitPrimary', angle: 0 },
+      viewSize: { width: PW, height: PH },
+      deviceScaleFactor: 2,
+      scale,
+    });
+  } catch {}
 }
 
 function layoutBrowser() {
@@ -2960,7 +3036,7 @@ function layoutBrowser() {
     const saved = Math.round(Number(settings.browserWidth) || 0);
     browser.width = saved >= 300 ? saved : browserWidthFor(w);
   }
-  const shownWidth = Math.min(browser.width, Math.max(320, w - 320));
+  const shownWidth = browserShownWidth(w);
   if (!browser.view || !browser.open) return;
   const view = browser.view;
   if (!browser.attached) {
@@ -2972,6 +3048,7 @@ function layoutBrowser() {
   try {
     view.setBounds({ x: Math.max(0, w - shownWidth), y: BROWSER_TOOLBAR_H, width: shownWidth, height: Math.max(0, h - BROWSER_TOOLBAR_H) });
     view.setVisible(browser.open && browser.visible);
+    if (browser.phone) applyPhoneEmulation(); // pencere boyutlanınca telefon ölçeği tazelensin
   } catch {}
 }
 
@@ -2998,6 +3075,8 @@ function ensureBrowser() {
     const bses = session.fromPartition('persist:browser');
     if (bses && bses.setUserAgent) bses.setUserAgent(chromeUA, 'tr-TR,tr;q=0.9,en;q=0.8');
     wc.setUserAgent(chromeUA);
+    browser.desktopUA = chromeUA;
+    if (browser.phone) wc.setUserAgent(PHONE_UA); // telefon modu açıkken mobil UA ile doğ
   } catch {}
   wc.setWindowOpenHandler(({ url }) => {
     if (/^https?:\/\//i.test(url)) wc.loadURL(url).catch(() => {});
@@ -3022,6 +3101,7 @@ function ensureBrowser() {
     browser.view = null;
   });
   browser.view = view;
+  if (browser.phone) applyPhoneEmulation(); // tarayıcı telefon modunda doğarsa emülasyonu uygula
   return view;
 }
 
@@ -3923,6 +4003,8 @@ function createWindow() {
 /* ---------------- IPC ---------------- */
 
 ipcMain.handle('app:state', () => engine.publicState());
+/* Ayarlar penceresi altında küçük sürüm etiketi (ör. v1.4.2) */
+ipcMain.handle('app:version', () => beastVersion());
 
 /* #3 log sistemi: ayarlar → Log sekmesinde görüntülenir */
 ipcMain.handle('logs:get', () => {
@@ -4295,7 +4377,7 @@ function handleGlobalStopStart(sessionId, cmd) {
     const n = stopEverything();
     reply =
       `\u25A0 **Durdu** — ${n} koşan iş kesildi.\n` +
-      'Paralel ajanlar ve bekleyen kuyruklar temizlendi. Cron, izleyici ve olay merkezi çalışmaya devam ediyor.\n' +
+      'Sürüyen sorgular, akıştaki cevaplar ve ajan faaliyetleri ANINDA kesildi; ajan yeni sorgu da açamaz.\n' +
       'Devam için bir şeyler yaz ya da `/start`';
   } else {
     const wasPaused = servicesPaused;
@@ -4392,7 +4474,7 @@ async function flushDesktop(sessionId) {
     if (!mergedAtts && Array.isArray(m.attachments)) mergedAtts = m.attachments;
   }
   if (!mergedText.trim() && !mergedAtts) return;
-  engine.send(sid, mergedAtts ? { text: mergedText, attachments: mergedAtts } : mergedText);
+  engine.send(sid, mergedAtts ? { text: mergedText, attachments: mergedAtts } : mergedText, { userAction: true });
 }
 
 /* agent işi bitince biriken masaüstü mesajlarını göndere bastır.
@@ -4627,13 +4709,13 @@ ipcMain.handle('model:set', (_e, sel) => {
 
 /* Paralel ajan geçmişini TOPLUCA sil (rail başlığındaki çöp ikonu) */
 ipcMain.handle('agents:clearAll', () => {
-  try {
-    const removed = engine.clearAllBgJobs();
-    return { ok: true, removed };
-  } catch (e) {
-    return { ok: false, error: String((e && e.message) || e) };
-  }
-});
+    try {
+      const removed = engine.clearAllBgJobs();
+      return { ok: true, removed };
+    } catch (e) {
+      return { ok: false, error: String((e && e.message) || e) };
+    }
+  });
 
 ipcMain.handle('model:role', (_e, map) => {
   const roleModels = {};
@@ -5121,6 +5203,57 @@ function cronEmit() {
   }
 }
 
+/* Cron cevabı bekleme haritası: sid -> job. İş 'done' olunca cevap
+   SAHİBİN bağlı olduğu TÜM AKTİF entegrasyonlara yansıtılır (kullanıcı
+   hangi kanaldan ajanla iletişimde belli değil). */
+const cronAnswerPending = new Map();
+
+/* Yansıtma hedefleri: bağlı WA (owner numarası), Telegram ve Discord
+   (owner işaretli kayıt; tek kayıt varsa o). Cron oturumunun KENDİ
+   kanalına yansıtmayız — cevabı zaten kendi akışından alır (çift yok). */
+function tgOwnerIds() {
+  const list = settings.tgAllow || [];
+  const objs = list.filter((e) => e && typeof e === 'object' && e.id && e.id !== '*');
+  const owner = objs.find((e) => e.owner) || (objs.length === 1 ? objs[0] : null);
+  return owner ? [String(owner.id)] : [];
+}
+function dcOwnerIds() {
+  const list = settings.dcAllow || [];
+  const objs = list.filter((e) => e && typeof e === 'object' && e.id && e.id !== '*');
+  const owner = objs.find((e) => e.owner) || (objs.length === 1 ? objs[0] : null);
+  return owner ? [String(owner.id)] : [];
+}
+function cronMirrorTargets(cronSid) {
+  const out = [];
+  try {
+    if (wa && wa.connected) {
+      const own = waOwnerNum();
+      if (own) {
+        const jid = own + '@s.whatsapp.net';
+        const bound = [...waChats.entries()].some(([j, s]) => j === jid && String(s) === String(cronSid));
+        if (!bound) out.push({ kind: 'wa', send: (t) => sendWaSafe(jid, t) });
+      }
+    }
+  } catch {}
+  try {
+    if (tg && tg.connected) {
+      for (const id of tgOwnerIds()) {
+        const bound = [...tgChats.entries()].some(([c, s]) => String(c) === String(id) && String(s) === String(cronSid));
+        if (!bound) out.push({ kind: 'tg', send: (t) => sendTgSafe(id, t) });
+      }
+    }
+  } catch {}
+  try {
+    if (dc && dc.connected) {
+      for (const id of dcOwnerIds()) {
+        const bound = [...dcChats.entries()].some(([c, s]) => String(c) === String(id) && String(s) === String(cronSid));
+        if (!bound) out.push({ kind: 'dc', send: (t) => sendDcSafe(id, t) });
+      }
+    }
+  } catch {}
+  return out;
+}
+
 function cronFire(job) {
   try {
     let sid = job.sessionId;
@@ -5130,9 +5263,11 @@ function cronFire(job) {
       sid = s.id;
       cron.update(job.id, { sessionId: sid });
     }
-    engine.send(sid, {
+    cronAnswerPending.set(String(sid), job);
+    const sent = engine.send(sid, {
       text: `[cron: ${job.name}]\n${job.prompt}`,
     });
+    if (!sent) cronAnswerPending.delete(String(sid)); // gönderilemedi — bayat bekleme bırakma
   } catch {}
   cronEmit();
 }
@@ -5274,9 +5409,35 @@ ipcMain.handle('browser:setWidth', (_e, wpx) => {
   settings.browserWidth = browser.width;
   saveSettings();
   layoutBrowser();
-  browserEmit({ open: true, width: browser.width });
+  browserEmit({ open: true, width: browserShownWidth(w) });
   return { ok: true, width: browser.width };
 });
+
+/* TELEFON MODU: mobil UA + dar dock (≈430px) → aynı sitenin mobil versiyonu.
+   Kapatınca masaüstü UA + kayıtlı genişlik geri gelir. UA değişimi için sayfa
+   taze yüklenir. Expo/Metro dev sunucularında otomatik açılır. */
+function setBrowserPhone(on) {
+  const want = !!on;
+  if (browser.phone === want) return { ok: true, phone: want };
+  browser.phone = want;
+  try {
+    const wc = browser.view && browser.view.webContents;
+    if (wc) {
+      wc.setUserAgent(browser.phone ? PHONE_UA : browser.desktopUA || PHONE_UA);
+      let url = '';
+      try { url = wc.getURL(); } catch {}
+      if (url && /^https?:/i.test(url)) wc.loadURL(url).catch(() => {});
+    }
+  } catch {}
+  applyPhoneEmulation(); // açık: 390x844 cihaz ortalanır — kapalı: emülasyon kapanır
+  if (browser.open && win && !win.isDestroyed()) {
+    layoutBrowser();
+    const [w] = win.getContentSize();
+    browserEmit({ open: true, width: browserShownWidth(w) });
+  }
+  return { ok: true, phone: browser.phone };
+}
+ipcMain.handle('browser:phone', (_e, on) => setBrowserPhone(on));
 ipcMain.handle('browser:screenshot', async () => {
   const r = await browserScreenshot();
   if (!r.ok) return { ok: false, error: r.error };
@@ -5287,31 +5448,95 @@ ipcMain.handle('browser:screenshot', async () => {
    Sağ dock paneli renderer'da; main sadece PowerShell komutlarını
    çalıştırır ve çıktıyı canlı akıtır. Terminal ile tarayıcı aynı
    dock'u paylaştığı için ikisi aynı anda açık kalamaz. */
-let termChild = null;
+let termChild = null; /* KALICI CMD oturumu — cd/set değişkenleri komutlar arasında KORUNUR */
+let termShellCwd = ''; /* izlenen çalışma klasörü (komut sonundaki marker'dan) */
+let termShellId = null;
+let termShellSeq = 0;
+let termForwarded = 0;
+let termCapNotified = false;
 const TERM_FWD_CAP = 1024 * 1024; /* iletilecek çıktı üst sınırı (1 MB) */
+const TERM_MARKER = '__BEAST_EOF__';
 
 function termSend(ev) {
   if (win && !win.isDestroyed()) win.webContents.send('agent:event', ev);
 }
 
+/* Kalıcı kabuğu başlat: cmd /q /k — girdi pipe'ından satır satır okur,
+   prompt yazmaz. chcp 65001 → Türkçe yollar (Masaüstü vb.) doğru çözülür. */
+function termShellSpawn() {
+  const cwd =
+    termShellCwd ||
+    (engine && engine.workspace) ||
+    settings.workspace ||
+    app.getPath('home');
+  const child = spawn('cmd.exe', ['/q', '/k'], {
+    cwd,
+    windowsHide: true,
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  termShellCwd = cwd;
+  termChild = child;
+  termForwarded = 0;
+  termCapNotified = false;
+  child.stdout.setEncoding('utf8');
+  child.stderr.setEncoding('utf8');
+  child.stdout.on('data', (d) => {
+    termForwarded += String(d).length;
+    if (termForwarded > TERM_FWD_CAP) {
+      if (!termCapNotified) {
+        termCapNotified = true;
+        termSend({ type: 'term-out', id: termShellId, stream: 'out', chunk: '\n[beast] çıktı çok büyük — iletim durduruldu (komut sürüyor)\n' });
+      }
+      return;
+    }
+    termSend({ type: 'term-out', id: termShellId, stream: 'out', chunk: String(d) });
+  });
+  child.stderr.on('data', (d) => {
+    termSend({ type: 'term-out', id: termShellId, stream: 'err', chunk: String(d) });
+  });
+  child.on('exit', () => {
+    if (termChild === child) termChild = null;
+  });
+  /* UTF-8 kod sayfası: Türkçe karakterli klasörler/çıktılar bozulmadan akar.
+     (cmd her stdin satırını bir komut işler — bu ilk satır chcp olur) */
+  try { child.stdin.write('chcp 65001 > nul\r\n'); } catch {}
+}
+
 ipcMain.handle('terminal:toggle', () => {
   if (browser.open) setBrowserOpen(false);
-  return { ok: true, cwd: (engine && engine.workspace) || settings.workspace || app.getPath('home') };
+  return { ok: true, cwd: termShellCwd || (engine && engine.workspace) || settings.workspace || app.getPath('home') };
 });
 
 ipcMain.handle('terminal:run', (_e, payload) => {
   const cmd = String((payload && payload.cmd) || '').trim();
   const shell = String((payload && payload.shell) || 'cmd');
   if (!cmd) return { ok: false, error: 'boş komut' };
-  if (termChild) return { ok: false, error: 'önceki komut sürüyor — ■ ile durdurabilirsin' };
-  const cwd = (engine && engine.workspace) || settings.workspace || app.getPath('home');
+  /* kalıcı CMD: komut AYNI kabuğa yazılır → cd/set kalıcıdır; komutlar sıraya girer */
+  if (shell === 'cmd') {
+    if (!termChild || !termChild.stdin.writable) termShellSpawn();
+    if (!termChild) return { ok: false, error: 'kabuk başlatılamadı' };
+    const id = 't' + Date.now().toString(36) + ++termShellSeq;
+    termShellId = id;
+    termForwarded = 0;
+    termCapNotified = false;
+    try {
+      /* İKİ AYRI satır: cmd her satırı SIRAYLA işler — ikinci satırdaki %CD%
+         ancak ilk komut BİTİNCE okunur/genişletilir → doğru (yeni) klasör gelir.
+         Aynı satıra & echo yazsaydık %CD% eski klasörü verirdi. */
+      termChild.stdin.write(cmd + '\r\n' + 'echo ' + TERM_MARKER + '%CD%' + TERM_MARKER + '\r\n');
+    } catch (e) {
+      return { ok: false, error: String((e && e.message) || e) };
+    }
+    return { ok: true, id };
+  }
+  /* geriye dönük uyumluluk — UI artık yalnız CMD gönderir */
+  const cwd = termShellCwd || (engine && engine.workspace) || settings.workspace || app.getPath('home');
   const id = 't' + Date.now().toString(36);
   let file, args;
   if (shell === 'cmd') {
     file = 'cmd.exe';
     args = ['/d', '/s', '/c', cmd];
   } else {
-    /* geriye dönük uyumluluk — UI artık yalnız CMD gönderir */
     file = 'powershell.exe';
     args = ['-NoProfile', '-NoLogo', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', cmd];
   }
@@ -5321,38 +5546,29 @@ ipcMain.handle('terminal:run', (_e, payload) => {
   } catch (e) {
     return { ok: false, error: String((e && e.message) || e) };
   }
-  termChild = child;
   child.stdout.setEncoding('utf8');
   child.stderr.setEncoding('utf8');
-  let forwarded = 0;
-  let capNotified = false;
-  const push = (stream, d) => {
-    if (forwarded > TERM_FWD_CAP) {
-      if (!capNotified) {
-        capNotified = true;
-        termSend({ type: 'term-out', id, stream, chunk: '\n[beast] çıktı çok büyük — iletim durduruldu (komut sürüyor)\n' });
-      }
-      return;
-    }
-    forwarded += String(d).length;
-    termSend({ type: 'term-out', id, stream, chunk: String(d) });
-  };
-  child.stdout.on('data', (d) => push('out', d));
-  child.stderr.on('data', (d) => push('err', d));
+  child.stdout.on('data', (d) => termSend({ type: 'term-out', id, stream: 'out', chunk: String(d) }));
+  child.stderr.on('data', (d) => termSend({ type: 'term-out', id, stream: 'err', chunk: String(d) }));
   child.on('error', (err) => {
-    if (termChild === child) termChild = null;
     termSend({ type: 'term-end', id, code: -1, error: String((err && err.message) || err) });
   });
   child.on('close', (code) => {
-    if (termChild === child) termChild = null;
     termSend({ type: 'term-end', id, code: code == null ? -1 : code });
   });
   return { ok: true, id };
 });
 
 ipcMain.handle('terminal:stop', () => {
-  if (!termChild) return { ok: false };
-  try { spawn('taskkill', ['/pid', String(termChild.pid), '/T', '/F'], { windowsHide: true }); } catch {}
+  /* ■: süren komutu (tüm alt süreçleriyle) kes; KALICI kabuk yenilenir —
+     son bilinen klasör korunur, cd geçmişi kaybolmaz */
+  if (termChild) {
+    try { spawn('taskkill', ['/pid', String(termChild.pid), '/T', '/F'], { windowsHide: true }); } catch {}
+    try { termChild.kill(); } catch {}
+    termChild = null;
+  }
+  termSend({ type: 'term-end', id: termShellId, code: 130, error: 'komut durduruldu — kalıcı CMD yeniden hazır' });
+  termShellId = null;
   return { ok: true };
 });
 
@@ -5405,13 +5621,16 @@ function bcPanelEvent(sid, ev) {
 const BC_DEBOUNCE_MS = 900;
 const bcQueue = new Map(); /* klasör yolu → { timer, msgs[] } */
 
-function bcQueuePush(ws, text) {
+function bcQueuePush(ws, text, attachments) {
   let q = bcQueue.get(ws);
   if (!q) {
     q = { timer: null, msgs: [] };
     bcQueue.set(ws, q);
   }
-  q.msgs.push({ text });
+  q.msgs.push({
+    text,
+    attachments: Array.isArray(attachments) && attachments.length ? attachments : undefined,
+  });
   return q;
 }
 
@@ -5421,8 +5640,12 @@ function bcFlush(folder) {
   const s = bcGetSession(folder); /* oturum yoksa oluşturur */
   if (engine.isBusy(s.id)) return; /* hâlâ çalışıyor — done/error eventini bekle */
   let merged = '';
-  for (const m of q.msgs) if (m.text) merged += (merged ? '\n' : '') + m.text;
-  if (!merged.trim()) {
+  let mergedAtts = null;
+  for (const m of q.msgs) {
+    if (m.text) merged += (merged ? '\n' : '') + m.text;
+    if (!mergedAtts && Array.isArray(m.attachments) && m.attachments.length) mergedAtts = m.attachments;
+  }
+  if (!merged.trim() && !mergedAtts) {
     bcQueue.delete(folder);
     clearTimeout(q.timer);
     return;
@@ -5430,7 +5653,8 @@ function bcFlush(folder) {
   s.workspace = folder;
   s.bcCode = true;
   engine.cache.set(s.id, s);
-  if (engine.send(s.id, merged)) {
+  const payload = mergedAtts ? { text: merged, attachments: mergedAtts } : merged;
+  if (engine.send(s.id, payload, { userAction: true })) {
     bcQueue.delete(folder);
     clearTimeout(q.timer);
   } else {
@@ -5461,7 +5685,8 @@ function bcFlushOnDone(ev) {
 
 ipcMain.handle('beastcode:send', async (_e, payload) => {
   const text = String((payload && payload.msg) || '').trim();
-  if (!text) return { ok: false, error: 'boş mesaj' };
+  const attachments = Array.isArray(payload && payload.attachments) ? payload.attachments : [];
+  if (!text && !attachments.length) return { ok: false, error: 'boş mesaj' };
   if (!engine) return { ok: false, error: 'ajan hazır değil' };
   const ws = ideRoot();
   const modeM = /^\/(plan|build|auto)\b/i.exec(text);
@@ -5489,18 +5714,36 @@ ipcMain.handle('beastcode:send', async (_e, payload) => {
   }
   if (busy) {
     /* ajan çalışıyor → kuyruğa al; iş bitince (done/error) toplu gider */
-    const q = bcQueuePush(ws, text);
+    const q = bcQueuePush(ws, text, attachments);
     return { ok: true, queued: true, count: q.msgs.length, sessionId: s.id };
   }
   /* boşta: kısa pencere — hızlı ard arda mesajlar tek işte birleşir */
-  const q = bcQueuePush(ws, text);
+  const q = bcQueuePush(ws, text, attachments);
   clearTimeout(q.timer);
   q.timer = setTimeout(() => { try { bcFlush(ws); } catch {} }, BC_DEBOUNCE_MS);
   return { ok: true, sessionId: s.id, pending: true };
 });
 
-ipcMain.handle('beastcode:stop', async () => {
-  const ws = ideRoot();
+/* BC görev listesi (ID'li) + TEK TUŞ GERİ ALMA: bir görev maddesinin
+   değişiklikleri, madde başlamadan önceki kod tabanına döndürülür */
+ipcMain.handle('bc:todos', (_e, payload) => {
+  try {
+    return engine.todoUndoInfo(String((payload && payload.sessionId) || ''));
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+});
+ipcMain.handle('bc:undo', (_e, payload) => {
+  try {
+    const sid = String((payload && payload.sessionId) || '');
+    const todoId = String((payload && payload.todoId) || '');
+    return todoId === 'last' ? engine.undoLastTodo(sid) : engine.undoTodo(sid, todoId);
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+});
+
+ipcMain.handle('beastcode:stop', async () => {  const ws = ideRoot();
   const sid = bcSessions.get(ws);
   /* durdurma: bekleyen kuyruğu da boşalt (kullanıcı vazgeçti) */
   const q = bcQueue.get(ws);
@@ -5527,6 +5770,7 @@ ipcMain.handle('beastcode:new', async () => {
   }
   if (sid) {
     try { engine.deleteSession(sid); } catch {}
+    bcLastServerUrl = ''; /* yeni oturum — eski dev server adresi geçersiz */
     bcSessions.delete(ws);
   }
   return { ok: true };
@@ -5727,6 +5971,7 @@ ipcMain.handle('ide:setroot', async () => {
     if (r.canceled || !r.filePaths || !r.filePaths[0]) return { ok: false, canceled: true };
     settings.ideRoot = r.filePaths[0];
     saveSettings();
+    ideWatchStart(); // yeni kökte izleme yeniden kurulur
     return { ok: true, root: settings.ideRoot };
   } catch (e) {
     return { ok: false, error: String((e && e.message) || e) };
@@ -5739,6 +5984,56 @@ function ideSafe(rel) {
   const p = path.resolve(root, String(rel || ''));
   if (p !== root && !p.startsWith(root + path.sep)) return null;
   return p;
+}
+
+/* ---------- IDE DOSYA AĞACI CANLI İZLEME ----------
+   Soldaki klasör paneli ELLE yenilemeden güncellensin: workspace kökü
+   fs.watch (recursive) ile izlenir; node_modules/.git gürültüsü elenir,
+   500ms debounce ile renderer'a 'ide-tree-changed' düşer. Ajan dışında
+   (kullanıcı kaydı, git, harici program) değişen dosyalar da yakalanır. */
+let ideWatcher = null;
+let ideWatchTimer = null;
+let ideWatchRoot = '';
+function ideWatchStart() {
+  const root = ideRoot();
+  if (ideWatcher && ideWatchRoot === root) return;
+  ideWatchStop();
+  /* ev dizininin KÖKÜNÜ izlemek AppData gürültüsü yüzünden paneli sürekli
+     yeniler — özel klasör seçiliyken (ideRoot/workspace) izleme aktiftir */
+  if (root === app.getPath('home')) return;
+  try {
+    fs.accessSync(root); // kök yoksa izleme kurma
+  } catch {
+    return;
+  }
+  ideWatchRoot = root;
+  try {
+    ideWatcher = fs.watch(root, { recursive: true }, (_evType, fname) => {
+      const f = String(fname || '').replace(/\\/g, '/');
+      if (/^(node_modules|\.git|dist|\.next|\.nuxt)(\/|$)/i.test(f)) return;
+      if (ideWatchTimer) return;
+      ideWatchTimer = setTimeout(() => {
+        ideWatchTimer = null;
+        try {
+          if (win && !win.isDestroyed()) {
+            win.webContents.send('agent:event', { type: 'ide-tree-changed' });
+          }
+        } catch {}
+      }, 500);
+    });
+    ideWatcher.on('error', () => {
+      ideWatchStop();
+      /* kök klasör silinip yeniden yaratıldıysa kısa süre sonra tekrar dene */
+      setTimeout(() => { try { ideWatchStart(); } catch {} }, 3000);
+    });
+    try { log.info('ide', 'ağaç izleme açık: ' + root); } catch {}
+  } catch {}
+}
+function ideWatchStop() {
+  if (ideWatcher) { try { ideWatcher.close(); } catch {} }
+  ideWatcher = null;
+  ideWatchRoot = '';
+  if (ideWatchTimer) { clearTimeout(ideWatchTimer); ideWatchTimer = null; }
 }
 
 ipcMain.handle('ide:tree', (_e, rel) => {
@@ -5818,25 +6113,102 @@ ipcMain.handle('ide:delete', async (_e, rel) => {
 });
 
 /* Sağ tık menüsü: HTML dosyasını dahili tarayıcıda GÖRÜNÜR aç */
-ipcMain.handle('ide:previewFile', (_e, rel) => {
+/* ---------- BC DAHİLİ STATİK SUNUCU ----------
+   Beast Code çıktısı ASLA file:// ile açılmaz: ES modülleri, fetch, ServiceWorker
+   ve "clean URL" yolları file://'da çalışmaz. Her preview http://127.0.0.1 üzerinden
+   servis edilir; ajan kendi dev sunucusunu başlattıysa o adres önceliklidir. */
+let bcLastServerUrl = ''; /* ajanın başlattığı dev server adresi (bc-preview'dan yakalanır) */
+const bcStatic = { server: null, root: '', base: '' };
+const BC_MIME = {
+  '.html': 'text/html; charset=utf-8', '.htm': 'text/html; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8', '.json': 'application/json; charset=utf-8',
+  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif',
+  '.svg': 'image/svg+xml', '.ico': 'image/x-icon', '.webp': 'image/webp', '.avif': 'image/avif',
+  '.woff': 'font/woff', '.woff2': 'font/woff2', '.ttf': 'font/ttf', '.otf': 'font/otf',
+  '.txt': 'text/plain; charset=utf-8', '.md': 'text/plain; charset=utf-8',
+  '.map': 'application/json', '.wasm': 'application/wasm', '.pdf': 'application/pdf',
+  '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.mp4': 'video/mp4', '.webm': 'video/webm',
+  '.xml': 'application/xml', '.csv': 'text/csv',
+};
+function bcStaticHandler(req, res) {
+  try {
+    let rel = decodeURIComponent(String((req && req.url) || '/').split('?')[0]);
+    rel = rel.replace(/^\/+/, '');
+    const fp = path.resolve(bcStatic.root, rel);
+    if (fp !== bcStatic.root && !fp.startsWith(bcStatic.root + path.sep)) {
+      res.writeHead(403); res.end('forbidden'); return;
+    }
+    const isFile = (p) => { try { return fs.statSync(p).isFile() ? p : null; } catch { return null; } };
+    let hit = isFile(fp);
+    if (!hit) hit = isFile(path.join(fp, 'index.html')); /* dizin → index.html */
+    if (!hit) hit = isFile(fp + '.html');                /* clean URL: /hakkinda → hakkinda.html */
+    if (!hit) { res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' }); res.end('404 — /' + rel); return; }
+    const ext = path.extname(hit).toLowerCase();
+    res.writeHead(200, { 'Content-Type': BC_MIME[ext] || 'application/octet-stream', 'Cache-Control': 'no-store' });
+    fs.createReadStream(hit).pipe(res);
+  } catch (e) {
+    try { res.writeHead(500); res.end('server error'); } catch {}
+  }
+}
+function bcStaticStart(root) {
+  return new Promise((resolve) => {
+    const r = path.resolve(String(root || ''));
+    if (bcStatic.server && bcStatic.root === r) { resolve(bcStatic.base); return; }
+    if (bcStatic.server) { try { bcStatic.server.close(); } catch {} bcStatic.server = null; }
+    const srv = http.createServer(bcStaticHandler);
+    srv.on('error', () => resolve(''));
+    srv.listen(0, '127.0.0.1', () => {
+      bcStatic.server = srv;
+      bcStatic.root = r;
+      bcStatic.base = 'http://127.0.0.1:' + srv.address().port;
+      try { log.info('bc', 'statik sunucu: ' + bcStatic.base + ' → ' + r); } catch {}
+      resolve(bcStatic.base);
+    });
+  });
+}
+/* Preview'a basılınca BC oturumuna SESSİZ bağlam enjeksiyonu (observe — tur
+   AÇMAZ, maliyet yok): ajan dahili sunucunun çalıştığını bilir ve statik
+   dosyalar için kendi sunucusunu başlatma denemez → çakışma biter */
+function bcTellServe(staticBase) {
+  try {
+    const ws = ideRoot();
+    const sid = bcSessions.get(ws);
+    if (!sid) return;
+    engine.observe(sid,
+      '[PREVIEW] Kullanıcı önizlemeyi açtı — DAHİLİ STATİK SUNUCU şu adreste ÇALIŞIYOR: ' + staticBase + '\n' +
+      'Statik dosyalar için KENDİ sunucunu BAŞLATMA; üretilen siteyi bu adres üzerinden değerlendir.\n' +
+      'Yalnızca gerçek dev-server/build gerekiyorsa (React/Vite/Next/Expo: npm run dev, expo start) ' +
+      'kendi sunucunu BLOKLAMADAN arka planda başlat ve çalışan adresi yaz.'
+    );
+  } catch {}
+}
+
+ipcMain.handle('ide:previewFile', async (_e, rel) => {
   try {
     const p = ideSafe(rel);
     if (!p) return { ok: false, error: 'geçersiz yol' };
     if (!/\.html?$/i.test(p)) return { ok: false, error: 'önizleme yalnız .html/.htm dosyaları için' };
+    const base = await bcStaticStart(ideRoot());
+    if (!base) return { ok: false, error: 'statik sunucu başlatılamadı' };
+    const root = ideRoot();
+    const relPath = path.relative(root, p).replace(/\\/g, '/');
+    const url = base + '/' + relPath;
     setBrowserOpen(true, true);
-    const url = 'file:///' + p.replace(/\\/g, '/');
     browser.view.webContents.loadURL(url).catch(() => {});
     browserEmit({ open: true, width: browser.width, url });
-    return { ok: true };
+    return { ok: true, url };
   } catch (e) {
     return { ok: false, error: String((e && e.message) || e) };
   }
 });
 
-/* PREVIEW: workspace kökündeki entry sayfayı (index.html → ilk *.html) sağdaki
-   dahili tarayıcıda aç. file:// yükleme browserNavigate'i BYPASS eder — o https
-   olmayan adresi aramaya çevirir. */
-ipcMain.handle('ide:preview', () => {  try {
+/* PREVIEW: workspace kökündeki siteyi DAİMA sunucudan aç —
+   1) ajan bir dev server başlattıysa onun adresi, 2) yoksa dahili statik sunucu.
+   file:// ASLA kullanılmaz (JS/clean URL kırılmaları). Ayrıca ajana SUNUCU
+   komutu düşer: uygulama sunucu istiyorsa kendisi başlatıp adresi yazar. */
+ipcMain.handle('ide:preview', async () => {
+  try {
     const root = ideRoot();
     const pick = (name) => {
       const p = path.join(root, name);
@@ -5851,12 +6223,19 @@ ipcMain.handle('ide:preview', () => {  try {
       entry = htmls.length ? path.join(root, htmls.sort()[0]) : null;
     }
     if (!entry) return { ok: false, error: 'workspace kökünde index.html yok — önce agent\'a siteyi yazdır' };
-    /* forceVisible: preview'a basınca tarayıcı ikonuna basmaya gerek kalmasın —
-       dahili tarayıcı otomatik ve GÖRÜNÜR açılır */
+    /* forceVisible: preview'a basınca tarayıcı ikonuna basmaya gerek kalmasın */
     setBrowserOpen(true, true);
-    const url = 'file:///' + entry.replace(/\\/g, '/');
+    let url = '';
+    if (bcLastServerUrl) {
+      url = bcLastServerUrl; /* ajanın kendi dev sunucusu öncelikli */
+    } else {
+      const base = await bcStaticStart(root);
+      if (!base) return { ok: false, error: 'statik sunucu başlatılamadı' };
+      url = base + '/';
+    }
     browser.view.webContents.loadURL(url).catch(() => {});
     browserEmit({ open: true, width: browser.width, url });
+    if (!bcLastServerUrl) bcTellServe(url.replace(/\/$/, ''));
     return { ok: true, url };
   } catch (e) {
     return { ok: false, error: String((e && e.message) || e) };
@@ -5864,20 +6243,44 @@ ipcMain.handle('ide:preview', () => {  try {
 });
 
 /* BEAST CODE otomatik canlı önizleme: iş bitince üretilen site/app dahili
-   tarayıcıda GÖRÜNÜR açılır. Yalnız localhost + file:// kabul edilir —
-   dış adresler güvenlik için reddedilir. */
-ipcMain.handle('ide:previewUrl', (_e, url) => {
+   tarayıcıda GÖRÜNÜR açılır. Yalnız localhost kabul edilir; file:// gelen
+   eser adresi DAHİLİ STATİK SUNUCUYA çevrilir — dosyadan ASLA açılmaz. */
+ipcMain.handle('ide:previewUrl', async (_e, url) => {
   try {
     const u = String(url || '');
-    const okUrl =
-      /^https?:\/\/(?:localhost|127\.0\.0\.1)(?::\d{2,5})?(?:\/|$)/i.test(u) ||
-      /^file:\/\/\//i.test(u);
-    if (!okUrl) return { ok: false, error: 'yalnız localhost/file:// adresleri önizlenebilir' };
-    /* forceVisible: preview'a basmaya gerek kalmasın — otomatik ve GÖRÜNÜR açılır */
+    let target = '';
+    if (/^https?:\/\/(?:localhost|127\.0\.0\.1)(?::\d{2,5})?(?:\/|$)/i.test(u)) {
+      target = u;
+    } else if (/^file:\/\/\//i.test(u)) {
+      const raw = decodeURIComponent(u.replace(/^file:\/\/\//, '')).replace(/\/$/, '');
+      const fp = path.resolve(raw);
+      const root = ideRoot();
+      const rel = path.relative(root, fp).replace(/\\/g, '/');
+      let base;
+      if (rel && !rel.startsWith('..')) {
+        base = await bcStaticStart(root);
+        if (!base) return { ok: false, error: 'statik sunucu başlatılamadı' };
+        target = base + '/' + rel;
+      } else {
+        /* workspace dışı eser — dosyanın kendi klasörü kök alınır */
+        base = await bcStaticStart(path.dirname(fp));
+        if (!base) return { ok: false, error: 'statik sunucu başlatılamadı' };
+        target = base + '/' + path.basename(fp);
+      }
+    } else {
+      return { ok: false, error: 'yalnız localhost adresleri önizlenebilir' };
+    }
+    /* Expo/Metro dev sunucusu → telefon modu OTOMATİK (mobil uygulama canlı önizleme) */
+    if (/^https?:\/\/(?:localhost|127\.0\.0\.1):(8081|19000|19001|19002|3000|5173)\//i.test(target)) {
+      if (!browser.phone) setBrowserPhone(true);
+    }
+    /* forceVisible: otomatik ve GÖRÜNÜR açılır */
     setBrowserOpen(true, true);
-    browser.view.webContents.loadURL(u).catch(() => {});
-    browserEmit({ open: true, width: browser.width, url: u });
-    return { ok: true, url: u };
+    browser.view.webContents.loadURL(target).catch(() => {});
+    let wNow = 0;
+    try { wNow = win.getContentSize()[0]; } catch {}
+    browserEmit({ open: true, width: browserShownWidth(wNow), url: target });
+    return { ok: true, url: target };
   } catch (e) {
     return { ok: false, error: String((e && e.message) || e) };
   }

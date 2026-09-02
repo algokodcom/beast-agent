@@ -28,7 +28,6 @@ const els = {
   cfgNone: $('#cfgNone'),
   cfgList: $('#cfgList'),
   themeBtn: $('#themeBtn'),
-  langBtn: $('#langBtn'),
   chatScroll: $('#chatScroll'),
   msgs: $('#msgs'),
   empty: $('#empty'),
@@ -60,6 +59,7 @@ const els = {
   bbShot: $('#bbShot'),
   bbClose: $('#bbClose'),
   bbResize: $('#bbResize'),
+  bbPhone: $('#bbPhone'),
   termCBtn: $('#termCBtn'),
   termPanel: $('#termPanel'),
   termCwd: $('#termCwd'),
@@ -78,9 +78,25 @@ const els = {
   bcNew: $('#bcNew'),
   bcTodoWrap: $('#bcTodoWrap'),
   bcStatus: $('#bcStatus'),
+  bcAttach: $('#bcAttach'),
+  bcMic: $('#bcMic'),
+  bcChips: $('#bcChips'),
   codeTabs: $('#codeTabs'),
   codeTa: $('#codeTa'),
   codeGutter: $('#codeGutter'),
+  codeLayer: $('#codeLayer'),
+  codeDiffBtn: $('#codeDiffBtn'),
+  codeDiffView: $('#codeDiffView'),
+  codeDiffTitle: $('#codeDiffTitle'),
+  codeDiffStats: $('#codeDiffStats'),
+  codeDiffRows: $('#codeDiffRows'),
+  codeDiffClose: $('#codeDiffClose'),
+  codeFind: $('#codeFind'),
+  codeFindInp: $('#codeFindInp'),
+  codeFindCount: $('#codeFindCount'),
+  codeFindPrev: $('#codeFindPrev'),
+  codeFindNext: $('#codeFindNext'),
+  codeFindClose: $('#codeFindClose'),
   codePath: $('#codePath'),
   codeSave: $('#codeSave'),
   codeHide: $('#codeHide'),
@@ -98,11 +114,14 @@ const els = {
   gearBtn: $('#gearBtn'),
   settingsOverlay: $('#settingsOverlay'),
   setClose: $('#setClose'),
+  setVersion: $('#setVersion'),
   beastCode: $('#beastCode'),
   bcCopy: $('#bcCopy'),
   attachBtn: $('#attachBtn'),
   micBtn: $('#micBtn'),
   fileInput: $('#fileInput'),
+  fileTasks: $('#fileTasks'),
+  tasksPanel: $('#tasksPanel'),
   chips: $('#chips'),
   toast: $('#toast'),
   railList: $('#railList'),
@@ -320,7 +339,7 @@ function toast(msg) {
 
 /* ---------------- messages ---------------- */
 
-function addUserBubble(content) {
+function addUserBubble(content, atts) {
   showEmpty(false);
   const div = document.createElement('div');
   div.className = 'msg msg-user';
@@ -339,11 +358,27 @@ function addUserBubble(content) {
     text = String(content);
   }
   div.appendChild(document.createTextNode(text));
-  if (nImg) {
-    const badge = document.createElement('div');
-    badge.style.cssText = 'color:var(--accent);font-size:12px;margin-top:6px';
-    badge.textContent = `[${nImg} resim]`;
-    div.appendChild(badge);
+  /* ekler İÇERİK AÇILMADAN kompakt kart olarak görünür: ≡ dosya · ▣ resim */
+  const list = Array.isArray(atts) ? atts : [];
+  if (nImg || list.length) {
+    const wrap = document.createElement('div');
+    wrap.className = 'att-row';
+    let named = 0;
+    for (const a of list) {
+      const isImg = a && a.type === 'image';
+      const chip = document.createElement('span');
+      chip.className = 'att-chip' + (isImg ? ' att-img' : '');
+      chip.textContent = (isImg ? '\u25A3 ' : '\u2261 ') + String((a && a.name) || (isImg ? 'resim' : 'dosya'));
+      wrap.appendChild(chip);
+      if (isImg) named++;
+    }
+    for (let k = named; k < nImg; k++) {
+      const chip = document.createElement('span');
+      chip.className = 'att-chip att-img';
+      chip.textContent = '\u25A3 resim';
+      wrap.appendChild(chip);
+    }
+    div.appendChild(wrap);
   }
   els.msgs.appendChild(div);
   scrollDown(true);
@@ -812,7 +847,7 @@ async function openSession(id) {
 
   for (let i = 0; i < s.messages.length; i++) {
     const m = s.messages[i];
-    if (m.role === 'user') addUserBubble(m.content);
+    if (m.role === 'user') addUserBubble(m.content, m.attachments);
     else if (m.role === 'assistant') {
       if (m.tool_calls && m.tool_calls.length) {
         for (const tc of m.tool_calls) {
@@ -840,6 +875,9 @@ async function openSession(id) {
 
 const TEXT_EXT = /\.(txt|md|json|csv|log|js|ts|py|ps1|bat|cmd|html|css|yaml|yml|xml|ini)$/i;
 
+/* ek hedefleri: chat + Beast Code panosu ayrı kuyruklar */
+let bcPending = [];
+
 function renderChips() {
   els.chips.innerHTML = '';
   els.chips.hidden = pending.length === 0;
@@ -860,22 +898,46 @@ function renderChips() {
   });
 }
 
-function addFiles(files) {
+function renderBcChips() {
+  if (!els.bcChips) return;
+  els.bcChips.innerHTML = '';
+  els.bcChips.hidden = bcPending.length === 0;
+  bcPending.forEach((a, i) => {
+    const c = document.createElement('span');
+    c.className = 'chip';
+    const label = a.type === 'image' ? `\u25A3 ${a.name}` : `\u2261 ${a.name}`;
+    c.appendChild(document.createTextNode(label));
+    const x = document.createElement('span');
+    x.className = 'x';
+    x.textContent = '×';
+    x.addEventListener('click', () => {
+      bcPending.splice(i, 1);
+      renderBcChips();
+    });
+    c.appendChild(x);
+    els.bcChips.appendChild(c);
+  });
+}
+
+function addFiles(files, mode) {
+  const isBc = mode === 'bc';
   for (const f of files) {
     if (f.size > 8 * 1024 * 1024) { toast('Çok büyük (max 8MB): ' + f.name); continue; }
     if (f.type.startsWith('image/')) {
       const r = new FileReader();
       r.onload = () => {
-        if (pending.length >= 6) { toast('En fazla 6 ek'); return; }
-        pending.push({ type: 'image', name: f.name, dataUrl: String(r.result) });
-        renderChips();
+        const list = isBc ? bcPending : pending;
+        if (list.length >= 6) { toast('En fazla 6 ek'); return; }
+        list.push({ type: 'image', name: f.name, dataUrl: String(r.result) });
+        isBc ? renderBcChips() : renderChips();
       };
       r.readAsDataURL(f);
     } else if (TEXT_EXT.test(f.name)) {
       f.text().then((t) => {
-        if (pending.length >= 6) { toast('En fazla 6 ek'); return; }
-        pending.push({ type: 'file', name: f.name, content: t.slice(0, 200000) });
-        renderChips();
+        const list = isBc ? bcPending : pending;
+        if (list.length >= 6) { toast('En fazla 6 ek'); return; }
+        list.push({ type: 'file', name: f.name, content: t.slice(0, 200000) });
+        isBc ? renderBcChips() : renderChips();
       });
     } else {
       toast('Desteklenmeyen tür: ' + f.name);
@@ -885,10 +947,42 @@ function addFiles(files) {
 
 /* ---------------- settings ---------------- */
 
-let setTab = 'provider';
+let setTab = 'lang'; /* ayarlar artık DİL sekmesiyle açılır */
+
+/* DİL sekmesi: arayüz dili seçimi (eski sağ-alt dil ikonunun yerine) */
+function renderLangPane() {
+  const pane = $('#tab-lang');
+  if (!pane) return;
+  const cur = (window.I18N && window.I18N.lang) || 'tr';
+  /* iki büyük kart YAN YANA — aynı boyda (seçili dil vurgusu çerçeveyle verilir, tick yok) */
+  const item = (code, label, sub) =>
+    `<button class="prov-row lang-row${cur === code ? ' active' : ''}" data-lang="${code}" ` +
+    `style="flex:1;flex-direction:column;align-items:center;justify-content:center;gap:5px;min-height:88px;margin:0">` +
+    `<span style="font-size:16px;font-weight:800">${escapeHtml(label)}</span>` +
+    `<span class="sub" style="margin:0;text-align:center;font-size:11.5px">${escapeHtml(sub)}</span>` +
+    `</button>`;
+  pane.innerHTML =
+    `<h2 data-i18n="tab_lang">${_t('tab_lang')}</h2>` +
+    `<div class="sub">${_t('lang_sub')}</div>` +
+    `<div style="display:flex;gap:12px;max-width:460px;width:100%">` +
+    item('tr', 'T\u00FCrk\u00E7e', 'T\u00FCrk\u00E7e aray\u00FCz') +
+    item('en', 'English', 'English UI') +
+    `</div>`;
+  pane.querySelectorAll('.lang-row').forEach((b) => {
+    b.addEventListener('click', () => {
+      const l = b.dataset.lang;
+      if (window.I18N && window.I18N.lang !== l) {
+        window.I18N.setLang(l); /* langchange → paneler otomatik yeniden çizilir */
+      }
+    });
+  });
+}
 
 async function openSettings() {
   els.settingsOverlay.hidden = false;
+  if (els.setVersion) {
+    beast.appVersion().then((v) => { els.setVersion.textContent = 'v' + String(v || '?'); }).catch(() => {});
+  }
   try {
     const s = await beast.getSettings();
     if (els.beastCode) els.beastCode.textContent = s.beastCode || '—';
@@ -909,6 +1003,7 @@ function closeSettings() {
 async function renderActiveSettingsTab() {
   if (els.settingsOverlay.hidden) return;
   switch (setTab) {
+    case 'lang': renderLangPane(); break;
     case 'provider': await renderProviderPane(); break;
     case 'fallout': await refreshFalloutPane(); break;
     case 'skills': await renderSkillsPane(); break;
@@ -922,7 +1017,6 @@ async function renderActiveSettingsTab() {
     case 'agents': await refreshAgentsPane(); break;
     case 'logs': await renderLogPane(); break;
     case 'dash': await renderDashboardPane(); break;
-    case 'limits': await renderLimitsPane(); break;
     case 'sec': await renderSecurityPane(); break;
     case 'update': await renderUpdatePane(); break;
   }
@@ -933,16 +1027,16 @@ function switchTab(name) {
   document.querySelectorAll('#setTabs .tab').forEach((b) =>
     b.classList.toggle('active', b.dataset.tab === name)
   );
-  for (const p of ['provider', 'fallout', 'skills', 'agents', 'tts', 'email', 'integrations', 'websearch', 'events', 'cron', 'usage', 'logs', 'dash', 'limits', 'sec', 'update']) {
+  for (const p of ['lang', 'provider', 'fallout', 'skills', 'agents', 'tts', 'email', 'integrations', 'websearch', 'events', 'cron', 'usage', 'logs', 'dash', 'sec', 'update']) {
     const el = $('#tab-' + p);
     if (el) el.hidden = p !== name; // guard: eksik pane tüm sekmeleri kilitlemesin
   }
+  if (name === 'lang') renderLangPane();
   if (name === 'cron') openCron();
   if (name === 'usage') renderUsagePane();
   if (name === 'events') renderEventsPane();
   if (name === 'logs') renderLogPane();
   if (name === 'dash') renderDashboardPane();
-  if (name === 'limits') renderLimitsPane();
   if (name === 'sec') renderSecurityPane();
   if (name === 'update') renderUpdatePane(true);
   if (name === 'agents') refreshAgentsPane();
@@ -1027,6 +1121,11 @@ async function renderUsagePane() {
     await beast.whereWasISet({ enabled: e.target.checked });
     toast(e.target.checked ? _t('us_where_on_toast') : _t('us_where_off_toast'));
   });
+  /* LİMİT ayarları aynı sekmenin alt bölümünde (Maliyet · Limit birleşik) */
+  const limBox = document.createElement('div');
+  limBox.id = 'limBox';
+  pane.appendChild(limBox);
+  await renderLimitsPane();
 }
 
 async function refreshFalloutPane() {
@@ -2194,7 +2293,8 @@ async function renderDashboardPane() {
 /* ---------------- Limit: provider bazlı girdi limiti ---------------- */
 
 async function renderLimitsPane() {
-  const pane = $('#tab-limits');
+  /* Maliyet sekmesine GÖMÜLÜ çalışır (ayrı sekme kaldırıldı) */
+  const pane = $('#tab-limits') || $('#limBox');
   if (!pane) return;
   const cur = await beast.getLimits().catch(() => ({ enabled: false, compress: true, default: 0, perProvider: {} }));
   const provs = [...new Set((state.models || []).map((m) => m.providerName))].sort((a, b) => a.localeCompare(b));
@@ -4197,7 +4297,7 @@ function onEvent(ev) {
       beast.getState().then((s) => { state = s; applyState(); }).catch(() => {});
       break;
     case 'message':
-      if (ev.message.role === 'user') addUserBubble(ev.message.content);
+      if (ev.message.role === 'user') addUserBubble(ev.message.content, ev.message.attachments);
       else if (ev.message.role === 'assistant') {
         finalizeAssistant(ev.message.content);
         /* tool_calls'lı iş turu grupları açık tutar; saf metin (normal cevap) kapatır */
@@ -4237,12 +4337,19 @@ function onEvent(ev) {
     case 'file':
       addFileCard(ev);
       break;
+    case 'ide-tree-changed':
+      /* dosya sistemi değişti (ajan, kullanıcı kaydı, git, harici program) —
+         soldaki klasör paneli ELLE yenilemeden canlı tazelenir */
+      ideRefreshTree();
+      break;
     case 'browser': {
       /* visible=false → ajan tarayıcıyı GİZLİ kullanıyor: UI yer açmaz */
       const shown = !!ev.open && ev.visible !== false;
       const wasShown = document.body.classList.contains('browser-open');
       document.body.classList.toggle('browser-open', shown);
       if (shown && ev.width) document.body.style.setProperty('--bw', ev.width + 'px');
+      document.body.classList.toggle('phone-mode', !!ev.phone);
+      if (els.bbPhone) els.bbPhone.classList.toggle('on', !!ev.phone);
       els.browserBar.hidden = !shown;
       els.bbResize.hidden = !shown;
       /* terminal de sağ dock'u kullanır — tarayıcı açılınca yerini bırak */
@@ -4276,9 +4383,29 @@ function onEvent(ev) {
       if (!busy) break;
       setStatus(ev.status === 'idle' ? (busy ? 'düşünüyor…' : '') : ev.status === 'thinking' ? 'düşünüyor…' : ev.status + '…');
       break;
-    case 'term-out':
-      termLine(ev.stream === 'err' ? 't-err' : 't-out', ev.chunk, false);
+    case 'term-out': {
+      /* KALICI CMD: her komutun sonunda marker satırı gelir —
+         __BEAST_EOF__<yol>__BEAST_EOF__  → yazdırılmaz, cwd güncellenir, kilit açılır */
+      const chunk = String(ev.chunk || '');
+      if (ev.stream === 'err') { termLine('t-err', chunk, false); break; }
+      termPendBuf += chunk;
+      const parts = termPendBuf.split(/\r?\n/);
+      termPendBuf = parts.pop(); /* son yarım satır bekler */
+      for (const line of parts) {
+        const m = /__BEAST_EOF__(.*)__BEAST_EOF__/.exec(line.trim());
+        if (m) {
+          const cwd2 = m[1].trim();
+          if (cwd2) {
+            els.termCwd.textContent = cwd2;
+            els.termCwd.title = cwd2;
+          }
+          termCmdDone({ code: 0, silent: true });
+          continue;
+        }
+        if (line.trim()) termLine('t-out', line, false);
+      }
       break;
+    }
     case 'term-end':
       termCmdDone(ev);
       break;
@@ -4342,6 +4469,7 @@ function addFileCard(ev) {
 let termOpen = false;
 let termBannerDone = false;
 let termRunning = false;
+let termPendBuf = ''; /* kalıcı CMD: yarım satır tamponu (marker tespiti için) */
 let termHist = [];
 let termHistIdx = -1;
 let termShell = 'cmd';
@@ -4401,7 +4529,7 @@ function termBanner(cwd) {
   els.termCwd.title = cwd || '';
   termLine('t-sys', 'Beast Terminal — çalışma klasörü: ' + (cwd || '?'));
   termLine('t-sys', 'Kabuk: ' + TERM_SHELLS[termShell].label + ' · Ajanlar çalışırken araç çağrıları ve çıktıları burada canlı akar.', false);
-  termLine('t-dim', 'Komut yaz, Enter\'a bas — her komut workspace\'te ayrı süreçle çalışır. Kabuk: CMD.', false);
+  termLine('t-dim', 'KALICI CMD oturumu — cd ile geçtiğin klasör komutlar arasında KORUNUR; set ile tanımladığın değişkenler de öyle.', false);
 }
 
 function termShortTool(name, args) {
@@ -4431,8 +4559,9 @@ function termAgentEvent(ev) {
 function termCmdDone(ev) {
   termRunning = false;
   els.termStop.hidden = true;
-  if (ev.error) termLine('t-err', '[hata] ' + ev.error, false);
-  else termLine('t-dim', '(çıkış kodu: ' + ev.code + ')' + (ev.code ? ' — başarısız' : ''), false);
+  if (ev && ev.silent) return; /* kalıcı CMD marker bitişi — çıkış satırı yazma */
+  if (ev && ev.error) termLine('t-err', '[hata] ' + ev.error, false);
+  else termLine('t-dim', '(çıkış kodu: ' + (ev ? ev.code : 0) + ')' + (ev && ev.code ? ' — başarısız' : ''), false);
 }
 
 async function termToggle(shell) {
@@ -4953,12 +5082,6 @@ async function init() {
     }
   };
 
-  const syncLangBtn = () => {
-    if (!els.langBtn) return;
-    els.langBtn.innerHTML =
-      '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3c2.6 2.6 2.6 15.4 0 18M12 3c-2.6 2.6-2.6 15.4 0 18"/></svg>';
-  };
-
   refreshAgentsPane();
 
   els.sendBtn.addEventListener('click', sendCurrent);
@@ -5052,29 +5175,29 @@ async function init() {
     await beast.setTheme(dark ? 'dark' : 'light');
   });
 
-  if (els.langBtn) {
-    syncLangBtn();
-    els.langBtn.addEventListener('click', () => {
-      const next = (window.I18N && window.I18N.lang) === 'en' ? 'tr' : 'en';
-      window.I18N.setLang(next);
-      syncLangBtn();
-    });
-    document.addEventListener('langchange', syncLangBtn);
-    document.addEventListener('langchange', renderActiveSettingsTab);
-    /* Whisper STT dili arayüz dilini izler (WA sesli notları da) */
+  /* dil seçimi artık Ayarlar → DİL sekmesinde; STT dili arayüz dilini izler */
+  document.addEventListener('langchange', renderActiveSettingsTab);
+  {
     const syncSttLang = () => { try { beast.sttLangSet((window.I18N && window.I18N.lang) || 'tr'); } catch {} };
     syncSttLang();
     document.addEventListener('langchange', syncSttLang);
   }
 
-  els.attachBtn.addEventListener('click', () => els.fileInput.click());
+  /* + butonu iki hedefe hizmet eder: chat composer VE Beast Code paneli */
+  let fileSink = 'chat';
+  els.attachBtn.addEventListener('click', () => { fileSink = 'chat'; els.fileInput.click(); });
+  if (els.bcAttach) {
+    els.bcAttach.addEventListener('click', () => { fileSink = 'bc'; els.fileInput.click(); });
+  }
   els.fileInput.addEventListener('change', () => {
-    addFiles([...els.fileInput.files]);
+    addFiles([...els.fileInput.files], fileSink);
     els.fileInput.value = '';
   });
 
-  /* ---- Sesli komut (yerel Whisper): kayıt → yazıya çevir → input'a koy ---- */
-  if (els.micBtn) {
+  /* ---- Sesli komut (yerel Whisper): kayıt → yazıya çevir → hedef input'a koy ----
+     Aynı düzenek chat composer VE Beast Code girişinde çalışır. */
+  const setupMicButton = (btn, apply) => {
+    if (!btn) return;
     let micRec = null;
     let micChunks = [];
     let micStream = null;
@@ -5084,7 +5207,7 @@ async function init() {
         fr.onload = () => res(fr.result);
         fr.readAsDataURL(b);
       });
-    els.micBtn.addEventListener('click', async () => {
+    btn.addEventListener('click', async () => {
       if (micRec && micRec.state === 'recording') {
         micRec.stop();
         return;
@@ -5100,7 +5223,7 @@ async function init() {
       micRec.ondataavailable = (e) => { if (e.data && e.data.size) micChunks.push(e.data); };
       micRec.onstop = async () => {
         try { micStream.getTracks().forEach((t) => t.stop()); } catch {}
-        els.micBtn.classList.remove('rec');
+        btn.classList.remove('rec');
         const blob = new Blob(micChunks, { type: micRec.mimeType || 'audio/webm' });
         if (!blob.size) return;
         toast(_t('mic_transcribing'));
@@ -5108,19 +5231,25 @@ async function init() {
         /* arayüz dili = Whisper dili: TR ise Türkçe, EN ise İngilizce algılar */
         const uiLang = (window.I18N && window.I18N.lang) || 'tr';
         const r = await beast.sttTranscribe(b64, uiLang).catch(() => ({ ok: false, error: 'ipc' }));
-        if (r && r.ok && r.text) {
-          els.input.value = (els.input.value ? els.input.value.replace(/\s+$/, '') + ' ' : '') + r.text;
-          els.input.focus();
-          els.input.dispatchEvent(new Event('input'));
-        } else {
-          toast(_t('mic_fail'));
-        }
+        if (r && r.ok && r.text) apply(r.text);
+        else toast(_t('mic_fail'));
       };
       micRec.start();
-      els.micBtn.classList.add('rec');
+      btn.classList.add('rec');
       toast(_t('mic_listening'));
     });
-  }
+  };
+  setupMicButton(els.micBtn, (t) => {
+    els.input.value = (els.input.value ? els.input.value.replace(/\s+$/, '') + ' ' : '') + t;
+    els.input.focus();
+    els.input.dispatchEvent(new Event('input'));
+  });
+  setupMicButton(els.bcMic, (t) => {
+    if (!els.bcInput) return;
+    els.bcInput.value = (els.bcInput.value ? els.bcInput.value.replace(/\s+$/, '') + ' ' : '') + t;
+    els.bcInput.focus();
+    bcInputResize();
+  });
 
   beast.onWaEvent(onWaEvent);
   beast.onTgEvent(onTgEvent);
@@ -5179,6 +5308,13 @@ async function init() {
   els.bbBack.addEventListener('click', () => beast.browserCtrl('back'));
   els.bbFwd.addEventListener('click', () => beast.browserCtrl('forward'));
   els.bbReload.addEventListener('click', () => beast.browserCtrl('reload'));
+  if (els.bbPhone) {
+    els.bbPhone.addEventListener('click', () => {
+      /* web ↔ mobil: aynı sitenin iki versiyonu arasındaki anahtar */
+      const on = !document.body.classList.contains('phone-mode');
+      beast.browserPhone(on).catch(() => {});
+    });
+  }
   els.bbClose.addEventListener('click', () => {
     document.body.classList.remove('browser-open');
     els.browserBar.hidden = true;
@@ -6020,6 +6156,9 @@ function ideModeOn() {
 
 async function setIdeMode(on) {
   document.body.classList.toggle('ide-mode', !!on);
+  /* soldaki marka: chat modunda BEAST Agent, IDE modunda BEAST Code */
+  const brandSub = document.querySelector('#brand .brand-sub');
+  if (brandSub) brandSub.textContent = on ? 'Code' : 'Agent';
   /* IDE modu oturumluk: uygulama HER AÇILIŞTA agent (chat) modunda başlar */
   toggleRail(!!on);
   /* IDE'den çıkış: açık tarayıcı da kapansın — her şey default haline dönsün */
@@ -6287,6 +6426,148 @@ function codeGutterRender() {
   }
   g.innerHTML = html;
   g.scrollTop = ta.scrollTop;
+  codeLayerRender();
+}
+
+/* canlı satır boyama: base ile güncel içeriğin diff'ine göre textarea'nın
+   ARKASINDAKİ katmana boya basılır — eklenen satırlar YEŞİL, silinme olan
+   konumlar KIRMIZı çizgili; metin birebir aynı yazıldığı için satırlar
+   birebir üst üste gelir (silinen metnin tamamı Diff görünümünde okunur) */
+function codeLayerRender() {
+  const layer = els.codeLayer;
+  const ta = els.codeTa;
+  if (!layer || !ta) return;
+  const hasFile = codeActive >= 0 && codeTabs[codeActive];
+  if (!hasFile) {
+    layer.textContent = '';
+    return;
+  }
+  const t = codeTabs[codeActive];
+  const diff = codeDiffLines(t.base, ta.value);
+  const lines = ta.value.split('\n');
+  let html = '';
+  for (let i = 1; i <= lines.length; i++) {
+    const isAdd = diff.added.has(i);
+    const delN = diff.dels.get(i) || 0;
+    const isFind = findLineSet.has(i);
+    const cls = (isAdd ? ' add' : delN ? ' mod' : '') + (isFind ? ' find' : '');
+    html += `<span class="row${cls}">${escapeHtml(lines[i - 1])}</span>`;
+  }
+  layer.innerHTML = html;
+  layer.scrollTop = ta.scrollTop;
+}
+
+/* ---------- kod içi arama (Shift+F) ----------
+   VS Code find widget'ı: kutucuk editörün sağ üstünde yüzer; eşleşen satırlar
+   katmanda sarı boyanır, güncel eşleşme textarea seçimiyle işaretlenir. */
+let findMatches = [];
+let findIdx = -1;
+let findTimer = null;
+const findLineSet = new Set();
+
+function findOpen() {
+  if (!els.codeFind) return;
+  els.codeFind.hidden = false;
+  els.codeFindInp.focus();
+  els.codeFindInp.select();
+  findCompute();
+}
+
+function findClose() {
+  if (!els.codeFind || els.codeFind.hidden) return;
+  els.codeFind.hidden = true;
+  findMatches = [];
+  findIdx = -1;
+  findLineSet.clear();
+  codeGutterRender(); /* katmandaki sarı tint'i temizle */
+  els.codeTa.focus();
+}
+
+function findCompute() {
+  const ta = els.codeTa;
+  if (!ta) return;
+  const q = els.codeFindInp.value;
+  findMatches = [];
+  findIdx = -1;
+  findLineSet.clear();
+  if (q) {
+    const hay = ta.value.toLowerCase();
+    const needle = q.toLowerCase();
+    let i = hay.indexOf(needle);
+    while (i !== -1 && findMatches.length < 2000) {
+      findMatches.push({ s: i, e: i + needle.length });
+      i = hay.indexOf(needle, i + Math.max(1, needle.length));
+    }
+    for (const m of findMatches) {
+      findLineSet.add(ta.value.slice(0, m.s).split('\n').length);
+    }
+  }
+  codeGutterRender(); /* satır tintlerini yeniden boya */
+  if (findMatches.length) findGoto(0, { focus: false });
+  else findCount();
+}
+
+function findCount() {
+  if (els.codeFindCount) {
+    els.codeFindCount.textContent = findMatches.length
+      ? (findIdx + 1) + '/' + findMatches.length
+      : '0/0';
+  }
+}
+
+function findGoto(i, opts = {}) {
+  if (!findMatches.length) return;
+  findIdx = ((i % findMatches.length) + findMatches.length) % findMatches.length;
+  const m = findMatches[findIdx];
+  const ta = els.codeTa;
+  /* YAZARKEN ODAK ÇALINMAZ: arama kutusuna yazıyorsa focus editöre geçmez —
+     sadece seçim + kaydırma güncellenir (yoksa harfler koda düşer) */
+  const keepBox = opts.focus === false || document.activeElement === els.codeFindInp;
+  ta.setSelectionRange(m.s, m.e);
+  if (!keepBox) ta.focus();
+  const line = ta.value.slice(0, m.s).split('\n').length - 1;
+  ta.scrollTop = Math.max(0, line * 20 - ta.clientHeight / 3);
+  if (els.codeLayer) els.codeLayer.scrollTop = ta.scrollTop;
+  findCount();
+}
+
+function findNext() { findGoto(findIdx + 1); }
+function findPrev() { findGoto(findIdx - 1); }
+
+/* okunur diff görünümü: silinen satırlar KIRMIZI, eklenenler YEŞİL —
+   ajan dosyayı değiştirdiğinde OTOMATİK açılır; Diff butonuyla elle de açılır */
+function codeDiffHide() {
+  if (els.codeDiffView) els.codeDiffView.hidden = true;
+}
+
+function codeDiffShow() {
+  const t = codeActive >= 0 ? codeTabs[codeActive] : null;
+  if (!t || !els.codeDiffView) return;
+  findClose(); /* diff görünümü editörü kapatır — arama widget'ı da kapanır */
+  const ops = diffOps(t.base, els.codeTa.value);
+  let adds = 0;
+  let dels = 0;
+  let o = 0;
+  let n = 0;
+  let html = '';
+  for (const op of ops) {
+    if (op.t === 'ctx') {
+      o++; n++;
+      html += `<div class="dr ctx"><span class="sign"> </span><span class="num">${o}</span><span class="tx">${escapeHtml(op.a || '')}</span></div>`;
+    } else if (op.t === 'del') {
+      o++; dels++;
+      html += `<div class="dr del"><span class="sign">−</span><span class="num">${o}</span><span class="tx">${escapeHtml(op.a || '')}</span></div>`;
+    } else {
+      n++; adds++;
+      html += `<div class="dr add"><span class="sign">+</span><span class="num">${n}</span><span class="tx">${escapeHtml(op.b || '')}</span></div>`;
+    }
+  }
+  els.codeDiffRows.innerHTML =
+    html || '<div class="dr ctx"><span class="tx">  (de\u011Fi\u015Fiklik yok)</span></div>';
+  els.codeDiffTitle.textContent = t.rel;
+  els.codeDiffStats.innerHTML =
+    `<span class="plus">+${adds}</span> <span class="minus">\u2212${dels}</span>`;
+  els.codeDiffView.hidden = false;
 }
 
 let codeGutterTimer = null;
@@ -6320,6 +6601,8 @@ function codeFlushActive() {
 
 function codeActivate(i) {
   codeFlushActive();
+  codeDiffHide(); /* sekme değişince diff incelemesi kapanır */
+  findClose(); /* arama eşleşmeleri sekmeye özeldir — yeni sekmede temiz başla */
   if (i < 0 || i >= codeTabs.length) {
     codeActive = -1;
     els.codeTa.value = '';
@@ -6356,6 +6639,16 @@ async function codeOpen(rel) {
 
 function codeClose(i) {
   if (i < 0 || i >= codeTabs.length) return;
+  /* KAYIT DİSİPLİNİ: düzenlemeler yalnız Kaydet/Ctrl+S ile diske yazılır.
+     Kaydedilmemiş sekme kapatılırken kullanıcıya sorulur — sessiz kayıp yok. */
+  if (codeTabs[i].dirty) {
+    const ok = confirm(
+      '"' + codeTabs[i].rel + '" kaydedilmedi.\n\n' +
+      'Tamam = kaydetmeden kapat\n' +
+      'İptal = editörde kal (kaydetmek için Ctrl+S)'
+    );
+    if (!ok) return;
+  }
   codeFlushActive();
   const oldActive = codeActive;
   const wasActive = i === oldActive;
@@ -6384,6 +6677,7 @@ async function codeSave() {
     t.base = t.content; /* kaydedildi → diff sıfırlanır (VS Code davranışı) */
     codeRenderTabs();
     codeGutterRender();
+    codeDiffHide(); /* kaydedildi — incelenecek diff kalmadı */
     toast(_t('ide_saved'));
   } else {
     toast((r && r.error) || 'kaydedilemedi');
@@ -6415,6 +6709,8 @@ async function codeReloadIfOpen(p) {
   t.content = r.content || '';  /* ajanın yazdığı yeni içerik */
   if (i === codeActive) {
     els.codeTa.value = t.content;
+    /* ajan aktif dosyayı değiştirdi → chat diffView gibi KIRMIZI/YEŞİL inceleme otomatik açılır */
+    if (!editorHiddenOn()) codeDiffShow();
   }
   codeGutterRender();
 }
@@ -6430,6 +6726,74 @@ $('#filePick').addEventListener('click', async () => {
   }
 });
 $('#fileRefresh').addEventListener('click', () => loadIdeTree());
+
+/* ---------- görev listesi + TEK TUŞ GERİ ALMA (dosya paneli) ---------- */
+let tasksPanelOpen = false;
+
+function toggleTasksPanel(force) {
+  tasksPanelOpen = typeof force === 'boolean' ? force : !tasksPanelOpen;
+  if (els.tasksPanel) els.tasksPanel.hidden = !tasksPanelOpen;
+  if (els.fileTasks) els.fileTasks.classList.toggle('on', tasksPanelOpen);
+  if (tasksPanelOpen) renderTasksPanel();
+}
+
+async function renderTasksPanel() {
+  const box = els.tasksPanel;
+  if (!box) return;
+  if (!bcSessionId) {
+    box.innerHTML = '<div class="tsk-empty">\u00D6nce Beast Code\u2019da bir mesaj yaz — g\u00F6rev listesi i\u00E7in oturum gerekli.</div>';
+    return;
+  }
+  const r = await beast.bcTodos(bcSessionId).catch(() => null);
+  if (!r || !r.ok) {
+    box.innerHTML = '<div class="tsk-empty">' + escapeHtml((r && r.error) || 'okunamad\u0131') + '</div>';
+    return;
+  }
+  const GLYPH = { pending: '\u25CB', active: '\u25D0', done: '\u25CF' };
+  const undoMap = new Map((r.undo || []).map((u) => [u.id, u.files]));
+  let html =
+    '<div class="tsk-head"><span>G\u00D6REVLER</span>' +
+    '<button id="tskUndoLast" ' + (r.lastTodoId ? '' : 'disabled') + ' title="Kay\u0131tl\u0131 son g\u00F6revi geri al">\u21B6 Son G\u00F6revi Geri Al</button>' +
+    '<button id="tskClose" title="Kapat">\u00D7</button></div>';
+  if (!(r.todos || []).length) {
+    html += '<div class="tsk-empty">g\u00F6rev listesi yok</div>';
+  }
+  for (const t of r.todos || []) {
+    const files = undoMap.get(t.id) || 0;
+    html +=
+      '<div class="tsk-row">' +
+      '<span class="tsk-id">' + escapeHtml(t.id || '?') + '</span>' +
+      '<span class="tsk-title" title="' + escapeHtml(t.title) + '">' + escapeHtml(t.title) + '</span>' +
+      '<span class="tsk-st ' + escapeHtml(t.status || 'pending') + '">' + (GLYPH[t.status] || '\u25CB') + '</span>' +
+      '<button class="tsk-undo" data-id="' + escapeHtml(t.id || '') + '" ' + (files ? '' : 'disabled') +
+      ' title="' + files + ' dosya \u00F6nceki haline d\u00F6ner">\u21B6</button></div>';
+  }
+  box.innerHTML = html;
+  const close = box.querySelector('#tskClose');
+  if (close) close.addEventListener('click', () => toggleTasksPanel(false));
+  const ul = box.querySelector('#tskUndoLast');
+  if (ul) ul.addEventListener('click', () => undoTask('last'));
+  box.querySelectorAll('.tsk-undo[data-id]').forEach((b) => {
+    b.addEventListener('click', () => undoTask(b.dataset.id));
+  });
+}
+
+async function undoTask(id) {
+  if (!bcSessionId) return;
+  if (busy) { toast('Ajan \u00E7al\u0131\u015F\u0131yor — \u25A0 ile durdurup \u00F6yle geri al'); return; }
+  const r = await beast.bcUndo(bcSessionId, id).catch(() => null);
+  if (r && r.ok) {
+    toast('\u21B6 Geri al\u0131nd\u0131 — ' + (r.reverted || 0) + ' dosya \u00F6nceki h\u00E2line d\u00F6nd\u00FC');
+    ideRefreshTree();
+    for (const p of r.paths || []) codeReloadIfOpen(p);
+    renderTasksPanel();
+  } else {
+    toast((r && r.error) || 'geri al\u0131namad\u0131');
+  }
+}
+
+if (els.fileTasks) els.fileTasks.addEventListener('click', () => toggleTasksPanel());
+
 $('#filePreview').addEventListener('click', async () => {
   const r = await beast.idePreview().catch(() => null);
   if (r && r.ok) {
@@ -6439,6 +6803,24 @@ $('#filePreview').addEventListener('click', async () => {
   }
 });
 if (els.codeSave) els.codeSave.addEventListener('click', codeSave);
+if (els.codeDiffBtn) {
+  els.codeDiffBtn.addEventListener('click', () => {
+    if (els.codeDiffView && !els.codeDiffView.hidden) {
+      codeDiffHide();
+      return;
+    }
+    if (codeActive < 0 || !codeTabs[codeActive]) {
+      toast('Dosya a\u00E7\u0131k de\u011Fil');
+      return;
+    }
+    if (els.codeTa.value === codeTabs[codeActive].base) {
+      toast('De\u011Fi\u015Fiklik yok');
+      return;
+    }
+    codeDiffShow();
+  });
+}
+if (els.codeDiffClose) els.codeDiffClose.addEventListener('click', codeDiffHide);
 if (els.codeTa) {
   els.codeTa.addEventListener('input', () => {
     if (codeActive < 0) return;
@@ -6448,16 +6830,44 @@ if (els.codeTa) {
     /* gutter diff'i hafif gecikmeli — her tuşta LCS koşmasın */
     clearTimeout(codeGutterTimer);
     codeGutterTimer = setTimeout(codeGutterRender, 120);
+    /* arama açıkken içerik değişti → eşleşmeler tazelensin */
+    if (els.codeFind && !els.codeFind.hidden) {
+      clearTimeout(findTimer);
+      findTimer = setTimeout(findCompute, 220);
+    }
   });
   els.codeTa.addEventListener('scroll', () => {
     if (els.codeGutter) els.codeGutter.scrollTop = els.codeTa.scrollTop;
+    if (els.codeLayer) els.codeLayer.scrollTop = els.codeTa.scrollTop;
   });
   els.codeTa.addEventListener('keydown', (e) => {
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
       e.preventDefault();
       codeSave();
+      return;
+    }
+    /* Shift+F: kod içinde arama (VS Code tarzı find widget'ı) */
+    if (e.shiftKey && !e.ctrlKey && !e.altKey && (e.key === 'F' || e.key === 'f')) {
+      e.preventDefault();
+      findOpen();
     }
   });
+  /* arama widget'ı bağlantıları */
+  if (els.codeFindInp) {
+    els.codeFindInp.addEventListener('keydown', (e) => {
+      /* Enter/Shift+Enter: eşleşmeye GEÇ ve odağı editöre ver (yazma bitti) */
+      if (e.key === 'Enter' && e.shiftKey) { e.preventDefault(); findGoto(findIdx - 1, { focus: true }); }
+      else if (e.key === 'Enter') { e.preventDefault(); findGoto(findIdx + 1, { focus: true }); }
+      else if (e.key === 'Escape') { e.preventDefault(); findClose(); }
+    });
+    els.codeFindInp.addEventListener('input', () => {
+      clearTimeout(findTimer);
+      findTimer = setTimeout(findCompute, 200);
+    });
+  }
+  if (els.codeFindNext) els.codeFindNext.addEventListener('click', findNext);
+  if (els.codeFindPrev) els.codeFindPrev.addEventListener('click', findPrev);
+  if (els.codeFindClose) els.codeFindClose.addEventListener('click', findClose);
 }
 
 /* ---------- dosya ağacı sağ tık menüsü (Sil / Aç / Preview) ---------- */
@@ -6948,16 +7358,19 @@ function bcInputResize() {
 
 function bcRunCurrent() {
   const msg = els.bcInput.value.trim();
-  if (!msg) return;
+  if (!msg && !bcPending.length) return;
+  const atts = bcPending.slice();
+  bcPending = [];
+  renderBcChips();
   els.bcInput.value = '';
   bcInputResize();
   els.bcInput.focus();
-  bcLine('t-cmd', 'code> ' + msg);
+  bcLine('t-cmd', 'code> ' + (msg || (atts.length ? '[' + atts.length + ' ek]' : '')));
   bcHideTodos(); /* yeni sorgu = eski todo list temizlenir; agent yeniden basacak */
   bcSetBusy(true);
   /* sürüyor/serbest kararını main'deki gerçek engine.isBusy verir —
      panel bayat kilitli kaldıysa ilk mesajla kendini düzeltir */
-  beast.beastcodeSend(msg).then((r) => {
+  beast.beastcodeSend(msg || '[dosya ekleri]', atts).then((r) => {
     if (r && r.ok && r.mode) {
       /* /plan · /build · /auto: mod değişimi — tur AÇILMAZ, kilit anında açılır
          (bilgi satırı bc-mode olayıyla düşer, başlık rozeti güncellenir) */
@@ -6993,6 +7406,8 @@ if (els.bcInput) {
   });
 }
 if (els.bcStop) els.bcStop.addEventListener('click', () => {
+  bcPending = [];
+  renderBcChips();
   beast.beastcodeStop().then((r) => {
     /* kuyrukta bekleyen mesajlar da silindi; engine boştaysa kilidi aç */
     if (r && r.ok && r.wasBusy === false) {
@@ -7013,6 +7428,8 @@ if (els.bcNew) els.bcNew.addEventListener('click', async () => {
   const r = await beast.beastcodeNew().catch(() => null);
   if (r && r.ok) {
     bcSessionId = null;
+    bcPending = [];
+    renderBcChips();
     bcTools.clear();
     bcCloseToolGroup();
     bcHideTodos();

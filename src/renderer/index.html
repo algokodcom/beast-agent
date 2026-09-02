@@ -27,17 +27,18 @@
         <div id="filePanelHead">
           <span id="filePanelTitle" data-i18n="ide_files">DOSYALAR</span>
           <span class="file-spacer"></span>
+          <button id="fileTasks" title="Görev listesi + geri al" data-i18n-title="ide_tasks"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="3" width="14" height="18" rx="2"/><path d="M9 8h6M9 12h6M9 16h4"/></svg></button>
           <button id="filePick" title="Klasör seç" data-i18n-title="ide_pick"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/></svg></button>
           <button id="fileRefresh" title="Yenile" data-i18n-title="ide_refresh">&#x27F3;</button>
-          <button id="filePreview" title="Preview" data-i18n="ide_preview">&#9654; Preview</button>
+          <button id="filePreview" title="Preview" data-i18n-title="ide_preview_t">&#9654;</button>
         </div>
         <div id="filePanelPath" title="">—</div>
+        <div id="tasksPanel" hidden></div>
         <div id="fileTree"></div>
       </aside>
       <div id="sideFoot">
         <button id="gearBtn" title="Ayarlar" data-i18n-title="tipGear">&#x2699;&#xFE0E;</button>
         <button id="themeBtn" title="Koyu tema">&#x263E;</button>
-        <button id="langBtn" title="Dil değiştir / Switch language" data-i18n-title="tipLang"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3c2.6 2.6 2.6 15.4 0 18M12 3c-2.6 2.6-2.6 15.4 0 18"/></svg></button>
         <button id="storeBtn" title="Skills Store" data-i18n-title="tipStore"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16l-1.3 12.1a2 2 0 0 1-2 1.9H7.3a2 2 0 0 1-2-1.9L4 7z"/><path d="M8 10V6a4 4 0 0 1 8 0v4"/></svg></button>
         <button id="gitBtn" title="GitHub Trending" data-i18n-title="tipGithub"><svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor" aria-hidden="true"><path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></svg></button>
         <button id="ideBtn" title="IDE Modu" data-i18n-title="tipIde"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6l-5 6 5 6"/><path d="M16 6l5 6-5 6"/><path d="M13.5 4l-3 16"/></svg></button>
@@ -110,12 +111,30 @@
           <div id="codeTabsBar">
             <div id="codeTabs"></div>
             <code id="codePath" title="">—</code>
+            <button id="codeDiffBtn" title="Değişiklikleri kırmızı/yeşil göster (ajan + kendi düzenlemelerin)">Diff</button>
             <button id="codeSave" title="Kaydet (Ctrl+S)">Kaydet</button>
             <button id="codeHide" title="Editörü kapat" data-i18n-title="tipCodeHide">&#x2715;&#xFE0E;</button>
           </div>
           <div id="codeBody">
             <div id="codeGutter" aria-hidden="true"></div>
+            <pre id="codeLayer" aria-hidden="true"></pre>
             <textarea id="codeTa" spellcheck="false" wrap="off"></textarea>
+            <div id="codeFind" hidden>
+              <input id="codeFindInp" placeholder="Bul…  (Shift+F)" autocomplete="off" spellcheck="false" />
+              <span id="codeFindCount">0/0</span>
+              <button id="codeFindPrev" title="Önceki eşleşme (Shift+Enter)">&#x2191;</button>
+              <button id="codeFindNext" title="Sonraki eşleşme (Enter)">&#x2193;</button>
+              <button id="codeFindClose" title="Kapat (Esc)">&#x00D7;</button>
+            </div>
+            <div id="codeDiffView" hidden>
+              <div id="codeDiffBar">
+                <span id="codeDiffTitle">DEĞİŞİKLİKLER</span>
+                <span id="codeDiffStats"></span>
+                <span class="file-spacer"></span>
+                <button id="codeDiffClose" title="Düzenlemeye dön">&#x2715;&#xFE0E; Kapat</button>
+              </div>
+              <div id="codeDiffRows"></div>
+            </div>
           </div>
         </section>
 
@@ -133,8 +152,10 @@
           <div id="bcOut"></div>
           <div id="bcTodoWrap" hidden></div>
           <div id="bcStatus" hidden></div>
+          <div id="bcChips" hidden></div>
           <div id="bcInputRow">
-            <span id="bcPrompt">code&gt;</span>
+            <button id="bcAttach" title="Dosya / resim ekle" data-i18n-title="tipAttach">+</button>
+            <button id="bcMic" title="Sesli komut — konuş, bırakınca yazıya çevirsin" data-i18n-title="tipMic"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><path d="M12 19v3"/></svg></button>
             <textarea id="bcInput" rows="1" spellcheck="false" autocomplete="off" placeholder="Beast Code mesajı yaz — Enter ile gönder…" data-i18n-ph="bc_ph"></textarea>
             <button id="bcStop" title="Çalışan mesajı durdur" hidden data-i18n-title="bc_stop">&#x25A0;&#xFE0E;</button>
           </div>
@@ -161,7 +182,8 @@
       <aside id="setTabs">
         <div class="set-tabs-title" data-i18n="set_title">AYARLAR</div>
         <nav class="set-tabs-list">
-        <button class="tab active" data-tab="provider" data-i18n="tab_provider">Provider</button>
+        <button class="tab active" data-tab="lang" data-i18n="tab_lang">Dil</button>
+        <button class="tab" data-tab="provider" data-i18n="tab_provider">Provider</button>
         <button class="tab" data-tab="fallout" data-i18n="tab_fallout">Fallout</button>
         <button class="tab" data-tab="skills" data-i18n="tab_skills">Skills</button>
         <button class="tab" data-tab="agents" data-i18n="tab_agents">Paralel Ajanlar</button>
@@ -171,10 +193,9 @@
         <button class="tab" data-tab="websearch" data-i18n="tab_websearch">Web Arama</button>
         <button class="tab" data-tab="events" data-i18n="tab_events">Olay Merkezi</button>
         <button class="tab" data-tab="cron" data-i18n="tab_cron">Cron</button>
-        <button class="tab" data-tab="usage" data-i18n="tab_usage">Maliyet</button>
+        <button class="tab" data-tab="usage" data-i18n="tab_usage">Maliyet · Limit</button>
         <button class="tab" data-tab="logs" data-i18n="tab_logs">Log</button>
         <button class="tab" data-tab="dash" data-i18n="tab_dash">Dashboard</button>
-        <button class="tab" data-tab="limits" data-i18n="tab_limits">Limit</button>
         <button class="tab" data-tab="sec" data-i18n="tab_security">Güvenlik</button>
         <button class="tab" data-tab="update" data-i18n="tab_update">Güncelleme</button>
         </nav>
@@ -186,9 +207,11 @@
             </div>
           </div>
           <button id="setClose" data-i18n="btn_close">Kapat</button>
+          <div id="setVersion" class="set-version">—</div>
         </div>
       </aside>
       <section id="setContent">
+        <div id="tab-lang" class="pane"></div>
         <div id="tab-provider" class="pane"></div>
         <div id="tab-fallout" class="pane" hidden></div>
         <div id="tab-skills" class="pane" hidden></div>
@@ -201,7 +224,6 @@
         <div id="tab-usage" class="pane" hidden></div>
         <div id="tab-logs" class="pane" hidden></div>
         <div id="tab-dash" class="pane" hidden></div>
-        <div id="tab-limits" class="pane" hidden></div>
         <div id="tab-sec" class="pane" hidden></div>
         <div id="tab-update" class="pane" hidden></div>
         <div id="tab-cron" class="pane" hidden>
@@ -351,6 +373,7 @@
     <button id="bbFwd" title="İleri" data-i18n-title="tip_bb_fwd">&#x2192;</button>
     <button id="bbReload" title="Yenile" data-i18n-title="tip_bb_reload">&#x21BB;</button>
     <input id="bbUrl" placeholder="adres yaz veya ara…" autocomplete="off" spellcheck="false" data-i18n-ph="bb_ph" />
+    <button id="bbPhone" title="Telefon modu — mobil versiyon / web versiyonu" data-i18n-title="tip_bb_phone"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="7" y="2" width="10" height="20" rx="2.5"/><line x1="11" y1="18" x2="13" y2="18"/></svg></button>
     <button id="bbShot" title="Ekran görüntüsünü sohbete ekle" data-i18n-title="tip_bb_shot">&#x25A3;</button>
     <button id="bbOpenExt" title="Tarayıcıda aç" data-i18n-title="tip_bb_open">&#x2197;</button>
     <button id="bbClose" title="Kapat" data-i18n-title="btn_close">&#x00D7;</button>

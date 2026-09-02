@@ -1495,6 +1495,9 @@ body.browser-open #settingsDialog { width: min(70vw, calc(100vw - var(--bw, 480p
   margin-bottom: 8px;
   cursor: pointer;
   background: var(--panel);
+  /* button elementleri body'den renk miras almaz — dark modda siyah kalmasın */
+  color: var(--text);
+  font-family: inherit;
 }
 .prov-row:hover { border-color: var(--accent); }
 /* dil kartları: aktif seçim vurgusu */

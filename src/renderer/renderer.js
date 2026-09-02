@@ -1059,7 +1059,7 @@ async function renderUsagePane() {
   } catch {
     rep = { today: { total: {}, models: [] }, month: { total: {}, models: [] } };
   }
-  const wwi = await beast.whereWasIGet().catch(() => ({ enabled: true }));
+  const wwi = await beast.whereWasIGet().catch(() => ({ enabled: false }));
   const t = rep.today.total || {};
   const mo = rep.month.total || {};
   const card = (label, v) =>

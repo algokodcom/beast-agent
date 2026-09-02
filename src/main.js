@@ -2747,8 +2747,7 @@ function falloutResume() {
     if (!f.enabled || f.autoResume === false) return;
     const st = JSON.parse(fs.readFileSync(FALLOUT_CRASH_FILE, 'utf8'));
     if (!st || !st.sessionId) return;
-    const exists = engine.listSessions().some((s) => s.id === st.sessionId);
-    const sid = exists ? st.sessionId : engine.createSession().id;
+    const sid = reuseOrLatestSession(st.sessionId);
     const when = st.at ? new Date(st.at).toLocaleString('tr-TR') : '?';
     setTimeout(() => {
       try {
@@ -2795,7 +2794,8 @@ function whereWasISummary() {
 function maybeRunWhereWasI() {
   try {
     const cfg = settings.whereWasI || {};
-    if (cfg.enabled === false) return;
+    /* DEFAULT KAPALI: yalnız Ayarlar → Maliyet · Limit'ten açıldıysa göster */
+    if (cfg.enabled !== true) return;
     const sum = whereWasISummary();
     if (!sum) return;
     settingsLog(`nerede-kaldım: ${String(sum.text).split('\n')[0]}`);
@@ -4922,8 +4922,12 @@ ipcMain.handle('setup:skip', () => {
   return { ok: true };
 });
 
-/* #5 "nerede kaldım" */
-ipcMain.handle('wherewasi:get', () => whereWasISummary());
+/* #5 "nerede kaldım": get → gerçek ayar durumu (checkbox doğru görünsün) */
+ipcMain.handle('wherewasi:get', () => {
+  const cfg = settings.whereWasI || {};
+  const sum = whereWasISummary();
+  return { enabled: cfg.enabled === true, ...(sum || {}) };
+});
 ipcMain.handle('wherewasi:set', (_e, cfg) => {
   settings.whereWasI = { enabled: !!(cfg && cfg.enabled) };
   saveSettings();
@@ -5208,6 +5212,24 @@ function cronEmit() {
    hangi kanaldan ajanla iletişimde belli değil). */
 const cronAnswerPending = new Map();
 
+/* OTOMATİK YENİ SOHBET YOK: cron/izleyici/fallout tetiklendiğinde oturum
+   seçimi — kayıtlı id geçerliyse O, değilse EN GÜNCEL oturum kullanılır.
+   Hiç oturum yoksa (ilk kurulum) yeni açılır. Böylece soldaki sohbet
+   geçmişine "+ Yeni Sohbet" olmadan hayalet sohbetler düşmez. */
+function reuseOrLatestSession(preferredId) {
+  const sid = String(preferredId || '');
+  if (sid) {
+    try {
+      if (engine._load(sid)) return sid;
+    } catch {}
+  }
+  try {
+    const list = engine.listSessions(); // updatedAt'e göre yeni→eski sıralı
+    if (list.length) return String(list[0].id);
+  } catch {}
+  return engine.createSession().id;
+}
+
 /* Yansıtma hedefleri: bağlı WA (owner numarası), Telegram ve Discord
    (owner işaretli kayıt; tek kayıt varsa o). Cron oturumunun KENDİ
    kanalına yansıtmayız — cevabı zaten kendi akışından alır (çift yok). */
@@ -5256,11 +5278,8 @@ function cronMirrorTargets(cronSid) {
 
 function cronFire(job) {
   try {
-    let sid = job.sessionId;
-    const exists = sid && engine.listSessions().some((s) => s.id === sid);
-    if (!exists) {
-      const s = engine.createSession();
-      sid = s.id;
+    const sid = reuseOrLatestSession(job.sessionId);
+    if (sid !== String(job.sessionId || '')) {
       cron.update(job.id, { sessionId: sid });
     }
     cronAnswerPending.set(String(sid), job);
@@ -5276,10 +5295,8 @@ function cronFire(job) {
 function watcherFire(w, value) {
   try {
     watcherLog(`tetiklendi id=${w.id} name="${w.name}" kind=${w.kind} op=${w.op} value=${value}`);
-    let sid = w.sessionId;
-    const exists = sid && engine.listSessions().some((s) => s.id === sid);
-    if (!exists) {
-      sid = engine.createSession().id;
+    const sid = reuseOrLatestSession(w.sessionId);
+    if (sid !== String(w.sessionId || '')) {
       watchers.patch(w.id, { sessionId: sid });
     }
     const target =

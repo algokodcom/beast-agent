@@ -2993,37 +2993,17 @@ function browserWidthFor(w) {
   return Math.max(380, Math.min(800, Math.floor(w * 0.46)));
 }
 
-function browserShownWidth(w) {
-  /* telefon modunda dock genişliği KORUNUR — 390x844 telefon ekranı
-     görüntünün ORTASINDA, cihaz çerçevesiyle gösterilir (DevTools gibi) */
-  return Math.min(browser.width, Math.max(320, w - 320));
+/* emit'lerdeki genişlik HEP gösterilen genişlik olmalı (telefon modunda 430) —
+   yoksa yüklenme bitince dock eski genişliğine döner, daralan solda boşluk bırakır */
+function browserW() {
+  try { return win.getContentSize()[0]; } catch { return 0; }
 }
 
-/* telefon modu görüntü parametreleri: mobil ekran emülasyonu + sığma ölçeği */
-function applyPhoneEmulation() {
-  try {
-    const wc = browser.view && browser.view.webContents;
-    if (!wc) return;
-    if (!browser.phone) {
-      wc.disableDeviceEmulation();
-      return;
-    }
-    let w = 800;
-    let h = 900;
-    try { [w, h] = win.getContentSize(); } catch {}
-    const viewW = browserShownWidth(w);
-    const viewH = Math.max(240, h - BROWSER_TOOLBAR_H - 8);
-    const PW = 390;
-    const PH = 844;
-    const scale = Math.max(0.3, Math.min(1, (viewW - 20) / PW, (viewH - 12) / PH));
-    wc.enableDeviceEmulation({
-      screenPosition: 'mobile',
-      screenOrientation: { type: 'portraitPrimary', angle: 0 },
-      viewSize: { width: PW, height: PH },
-      deviceScaleFactor: 2,
-      scale,
-    });
-  } catch {}
+function browserShownWidth(w) {
+  const avail = Math.max(320, w - 320);
+  /* TELEFON MODU: dock KENDİSİ daralır (~430px) — sayfa mobil düzenle
+     kenarlara tam oturur; kapatınca kullanıcı genişliği geri gelir */
+  return browser.phone ? Math.min(430, avail) : Math.min(browser.width, avail);
 }
 
 function layoutBrowser() {
@@ -3048,7 +3028,6 @@ function layoutBrowser() {
   try {
     view.setBounds({ x: Math.max(0, w - shownWidth), y: BROWSER_TOOLBAR_H, width: shownWidth, height: Math.max(0, h - BROWSER_TOOLBAR_H) });
     view.setVisible(browser.open && browser.visible);
-    if (browser.phone) applyPhoneEmulation(); // pencere boyutlanınca telefon ölçeği tazelensin
   } catch {}
 }
 
@@ -3085,7 +3064,7 @@ function ensureBrowser() {
   // Tarayıcı kapalıyken olayların UI'ı geri açmamasını garantile
   const notify = (extra) => {
     if (browser.open && win && !win.isDestroyed()) {
-      browserEmit({ open: true, width: browser.width, ...extra });
+      browserEmit({ open: true, width: browserShownWidth(browserW()), ...extra });
     }
   };
   wc.on('did-navigate', (_e, url) => notify({ url, loading: false }));
@@ -3101,7 +3080,6 @@ function ensureBrowser() {
     browser.view = null;
   });
   browser.view = view;
-  if (browser.phone) applyPhoneEmulation(); // tarayıcı telefon modunda doğarsa emülasyonu uygula
   return view;
 }
 
@@ -3146,7 +3124,7 @@ function setBrowserOpen(v, forceVisible) {
   layoutBrowser();
   let url = '';
   try { url = browser.view.webContents.getURL(); } catch {}
-  browserEmit({ open: true, width: browser.width, url });
+  browserEmit({ open: true, width: browserShownWidth(browserW()), url });
 }
 
 /* --- Paralel ajan trafik düzeni: ajanlar aynı saniyede sorgu atınca Google
@@ -3210,7 +3188,7 @@ async function browserNavigateNow(raw, signal, ctx) {
   let title = '';
   let finalUrl = url;
   try { title = wc.getTitle(); finalUrl = wc.getURL() || url; } catch {}
-  browserEmit({ open: true, width: browser.width, url: finalUrl });
+  browserEmit({ open: true, width: browserShownWidth(browserW()), url: finalUrl });
   flushBrowserStorage(); // oturum çerezleri diske — ani kapanışta kaybolmasın
   /* açılışta snapshot da göm — model ayrı snapshot çağırmadan ref'lere başlar */
   let snap = null;
@@ -5389,7 +5367,7 @@ ipcMain.handle('browser:shown:set', (_e, v) => {
   if (browser.open) {
     browser.visible = !!v;
     layoutBrowser();
-    browserEmit({ open: true, width: browser.width });
+    browserEmit({ open: true, width: browserShownWidth(browserW()) });
   }
   return { shown: !!v };
 });
@@ -5446,7 +5424,7 @@ function setBrowserPhone(on) {
       if (url && /^https?:/i.test(url)) wc.loadURL(url).catch(() => {});
     }
   } catch {}
-  applyPhoneEmulation(); // açık: 390x844 cihaz ortalanır — kapalı: emülasyon kapanır
+  /* dock daralır/genişler — layout + renderer --bw tazelenir */
   if (browser.open && win && !win.isDestroyed()) {
     layoutBrowser();
     const [w] = win.getContentSize();
@@ -6213,7 +6191,7 @@ ipcMain.handle('ide:previewFile', async (_e, rel) => {
     const url = base + '/' + relPath;
     setBrowserOpen(true, true);
     browser.view.webContents.loadURL(url).catch(() => {});
-    browserEmit({ open: true, width: browser.width, url });
+    browserEmit({ open: true, width: browserShownWidth(browserW()), url });
     return { ok: true, url };
   } catch (e) {
     return { ok: false, error: String((e && e.message) || e) };
@@ -6251,7 +6229,7 @@ ipcMain.handle('ide:preview', async () => {
       url = base + '/';
     }
     browser.view.webContents.loadURL(url).catch(() => {});
-    browserEmit({ open: true, width: browser.width, url });
+    browserEmit({ open: true, width: browserShownWidth(browserW()), url });
     if (!bcLastServerUrl) bcTellServe(url.replace(/\/$/, ''));
     return { ok: true, url };
   } catch (e) {

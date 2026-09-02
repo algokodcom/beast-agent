@@ -56,7 +56,6 @@ const els = {
   bbReload: $('#bbReload'),
   bbUrl: $('#bbUrl'),
   bbOpenExt: $('#bbOpenExt'),
-  bbShot: $('#bbShot'),
   bbClose: $('#bbClose'),
   bbResize: $('#bbResize'),
   bbPhone: $('#bbPhone'),
@@ -5326,28 +5325,6 @@ async function init() {
     const u = els.bbUrl.value.trim();
     if (/^https?:\/\//i.test(u)) beast.openExternal(u);
   });
-  els.bbShot.addEventListener('click', async () => {
-    try {
-      setStatus('ekran görüntüsü alınıyor…');
-      const r = await beast.browserScreenshot();
-      setStatus('');
-      if (r && r.ok) {
-        pending.push({
-          type: 'image',
-          name: 'screenshot-' + new Date().toISOString().slice(11, 19).replace(/:/g, '') + '.jpg',
-          dataUrl: r.image,
-        });
-        renderChips();
-        scrollDown();
-        toast('Görüntü eklendi — mesajına iliştirilecek');
-      } else {
-        toast((r && r.error) || 'Ekran görüntüsü alınamadı');
-      }
-    } catch (e) {
-      setStatus('');
-      toast(String((e && e.message) || e));
-    }
-  });
   els.bbUrl.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {
       const v = els.bbUrl.value.trim();
@@ -6753,7 +6730,8 @@ async function renderTasksPanel() {
   const undoMap = new Map((r.undo || []).map((u) => [u.id, u.files]));
   let html =
     '<div class="tsk-head"><span>G\u00D6REVLER</span>' +
-    '<button id="tskUndoLast" ' + (r.lastTodoId ? '' : 'disabled') + ' title="Kay\u0131tl\u0131 son g\u00F6revi geri al">\u21B6 Son G\u00F6revi Geri Al</button>' +
+    '<button id="tskUndoLast" class="tsk-undo-last" ' + (r.lastTodoId ? '' : 'disabled') +
+    ' title="Son g\u00F6revi geri al">\u21B6</button>' +
     '<button id="tskClose" title="Kapat">\u00D7</button></div>';
   if (!(r.todos || []).length) {
     html += '<div class="tsk-empty">g\u00F6rev listesi yok</div>';

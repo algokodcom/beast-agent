@@ -2500,11 +2500,14 @@ body.ide-mode #bcPanel { display: flex; }
 .bc-todoitem.done { color: var(--muted); }
 .bc-todoitem.done .bc-todocheck { color: var(--ok, var(--accent)); }
 .bc-todoitem.done .bc-todotext { text-decoration: line-through; }
+#filePanelTitle { display: none; } /* başlık kaldırıldı — başlıkta yalnız ikonlar */
+#filePanel .file-spacer { display: none; }
 #filePanelHead {
   display: flex;
   align-items: center;
+  justify-content: space-evenly;
   gap: 6px;
-  padding: 10px 10px;
+  padding: 10px 6px;
   border-bottom: 1px solid var(--border);
 }
 #filePanelTitle { font-size: 11px; letter-spacing: 2px; color: var(--muted); font-weight: 800; }
@@ -2572,6 +2575,14 @@ body.ide-mode #bcPanel { display: flex; }
 }
 .tsk-head button:hover { color: var(--text); border-color: var(--accent); }
 .tsk-head button[disabled] { opacity: 0.35; cursor: default; }
+/* başlıktaki tek ikonluk geri-al butonu — görev ikonuyla aynı boyda */
+.tsk-head .tsk-undo-last {
+  color: var(--accent);
+  border-color: var(--accent);
+  padding: 2px 7px;
+  font-size: 12px;
+}
+.tsk-head .tsk-undo-last:hover { color: var(--err); border-color: var(--err); }
 .tsk-row {
   display: flex;
   align-items: center;

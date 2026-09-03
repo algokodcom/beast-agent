@@ -1,0 +1,21 @@
+{
+  "servers": {
+    "fetch": {
+      "command": "uvx",
+      "args": ["mcp-server-fetch"],
+      "enabled": true
+    },
+    "git": {
+      "command": "uvx",
+      "args": ["mcp-server-git", "--repository", "C:/projeler/ornek-repo"],
+      "enabled": true,
+      "tools": ["git_status", "git_diff", "git_log"],
+      "timeoutMs": 60000
+    },
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "C:/projeler/izinli-klasor"],
+      "enabled": false
+    }
+  }
+}

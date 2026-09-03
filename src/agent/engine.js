@@ -14,6 +14,7 @@ const agentdefs = require('./agentdefs');
 const memory = require('./memory');
 const mem0 = require('./mem0');
 const skills = require('./skills');
+const mcp = require('./mcp');
 const { estTokens, estMsgTokens } = require('./tokens');
 const log = require('./logger');
 
@@ -2828,6 +2829,10 @@ class Engine {
   }
 
   async _chatTurn(session, signal, onDelta, toolsList = TOOLS) {
+    /* MCP: %APPDATA%\beast\mcp.json'daki etkin serverların araçlarını şema listesine ekle
+       (bağlı değilse lazy bağlanır; kapalıysa liste değişmez; Beast Code paneli hızlı
+       ilk-token sözü için MCP'siz kalır) */
+    if (!session || !session.bcCode) toolsList = await mcp.mergeTools(toolsList);
     /* opencode agent.ts port: özel ajan tanımı — prompt/model/araç/steps */
     const adef = this._agentDefFor(session, !!session.bgJob);
     /* Beast Code: todo_write açıklaması "3+ adım" kısıtı içerir ve model küçük
@@ -3450,7 +3455,7 @@ class Engine {
     /* OTOMATİK SKİLL SİSTEMİ: kurulu skill listesi de prompta girer —
        ajan "eski skillden daha kolay/better yol buldum" diyebilmesin, KARAR VERİP
        skilli GÜNCELLESİN. action: create (yeni) | update (mevcutu iyileştir) | none */
-    const skills = require('./skills');
+const skills = require('./skills');
     const existing = skills
       .scan()
       .map((s) => `- ${s.name}: ${(s.description || '').slice(0, 100)}`)
@@ -3812,7 +3817,7 @@ class Engine {
       /* onay kapısı: riskli araçta dış onay bekle; reddedilirse araç çalışmaz.
          "always" onaylı araçlar doğrudan geçer. */
       if (
-        Engine.RISKY_TOOLS.has(name) &&
+        (Engine.RISKY_TOOLS.has(name) || String(name).startsWith('mcp__')) &&
         !this.alwaysAllowTools.has(name) &&
         this.approvals && typeof this.approvals.request === 'function'
       ) {
@@ -3831,6 +3836,10 @@ class Engine {
       }
       /* GERİ ALMA GÜNLÜĞÜ: dosya yazımından ÖNCE eski içerik kayda geçer */
       this._journalBefore(sessionId, name, args);
+      /* MCP: dış server araçları (mcp__<server>__<tool>) — tools/call'a köprülenir */
+      if (String(name).startsWith('mcp__')) {
+        return JSON.stringify(await mcp.call(name, args, signal));
+      }
       if (name === 'memory_write') {
         /* bot oturumu → botun KENDİ hafıza store'una yaz (global Beast hafızasına değil).
            mem0 açıkken: hash+semantic dedup'lı store'a gider, MEMORY.md aynası güncellenir. */

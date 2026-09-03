@@ -1013,6 +1013,7 @@ async function renderActiveSettingsTab() {
     case 'email': await renderEmailPane(); break;
     case 'integrations': await renderIntegrationsPane(); break;
     case 'websearch': await renderWebSearchPane(); break;
+    case 'mcp': await renderMcpPane(); break;
     case 'events': await renderEventsPane(); break;
     case 'cron': await openCron(); break;
     case 'usage': await renderUsagePane(); break;
@@ -1024,12 +1025,82 @@ async function renderActiveSettingsTab() {
   }
 }
 
+async function renderMcpPane() {
+  const pane = $('#tab-mcp');
+  if (!pane) return;
+  const st = await beast.mcpStatus().catch(() => ({ path: '', servers: [] }));
+  const cfg = await beast.mcpConfigGet().catch(() => ({ path: '', raw: '' }));
+  const stateT = (s) => _t('mcp_state_' + s) || String(s || '').toUpperCase();
+  let rows = '';
+  if (!(st.servers || []).length) {
+    rows = '<div class="sub">' + _t('mcp_none') + '</div>';
+  }
+  for (const s of st.servers || []) {
+    rows +=
+      '<div style="display:flex;align-items:center;gap:8px;padding:8px;border:1px solid var(--border);border-radius:8px;margin-bottom:6px;flex-wrap:wrap">' +
+      '<span style="font-weight:600">' + escapeHtml(s.name) + '</span>' +
+      '<span class="sub" style="margin:0;max-width:40%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escapeHtml(s.command + ' ' + (s.args || []).join(' ')) + '</span>' +
+      '<span style="color:var(--muted);font-size:12px">' + stateT(s.state) + (s.enabled && s.toolCount ? ' · ' + s.toolCount + ' ' + _t('mcp_tool_count') : '') + '</span>' +
+      (s.lastError && s.state === 'down' ? '<span class="sub" style="color:#e06c75;margin:0;max-width:30%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escapeHtml(s.lastError.slice(0, 90)) + '</span>' : '') +
+      '<span style="flex:1"></span>' +
+      '<button class="btn mcp-tgl" data-n="' + escapeHtml(s.name) + '" style="width:auto;padding:2px 10px">' + (s.enabled ? '⏸' : '▶') + '</button>' +
+      '<button class="btn ghost mcp-ref" data-n="' + escapeHtml(s.name) + '" style="width:auto;padding:2px 10px">' + _t('mcp_refresh') + '</button>' +
+      '</div>';
+  }
+  pane.innerHTML =
+    '<h2>' + _t('mcp_h2') + '</h2>' +
+    '<div class="sub">' + _t('mcp_sub') + '</div>' +
+    '<div id="mcpList" style="margin-top:10px">' + rows + '</div>' +
+    '<div class="divider"></div>' +
+    '<h2>' + _t('mcp_json_h2') + '</h2>' +
+    '<div class="sub">' + _t('mcp_json_sub') + '</div>' +
+    '<textarea id="mcpJson" class="inp" rows="10" spellcheck="false" style="margin-top:8px;font-family:monospace;font-size:12px"></textarea>' +
+    '<div style="display:flex;gap:8px;margin-top:8px">' +
+    '<button id="mcpSave" class="btn">' + _t('mcp_save') + '</button>' +
+    '<span id="mcpMsg" class="sub" style="margin:0;align-self:center"></span></div>';
+  const box = $('#mcpJson');
+  box.value = cfg.raw || JSON.stringify({ servers: {} }, null, 2);
+  $('#mcpSave').addEventListener('click', async () => {
+    const msg = $('#mcpMsg');
+    const r = await beast.mcpConfigSet(box.value).catch(() => ({ ok: false, error: 'IPC' }));
+    if (r && r.ok) {
+      msg.textContent = _t('mcp_saved');
+      msg.style.color = '';
+      renderMcpPane();
+    } else {
+      msg.textContent = _t('mcp_save_err') + ((r && r.error) || '?');
+      msg.style.color = '#e06c75';
+    }
+  });
+  pane.querySelectorAll('.mcp-ref').forEach((b) =>
+    b.addEventListener('click', async () => {
+      b.disabled = true;
+      await beast.mcpRefresh(b.dataset.n).catch(() => {});
+      renderMcpPane();
+    })
+  );
+  pane.querySelectorAll('.mcp-tgl').forEach((b) =>
+    b.addEventListener('click', async () => {
+      b.disabled = true;
+      try {
+        const obj = JSON.parse(box.value || '{}');
+        const name = b.dataset.n;
+        if (obj.servers && obj.servers[name]) {
+          obj.servers[name].enabled = obj.servers[name].enabled === false;
+          await beast.mcpConfigSet(JSON.stringify(obj));
+        }
+      } catch {}
+      renderMcpPane();
+    })
+  );
+}
+
 function switchTab(name) {
   setTab = name;
   document.querySelectorAll('#setTabs .tab').forEach((b) =>
     b.classList.toggle('active', b.dataset.tab === name)
   );
-  for (const p of ['lang', 'provider', 'fallout', 'skills', 'agents', 'tts', 'email', 'integrations', 'websearch', 'events', 'cron', 'usage', 'logs', 'dash', 'sec', 'update']) {
+  for (const p of ['lang', 'provider', 'fallout', 'skills', 'agents', 'tts', 'email', 'integrations', 'websearch', 'mcp', 'events', 'cron', 'usage', 'logs', 'dash', 'sec', 'update']) {
     const el = $('#tab-' + p);
     if (el) el.hidden = p !== name; // guard: eksik pane tüm sekmeleri kilitlemesin
   }
@@ -1043,6 +1114,7 @@ function switchTab(name) {
   if (name === 'update') renderUpdatePane(true);
   if (name === 'agents') refreshAgentsPane();
   if (name === 'websearch') renderWebSearchPane();
+  if (name === 'mcp') renderMcpPane();
   /* Fallout: her açılışta güncel provider zincirini çek */
   if (name === 'fallout') refreshFalloutPane();
 }

@@ -392,7 +392,7 @@ body.term-open #topbar { width: auto; }
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 0 10px;
+  padding: 0 148px 0 10px; /* sağ: sabit pencere butonları (win-controls) alanı */
   border-bottom: 1px solid var(--border);
 }
 #termTitle { font-size: 11px; font-weight: 800; letter-spacing: 1px; color: var(--accent); flex: none; }
@@ -503,13 +503,18 @@ body.term-open #settingsOverlay { right: var(--tw, 520px); }
 .drag-spacer { flex: 1; height: 100%; -webkit-app-region: drag; }
 
 /* ---------- custom pencere butonları (native overlay yerine) ----------
-   Arka plan YOK — topbar'ın kendi zemininde yüzüyor; hover'da uygulamanın
-   kendi accent-dim tonu, kapat Windows alışkanlığıyla kırmızı. */
+   PENCERENİN sağ üst köşesine SABİT: tarayıcı/terminal/paralel ajan konsolu
+   hangi panel açılırsa açılsın butonlar hep en sağda kalır (panellerin
+   başlık satırları bu alanı boş bırakır). Zemin yok — altındaki yüzeyde
+   yüzür; hover'da accent-dim, kapat kırmızı. */
 .win-controls {
+  position: fixed;
+  top: 0;
+  right: 0;
+  z-index: 100;
   display: flex;
   align-items: center;
-  height: 100%;
-  margin-left: -4px;
+  height: 46px;
   -webkit-app-region: no-drag;
 }
 .win-controls button {
@@ -1805,7 +1810,7 @@ body.browser-open #settingsDialog { width: min(70vw, calc(100vw - var(--bw, 480p
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 12px 12px 10px 16px;
+  padding: 12px 148px 10px 16px; /* sağ: sabit pencere butonları (win-controls) alanı */
   font-weight: 800;
   letter-spacing: 1px;
   font-size: 13px;

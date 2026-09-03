@@ -151,6 +151,7 @@ function startNpmUpdateWatch() {
   setInterval(check, 6 * 60 * 60 * 1000);
 }
 const toolsMod = require('./agent/tools');
+const mcpMod = require('./agent/mcp');
 const { htmlToText, setSearchChain, setTinyfishKey } = toolsMod;
 /* OpenCode köprüsü KALDIRILDI: Beast Code artık tamamen BEAST motoruyla
    çalışır — opencode'in döngü mantığı (compaction, prune, cache disiplini,
@@ -2972,6 +2973,7 @@ app.whenReady().then(() => {
       app.isQuitting = true;
       flushBrowserStorage(); // x.com/google oturumları (cookies) diske yazılsın
       try { toolsMod.disposeShellSessions(); } catch {} // kalıcı shell oturumlarını kapat
+      try { require('./agent/mcp').stopAll(); } catch {} // MCP server süreçlerini kapat
     });
 
     if (process.argv.includes('--smoke')) {
@@ -4975,6 +4977,41 @@ ipcMain.handle('settings:get', () => {
   if (out.email && out.email.pass) out.email.pass = '***';
   if (out.waTts && out.waTts.key) out.waTts.key = '***';
   return out;
+});
+
+/* ---------------- MCP IPC ---------------- */
+
+ipcMain.handle('mcp:status', () => {
+  try { return mcpMod.status(); } catch { return { path: '', servers: [] }; }
+});
+
+ipcMain.handle('mcp:config:get', () => {
+  try {
+    const p = mcpMod.configPath();
+    let raw = '';
+    try { raw = require('fs').readFileSync(p, 'utf8'); } catch {}
+    return { path: p, raw };
+  } catch { return { path: '', raw: '' }; }
+});
+
+ipcMain.handle('mcp:config:set', (_e, raw) => {
+  try {
+    const text = String(raw || '');
+    if (text.trim()) JSON.parse(text); /* bozuk JSON diske yazılmaz */
+    mcpMod.saveConfig(text.trim() ? JSON.parse(text) : { servers: {} });
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+});
+
+ipcMain.handle('mcp:refresh', async (_e, name) => {
+  try {
+    const ok = await mcpMod.refresh(String(name || ''));
+    return { ok, status: mcpMod.status() };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
 });
 
 /* ---------------- FALLOUT IPC ---------------- */

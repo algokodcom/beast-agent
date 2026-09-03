@@ -110,6 +110,7 @@ Get-Content "$env:APPDATA\\beast\\sessions\\bg-jobs.json" | ConvertFrom-Json | %
 | \`bots.json\` | Bot kayıt defteri — max 5 bot, ilk kayıt admin 'Beast' (silinemez). Bot adı HARFLE başlamak ZORUNDA |
 | \`bots/<id>/\` | Botun izole klasörü: config.json, memory.md, yetkiler.json, logs/ |
 | \`whitelist.json\`, \`wa-auth\\\`, \`wa-chats.json\`, \`wa.log\` | WhatsApp izin listesi, Baileys auth (SİLME), sohbet eşlemesi, log |
+| \`mcp.json\` | MCP server tanımları — dış araçlar (Ayarlar → MCP'den düzenlenir; araçlar modele \`mcp__<server>__<tool>\` adıyla açılır, çağrı onay kapısından geçer, çöken server 3 dk sonra otomatik yeniden denenir) |
 | \`cron.json\`, \`watchers.json\`, \`bus.json\` | Zamanlanmış görevler, web/batarya izleyicileri, olay abonelikleri |
 | \`scripts\\\` | Python scriptleri (websearch.py, news.py) |
 | \`searxng\\settings.yml\` | SearXNG yerel arama motoru ayarları (127.0.0.1:8888 — \`beast searxng\` ile kurulur/başlatılır) |
@@ -139,7 +140,7 @@ Get-Content "$env:APPDATA\\beast\\sessions\\bg-jobs.json" | ConvertFrom-Json | %
 /help · /version · /new · /open <kod> · /sessions · /stop · /start · /restart · /change [n] · /model <isim> · /think 0-5 · /clear · /notes · /rule <metin> · /rules · /notify on|off · /screenshot · /approve [always] · /deny · /update [now] · /usage · /backup · /status · /skills
 
 ## AYAR SEKMELERİ
-Provider · Fallout · Skills · Paralel Ajanlar · TTS · E-posta · Entegrasyonlar · Web Arama (Obscura kurulum + arama sırası) · Olaylar · Cron · Maliyet · Loglar · Panel · Limitler · Güvenlik · Güncelleme
+Provider · Fallout · Skills · Paralel Ajanlar · TTS · E-posta · Entegrasyonlar · Web Arama · MCP · Olaylar · Cron · Maliyet · Loglar · Panel · Limitler · Güvenlik · Güncelleme
 
 ## PARALEL AJAN HIZLI BİLGİ
 - CEO modu: konuşan ajan iş YAPMAZ, run_background/run_background_many ile devreder; görev tanımı kendine yeterli olmalı (ajan CEO bağlamını GÖREMEZ).

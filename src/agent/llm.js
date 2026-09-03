@@ -249,6 +249,44 @@ async function streamOnce(sel, body, { signal, onDelta, onRetry } = {}, omitReas
         signal.addEventListener('abort', onAbort, { once: true });
       }
       try {
+        /* tek satır SSE olayını işle — hem okuma döngüsü hem SON FLUSH kullanır */
+        const handleLine = (line) => {
+          line = line.trim();
+          if (!line.startsWith('data:')) return;
+          const data = line.slice(5).trim();
+          if (!data || data === '[DONE]') return;
+
+          let json;
+          try {
+            json = JSON.parse(data);
+          } catch {
+            return;
+          }
+
+          if (json.usage) state.usage = json.usage;
+          const ch = json.choices && json.choices[0];
+          if (!ch) return;
+          if (ch.finish_reason) state.finishReason = ch.finish_reason;
+          const d = ch.delta || {};
+          if (d.content) {
+            state.content += d.content;
+            onDelta && onDelta(d.content, state.content);
+          }
+          if (d.reasoning_content) state.reasoning += d.reasoning_content;
+          if (d.reasoning) state.reasoning += d.reasoning;
+          for (const tc of d.tool_calls || []) {
+            const i = typeof tc.index === 'number' ? tc.index : state.toolCalls.length;
+            while (state.toolCalls.length <= i) {
+              state.toolCalls.push({ id: '', type: 'function', function: { name: '', arguments: '' } });
+            }
+            if (tc.id) state.toolCalls[i].id = tc.id;
+            if (tc.function) {
+              if (tc.function.name) state.toolCalls[i].function.name += tc.function.name;
+              if (tc.function.arguments) state.toolCalls[i].function.arguments += tc.function.arguments;
+            }
+          }
+        };
+
         while (true) {
           const { done, value } = await reader.read();
           if (signal && signal.aborted) {
@@ -261,43 +299,17 @@ async function streamOnce(sel, body, { signal, onDelta, onRetry } = {}, omitReas
 
           let idx;
           while ((idx = buf.indexOf('\n')) !== -1) {
-            const line = buf.slice(0, idx).trim();
+            const line = buf.slice(0, idx);
             buf = buf.slice(idx + 1);
-            if (!line.startsWith('data:')) continue;
-            const data = line.slice(5).trim();
-            if (!data || data === '[DONE]') continue;
-
-            let json;
-            try {
-              json = JSON.parse(data);
-            } catch {
-              continue;
-            }
-
-            if (json.usage) state.usage = json.usage;
-            const ch = json.choices && json.choices[0];
-            if (!ch) continue;
-            if (ch.finish_reason) state.finishReason = ch.finish_reason;
-            const d = ch.delta || {};
-            if (d.content) {
-              state.content += d.content;
-              onDelta && onDelta(d.content, state.content);
-            }
-            if (d.reasoning_content) state.reasoning += d.reasoning_content;
-            if (d.reasoning) state.reasoning += d.reasoning;
-            for (const tc of d.tool_calls || []) {
-              const i = typeof tc.index === 'number' ? tc.index : state.toolCalls.length;
-              while (state.toolCalls.length <= i) {
-                state.toolCalls.push({ id: '', type: 'function', function: { name: '', arguments: '' } });
-              }
-              if (tc.id) state.toolCalls[i].id = tc.id;
-              if (tc.function) {
-                if (tc.function.name) state.toolCalls[i].function.name += tc.function.name;
-                if (tc.function.arguments) state.toolCalls[i].function.arguments += tc.function.arguments;
-              }
-            }
+            handleLine(line);
           }
         }
+
+        /* SON FLUSH — KRİTİK: akış son parçası '\n' ile bitmeyebilir.
+           Okuma bitince kalan buf'u Decoder'dan boşaltıp işlemezsek
+           cevabın SON kelimesi/cümlesi kaybolur (SSE sonu öyle gelir). */
+        buf += decoder.decode();
+        if (buf.trim()) handleLine(buf);
 
         return { ...state };
       } finally {

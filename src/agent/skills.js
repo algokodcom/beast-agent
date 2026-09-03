@@ -102,7 +102,7 @@ Get-Content "$env:APPDATA\\beast\\sessions\\bg-jobs.json" | ConvertFrom-Json | %
 | Yol | Ne İşe Yarar |
 |---|---|
 | \`config.yaml\` + \`.env\` | Model sağlayıcıları + API anahtarları (\`providers.<id>.base_url/key_env/models\`, aktif: \`model.provider/default\`) |
-| \`settings.json\` | App ayarları: theme, workspace, modelOverride, customProviders, roleModels, deletedModels, fallout, waTts, email, waAllow, **searchChain (web arama sırası)**, **obscuraEnabled**, activeBotId |
+| \`settings.json\` | App ayarları: theme, workspace, modelOverride, customProviders, roleModels, deletedModels, fallout, waTts, email, waAllow, **searchChain (web arama sırası)**, activeBotId |
 | \`sessions\\*.jsonl\` | Sohbet oturumları (satır JSON: t:meta kod, t:meta2 paralel-ajan işareti, t:msg mesaj, t:todo, t:notes) |
 | \`sessions\\bg-jobs.json\` | Paralel ajan iş kayıtları: id, title, status(queued/running/done/error/aborted), error=İPTAL SEBEBİ, groupId |
 | \`memories\\\` | SOUL.md (kişilik), MEMORY.md (uzun hafıza), USER.md (kullanıcı) |
@@ -112,7 +112,7 @@ Get-Content "$env:APPDATA\\beast\\sessions\\bg-jobs.json" | ConvertFrom-Json | %
 | \`whitelist.json\`, \`wa-auth\\\`, \`wa-chats.json\`, \`wa.log\` | WhatsApp izin listesi, Baileys auth (SİLME), sohbet eşlemesi, log |
 | \`cron.json\`, \`watchers.json\`, \`bus.json\` | Zamanlanmış görevler, web/batarya izleyicileri, olay abonelikleri |
 | \`scripts\\\` | Python scriptleri (websearch.py, news.py) |
-| \`obscura\\obscura.exe\` | Obscura stealth tarayıcı (web arama zincirinin 2. motoru; açılışta otomatik kurulur) |
+| \`searxng\\settings.yml\` | SearXNG yerel arama motoru ayarları (127.0.0.1:8888 — \`beast searxng\` ile kurulur/başlatılır) |
 | \`py\\python.exe\` | Gömülü Python runtime (makinede Python olmasa bile python_run çalışır) |
 | \`usage.json\`, \`logs\\\` | Kullanım sayaçları, çalışma logları |
 | Masaüstü\\Beast-Backups | Şifreli yedekler (.beastbak) — /backup ile alınır |
@@ -121,14 +121,14 @@ Get-Content "$env:APPDATA\\beast\\sessions\\bg-jobs.json" | ConvertFrom-Json | %
 
 | Dosya | Sorumluluk |
 |---|---|
-| \`main.js\` | Electron ana süreç: tüm IPC, WhatsApp/Telegram/Discord entegrasyonları, onay kapısı (/approve), /stop /restart, splash, gizli araştırma tarayıcısı, obscura kurulumu |
+| \`main.js\` | Electron ana süreç: tüm IPC, WhatsApp/Telegram/Discord entegrasyonları, onay kapısı (/approve), /stop /restart, splash, gizli araştırma tarayıcısı |
 | \`agent/engine.js\` | OTURUM MOTORU: send/_run tur döngüsü, paralel ajanlar (run_background, run_background_many, tasks_list, task_status, task_cancel — task_cancel reason ZORUNLU), superyorizon (takılan işi zorla kapatır), iptal sebep disiplini, flushPendingReports |
 | \`agent/tools.js\` | Araçlar + web_search SIRALI ZİNCİRİ (searchChain: 1 dahili tarayıcı(Google) → 2 Obscura(stealth→DuckDuckGo) → 3 TinyFish(anahtarsa) → 4 python çoklu-motor; sıra Ayarlar→Web Arama'dan değişir), run_command, read/write_file, python_run, http_fetch, deep_search |
 | \`agent/llm.js\` | Sağlayıcı çağrısı + retry: ağ kopmasında 6 deneme + internet dönene kadar bekler; akış ortası kopmada kaldığı yerden devam |
 | \`agent/agentdefs.js\` | Özel ajan tanımları: %APPDATA%\beast\agents\\*.md (frontmatter: model/tools/steps/mode + prompt gövdesi); /agent ile bağlanır, run_background(agent:) ile paralel ajana verilir |
-| \`agent/obscura.js\` | Obscura: otomatik kurulum (GitHub releases, stealth zip) + DuckDuckGo html/lite arama ayrıştırıcı |
+| \`agent/searxng.js\` | SearXNG entegrasyonu: gömülü Python'a kurulum + 127.0.0.1:8888 başlatıcı + JSON arama motoru |
 | \`agent/bots.js\` | Bot CRUD, 5 haneli bot kodu, izolasyon; ad-ilk-harf doğrulaması |
-| \`agent/skills.js\` | Builtin tohumlar (help, email, python-web-search, pdf, gold-trading) + SKILL.md taraması + taslaklar |
+| \`agent/skills.js\` | Builtin tohumlar (help, email, python-web-search, pdf, gold-trading + superpowers metodoloji paketi: brainstorming/writing-plans/executing-plans/TDD/paralel-ajan/alt-ajan-geliştirme/sistematik-debugging/doğrulama/skill-yazma) + SKILL.md taraması + taslaklar |
 | \`agent/memory.js\`, \`agent/kb.js\` | Kalıcı hafıza + bilgi bankası |
 | \`cron.js\` (src kökü), \`agent/watchers.js\`, \`agent/bus.js\` | Cron, izleyici, olay merkezi — /stop bunlara DOKUNMAZ |
 | \`agent/usage.js\` | Token/maliyet sayaçları |
@@ -235,9 +235,9 @@ web_search aracı çağrıldığında zincir OTOMATİK çalışır — elle moto
 
 Gerçek Chromium olduğu için Google'a bot koruması uygulamaz. Arama aep=1 ile açılır: Google'ın KENDİ AI cevabı yanıtın 'ai' alanında HAZIR gelir — "kimdir/nedir" sorularında önce onu kullan, kaynak linkleri de 'results' alanında gelir. Sağ panelde açılır, kullanıcı da görebilir. CAPTCHA/trafik uyarısı gelirse tarayıcı 10 dk atlanır, sıradaki motor devreye girer.
 
-## 2. Obscura (stealth headless — DuckDuckGo)
+## 2. SearXNG (yerel metasearch — otomatik öncelik)
 
-Rust tabanlı gizli tarayıcı: anti-detect parmak izi + V8 JS. Beast Agent PAKETİNDE hazır gelir — ilk açılışta %APPDATA%\\beast\\obscura'ya açılır (indirme yok). Varsayılan AKTİF — tarayıcı engellenirse bot korumasını aşarak DuckDuckGo'dan sonuç getirir.
+Ücretsiz, sınırsız, anahtarsız. \`beast searxng\` ile gömülü Python'a kurulur ve 127.0.0.1:8888'de arka planda çalışır. AYAKTAYSA zincirde nerede olursa olsun OTOMATİK ÖNE alınır (çok kaynaklı: Google/Bing/DDG…); kapalıysa sessizce atlanır.
 
 ## 3. TinyFish API (anahtar varsa)
 
@@ -452,16 +452,45 @@ function writeSeed(seed) {
   } catch {}
 }
 
+/* Dosya tohumları: src/agent/seeds/<klasör>/SKILL.md — Superpowers metodoloji
+   paketi gibi kod dışı taşınan builtin skill'ler. Hepsi force: her açılışta
+   app sürümüyle güncellenir (kullanıcı düzenlemesi korunmaz, builtin'dir). */
+function fileSeedsDir() {
+  return path.join(__dirname, 'seeds');
+}
+
+function loadFileSeeds() {
+  const out = [];
+  let entries;
+  try {
+    entries = fs.readdirSync(fileSeedsDir(), { withFileTypes: true });
+  } catch {
+    return out;
+  }
+  for (const e of entries) {
+    if (!e.isDirectory()) continue;
+    try {
+      out.push({
+        folder: e.name,
+        force: true,
+        body: fs.readFileSync(path.join(fileSeedsDir(), e.name, 'SKILL.md'), 'utf8'),
+      });
+    } catch {}
+  }
+  return out;
+}
+
 /* Kaldırılan eski tohumlar: kullanıcı makinesinden de silinir */
 const RETIRED_SEEDS = ['free-web-search'];
 
 function seedIfEmpty() {
+  const seeds = SEEDS.concat(loadFileSeeds());
   if (!scan().length) {
-    for (const seed of SEEDS) writeSeed(seed);
+    for (const seed of seeds) writeSeed(seed);
   } else {
     /* force tohumlar her açılışta güncellenir: varsayılan web arama skill'inin
        içeriği hep güncel kalır (mevcut kurulum dahil) */
-    for (const seed of SEEDS) {
+    for (const seed of seeds) {
       if (seed.force) writeSeed(seed);
     }
   }
@@ -612,6 +641,7 @@ module.exports = {
   scan,
   seedIfEmpty,
   parseFrontmatter,
+  loadFileSeeds,
   addDraft,
   listDrafts,
   acceptDraft,

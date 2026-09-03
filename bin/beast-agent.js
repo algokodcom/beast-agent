@@ -87,6 +87,18 @@ if (process.argv[2] === 'update') {
   process.exit(0);
 }
 
+/* SearXNG: yerel arama motoru — kur + arka planda başlat (127.0.0.1:8888)
+   beast searxng        → gerekirse kur, başlat
+   beast searxng status → durum
+   beast searxng stop   → kulla */
+if (process.argv[2] === 'searxng') {
+  require('../src/agent/searxng').cli(process.argv.slice(3)).catch((e) => {
+    console.error('\u2717 ' + String((e && e.message) || e));
+    process.exit(1);
+  });
+  return;
+}
+
 /* detached başlatıcı + kendini onaran electron:
    taze makinalarda npm postinstall sırasında electron binary indirmesi
    sessizce başarısız olmuş olabilir → burada otomatik tamir edilir. */

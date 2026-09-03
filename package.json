@@ -1,7 +1,7 @@
 {
     "name": "beast-agent",
     "productName": "Beast Agent",
-    "version": "1.7.0",
+    "version": "1.8.0",
     "description": "Ultra-fast local agent shell for Windows.",
     "author": "algokodcom (AlgoKod)",
     "license": "MIT",
@@ -45,8 +45,7 @@
         "postpublish": "node scripts/swap-electron.js devdeps"
     },
     "devDependencies": {
-        "electron-builder": "^26.15.3",
-        "electron": "40.10.2"
+        "electron-builder": "^26.15.3"
     },
     "dependencies": {
         "@pdf-lib/fontkit": "^1.1.1",
@@ -63,7 +62,8 @@
         "pdfkit": "^0.20.1",
         "qrcode": "^1.5.4",
         "tesseract.js": "^7.0.0",
-        "ws": "^8.21.3"
+        "ws": "^8.21.3",
+        "electron": "40.10.2"
     },
     "build": {
         "appId": "com.quantumalgo.beastagent",

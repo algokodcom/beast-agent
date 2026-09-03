@@ -1,4 +1,4 @@
-'use strict';
+﻿'use strict';
 
 const { app, BrowserWindow, WebContentsView, ipcMain, shell, dialog, Tray, Menu, nativeImage, desktopCapturer, session, net: electronNet } = require('electron');
 const path = require('path');
@@ -151,8 +151,7 @@ function startNpmUpdateWatch() {
   setInterval(check, 6 * 60 * 60 * 1000);
 }
 const toolsMod = require('./agent/tools');
-const { htmlToText, setSearchChain, setSearchObscuraEnabled, setTinyfishKey } = toolsMod;
-const obscura = require('./agent/obscura');
+const { htmlToText, setSearchChain, setTinyfishKey } = toolsMod;
 /* OpenCode köprüsü KALDIRILDI: Beast Code artık tamamen BEAST motoruyla
    çalışır — opencode'in döngü mantığı (compaction, prune, cache disiplini,
    doom-loop, yetim onarım) engine.js'e native port edildi. */
@@ -226,14 +225,8 @@ let engine = null;
 let settings = loadSettings();
 ensureBeastCode();
 startHealthServer(); /* splash/boot aşamasından itibaren /health ayakta */
-try { setSearchObscuraEnabled(settings.obscuraEnabled !== false); } catch {} /* Obscura varsayılan AKTİF */
 try { setSearchChain(settings.searchChain); } catch {}
 try { setTinyfishKey(settings.tinyfishKey || null); } catch {}
-/* kurulumda Obscura da kurulsun: yoksa ARKA PLANDA otomatik indir (UI kilitlenmez);
-   ilerleme Ayarlar → Web Arama'dan da izlenebilir */
-setTimeout(() => {
-  if (!obscura.obscuraInstalled()) startObscuraInstall();
-}, 4000).unref?.();
 let wa = null;
 let waChats = new Map(); // jid -> aktif session id
 let waHistory = new Map(); // jid -> [sid,...] bu sohbete ait tüm oturumlar
@@ -5833,57 +5826,6 @@ ipcMain.handle('think:set', (_e, v) => {
   return engine.publicState();
 });
 
-/* Obscura stealth headless tarayıcı (Ayarlar → Web Arama) */
-
-/* kurulum durumu: ayarlardan çıkılıp dönülsa da main process'te sürer;
-   ilerleme agent:event ile panele, obscura:installState ile sekme açılışına taşınır */
-let obscuraInstallState = { running: false, pct: 0, phase: '', error: null };
-
-function pushObscuraProgress() {
-  try {
-    if (win && !win.isDestroyed()) win.webContents.send('agent:event', { type: 'obscura-progress', ...obscuraInstallState });
-  } catch {}
-}
-
-function startObscuraInstall() {
-  if (obscuraInstallState.running) return { ok: false, busy: true, ...obscuraInstallState };
-  obscuraInstallState = { running: true, pct: 0, phase: 'hazırlanıyor', error: null };
-  pushObscuraProgress();
-  obscura
-    .installObscura(null, (p) => {
-      obscuraInstallState.pct = Math.max(0, Math.min(100, Math.round(Number(p && p.pct) || 0)));
-      obscuraInstallState.phase = String((p && p.phase) || obscuraInstallState.phase || '');
-      pushObscuraProgress();
-    })
-    .then((r) => {
-      obscuraInstallState = r && r.ok
-        ? { running: false, pct: 100, phase: 'tamamlandı', error: null }
-        : { running: false, pct: 0, phase: 'hata', error: String((r && r.error) || 'bilinmeyen hata') };
-      pushObscuraProgress();
-      console.log('[obscura]', r && r.ok ? 'kuruldu: ' + r.dir : 'kurulamadı: ' + ((r && r.error) || '?'));
-    })
-    .catch((e) => {
-      obscuraInstallState = { running: false, pct: 0, phase: 'hata', error: String((e && e.message) || e) };
-      pushObscuraProgress();
-      console.log('[obscura] kurulamadı:', String((e && e.message) || e));
-    });
-  return { ok: true, started: true, ...obscuraInstallState };
-}
-
-ipcMain.handle('obscura:get', () => ({
-  installed: obscura.obscuraInstalled(),
-  dir: obscura.obscuraDir(),
-  enabled: settings.obscuraEnabled !== false,
-  install: { ...obscuraInstallState },
-}));
-ipcMain.handle('obscura:install', () => startObscuraInstall());
-ipcMain.handle('obscura:installState', () => ({ ...obscuraInstallState }));
-ipcMain.handle('obscura:setEnabled', (_e, v) => {
-  settings.obscuraEnabled = v !== false;
-  saveSettings();
-  try { setSearchObscuraEnabled(settings.obscuraEnabled); } catch {}
-  return { ok: true, enabled: settings.obscuraEnabled };
-});
 
 /* Arama zinciri sırası (Ayarlar → Web Arama'dan değiştirilir) */
 ipcMain.handle('searchorder:get', () => ({ chain: toolsMod.getSearchChain() }));

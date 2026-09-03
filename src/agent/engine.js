@@ -1,4 +1,4 @@
-'use strict';
+﻿'use strict';
 
 /* Beast engine: sessions, frugal context, streaming tool loop.
    v2: token-bazlı bağlam bütçesi (kullanım kalibrasyonlu), paralel tool
@@ -1519,7 +1519,7 @@ class Engine {
           'Tarayıcı eylemlerinin yanıtındaki recent günlüğü ve navigated bilgisini takip et; eylem yanıtları zaten taze snapshot içerir — refler tutarsız görünürse yeni snapshot al.',
           'CONUŞMA ODAĞI SENDE KALSIN: kullanıcı seninle konuşurken iş çıkmışsa — uzun da olsa UFACIK da (tek komutluk dizin listesi, tek dosya okuma, tek arama…) — run_background ile PARALEL ajana devret; ana sohbet hiçbir işi beklemez; bittiğinde özet otomatik düşer.',
           'Python işleri için python_run kullan: küçük betikler inline code ile; tekrarlayan işler %APPDATA%\\beast\\scripts klasöründeki dosyalarla (ör. news.py = RSS haber toplayıcı: args ["--limit","8","--json"]). Python kurulu olmasa bile ilk çağrıda taşınabilir gömülü runtime otomatik iner.',
-            'PYTHON DURUMU: makinede sistem Python\'u görünmese bile ŞAŞIRMA ve "python yok" DEME — python_run aracı kendi taşınabilir runtime\'ını (%APPDATA%\\beast\\py\\python.exe) otomatik indirir/kullanır ve bu klasör run_command PATH\'inde önceliklidir; yani run_command içinde de `python` çalışır. Ham Google/Bing scrape yerine önce web_search aracını kullan (zaten Obscura stealth tarayıcı + TinyFish + Python çoklu-motor destekli), script gerektiğinde python_run yaz.',
+            'PYTHON DURUMU: makinede sistem Python\'u görünmese bile ŞAŞIRMA ve "python yok" DEME — python_run aracı kendi taşınabilir runtime\'ını (%APPDATA%\\beast\\py\\python.exe) otomatik indirir/kullanır ve bu klasör run_command PATH\'inde önceliklidir; yani run_command içinde de `python` çalışır. Ham Google/Bing scrape yerine önce web_search aracını kullan (SearXNG + stealth TLS + TinyFish + Python çoklu-motor destekli), script gerektiğinde python_run yaz.',
           'PDF ÇIKTI KURALI: PDF üretirken pip\u2019ten pdf paketi (fpdf, fpdf2, markdown-pdf, weasyprint, reportlab vb.) KURMA/KULLANMA — bunlar Türkçe karakterleri bozar. Doğru kit Node tarafında ZATEN kurulu: `pdf-lib` + `@pdf-lib/fontkit` (Türkçe font gömme) ve `pdfkit`. python_run ile DEĞİL; write_file ile .js script yazıp run_command ile `node script.js` çalıştır. md→pdf çevirici YOKTUR ve kurulmaz: kullanıcıya rapor/özet/belge çıktısı vereceksen .md dosyası gönderme — aynı içeriği DOĞRUDAN pdf-lib/pdfkit ile PDF olarak üret ve send_file ile o PDF\u2019i gönder. Ayrıntılı örnekler: pdf skill\u2019i (SKILL.md).',
           'Eski bir hafıza kaydına ihtiyacın olursa memory_search ile ara; kalıcı bilgi/birikim için kb_search kullan, yeni bilgi öğrenirsen kb_add ile kaynak belirt.',
           'Bir oturumda 3+ kez memory_write yaptıysan iş bitince memory_hygiene çağır (duplike/eskime temizliği).',
@@ -3685,10 +3685,10 @@ class Engine {
 
   /* web_search zinciri — web_search VE deep_search aynı zinciri kullanır.
      Sıra + aç/kapa Ayarlar → Web Arama'dan değiştirilir (tools.searchChainWeb):
-     varsayılan: 1) dahili tarayıcı (DİREK GOOGLE) 2) Obscura (stealth headless
-     → DuckDuckGo; otomatik kurulur, varsayılan AKTİF) 3) TinyFish (anahtar
-     girildiyse) 4) python çoklu-motor. Tarayıcı CAPTCHA/trafik verirse 10 dk
-     atlanır — sıradaki motor hemen devreye girer. */
+     varsayılan: 1) SearXNG (yerel, ayaktaysa otomatik öne alınır) 2) stealth
+     (curl_cffi Chrome TLS taklidi → DDG html) 3) dahili tarayıcı (DİREK
+     GOOGLE) 4) TinyFish (anahtar girildiyse) 5) python çoklu-motor. Tarayıcı
+     CAPTCHA/trafik verirse 10 dk atlanır — sıradaki motor hemen devreye girer. */
   _webSearchChain(q, n, sessionId, signal) {
     const browserUsable = this.browser && typeof this.browser.search === 'function';
     return tools.searchChainWeb(q, n, {
@@ -4086,7 +4086,7 @@ class Engine {
       if (name === 'deep_search') {
         /* agentic derin araştırma: çoklu sorgu + gizli tarayıcıda sayfa okuma.
            ARAMA zinciri web_search ile BİREBİR AYNI — sıralı zincir
-           (tarayıcı → Obscura → TinyFish → python; Ayarlar'dan değiştirilir). */
+           (SearXNG → stealth → tarayıcı → TinyFish → python; Ayarlar'dan değiştirilir).. */
         try {
           emitSafe(this, sessionId, { type: 'status', status: 'derin araştırma: çoklu sorgu + gizli sayfa okuma' });
         } catch {}

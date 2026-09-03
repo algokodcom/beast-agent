@@ -1,4 +1,4 @@
-'use strict';
+﻿'use strict';
 
 const fs = require('fs');
 const os = require('os');
@@ -7,7 +7,7 @@ const https = require('https');
 const { execFile } = require('child_process');
 const { spawn } = require('child_process');
 const research = require('./research');
-const obscura = require('./obscura');
+const searxng = require('./searxng');
 
 const MAX_CMD_OUTPUT = 16000;
 const MAX_FILE_CHARS = 200000;
@@ -572,6 +572,69 @@ function parseWsOutput(output) {
     })
     .filter(Boolean)
     .map((x) => ({ title: String(x.title || ''), url: String(x.url || ''), snippet: String(x.snippet || ''), engine: String(x.engine || '') }));
+}
+
+/* Obscura yaklaşımının Node-gömülü uyarlaması: Chrome TLS parmak izi taklidi.
+   curl_cffi (curl-impersonate) gömülü Python'a otomatik kurulur; ayrı program YOK.
+   Bot koruması olan sitelerden (DDG html) gerçek Chrome kimliğiyle sonuç çeker. */
+
+let _cffiTried = null; // Promise<boolean> — oturum başına tek kurulum denemesi
+
+function cffiImportOk(probe) {
+  return pyExec(probe.exe, ['-c', 'import curl_cffi'], 15000).then((r) => !r.err);
+}
+
+function ensureCffi(probe) {
+  if (_cffiTried) return _cffiTried;
+  _cffiTried = (async () => {
+    try {
+      if (await cffiImportOk(probe)) return true;
+      const pip = await pyExec(probe.exe, ['-m', 'pip', '--version'], 15000);
+      if (pip.err) return false;
+      const inst = await pyExec(
+        probe.exe,
+        ['-m', 'pip', 'install', '--quiet', '--disable-pip-version-check', 'curl_cffi'],
+        300000
+      );
+      if (inst.err) return false;
+      return await cffiImportOk(probe);
+    } catch {
+      return false;
+    }
+  })();
+  return _cffiTried;
+}
+
+/* stealth arama: curl_cffi ile DDG html — ham HTML döner, JS'te parse edilir */
+async function stealthSearch(query, { maxResults = 8, signal } = {}) {
+  try {
+    const probe = await ensurePython({ allowDownload: true, signal });
+    if (!(await cffiImportOk(probe))) {
+      ensureCffi(probe).catch(() => {}); /* ilk çağrıda atla, kurulum arka planda */
+      return null;
+    }
+    const script = seedScript('stealthsearch.py', true);
+    const r = await runPy(
+      probe.exe,
+      script,
+      [encodeURIComponent(String(query || ''))],
+      process.cwd(),
+      25000,
+      signal
+    );
+    const html = String(r.output || '');
+    if (!html || html.length < 500) return null;
+    const results = parseDdgResults(html, Math.min(Math.max(Number(maxResults) || 8, 1), 12));
+    if (!results.length) return null;
+    return {
+      ok: true,
+      engine: 'stealth',
+      query,
+      results: results.map((x) => ({ ...x, engine: 'stealth' })),
+    };
+  } catch {
+    return null;
+  }
 }
 
 async function webSearchFast(query, { maxResults = 8, signal } = {}) {
@@ -1570,7 +1633,7 @@ const definitions = [
     function: {
       name: 'web_search',
       description:
-        'FAST web search with an automatic chain (order is configurable in Ayarlar → Web Arama): built-in browser (real Chromium searching GOOGLE directly with AI Mode — no bot protection; the response may include an `ai` field holding Google\'s own AI answer), Obscura stealth headless browser (anti-detect; searches DuckDuckGo, installed automatically and ACTIVE by default), TinyFish API (only if a key is configured), then Python multi-engine (ddgs / DuckDuckGo+Bing+Mojeek). If the browser hits CAPTCHA/unusual traffic it is skipped for 10 minutes and the next engine takes over. Returns {ai?, results[{title,url,snippet}]}. Use when fresh or external info is needed; skip for things you already know.',
+        'FAST web search with an automatic chain (order is configurable in Ayarlar → Web Arama): local SearXNG (free, unlimited, auto-prioritized when running — start with `beast searxng`), built-in browser (real Chromium searching GOOGLE directly with AI Mode — no bot protection; the response may include an `ai` field holding Google\'s own AI answer), TinyFish API (only if a key is configured), then Python multi-engine (ddgs / DuckDuckGo+Bing+Mojeek). If the browser hits CAPTCHA/unusual traffic it is skipped for 10 minutes and the next engine takes over. Returns {ai?, results[{title,url,snippet}]}. Use when fresh or external info is needed; skip for things you already know.',
       parameters: {
         type: 'object',
         properties: {
@@ -1988,7 +2051,7 @@ async function exec(name, args, ctx) {
       case 'web_search': {
         const q = String(args.query || '');
         const n = Number(args.max_results) || 8;
-        /* sıralı zincir (obscura/tinyfish/python — dahili tarayıcı engine
+        /* sıralı zincir (searxng/tinyfish/python — dahili tarayıcı engine
            tarafındaki hook'tan gelir); Exa KALDIRILDI */
         const r = await searchChainWeb(q, n, { signal: ctx.signal });
         return JSON.stringify(r);
@@ -2081,15 +2144,14 @@ async function exec(name, args, ctx) {
 }
 
 /* ---------- Sıralı arama zinciri (Ayarlar → Web Arama'dan değiştirilir) ----------
-   Motorlar: browser (dahili Chromium → Google) · obscura (stealth headless →
+   Motorlar: searxng (yerel 8888) · browser (dahili Chromium → Google) ·
    DuckDuckGo) · tinyfish (API, anahtar gerekir) · python (ddgs/DDG+Bing+Mojeek).
-   Sıra + aç/kapa ayarı settings.json'da (searchChain) saklanır; Obscura
+   Sıra + aç/kapa ayarı settings.json'da (searchChain) saklanır; eski
    varsayılan AKTİF. Tarayıcı CAPTCHA/trafik verirse 10 dk atlanır. */
-const SEARCH_ENGINE_IDS = ['browser', 'obscura', 'tinyfish', 'python'];
+const SEARCH_ENGINE_IDS = ['searxng', 'stealth', 'browser', 'tinyfish', 'python'];
 const DEFAULT_SEARCH_CHAIN = SEARCH_ENGINE_IDS.map((id) => ({ id, on: true }));
 
 let _searchChain = DEFAULT_SEARCH_CHAIN.map((x) => ({ ...x }));
-let _obscuraEnabled = true; /* Obscura varsayılan AKTİF */
 let _browserBanUntil = 0;
 
 function normalizeSearchChain(list) {
@@ -2105,7 +2167,6 @@ function normalizeSearchChain(list) {
   for (const id of SEARCH_ENGINE_IDS) {
     if (!seen.has(id)) rows.push({ id, on: true }); /* listede eksik motor varsayılan AÇIK */
   }
-  /* obscura varsayılan AKTİF; zincir boş kalmasın: hepsi kapalıysa browser'ı aç */
   if (!rows.some((r) => r.on)) {
     const b = rows.find((r) => r.id === 'browser');
     if (b) b.on = true;
@@ -2118,9 +2179,6 @@ function setSearchChain(list) {
   return _searchChain;
 }
 
-function setSearchObscuraEnabled(v) {
-  _obscuraEnabled = v !== false;
-}
 
 function getSearchChain() {
   return _searchChain.map((x) => ({ ...x }));
@@ -2142,7 +2200,15 @@ async function searchChainWeb(query, maxResults, { signal, browser } = {}) {
   const cap = Math.max(1, Math.min(12, Number(maxResults) || 8));
   let out = null;
   const banned = browserBanned();
-  for (const row of _searchChain) {
+  /* OTOMATİK SEÇİM: yerel SearXNG ayaktaysa (kullanıcı kapatmadıysa) zincirde
+     nerede olursa olsun ÖNE alınır — ücretsiz + CAPTCHAsız + en hızlı aday.
+     isUp() cache'li: kapalıysa ağır maliyeti yok, normal sıra işler. */
+  const rows = _searchChain.slice();
+  try {
+    const i = rows.findIndex((r) => r.id === 'searxng');
+    if (i > 0 && rows[i].on && (await searxng.isUp())) rows.unshift(rows.splice(i, 1)[0]);
+  } catch {}
+  for (const row of rows) {
     if (out && out.ok && (out.results || []).length) break;
     if (!row.on) continue;
     try {
@@ -2153,11 +2219,14 @@ async function searchChainWeb(query, maxResults, { signal, browser } = {}) {
           banBrowser(); /* tarayıcı sorunlu — 10 dk atla, alternatifler devrede */
           out = null;
         }
-      } else if (row.id === 'obscura') {
-        if (!_obscuraEnabled) continue;
-        out = await obscura.obscuraSearch(q, { maxResults: cap, signal });
+      } else if (row.id === 'stealth') {
+        /* obscura yaklaşımı: Chrome TLS taklidi (curl_cffi) */
+        out = await stealthSearch(q, { maxResults: cap, signal });
       } else if (row.id === 'tinyfish') {
         out = await tinyfishSearch(q, cap, signal);
+      } else if (row.id === 'searxng') {
+        /* yerel SearXNG — ayakta değilse hızlıca atlanır (probe cache'li) */
+        out = await searxng.search(q, { maxResults: cap, signal });
       } else if (row.id === 'python') {
         out = await webSearchFast(q, { maxResults: cap, signal });
       }
@@ -2254,15 +2323,13 @@ module.exports = {
   SEARCH_ENGINE_IDS,
   DEFAULT_SEARCH_CHAIN,
   setSearchChain,
-  setSearchObscuraEnabled,
   getSearchChain,
   searchChainWeb,
   browserBanned,
   banBrowser,
   setTinyfishKey,
   tinyfishSearch,
-  /* obscura geçişi */
-  obscura,
+  stealthSearch,
   /* python altyapısı */
   ensurePython,
   findSystemPython,

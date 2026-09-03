@@ -1,4 +1,4 @@
-'use strict';
+﻿'use strict';
 
 /* Beast renderer — vanilla JS, event-driven via window.beast IPC bridge. */
 
@@ -114,8 +114,6 @@ const els = {
   settingsOverlay: $('#settingsOverlay'),
   setClose: $('#setClose'),
   setVersion: $('#setVersion'),
-  beastCode: $('#beastCode'),
-  bcCopy: $('#bcCopy'),
   attachBtn: $('#attachBtn'),
   micBtn: $('#micBtn'),
   fileInput: $('#fileInput'),
@@ -410,6 +408,9 @@ function finalizeAssistant(content) {
   if (streamEl && content && streamRaw === content) {
     streamEl.dataset.done = '1';
     streamEl.classList.remove('cursor-blink');
+    /* KRİTİK: renderStream 50ms timer'ı hâlâ bekliyor olabilir — basmadan
+       geçersek SON kelimeler ekrana hiç gelmez (tail-loss bug'ı) */
+    streamEl.innerHTML = md(streamRaw);
     streamEl = null;
     return;
   }
@@ -988,10 +989,6 @@ async function openSettings() {
   if (els.setVersion) {
     beast.appVersion().then((v) => { els.setVersion.textContent = 'v' + String(v || '?'); }).catch(() => {});
   }
-  try {
-    const s = await beast.getSettings();
-    if (els.beastCode) els.beastCode.textContent = s.beastCode || '—';
-  } catch {}
   await renderProviderPane();
   renderSkillsPane();
   renderTtsPane();
@@ -1138,51 +1135,7 @@ async function refreshFalloutPane() {
   renderFalloutPane();
 }
 
-/* Obscura kurulum ilerlemesi: main process'te sürer — ayarlardan çıkılsa da
-   kesilmez. Panel açıksa çubuk canlı güncellenir; bitişte tek kez toast atılır. */
-let _obscuraWasRunning = false;
-function paintObscuraState(st) {
-  const ocSt = $('#ocStatus');
-  const ocProg = $('#ocProg');
-  const ocBtn = $('#ocInstall');
-  if (!ocSt || !ocProg || !ocBtn || !st || !st.phase) return;
-  const pct = Math.max(0, Math.min(100, Number(st.pct) || 0));
-  const fill = ocProg.querySelector('.oc-prog-fill');
-  const txt = ocProg.querySelector('.oc-prog-text');
-  if (st.running) {
-    ocBtn.disabled = true;
-    ocBtn.textContent = _t('oc_install_running');
-    ocProg.hidden = false;
-    if (fill) fill.style.width = pct + '%';
-    const phaseKey = ({ 'hazırlanıyor': 'prep', 'indiriliyor': 'download', 'kuruluyor': 'extract', 'doğrulanıyor': 'verify' })[st.phase];
-    if (txt) txt.textContent = (phaseKey ? _t('oc_phase_' + phaseKey) : st.phase) + ' — ' + pct + '%';
-    ocSt.textContent = _t('oc_bg_note');
-  } else if (st.phase === 'tamamlandı' && pct >= 100) {
-    ocBtn.disabled = false;
-    ocBtn.textContent = _t('oc_install');
-    ocProg.hidden = false;
-    if (fill) fill.style.width = '100%';
-    if (txt) txt.textContent = _t('oc_phase_done') + ' — 100%';
-    ocSt.textContent = _t('oc_status_ok');
-  } else if (st.phase === 'hata') {
-    ocBtn.disabled = false;
-    ocBtn.textContent = _t('oc_install');
-    ocProg.hidden = true;
-    ocSt.textContent = _t('oc_install_fail') + (st.error || '?');
-  }
-}
-
-function onObscuraProgress(ev) {
-  if (ev && ev.running) _obscuraWasRunning = true;
-  paintObscuraState(ev);
-  if (ev && !ev.running && _obscuraWasRunning) {
-    _obscuraWasRunning = false;
-    if (ev.phase === 'tamamlandı') toast(_t('oc_installed_toast'));
-    else if (ev.phase === 'hata') toast(_t('oc_install_fail') + (ev.error || '?'));
-  }
-}
-
-/* Web Arama sekmesi: TinyFish anahtarı + Obscura (kurulum/aktiflik) + arama sırası */
+/* Web Arama sekmesi: TinyFish anahtarı + arama sırası (Obscura kaldırıldı — SearXNG yerel motor) */
 async function renderWebSearchPane() {
   const pane = $('#tab-websearch');
   if (!pane) return;
@@ -1190,18 +1143,6 @@ async function renderWebSearchPane() {
   pane.innerHTML =
     '<h2>' + _t('ws_h2') + '</h2>' +
     '<div class="sub">' + _t('ws_sub') + '</div>' +
-    /* --- Obscura --- */
-    '<div class="divider"></div>' +
-    '<h2>' + _t('oc_h2') + '</h2>' +
-    '<div class="sub">' + _t('oc_sub') + '</div>' +
-    '<div id="ocStatus" class="sub" style="text-align:left;margin-top:8px"></div>' +
-    '<label class="mem-label" style="display:flex;align-items:center;justify-content:center;gap:8px;cursor:pointer">' +
-    '<input id="ocEnabled" type="checkbox" style="width:auto" /> <span>' + _t('oc_enabled') + '</span></label>' +
-    '<div id="ocProg" class="oc-prog" hidden>' +
-    '<div class="oc-prog-bar"><div class="oc-prog-fill" style="width:0%"></div></div>' +
-    '<div class="oc-prog-text sub"></div></div>' +
-    '<div style="display:flex;justify-content:center;margin-top:12px">' +
-    '<button id="ocInstall" class="btn">' + _t('oc_install') + '</button></div>' +
     /* --- Arama sırası --- */
     '<div class="divider"></div>' +
     '<h2>' + _t('so_h2') + '</h2>' +
@@ -1218,26 +1159,6 @@ async function renderWebSearchPane() {
     '<button id="tfSave" class="btn">' + _t('ws_save') + '</button>' +
     '<button id="tfClear" class="btn ghost">' + _t('ws_clear') + '</button></div>';
 
-  /* --- Obscura durumu --- */
-  const ocSt = $('#ocStatus');
-  const ocChk = $('#ocEnabled');
-  const ocBtn = $('#ocInstall');
-  const oc = await beast.obscuraGet().catch(() => ({ installed: false, enabled: true, dir: '', install: null }));
-  ocChk.checked = oc.enabled !== false;
-  /* kurulum arka planda sürüyorsa durum panelde GERİ YÜKLENİR —
-     ayarlardan çıkıp dönsen bile ilerleme kaybolmaz */
-  const ocState = oc.install || (await beast.obscuraInstallState().catch(() => null));
-  paintObscuraState(ocState);
-  ocChk.addEventListener('change', async () => {
-    await beast.obscuraSetEnabled(ocChk.checked).catch(() => {});
-    toast(ocChk.checked ? _t('oc_on_toast') : _t('oc_off_toast'));
-  });
-  ocBtn.addEventListener('click', async () => {
-    if (ocBtn.disabled) return;
-    const r = await beast.obscuraInstall().catch(() => ({ ok: false, error: 'hata' }));
-    if (r && (r.ok || r.started || r.busy)) paintObscuraState(await beast.obscuraInstallState().catch(() => null));
-    else toast(_t('oc_install_fail') + ((r && r.error) || '?'));
-  });
 
   /* --- Arama sırası --- */
   const soBox = $('#soList');
@@ -4277,8 +4198,6 @@ function onEvent(ev) {
   }
   /* OFFLINE MESAJ KUYRUĞU: bağlantı + kuyruk olayları (sessionId filtresinden önce) */
   if (ev.type === 'net' || ev.type === 'netQueue') { onNetEvent(ev); return; }
-  /* Obscura kurulum ilerlemesi — ayarlardan çıkıp dönülsen de main'de sürer */
-  if (ev.type === 'obscura-progress') { onObscuraProgress(ev); return; }
   /* Beast Code oturumu (IDE modu ortasındaki panel): olayları panele akıt,
      ana sohbeti kirletme */
   if (bcSessionId && ev.sessionId === bcSessionId) {
@@ -5292,16 +5211,6 @@ async function init() {
 
   els.gearBtn.addEventListener('click', openSettings);
   els.setClose.addEventListener('click', closeSettings);
-  if (els.bcCopy) {
-    els.bcCopy.addEventListener('click', async () => {
-      const code = (els.beastCode && els.beastCode.textContent) || '';
-      if (!code || code === '—') return;
-      try {
-        await navigator.clipboard.writeText(code);
-        toast(_t('bc_copied'));
-      } catch {}
-    });
-  }
 
   /* dahili tarayıcı çubuğu */
   els.browserBtn.addEventListener('click', () => beast.toggleBrowser());

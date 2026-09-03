@@ -1,7 +1,7 @@
 {
     "name": "beast-agent",
     "productName": "Beast Agent",
-    "version": "1.6.0",
+    "version": "1.6.1",
     "description": "Ultra-fast local agent shell for Windows.",
     "author": "algokodcom (AlgoKod)",
     "license": "MIT",
@@ -24,6 +24,7 @@
         "openai"
     ],
     "main": "src/main.js",
+    "preferGlobal": true,
     "bin": {
         "beast-agent": "bin/beast-agent.js",
         "beast": "bin/beast-agent.js"

@@ -114,6 +114,18 @@ module.exports = { electronDir, status, repair };
    elle çağrı → hata durumunda exit 1 */
 if (require.main === module) {
   const soft = process.argv.includes('--soft');
+  /* npm sitesindeki Install kutusu hep `npm i <isim>` yazar — lokal kurulumda
+     `beast-agent` komutu PATH'e girmez ve kullanıcı uygulama başlamadı sanır.
+     npm_config_global yalnız `npm i -g` kurulumlarında 'true' gelir → lokalse uyar. */
+  const isGlobal =
+    String(process.env.npm_config_global || process.env.NPM_CONFIG_GLOBAL || '').trim() === 'true';
+  if (soft && !isGlobal) {
+    console.log('');
+    console.log('\u26A0\uFE0F  Beast Agent bu klas\u00F6re LOKAL kuruldu \u2014 `beast-agent` komutu \u00E7al\u0131\u015Fmaz (PATH\u2019te de\u011Fil).');
+    console.log('   Do\u011Fru kurulum (\u00F6nerilen):  npm install -g beast-agent');
+    console.log('   Bu klas\u00F6rde denemek:       npx beast-agent');
+    console.log('');
+  }
   const r = repair({ quiet: false });
   if (r.ok) {
     console.log(r.skipped ? '\u2713 electron binary tamam' : '\u2713 electron binary onar\u0131ld\u0131');

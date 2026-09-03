@@ -4,6 +4,13 @@
 
 ![platform](https://img.shields.io/badge/platform-Windows-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![electron](https://img.shields.io/badge/electron-40-47848F)
 
+> [!IMPORTANT]
+> **This is a desktop app — it must be installed GLOBALLY:**
+> ```bash
+> npm install -g beast-agent
+> ```
+> ⚠️ The npm sidebar box (`npm i beast-agent`) performs a **local** install — the `beast-agent` command will NOT be on your PATH and the app won't start. If you already installed locally, either re-run the command above, or launch with `npx beast-agent`. Global install also sets up the desktop shortcut and Windows startup automatically on first launch.
+
 **Website:** [beast.algokod.com](https://beast.algokod.com) · **AlgoKod:** [algokod.com](https://algokod.com)
 
 Beast Agent is a personal AI agent that runs on your machine and connects to **any OpenAI-compatible provider**. Define all your models in a single `config.yaml`; Beast handles the rest.

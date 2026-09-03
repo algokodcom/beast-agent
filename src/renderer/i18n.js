@@ -22,6 +22,7 @@
       tip_net_online: 'İnternet: bağlı',
       tip_net_offline: 'İnternet: yok — bağlantı dönünce işler otomatik sürer',
       sess_drag: 'Sürükleyerek sırayı değiştir',
+  sess_del_confirm: 'Bu sohbet oturumunu silmek istediğine emin misin?',
       tipWatch: 'İzleyiciler (Watchers)',
       tipCron: 'Cron Görevler',
       tip_light: 'Açık tema',

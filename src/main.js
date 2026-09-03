@@ -1192,6 +1192,29 @@ async function tryWaSlash(jid, rawText, senderNum, payload0) {
       out =
         `*WA:* ${wst.status}${wst.user ? ' (' + wst.user + ')' : ''}\n` +
         `*İzleyici:* ${watchers.list().length} adet\n*Cron:* ${jobs} aktif görev`;
+    } else if (cmd === 'cron') {
+      /* /cron list | /cron clear (hepsini sil) | /cron del <id> */
+      const sub = String(arg || '').toLowerCase().trim();
+      if (!sub || sub === 'list') {
+        const all = cron.list();
+        out = all.length
+          ? '*Cron görevleri* (' + all.length + ')\n' +
+            all.map((j, i) => `${i + 1}. ${escapeWa(j.name)} — \`${j.schedule}\`${j.enabled ? '' : ' (kapalı)'}`).join('\n')
+          : 'Cron görevi yok.';
+      } else if (sub === 'clear') {
+        const r = cron.clearAll();
+        cronEmit();
+        out = r.ok
+          ? `*Tüm cron görevleri silindi* (${r.count} adet). Zamanlayıcı durduruldu.`
+          : 'Cron temizlenemedi.';
+      } else if (sub.startsWith('del ')) {
+        const id = sub.slice(4).trim();
+        const r = cron.remove(id);
+        cronEmit();
+        out = r.ok ? '*Cron görevi silindi.*' : 'Görev bulunamadı.';
+      } else {
+        out = 'Kullanım: `/cron list` · `/cron clear` (hepsini sil) · `/cron del <id>`';
+      }
     } else if (cmd === 'beastcode') {
       /* /beastcode [görev] — WhatsApp'tan UZAKTAN KODLAMA modu:
          masaüstünde GERÇEK Beast Code paneli açılır (IDE ekranı), sohbet
@@ -1744,6 +1767,25 @@ async function handleWaIncoming(jid, payload, senderNum) {
     const txt0 = String(payload.text || '').trim();
     if (txt0.startsWith('/') && !txt0.includes('\n') && (!isGroup || payload.mentioned)) {
       if (await tryWaSlash(jid, txt0, senderNum, payload)) return;
+    }
+
+    /* "hepsini sil" / "tüm cron" / "cronları temizle" gibi doğal dil → cron temizle.
+       clearAll() bellekteki job'ları VE diski boşaltır, zamanlayıcıyı durdurur
+       (sadece dosya silmek yetmezdi: çalışan proses belleği geri yazıyordu). */
+    const lc = txt0.toLowerCase();
+    if (
+      (lc.includes('cron') && /(sil|temizle|kaldır|hepsi|tüm|sıfırla)/.test(lc)) ||
+      /^(hepsini|hepsını|tümünü|tümünü|hepsnı|hepsnı)\b.*(sil|sıl|temizle|kaldır)/.test(lc)
+    ) {
+      const r = cron.clearAll();
+      cronEmit();
+      await sendWaSafe(
+        jid,
+        r.ok
+          ? `*Tüm cron görevleri silindi* (${r.count} adet). Zamanlayıcı durduruldu.`
+          : 'Cron temizlenemedi.'
+      ).catch(() => {});
+      return;
     }
 
     if (isGroup) {

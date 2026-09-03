@@ -186,6 +186,16 @@ function remove(id) {
   return { ok: jobs.length < before };
 }
 
+/* Tüm görevleri bellekten ve diskten sil; zamanlayıcıyı durdur.
+   "hepsini sil" / "/cron clear" için kullanılır. */
+function clearAll() {
+  const count = jobs.length;
+  jobs = [];
+  if (timer) { clearInterval(timer); timer = null; }
+  save();
+  return { ok: true, count };
+}
+
 function toggle(id) {
   const job = jobs.find((j) => j.id === id);
   if (!job) return { ok: false, error: 'görev bulunamadı' };
@@ -242,4 +252,4 @@ function stop() {
   timer = null;
 }
 
-module.exports = { init, stop, list, add, update, remove, toggle, runNow, parseCron, nextRunFrom, isValidSchedule, reminderSchedule };
+module.exports = { init, stop, list, add, update, remove, clearAll, toggle, runNow, parseCron, nextRunFrom, isValidSchedule, reminderSchedule };

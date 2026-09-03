@@ -789,13 +789,12 @@ async function renderSessions(list) {
     row.addEventListener('click', () => openSession(s.id));
     row.querySelector('.sess-del').addEventListener('click', async (e) => {
       e.stopPropagation();
+      if (!window.confirm((_t('sess_del_confirm') || 'Bu sohbet oturumunu silmek istediğine emin misin?') + '\n\n' + (s.title || 'Yeni Sohbet'))) return;
       await beast.deleteSession(s.id);
       if (s.id === activeId) {
         activeId = null;
         els.msgs.innerHTML = '';
         showEmpty(true);
-        const created = await beast.createSession();
-        await openSession(created.id);
       }
       sessionOrder = sessionOrder.filter((x) => x !== s.id);
       refreshSessions();
@@ -5058,11 +5057,13 @@ async function init() {
   } catch {}
   applyState();
 
+  /* açılışta: oturum varsa SON oturumu otomatik yükle/göster; yoksa yeni oturum AÇMA (kullanıcı "Yeni Sohbet"e bassın) */
   const sessions = await beast.listSessions();
-  if (sessions.length) await openSession(sessions[0].id);
-  else {
-    const created = await beast.createSession();
-    await openSession(created.id);
+  if (sessions.length) {
+    const last = sessions.slice().sort((a, b) => (new Date(b.updatedAt || 0) - new Date(a.updatedAt || 0)))[0] || sessions[0];
+    await openSession(last.id);
+  } else {
+    showEmpty(true);
   }
 
   els.newChat.addEventListener('click', async () => {

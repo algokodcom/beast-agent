@@ -603,6 +603,7 @@ module.exports = {
   setCapsFile,
   capsFor,
   resetCaps,
+  learnCaps,
   PARAM_LABELS,
   isNetworkError,
   wantsCacheKey,

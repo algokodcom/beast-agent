@@ -6907,6 +6907,35 @@ async function testZenModels(key, models) {
   return results;
 }
 
+/* REASONING PROBU: model düşünüyor mu? reasoning_effort:'low' ile minik istek —
+   200 → destekliyor (bir şey yapma), 400 → desteklemiyor (model-caps'e yazılır,
+   kullanıcı düşünmeyi açsa bile o modelde parametre hiç gönderilmez).
+   Diğer statuslar (429/5xx) kararsızdır — hüküm verilmez. */
+async function testZenReasoning(key, model) {
+  try {
+    const res = await fetch(ZEN_BASE + '/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + key },
+      body: JSON.stringify({
+        model,
+        messages: [{ role: 'user', content: 'ping' }],
+        max_tokens: 8,
+        stream: false,
+        reasoning_effort: 'low',
+      }),
+      signal: AbortSignal.timeout(25000),
+    });
+    if (res.ok) return true;
+    if (res.status === 400) {
+      try { await res.text(); } catch {}
+      return false;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 ipcMain.handle('zen:oneClick', async () => {
   try {
     /* 1) token zaten var mı? (env / auth.json) */
@@ -6947,6 +6976,25 @@ ipcMain.handle('zen:oneClick', async () => {
       };
     }
     const entry = applyZenProvider(key, models);
+    /* reasoning probu: desteklemeyen free modelleri ÖNCEDEN model-caps.json'a
+       yaz — kullanıcının düşünme seviyesi açıkken bile bu modellerde
+       reasoning_effort hiç gönderilmez, ilk istekte 400 turu yaşanmaz */
+    try {
+      const llmMod = require('./agent/llm');
+      llmMod.setCapsFile(path.join(beastDir(), 'model-caps.json'));
+      const noReason = [];
+      const RBATCH = 4;
+      for (let i = 0; i < models.length; i += RBATCH) {
+        const rs = await Promise.all(models.slice(i, i + RBATCH).map((m) => testZenReasoning(key, m)));
+        rs.forEach((r, j) => { if (r === false) noReason.push(models[i + j]); });
+      }
+      for (const m of noReason) {
+        llmMod.learnCaps({ providerId: 'custom:' + ZEN_PRESET_ID, model: m }, { noReasoning: true });
+      }
+      if (noReason.length) {
+        log.info('main', 'zen: reasoning desteklemeyenler (caps yazıldı) → ' + noReason.join(', '));
+      }
+    } catch {}
     /* hiç model seçili değilse ilk ÇALIŞAN modeli varsayılan yap */
     try {
       if (!engine.publicState().activeModel) {

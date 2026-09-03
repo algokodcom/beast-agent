@@ -80,6 +80,28 @@ const els = {
   bcAttach: $('#bcAttach'),
   bcMic: $('#bcMic'),
   bcChips: $('#bcChips'),
+  studioBtn: $('#studioBtn'),
+  stPanel: $('#stPanel'),
+  stTitle: $('#stTitle'),
+  stCwd: $('#stCwd'),
+  stOut: $('#stOut'),
+  stTodoWrap: $('#stTodoWrap'),
+  stStatus: $('#stStatus'),
+  stChips: $('#stChips'),
+  stInput: $('#stInput'),
+  stStop: $('#stStop'),
+  stClear: $('#stClear'),
+  stNew: $('#stNew'),
+  stAttach: $('#stAttach'),
+  stMic: $('#stMic'),
+  studioRow: $('#studioRow'),
+  stSplit: $('#stSplit'),
+  stVideoEl: $('#stVideoEl'),
+  stVideoName: $('#stVideoName'),
+  stVideoOpen: $('#stVideoOpen'),
+  stVideoExt: $('#stVideoExt'),
+  stVideoBody: $('#stVideoBody'),
+  stVideoEmpty: $('#stVideoEmpty'),
   codeTabs: $('#codeTabs'),
   codeTa: $('#codeTa'),
   codeGutter: $('#codeGutter'),
@@ -881,8 +903,9 @@ async function openSession(id) {
 
 const TEXT_EXT = /\.(txt|md|json|csv|log|js|ts|py|ps1|bat|cmd|html|css|yaml|yml|xml|ini)$/i;
 
-/* ek hedefleri: chat + Beast Code panosu ayrı kuyruklar */
+/* ek hedefleri: chat + Beast Code + Beast Studio ayrı kuyruklar */
 let bcPending = [];
+let stPending = [];
 
 function renderChips() {
   els.chips.innerHTML = '';
@@ -925,25 +948,49 @@ function renderBcChips() {
   });
 }
 
+function renderStChips() {
+  if (!els.stChips) return;
+  els.stChips.innerHTML = '';
+  els.stChips.hidden = stPending.length === 0;
+  stPending.forEach((a, i) => {
+    const c = document.createElement('span');
+    c.className = 'chip';
+    const label = a.type === 'image' ? `\u25A3 ${a.name}` : `\u2261 ${a.name}`;
+    c.appendChild(document.createTextNode(label));
+    const x = document.createElement('span');
+    x.className = 'x';
+    x.textContent = '×';
+    x.addEventListener('click', () => {
+      stPending.splice(i, 1);
+      renderStChips();
+    });
+    c.appendChild(x);
+    els.stChips.appendChild(c);
+  });
+}
+
 function addFiles(files, mode) {
   const isBc = mode === 'bc';
+  const isSt = mode === 'st';
+  const getList = () => (isBc ? bcPending : isSt ? stPending : pending);
+  const paint = () => (isBc ? renderBcChips() : isSt ? renderStChips() : renderChips());
   for (const f of files) {
     if (f.size > 8 * 1024 * 1024) { toast('Çok büyük (max 8MB): ' + f.name); continue; }
     if (f.type.startsWith('image/')) {
       const r = new FileReader();
       r.onload = () => {
-        const list = isBc ? bcPending : pending;
+        const list = getList();
         if (list.length >= 6) { toast('En fazla 6 ek'); return; }
         list.push({ type: 'image', name: f.name, dataUrl: String(r.result) });
-        isBc ? renderBcChips() : renderChips();
+        paint();
       };
       r.readAsDataURL(f);
     } else if (TEXT_EXT.test(f.name)) {
       f.text().then((t) => {
-        const list = isBc ? bcPending : pending;
+        const list = getList();
         if (list.length >= 6) { toast('En fazla 6 ek'); return; }
         list.push({ type: 'file', name: f.name, content: t.slice(0, 200000) });
-        isBc ? renderBcChips() : renderChips();
+        paint();
       });
     } else {
       toast('Desteklenmeyen tür: ' + f.name);
@@ -4245,6 +4292,12 @@ function renderAgentsPane() {
 function onEvent(ev) {
   if (ev.type === 'sessions') { refreshSessions(); return; }
   if (ev.type === 'approval') {
+    /* Beast Studio oturumunun onayı: panelde ipucu + kart sohbete düşer */
+    if (stSessionId && ev.sessionId === stSessionId) {
+      showApprovalCard(ev);
+      stLine('t-dim', '⏳ onay bekleniyor: ' + (ev.tool || '?') + ' — chat moduna geçip kartı onayla');
+      return;
+    }
     /* Beast Code oturumunun onayı: panelde ipucu + kart sohbete düşer */
     if (bcSessionId && ev.sessionId === bcSessionId) {
       showApprovalCard(ev);
@@ -4270,6 +4323,12 @@ function onEvent(ev) {
   }
   /* OFFLINE MESAJ KUYRUĞU: bağlantı + kuyruk olayları (sessionId filtresinden önce) */
   if (ev.type === 'net' || ev.type === 'netQueue') { onNetEvent(ev); return; }
+  /* Beast Studio oturumu: olaylar SADECE Studio paneline akar — ana sohbeti
+     ve Beast Code panelini kirletmez (dünyalar ayrı) */
+  if (stSessionId && ev.sessionId === stSessionId) {
+    stIngest(ev);
+    return;
+  }
   /* Beast Code oturumu (IDE modu ortasındaki panel): olayları panele akıt,
      ana sohbeti kirletme */
   if (bcSessionId && ev.sessionId === bcSessionId) {
@@ -5209,11 +5268,14 @@ async function init() {
     document.addEventListener('langchange', syncSttLang);
   }
 
-  /* + butonu iki hedefe hizmet eder: chat composer VE Beast Code paneli */
+  /* + butonu üç hedefe hizmet eder: chat composer, Beast Code VE Beast Studio */
   let fileSink = 'chat';
   els.attachBtn.addEventListener('click', () => { fileSink = 'chat'; els.fileInput.click(); });
   if (els.bcAttach) {
     els.bcAttach.addEventListener('click', () => { fileSink = 'bc'; els.fileInput.click(); });
+  }
+  if (els.stAttach) {
+    els.stAttach.addEventListener('click', () => { fileSink = 'st'; els.fileInput.click(); });
   }
   els.fileInput.addEventListener('change', () => {
     addFiles([...els.fileInput.files], fileSink);
@@ -5275,6 +5337,12 @@ async function init() {
     els.bcInput.value = (els.bcInput.value ? els.bcInput.value.replace(/\s+$/, '') + ' ' : '') + t;
     els.bcInput.focus();
     bcInputResize();
+  });
+  setupMicButton(els.stMic, (t) => {
+    if (!els.stInput) return;
+    els.stInput.value = (els.stInput.value ? els.stInput.value.replace(/\s+$/, '') + ' ' : '') + t;
+    els.stInput.focus();
+    stInputResize();
   });
 
   beast.onWaEvent(onWaEvent);
@@ -6144,12 +6212,26 @@ $('#ghAllRefresh').addEventListener('click', () => {
    Dosyaya tıkla → editör; klasöre tıkla → aç/kapa. */
 
 const IDE_ICONS = {
-  '.html': '🌐', '.htm': '🌐', '.css': '🎨', '.js': '📜', '.mjs': '📜', '.cjs': '📜',
-  '.ts': '📜', '.jsx': '📜', '.tsx': '📜', '.json': '🧾', '.md': '📝', '.txt': '📄',
-  '.py': '🐍', '.ps1': '⚙️', '.bat': '⚙️', '.cmd': '⚙️', '.sh': '⚙️', '.yaml': '🧾',
-  '.yml': '🧾', '.png': '🖼️', '.jpg': '🖼️', '.jpeg': '🖼️', '.gif': '🖼️', '.svg': '🖼️',
-  '.pdf': '📕',
+  '.html': '🌐', '.htm': '🌐', '.css': '🎨', '.scss': '🎨', '.sass': '🎨', '.less': '🎨',
+  '.js': '📜', '.mjs': '📜', '.cjs': '📜', '.ts': '📜', '.mts': '📜', '.cts': '📜',
+  '.jsx': '📜', '.tsx': '📜', '.vue': '📜', '.svelte': '📜', '.astro': '📜',
+  '.json': '🧾', '.jsonc': '🧾', '.yaml': '🧾', '.yml': '🧾', '.toml': '🧾', '.xml': '🧾',
+  '.md': '📝', '.mdx': '📝', '.txt': '📄', '.log': '📄', '.csv': '📊', '.tsv': '📊',
+  '.py': '🐍', '.go': '🐹', '.rs': '🦀', '.java': '☕', '.kt': '🧩', '.swift': '🕊️',
+  '.rb': '💎', '.php': '🐘', '.cs': '🎯', '.c': '🔧', '.h': '🔧', '.cpp': '🔧',
+  '.hpp': '🔧', '.sql': '🗄️', '.sh': '⚙️', '.ps1': '⚙️', '.bat': '⚙️', '.cmd': '⚙️',
+  '.lua': '🌙', '.r': '📈', '.dart': '🎯', '.graphql': '◈', '.proto': '◈',
+  '.png': '🖼️', '.jpg': '🖼️', '.jpeg': '🖼️', '.gif': '🖼️', '.svg': '🖼️', '.webp': '🖼️',
+  '.pdf': '📕', '.env': '🔑',
+  /* Studio medya ikonları — IDE ağacında da doğru simge */
+  '.mp4': '🎬', '.mkv': '🎬', '.mov': '🎬', '.avi': '🎬', '.webm': '🎬', '.m4v': '🎬',
+  '.mpg': '🎬', '.mpeg': '🎬', '.wmv': '🎬', '.flv': '🎬', '.3gp': '🎬', '.ogv': '🎬',
+  '.mp3': '🎵', '.wav': '🎵', '.ogg': '🎵', '.m4a': '🎵', '.flac': '🎵', '.aac': '🎵', '.opus': '🎵',
+  '.srt': '💬', '.vtt': '💬', '.ass': '💬', '.ssa': '💬',
 };
+
+/* Studio modunda ağaçta TIKLANAN medya dosyaları video bölümünde oynatılır */
+const MEDIA_FILE_RE = /\.(mp4|mkv|mov|avi|webm|m4v|mpg|mpeg|wmv|flv|3gp|ogv|mp3|wav|ogg|m4a|flac|aac|opus)$/i;
 
 const ideState = {
   cache: new Map(), // rel -> entries[]
@@ -6162,8 +6244,10 @@ function ideModeOn() {
 }
 
 async function setIdeMode(on) {
+  if (on && studioModeOn()) await setStudioMode(false); /* Studio açıkken IDE'ye geçiş — Studio kapanır */
   document.body.classList.toggle('ide-mode', !!on);
-  /* soldaki marka: chat modunda BEAST Agent, IDE modunda BEAST Code */
+  if (els.ideBtn) els.ideBtn.classList.toggle('on', !!on);
+  /* soldaki marka: chat modunda BEAST Agent, IDE modunda BEAST Code, Studio modunda BEAST Studio */
   const brandSub = document.querySelector('#brand .brand-sub');
   if (brandSub) brandSub.textContent = on ? 'Code' : 'Agent';
   /* rail her iki modda da DEFAULT KAPALI — çalışan paralel ajan varsa
@@ -6186,6 +6270,166 @@ async function setIdeMode(on) {
     agentState.autoOpened = false;
     try { await refreshAgentsPane(); } catch {}
   }
+}
+
+/* ================= BEAST STUDIO MODU =================
+   Beast Code ile AYRI dünya: sol klasör konsolu (başlık: BEAST STUDIO),
+   sağ → chat + video bölümü. Oturumlar main tarafında studioRoot bazlı ve
+   ÖZELDİR — chat geçmişi listesine VE Beast Code paneline karışmaz. */
+
+const studioState = {
+  cache: new Map(),
+  open: new Set(['']),
+  path: '',
+};
+
+function studioModeOn() {
+  return document.body.classList.contains('studio-mode');
+}
+
+async function setStudioMode(on) {
+  if (on && ideModeOn()) await setIdeMode(false); /* IDE açıkken Studio'ya geçiş — IDE kapanır */
+  document.body.classList.toggle('studio-mode', !!on);
+  if (els.studioBtn) els.studioBtn.classList.toggle('on', !!on);
+  const brandSub = document.querySelector('#brand .brand-sub');
+  if (brandSub) brandSub.textContent = on ? 'Studio' : 'Agent';
+  /* klasör konsolunun en üstü: Studio modunda "BEAST STUDIO" yazar */
+  const ftp = document.getElementById('filePanelTitle');
+  if (ftp) {
+    if (on) {
+      ftp.textContent = 'BEAST STUDIO';
+      ftp.removeAttribute('data-i18n');
+    } else {
+      ftp.setAttribute('data-i18n', 'ide_files');
+      ftp.textContent = (window.I18N && window.I18N.t('ide_files')) || 'DOSYALAR';
+    }
+  }
+  toggleRail(true);
+  railManualOpen = false;
+  /* Studio'da web önizleme yok — açık tarayıcıyı her iki yönde de kapat */
+  if (document.body.classList.contains('browser-open')) {
+    try { beast.toggleBrowser(); } catch {}
+  }
+  if (on) {
+    stSplitApply();
+    await loadStudioTree();
+    stBanner();
+  } else {
+    stVideoStop();
+  }
+}
+
+async function loadStudioTree() {
+  studioState.cache.clear();
+  await renderFileTree();
+}
+
+/* ---------- chat/video ayırıcı (IDE split ile aynı model) ---------- */
+let stSplitFrac = 0;
+
+function stSplitApply() {
+  if (!stSplitFrac) {
+    let saved = 0;
+    try { saved = parseFloat(localStorage.getItem('beast.studioSplit')) || 0; } catch {}
+    stSplitFrac = saved > 0.05 && saved < 0.95 ? saved : 0.48;
+  }
+  stSplitFrac = Math.max(0.2, Math.min(stSplitFrac, 0.8));
+  const rowW = els.studioRow && els.studioRow.clientWidth ? els.studioRow.clientWidth : window.innerWidth - 250;
+  const w = Math.max(300, Math.min(Math.round(rowW * stSplitFrac), Math.max(340, rowW - 260)));
+  document.body.style.setProperty('--stSplit', w + 'px');
+}
+
+if (els.stSplit) {
+  els.stSplit.addEventListener('mousedown', (e) => {
+    e.preventDefault();
+    els.stSplit.classList.add('dragging');
+    const rowLeft = els.stPanel ? els.stPanel.getBoundingClientRect().left : 250;
+    const rowW = Math.max(600, els.studioRow && els.studioRow.clientWidth ? els.studioRow.clientWidth : window.innerWidth - 250);
+    const move = (ev) => {
+      const w = Math.max(300, Math.min(ev.clientX - rowLeft, rowW - 260));
+      stSplitFrac = Math.max(0.2, Math.min(w / rowW, 0.8));
+      document.body.style.setProperty('--stSplit', Math.round(w) + 'px');
+    };
+    const up = () => {
+      document.removeEventListener('mousemove', move);
+      document.removeEventListener('mouseup', up);
+      els.stSplit.classList.remove('dragging');
+      try { localStorage.setItem('beast.studioSplit', String(stSplitFrac)); } catch {}
+    };
+    document.addEventListener('mousemove', move);
+    document.addEventListener('mouseup', up);
+  });
+  window.addEventListener('resize', () => {
+    if (studioModeOn()) stSplitApply();
+  });
+}
+
+/* ---------- video bölümü ----------
+   Sol ağaçtan video/ses seçilir veya "Aç" ile dosya seçilir; ajanın ffmpeg
+   çıktıları (output/ klasörü) ağaçta belirdiği an burada oynatılabilir. */
+let stVideoPath = '';
+
+function stVideoFileUrl(abs) {
+  let p = String(abs || '').replace(/\\/g, '/');
+  if (!p.startsWith('/')) p = '/' + p;
+  return 'file://' + p.split('/').map((seg) => encodeURIComponent(seg)).join('/');
+}
+
+function stVideoPlayPath(abs) {
+  if (!els.stVideoEl) return;
+  stVideoPath = String(abs || '');
+  els.stVideoEl.src = stVideoFileUrl(stVideoPath);
+  els.stVideoEl.hidden = false;
+  if (els.stVideoEmpty) els.stVideoEmpty.hidden = true;
+  const nm = stVideoPath.split(/[\\/]/).pop() || '—';
+  if (els.stVideoName) { els.stVideoName.textContent = nm; els.stVideoName.title = stVideoPath; }
+  els.stVideoEl.play().catch(() => {});
+}
+
+function stVideoPlay(rel) {
+  const root = studioState.path;
+  if (!root || !rel) return;
+  stVideoPlayPath(root + '\\' + String(rel).replace(/\//g, '\\'));
+}
+
+function stVideoStop() {
+  if (!els.stVideoEl) return;
+  try { els.stVideoEl.pause(); } catch {}
+  els.stVideoEl.removeAttribute('src');
+  try { els.stVideoEl.load(); } catch {}
+  els.stVideoEl.hidden = true;
+  if (els.stVideoEmpty) els.stVideoEmpty.hidden = false;
+  if (els.stVideoName) els.stVideoName.textContent = '—';
+  stVideoPath = '';
+}
+
+if (els.stVideoOpen) {
+  els.stVideoOpen.addEventListener('click', async () => {
+    const r = await beast.studioPickVideo().catch(() => null);
+    if (r && r.ok && r.path) stVideoPlayPath(r.path);
+    else if (r && !r.canceled && r.error) toast(r.error);
+  });
+}
+if (els.stVideoExt) {
+  els.stVideoExt.addEventListener('click', () => {
+    if (!stVideoPath) { toast('Açık video yok'); return; }
+    beast.openPath(stVideoPath).catch(() => {});
+  });
+}
+/* sürükle-bırak: video dosyası doğrudan video bölümüne bırakılabilir */
+if (els.stVideoBody) {
+  els.stVideoBody.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    els.stVideoBody.classList.add('dragover');
+  });
+  els.stVideoBody.addEventListener('dragleave', () => els.stVideoBody.classList.remove('dragover'));
+  els.stVideoBody.addEventListener('drop', (e) => {
+    e.preventDefault();
+    els.stVideoBody.classList.remove('dragover');
+    const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+    if (f && f.path && MEDIA_FILE_RE.test(f.name)) stVideoPlayPath(f.path);
+    else if (f) toast('Medya dosyası değil: ' + f.name);
+  });
 }
 
 /* ---------- editör panelini kapat/göster ----------
@@ -6279,21 +6523,31 @@ async function renderFileTree() {
   if (!tree) return;
   tree.innerHTML = '';
   const wsLabel = $('#filePanelPath');
+  /* Studio modunda ağaç studioRoot'tan, IDE modunda ideRoot'tan okunur —
+     aynı panel, aynı çizim; yalnız kaynak ve davranış moduna göre değişir */
+  const studio = studioModeOn();
+  const st = studio ? studioState : ideState;
+  const treeApi = studio ? beast.studioTree : beast.ideTree;
   const build = async (rel, depth, container) => {
-    let entries = ideState.cache.get(rel);
+    let entries = st.cache.get(rel);
     if (!entries) {
-      const r = await beast.ideTree(rel).catch(() => null);
+      const r = await treeApi(rel).catch(() => null);
       if (!r || !r.ok) {
         if (!rel) container.innerHTML = `<div class="file-empty">${escapeHtml((r && r.error) || 'okunamadı')}</div>`;
         return;
       }
       entries = r.entries;
-      ideState.cache.set(rel, entries);
+      st.cache.set(rel, entries);
       if (r.workspace) {
-        ideState.path = r.workspace;
+        st.path = r.workspace;
         if (wsLabel) { wsLabel.textContent = r.workspace; wsLabel.title = r.workspace; }
-        if (els.bcCwd) { els.bcCwd.textContent = r.workspace; els.bcCwd.title = r.workspace; }
-        bcOnFolderChanged(r.workspace);
+        if (studio) {
+          if (els.stCwd) { els.stCwd.textContent = r.workspace; els.stCwd.title = r.workspace; }
+          stOnFolderChanged(r.workspace);
+        } else {
+          if (els.bcCwd) { els.bcCwd.textContent = r.workspace; els.bcCwd.title = r.workspace; }
+          bcOnFolderChanged(r.workspace);
+        }
       }
     }
     for (const e of entries) {
@@ -6301,16 +6555,21 @@ async function renderFileTree() {
       const row = document.createElement('div');
       row.className = 'file-row';
       row.style.paddingLeft = 6 + depth * 14 + 'px';
-      const ico = e.dir ? (ideState.open.has(child) ? '📂' : '📁') : IDE_ICONS[e.name.slice(e.name.lastIndexOf('.')).toLowerCase()] || '📄';
+      const ext = e.name.slice(e.name.lastIndexOf('.')).toLowerCase();
+      const ico = e.dir ? (st.open.has(child) ? '📂' : '📁') : IDE_ICONS[ext] || '📄';
       row.innerHTML =
         `<span class="f-ico">${ico}</span>` +
         `<span class="f-nm" title="${escapeHtml(e.name)}">${escapeHtml(e.name)}</span>` +
         (e.dir ? '' : `<span class="f-sz">${fmtFileSize(e.size)}</span>`);
       row.addEventListener('click', () => {
         if (e.dir) {
-          if (ideState.open.has(child)) ideState.open.delete(child);
-          else ideState.open.add(child);
+          if (st.open.has(child)) st.open.delete(child);
+          else st.open.add(child);
           renderFileTree();
+        } else if (studio && MEDIA_FILE_RE.test(e.name)) {
+          stVideoPlay(child); /* video/ses → sağdaki video bölümünde oynat */
+        } else if (studio) {
+          toast('Studio modunda medya dosyaları oynatılır — dosya düzenleme Beast Code modunda');
         } else {
           codeOpen(child);
         }
@@ -6318,7 +6577,7 @@ async function renderFileTree() {
       row.dataset.rel = child;
       row.dataset.dir = e.dir ? '1' : '0';
       container.appendChild(row);
-      if (e.dir && ideState.open.has(child)) {
+      if (e.dir && st.open.has(child)) {
         const box = document.createElement('div');
         container.appendChild(box);
         await build(child, depth + 1, box);
@@ -6337,7 +6596,9 @@ function ideRefreshTree() {
   ideTreeTimer = setTimeout(() => {
     ideTreeTimer = null;
     try {
-      ideState.cache.clear();
+      /* hangi moddaysak o ağacın önbelleği tazelenir */
+      if (studioModeOn()) studioState.cache.clear();
+      else ideState.cache.clear();
       renderFileTree().catch(() => {});
     } catch {}
   }, 600);
@@ -6730,16 +6991,29 @@ async function codeReloadIfOpen(p) {
 }
 
 $('#ideBtn').addEventListener('click', () => setIdeMode(!ideModeOn()));
+if (els.studioBtn) els.studioBtn.addEventListener('click', () => setStudioMode(!studioModeOn()));
 $('#filePick').addEventListener('click', async () => {
-  const r = await beast.ideSetRoot().catch(() => null);
+  /* Studio modunda klasör seçimi Studio'nun KENDİ kökünü değiştirir —
+     IDE köküne dokunmaz (dünyalar ayrıdır) */
+  const r = studioModeOn()
+    ? await beast.studioSetRoot().catch(() => null)
+    : await beast.ideSetRoot().catch(() => null);
   if (r && r.ok) {
-    ideState.open = new Set(['']);
-    await loadIdeTree();
+    if (studioModeOn()) {
+      studioState.open = new Set(['']);
+      await loadStudioTree();
+    } else {
+      ideState.open = new Set(['']);
+      await loadIdeTree();
+    }
   } else if (r && !r.canceled && r.error) {
     toast(r.error);
   }
 });
-$('#fileRefresh').addEventListener('click', () => loadIdeTree());
+$('#fileRefresh').addEventListener('click', () => {
+  if (studioModeOn()) loadStudioTree();
+  else loadIdeTree();
+});
 
 /* ---------- görev listesi + TEK TUŞ GERİ ALMA (dosya paneli) ---------- */
 let tasksPanelOpen = false;
@@ -6754,11 +7028,14 @@ function toggleTasksPanel(force) {
 async function renderTasksPanel() {
   const box = els.tasksPanel;
   if (!box) return;
-  if (!bcSessionId) {
-    box.innerHTML = '<div class="tsk-empty">\u00D6nce Beast Code\u2019da bir mesaj yaz — g\u00F6rev listesi i\u00E7in oturum gerekli.</div>';
+  const sid = studioModeOn() ? stSessionId : bcSessionId;
+  if (!sid) {
+    box.innerHTML = '<div class="tsk-empty">' + (studioModeOn()
+      ? '\u00D6nce Beast Studio\u2019da bir mesaj yaz — g\u00F6rev listesi i\u00E7in oturum gerekli.'
+      : '\u00D6nce Beast Code\u2019da bir mesaj yaz — g\u00F6rev listesi i\u00E7in oturum gerekli.') + '</div>';
     return;
   }
-  const r = await beast.bcTodos(bcSessionId).catch(() => null);
+  const r = await beast.bcTodos(sid).catch(() => null);
   if (!r || !r.ok) {
     box.innerHTML = '<div class="tsk-empty">' + escapeHtml((r && r.error) || 'okunamad\u0131') + '</div>';
     return;
@@ -6794,9 +7071,10 @@ async function renderTasksPanel() {
 }
 
 async function undoTask(id) {
-  if (!bcSessionId) return;
+  const sid = studioModeOn() ? stSessionId : bcSessionId;
+  if (!sid) return;
   if (busy) { toast('Ajan \u00E7al\u0131\u015F\u0131yor — \u25A0 ile durdurup \u00F6yle geri al'); return; }
-  const r = await beast.bcUndo(bcSessionId, id).catch(() => null);
+  const r = await beast.bcUndo(sid, id).catch(() => null);
   if (r && r.ok) {
     toast('\u21B6 Geri al\u0131nd\u0131 — ' + (r.reverted || 0) + ' dosya \u00F6nceki h\u00E2line d\u00F6nd\u00FC');
     ideRefreshTree();
@@ -6895,17 +7173,23 @@ function fileCtxShow(e, rel, isDir) {
   const menu = els.fileCtxMenu;
   if (!menu || !rel) return;
   e.preventDefault();
-  const isHtml = /\.html?$/i.test(rel);
+  const studio = studioModeOn();
+  const st = studio ? studioState : ideState;
+  const isMedia = MEDIA_FILE_RE.test(rel.split('/').pop() || '');
   const items = [];
   if (isDir) {
     items.push({
-      label: ideState.open.has(rel) ? 'Kapat' : 'Aç',
+      label: st.open.has(rel) ? 'Kapat' : 'Aç',
       fn: () => {
-        if (ideState.open.has(rel)) ideState.open.delete(rel);
-        else ideState.open.add(rel);
+        if (st.open.has(rel)) st.open.delete(rel);
+        else st.open.add(rel);
         renderFileTree();
       },
     });
+  } else if (studio && isMedia) {
+    items.push({ label: 'Oynat', fn: () => stVideoPlay(rel) });
+  } else if (studio) {
+    items.push({ label: 'Dış uygulamada aç', fn: () => beast.openPath((studioState.path || '') + '\\' + rel.replace(/\//g, '\\')).catch(() => {}) });
   } else {
     items.push({ label: 'Aç', fn: () => codeOpen(rel) });
     if (isHtml) {
@@ -6922,13 +7206,17 @@ function fileCtxShow(e, rel, isDir) {
     label: 'Sil',
     danger: true,
     fn: async () => {
-      const r = await beast.ideDelete(rel).catch(() => null);
+      const r = studio
+        ? await beast.studioDelete(rel).catch(() => null)
+        : await beast.ideDelete(rel).catch(() => null);
       if (r && r.ok) {
-        /* silinen dosya/klasörün açık sekmelerini kapat */
-        for (let i = codeTabs.length - 1; i >= 0; i--) {
-          if (codeTabs[i].rel === rel || codeTabs[i].rel.startsWith(rel + '/')) codeClose(i);
+        if (!studio) {
+          /* silinen dosya/klasörün açık sekmelerini kapat */
+          for (let i = codeTabs.length - 1; i >= 0; i--) {
+            if (codeTabs[i].rel === rel || codeTabs[i].rel.startsWith(rel + '/')) codeClose(i);
+          }
         }
-        await loadIdeTree();
+        await renderFileTree();
       } else if (r && !r.canceled && r.error) {
         toast(r.error);
       }
@@ -6962,10 +7250,111 @@ if (els.fileCtxMenu) {
 $('#fileTree').addEventListener('contextmenu', (e) => {
   const row = e.target.closest('.file-row');
   if (!row || !row.dataset.rel) {
+    /* boş ağaç alanı: hızlı işlemler (mod-farkında) */
+    e.preventDefault();
     fileCtxHide();
+    const menu = els.fileCtxMenu;
+    if (!menu) return;
+    const items = [{ label: 'Yenile', fn: () => (studioModeOn() ? loadStudioTree() : loadIdeTree()) }];
+    const pick = document.getElementById('filePick');
+    if (pick) items.push({ label: 'Klasör seç…', fn: () => pick.click() });
+    menu.innerHTML = '';
+    for (const it of items) ctxMenuAppend(menu, it);
+    menu.hidden = false;
+    const mh = items.length * 33 + 8;
+    menu.style.left = Math.max(4, Math.min(e.clientX, window.innerWidth - 170)) + 'px';
+    menu.style.top = Math.max(4, Math.min(e.clientY, window.innerHeight - mh)) + 'px';
     return;
   }
   fileCtxShow(e, row.dataset.rel, row.dataset.dir === '1');
+});
+
+/* ---------- UYGULAMA GENELİ SAĞ TIK ----------
+   Metin alanlarında (input/textarea): Kes / Kopyala / Yapıştır / Tümünü seç;
+   seçili metinde (sohbet çıktısı vs.): Kopyala. Pano işlemleri pano
+   köprüsüyle (clip:read / clip:write) MANUEL yapılır — Chromium'un
+   execCommand('paste') kısıtı Electron'da da güvenilir değil; imleç
+   konumuna elle eklenir, 'input' olayı tetiklenir (oto-büyüme vs. çalışır).
+   Dosya ağacı kendi menüsünü gösterir (yukarıda). */
+function isEditableEl(t) {
+  if (!t || !t.tagName) return false;
+  const tag = String(t.tagName).toLowerCase();
+  if (tag === 'input' || tag === 'textarea') return !(t.disabled || t.readOnly);
+  return false;
+}
+
+function ctxMenuAppend(menu, it) {
+  const el = document.createElement('div');
+  el.className = 'ctx-item' + (it.danger ? ' danger' : '') + (it.disabled ? ' disabled' : '');
+  el.textContent = it.label;
+  if (!it.disabled) el.addEventListener('click', () => { fileCtxHide(); it.fn(); });
+  menu.appendChild(el);
+}
+
+function ctxFieldInputEvent(el) {
+  try { el.dispatchEvent(new Event('input', { bubbles: true })); } catch {}
+}
+
+async function ctxFieldOp(el, op) {
+  if (!el) return;
+  el.focus();
+  if (op === 'all') {
+    if (typeof el.select === 'function') el.select();
+    return;
+  }
+  const v = typeof el.value === 'string' ? el.value : '';
+  const start = typeof el.selectionStart === 'number' ? el.selectionStart : v.length;
+  const end = typeof el.selectionEnd === 'number' ? el.selectionEnd : v.length;
+  if (op === 'paste') {
+    const text = String((await beast.clipRead().catch(() => '')) || '');
+    if (!text) return;
+    el.value = v.slice(0, start) + text + v.slice(end);
+    el.setSelectionRange(start + text.length, start + text.length);
+    ctxFieldInputEvent(el);
+    return;
+  }
+  if (op === 'copy' || op === 'cut') {
+    const sel = v.slice(start, end);
+    if (!sel) return;
+    await beast.clipWrite(sel).catch(() => {});
+    if (op === 'cut') {
+      el.value = v.slice(0, start) + v.slice(end);
+      el.setSelectionRange(start, start);
+      ctxFieldInputEvent(el);
+    }
+  }
+}
+
+document.addEventListener('contextmenu', (e) => {
+  /* dosya ağacı kendi menüsünü kendisi açar */
+  if (e.target && e.target.closest && e.target.closest('#fileTree')) return;
+  fileCtxHide();
+  const field = isEditableEl(e.target) ? e.target : (isEditableEl(document.activeElement) ? document.activeElement : null);
+  const selText = String((window.getSelection && window.getSelection()) || '');
+  const hasSel = field && typeof field.selectionStart === 'number'
+    ? field.selectionEnd > field.selectionStart
+    : !!selText.trim();
+  if (!field && !hasSel) return; /* boş alan — menü yok */
+  e.preventDefault();
+  const menu = els.fileCtxMenu;
+  if (!menu) return;
+  const items = [];
+  if (field) items.push({ label: 'Kes', disabled: !hasSel, fn: () => ctxFieldOp(field, 'cut') });
+  items.push({
+    label: 'Kopyala',
+    disabled: !hasSel,
+    fn: () => (field ? ctxFieldOp(field, 'copy') : beast.clipWrite(selText).catch(() => {})),
+  });
+  if (field) {
+    items.push({ label: 'Yapıştır', fn: () => ctxFieldOp(field, 'paste') });
+    items.push({ label: 'Tümünü seç', fn: () => ctxFieldOp(field, 'all') });
+  }
+  menu.innerHTML = '';
+  for (const it of items) ctxMenuAppend(menu, it);
+  menu.hidden = false;
+  const mh = items.length * 33 + 8;
+  menu.style.left = Math.max(4, Math.min(e.clientX, window.innerWidth - 170)) + 'px';
+  menu.style.top = Math.max(4, Math.min(e.clientY, window.innerHeight - mh)) + 'px';
 });
 
 /* ---------- IDE modu ortası: BEAST CODE paneli ----------
@@ -7455,6 +7844,400 @@ if (els.bcNew) els.bcNew.addEventListener('click', async () => {
     bcFlushStream();
     if (els.bcTitle) els.bcTitle.textContent = 'BEAST CODE';
     bcLine('t-sys', 'yeni oturum — sonraki mesaj taze başlar');
+  }
+});
+
+/* ---------- BEAST STUDIO paneli ----------
+   Beast Code panelinin birebir karşılığı — AMA ayrı oturum, ayrı kuyruk,
+   ayrı çıktı. Olaylar stSessionId ile eşlenir; Beast Code sohbetine ve ana
+   chate ASLA sızmaz. Ajan buildStudioSystem ile açılır: video yapma/düzenleme. */
+
+const ST_MAX_LINES = 1200;
+let stSessionId = null;
+let stRunning = false;
+let stBannerDone = false;
+let stStreamEl = null;
+let stStreamRaw = '';
+let stWsPath = '';
+const stTools = new Map(); /* callId → { box, sec } */
+let stCurBox = null;
+let stNoteEl = null;
+let stNoteRaw = '';
+
+function stScroll() {
+  const b = els.stOut;
+  if (!b) return;
+  b.scrollTop = b.scrollHeight;
+}
+
+function stBodyScroll(el) {
+  const b = el && el.closest ? el.closest('.bc-toolbody') : null;
+  if (b) b.scrollTop = b.scrollHeight;
+}
+
+function stLine(cls, text, time = false) {
+  if (!els.stOut) return;
+  const el = document.createElement('div');
+  el.className = 't-line ' + (cls || '');
+  const ts = time ? '<span class="t-time">' + new Date().toTimeString().slice(0, 8) + '</span> ' : '';
+  el.innerHTML = ts + escapeHtml(String(text ?? ''));
+  els.stOut.appendChild(el);
+  while (els.stOut.childElementCount > ST_MAX_LINES) els.stOut.removeChild(els.stOut.firstChild);
+  stScroll();
+}
+
+function stBanner() {
+  if (stBannerDone) return;
+  stBannerDone = true;
+  const cwd = studioState.path || '';
+  if (els.stCwd && cwd) { els.stCwd.textContent = cwd; els.stCwd.title = cwd; }
+  stLine('t-sys', 'BEAST STUDIO — stüdyo klasörü: ' + (cwd || '?'));
+  stLine('t-dim', 'Video yapma/düzenleme ajanı: montaj, kesme, altyazı, ses, format — ffmpeg ile üretir, çıktılar "output" klasörüne düşer. ＋ yeni oturum · Temizle çıktıyı siler.', false);
+}
+
+/* Klasör değişimi → panel taze başlar (oturum main'de klasör bazlı saklanır) */
+function stOnFolderChanged(p) {
+  if (!p || stWsPath === p) return;
+  const first = !stWsPath;
+  stWsPath = p;
+  if (first) return; /* ilk yükleme — panel zaten boş, banner setStudioMode'da basılır */
+  if (els.stOut) els.stOut.innerHTML = '';
+  stTools.clear();
+  stCloseToolGroup();
+  stHideTodos();
+  stStreamEl = null;
+  stStreamRaw = '';
+  stBannerDone = false;
+  stBanner();
+}
+
+function stSetBusy(v) {
+  stRunning = !!v;
+  if (els.stStop) els.stStop.hidden = !v;
+}
+
+function stFlushStream() {
+  stStreamEl = null;
+  stStreamRaw = '';
+}
+
+function stStreamDelta(delta) {
+  if (!els.stOut) return;
+  if (!stStreamEl) {
+    stStreamEl = document.createElement('div');
+    stStreamEl.className = 't-line t-out';
+    els.stOut.appendChild(stStreamEl);
+  }
+  stStreamRaw += String(delta || '');
+  stStreamEl.textContent = stStreamRaw.slice(-4000);
+  stScroll(true);
+}
+
+function stStatusShow(text) {
+  if (!els.stStatus) return;
+  const t = String(text || '').trim();
+  if (!t) return;
+  els.stStatus.textContent = t;
+  els.stStatus.hidden = false;
+}
+
+function stStatusHide() {
+  if (els.stStatus) els.stStatus.hidden = true;
+}
+
+function stNoteDetach() {
+  stNoteEl = null;
+  stNoteRaw = '';
+}
+
+function stCloseToolGroup() {
+  if (stCurBox) stCurBox.classList.remove('running');
+  stCurBox = null;
+  stNoteDetach();
+}
+
+function stToolGroupNew() {
+  const box = document.createElement('div');
+  box.className = 'bc-toolbox';
+  const body = document.createElement('div');
+  body.className = 'bc-toolbody';
+  box.appendChild(body);
+  els.stOut.appendChild(box);
+  while (els.stOut.childElementCount > ST_MAX_LINES) els.stOut.removeChild(els.stOut.firstChild);
+  return box;
+}
+
+function stToolBoxStart(callId, name, args) {
+  stFlushStream();
+  if (!stCurBox) stCurBox = stToolGroupNew();
+  const sec = document.createElement('div');
+  sec.className = 'bc-toolsection';
+  const short = termShortTool(name, args);
+  sec.innerHTML =
+    '<div class="bc-toolhead">' +
+      '<span class="bc-toolspin"></span>' +
+      '<span class="bc-toolname">▸ ' + escapeHtml(String(name || 'araç')) + '</span>' +
+      (short ? '<span class="bc-toolar" title="' + escapeHtml(short) + '">' + escapeHtml(short) + '</span>' : '') +
+    '</div>' +
+    '<div class="bc-toolout" hidden></div>';
+  stCurBox.classList.add('running');
+  const body = stCurBox.querySelector('.bc-toolbody') || stCurBox;
+  body.appendChild(sec);
+  if (callId) stTools.set(callId, { box: stCurBox, sec });
+  stScroll();
+  stBodyScroll(body);
+}
+
+function stToolBoxEnd(callId, ok, result, diff) {
+  stFlushStream();
+  const t = (callId && stTools.get(callId)) || null;
+  if (callId) stTools.delete(callId);
+  const out = String(result || '').replace(/\s+$/, '');
+  if (t) {
+    const { sec } = t;
+    sec.classList.add('done');
+    if (!ok) sec.classList.add('failed');
+    if (!t.box.querySelector('.bc-toolsection:not(.done)')) {
+      t.box.classList.remove('running');
+    }
+    const pre = sec.querySelector('.bc-toolout');
+    if (diff && diff.path) {
+      const headEl = sec.querySelector('.bc-toolhead');
+      if (headEl && !headEl.querySelector('.diff-badge')) {
+        const badge = document.createElement('span');
+        badge.className = 'diff-badge';
+        const a = document.createElement('span');
+        a.className = 'diff-badge-add';
+        a.textContent = '+' + (diff.additions || 0);
+        const d = document.createElement('span');
+        d.className = 'diff-badge-del';
+        d.textContent = '−' + (diff.deletions || 0);
+        badge.appendChild(a);
+        badge.appendChild(d);
+        headEl.appendChild(badge);
+      }
+      pre.hidden = false;
+      pre.textContent = '';
+      pre.classList.add('bc-diffview');
+      pre.appendChild(buildDiffEl(diff, pre.clientWidth || 480));
+    } else if (out) {
+      pre.hidden = false;
+      pre.textContent = out.length > 4000 ? out.slice(0, 4000) + '\n… (kesildi)' : out;
+    } else {
+      pre.remove();
+    }
+    stBodyScroll(sec);
+  } else if (out || !ok) {
+    stLine(ok ? 't-out' : 't-err', out ? (out.length > 400 ? out.slice(0, 400) + ' …(kesildi)' : out) : '(hata)');
+  }
+  stScroll();
+}
+
+/* Ara yazı → açık grup varsa kutu İÇİNE not olarak akar */
+function stNoteStream(delta) {
+  if (!stCurBox) return false;
+  if (!stNoteEl) {
+    stNoteEl = document.createElement('div');
+    stNoteEl.className = 'bc-toolnote';
+    const body = stCurBox.querySelector('.bc-toolbody') || stCurBox;
+    body.appendChild(stNoteEl);
+  }
+  stNoteRaw += String(delta || '');
+  stNoteEl.textContent = stNoteRaw.slice(-2000);
+  stScroll(true);
+  stBodyScroll(stNoteEl);
+  return true;
+}
+
+function stRenderTodos(todos) {
+  const list = Array.isArray(todos) ? todos : [];
+  if (!els.stTodoWrap) return;
+  stFlushStream();
+  if (!list.length) {
+    stHideTodos();
+    return;
+  }
+  els.stTodoWrap.hidden = false;
+  els.stTodoWrap.innerHTML =
+    '<div class="bc-todobox">' +
+      '<div class="bc-todotitle"><span>GÖREVLER</span><span class="bc-todocount"></span></div>' +
+      '<div class="bc-todoitems"></div>';
+  const done = list.filter((t) => t.status === 'done').length;
+  els.stTodoWrap.querySelector('.bc-todocount').textContent = done + '/' + list.length;
+  const wrap = els.stTodoWrap.querySelector('.bc-todoitems');
+  wrap.innerHTML = '';
+  for (const t of list) {
+    const st = TODO_GLYPH[t.status] ? t.status : 'pending';
+    const row = document.createElement('div');
+    row.className = 'bc-todoitem ' + st;
+    row.innerHTML =
+      '<span class="bc-todocheck">' + TODO_GLYPH[st] + '</span>' +
+      '<span class="bc-todotext"></span>';
+    row.querySelector('.bc-todotext').textContent = String(t.title || '');
+    wrap.appendChild(row);
+  }
+}
+
+function stHideTodos() {
+  if (els.stTodoWrap) {
+    els.stTodoWrap.hidden = true;
+    els.stTodoWrap.innerHTML = '';
+  }
+}
+
+/* Studio oturumunun engine olayları → panel çıktısı (bcIngest'in karşılığı) */
+function stIngest(ev) {
+  switch (ev.type) {
+    case 'token':
+      if (stNoteStream(ev.delta)) break;
+      stStreamDelta(ev.delta);
+      break;
+    case 'message':
+      if (ev.message && ev.message.role === 'assistant') {
+        const content = typeof ev.message.content === 'string' ? ev.message.content : '';
+        const hasTools = Array.isArray(ev.message.tool_calls) && ev.message.tool_calls.length > 0;
+        if (hasTools) {
+          stNoteDetach();
+          stFlushStream();
+          break;
+        }
+        if (stNoteEl) { stNoteEl.remove(); stNoteDetach(); }
+        if (content && !stStreamRaw.trim()) stLine('t-out', content);
+        stCloseToolGroup();
+        stFlushStream();
+      }
+      break;
+    case 'todos':
+      stRenderTodos(ev.todos);
+      break;
+    case 'tool-start':
+      stSetBusy(true);
+      stToolBoxStart(ev.callId, ev.name, ev.args);
+      break;
+    case 'tool-end':
+      stToolBoxEnd(ev.callId, ev.ok, ev.result, ev.diff);
+      if (ev.name === 'write_file' || ev.name === 'edit_file' || ev.name === 'run_command' || ev.name === 'python_run') {
+        ideRefreshTree(); /* ffmpeg çıktısı anında ağaca düşer */
+      }
+      break;
+    case 'st-mode':
+      if (els.stTitle) {
+        els.stTitle.textContent =
+          ev.mode === 'plan' ? 'BEAST STUDIO · PLAN' :
+          ev.mode === 'build' ? 'BEAST STUDIO · BUILD' : 'BEAST STUDIO';
+      }
+      stLine('t-dim', '[' + (ev.body || ev.mode || 'mod değişti') + ']');
+      break;
+    case 'done':
+      stFlushStream();
+      stCloseToolGroup();
+      stSetBusy(false);
+      stStatusHide();
+      stLine(ev.aborted ? 't-err' : 't-dim', ev.aborted ? '[durduruldu — sebep: ' + (ev.reason || 'sebep belirtilmedi') + ']' : '(tamamlandı)');
+      ideRefreshTree();
+      if (studioModeOn() && els.stInput) els.stInput.focus();
+      break;
+    case 'error':
+      stFlushStream();
+      stCloseToolGroup();
+      stSetBusy(false);
+      stStatusHide();
+      stLine('t-err', '[hata] ' + (ev.error || ''));
+      break;
+    case 'status':
+      if (ev.status === 'idle') {
+        stCloseToolGroup();
+        stSetBusy(false);
+        stStatusHide();
+      } else {
+        stSetBusy(true);
+        stStatusShow(ev.status === 'thinking' ? 'düşünüyor…' : String(ev.status || ''));
+      }
+      break;
+  }
+}
+
+function stInputResize() {
+  const ta = els.stInput;
+  if (!ta) return;
+  ta.style.height = 'auto';
+  const max = 140;
+  const h = Math.min(ta.scrollHeight, max);
+  ta.style.height = h + 'px';
+  ta.classList.toggle('expand', ta.scrollHeight > max);
+}
+
+function stRunCurrent() {
+  const msg = els.stInput.value.trim();
+  if (!msg && !stPending.length) return;
+  const atts = stPending.slice();
+  stPending = [];
+  renderStChips();
+  els.stInput.value = '';
+  stInputResize();
+  els.stInput.focus();
+  stLine('t-cmd', 'studio> ' + (msg || (atts.length ? '[' + atts.length + ' ek]' : '')));
+  stHideTodos();
+  stSetBusy(true);
+  beast.studioSend(msg || '[dosya ekleri]', atts).then((r) => {
+    if (r && r.ok && r.mode) {
+      if (r.sessionId) stSessionId = r.sessionId;
+      stSetBusy(false);
+    } else if (r && r.ok && r.queued) {
+      if (r.sessionId) stSessionId = r.sessionId;
+      stLine('t-dim', '⏳ kuyrukta (' + r.count + ') — iş bitince gönderilir');
+    } else if (r && r.ok && r.pending) {
+      if (r.sessionId) stSessionId = r.sessionId;
+    } else if (r && r.ok) {
+      if (r.sessionId) stSessionId = r.sessionId;
+    } else if (r && r.busy) {
+      stLine('t-dim', (r && r.error) || 'mesaj sürüyor');
+    } else {
+      stSetBusy(false);
+      stLine('t-err', (r && r.error) || 'gönderilemedi');
+    }
+  }).catch((e) => {
+    stSetBusy(false);
+    stLine('t-err', String((e && e.message) || e));
+  });
+}
+
+if (els.stInput) {
+  els.stInput.addEventListener('input', stInputResize);
+  els.stInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); stRunCurrent(); }
+  });
+}
+if (els.stStop) els.stStop.addEventListener('click', () => {
+  stPending = [];
+  renderStChips();
+  beast.studioStop().then((r) => {
+    if (r && r.ok && r.wasBusy === false) {
+      stSetBusy(false);
+      stStatusHide();
+    }
+  }).catch(() => {});
+});
+if (els.stClear) els.stClear.addEventListener('click', () => {
+  els.stOut.innerHTML = '';
+  stTools.clear();
+  stCloseToolGroup();
+  stHideTodos();
+  stFlushStream();
+});
+if (els.stNew) els.stNew.addEventListener('click', async () => {
+  if (stRunning) { toast('Mesaj sürüyor — önce ■ ile durdur'); return; }
+  const r = await beast.studioNew().catch(() => null);
+  if (r && r.ok) {
+    stSessionId = null;
+    stPending = [];
+    renderStChips();
+    stTools.clear();
+    stCloseToolGroup();
+    stHideTodos();
+    stFlushStream();
+    if (els.stTitle) els.stTitle.textContent = 'BEAST STUDIO';
+    stLine('t-sys', 'yeni oturum — sonraki mesaj taze başlar');
   }
 });
 /* Uygulama her açılışta agent (chat) modunda başlar — IDE modu yalnız

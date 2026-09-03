@@ -1,4 +1,0 @@
-BEAST AGENT v1.5.2 — 02.09.2026 20:14:18
-Kaynak: C:\Users\batuh\OneDrive\Masaüstü\Beast Agent ana kod
-GitHub: https://github.com/algokodcom/beast-agent/releases/tag/v1.5.2
-npm: https://www.npmjs.com/package/beast-agent

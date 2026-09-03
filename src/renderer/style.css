@@ -180,7 +180,8 @@ body {
 #langBtn,
 #storeBtn,
 #gitBtn,
-#ideBtn {
+#ideBtn,
+#studioBtn {
   background: none;
   border: none;
   color: var(--muted);
@@ -198,13 +199,18 @@ body {
 #langBtn:hover,
 #storeBtn:hover,
 #gitBtn:hover,
-#ideBtn:hover { background: var(--panel2); color: var(--text); }
+#ideBtn:hover,
+#studioBtn:hover { background: var(--panel2); color: var(--text); }
 #gearBtn:focus,
 #themeBtn:focus,
 #langBtn:focus,
 #storeBtn:focus,
 #gitBtn:focus,
-#ideBtn:focus { outline: none; }
+#ideBtn:focus,
+#studioBtn:focus { outline: none; }
+/* aktif mod rozeti: IDE/Studio tuşu basılıyken vurgulanır */
+#ideBtn.on,
+#studioBtn.on { color: var(--accent); background: var(--panel2); }
 
 /* model refresh butonu — çekerken döner */
 #modelRefreshBtn.spin { opacity: .7; pointer-events: none; }
@@ -2935,10 +2941,10 @@ body.ide-mode.editor-hidden #ideRow #bcPanel { flex: 1 1 auto; min-width: 0; }
   background: var(--text);
 }
 
-/* ---------- dosya ağacı sağ tık menüsü ---------- */
+/* ---------- dosya ağacı + uygulama geneli sağ tık menüsü ---------- */
 #fileCtxMenu {
   position: fixed;
-  z-index: 70;
+  z-index: 110; /* tüm modal/overlay'ların ÜSTÜNDE (setup 90, win-controls 100) */
   min-width: 150px;
   background: var(--panel);
   border: 1px solid var(--border);
@@ -2956,6 +2962,7 @@ body.ide-mode.editor-hidden #ideRow #bcPanel { flex: 1 1 auto; min-width: 0; }
 }
 .ctx-item:hover { background: var(--panel2); }
 .ctx-item.danger { color: var(--err); }
+.ctx-item.disabled { opacity: 0.4; pointer-events: none; }
 
 /* ---------- SKILLS STORE ---------- */
 
@@ -3385,4 +3392,256 @@ body.browser-open #ghOverlay { right: var(--bw, 480px); }
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* ================= BEAST STUDIO MODU =================
+   Beast Code ile AYRI dünya: sol → klasör konsolu (başlığında BEAST STUDIO),
+   sağ → [chat | video bölümü]. Sohbet oturumları Studio'ya özeldir; chat
+   geçmişi ve Beast Code paneliyle ASLA paylaşılmaz. */
+
+/* STUDIO modunda sol taraf: sohbet geçmişi yerine klasör konsolu —
+   başlıkta "BEAST STUDIO" yazar (Beast Code/Agent değil) */
+body.studio-mode #newChat,
+body.studio-mode #sessList,
+body.studio-mode #botBar { display: none; }
+body.studio-mode #filePanel {
+  display: flex;
+  flex: 1;
+  width: auto;
+  min-width: 0;
+  border-right: none;
+}
+body.studio-mode #filePanelTitle { display: inline; }
+body.studio-mode #filePreview { display: none; } /* preview statik-site aracı — studio'da yer yok */
+/* STUDIO modunda orta: sohbet + composer gizli, IDE satırı gizli */
+body.studio-mode #chatScroll,
+body.studio-mode #composerWrap,
+body.studio-mode #ideRow { display: none; }
+
+#studioRow { display: none; flex: 1; min-height: 0; }
+body.studio-mode #studioRow { display: flex; flex-direction: row; }
+
+#stPanel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 300px;
+  flex: 0 0 var(--stSplit, 480px);
+  background: var(--bg);
+  overflow: hidden;
+}
+#stSplit {
+  flex: none;
+  width: 6px;
+  cursor: col-resize;
+  background: var(--border);
+  opacity: 0.55;
+}
+#stVideo {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 220px;
+  flex: 1;
+  background: var(--bg);
+  overflow: hidden;
+}
+#stHead {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+}
+#stTitle { font-size: 11px; font-weight: 800; letter-spacing: 1px; color: var(--accent); flex: none; }
+#stCwd {
+  color: var(--muted);
+  font-family: Consolas, monospace;
+  font-size: 11px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#stHead button {
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 3px 7px;
+  border-radius: 6px;
+  line-height: 1;
+  flex: none;
+}
+#stHead button:hover { background: var(--panel2); color: var(--text); }
+#stOut {
+  flex: 1;
+  overflow-y: auto;
+  padding: 10px 14px;
+  font-family: Consolas, "Cascadia Mono", monospace;
+  font-size: 12px;
+  line-height: 1.55;
+}
+#stTodoWrap { flex: none; }
+/* Studio todo kartı: Beast Code kartıyla aynı görünüm (bc-todobox sınıfları) */
+#stTodoWrap {
+  display: flex;
+  justify-content: center;
+  padding: 0 12px;
+  margin-top: -16px;
+  position: relative;
+  z-index: 2;
+}
+#stTodoWrap[hidden] { display: none; }
+#stInputRow {
+  flex: none;
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+  padding: 10px 12px;
+  border-top: 1px solid var(--border);
+  background: var(--panel);
+}
+#stAttach, #stMic {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  margin-bottom: 5px;
+  border: none;
+  background: var(--panel2);
+  color: var(--muted);
+  border-radius: 7px;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+#stAttach:hover, #stMic:hover { background: var(--panel); color: var(--accent); }
+#stMic.rec { color: #e5484d; animation: mic-pulse 1.2s ease-in-out infinite; }
+#stInput {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 7px;
+  padding: 7px 10px;
+  font-family: Consolas, monospace;
+  font-size: 12.5px;
+  outline: none;
+  resize: none;
+  overflow-y: hidden;
+  max-height: 140px;
+  line-height: 1.45;
+  display: block;
+}
+#stInput.expand { overflow-y: auto; }
+#stInput:focus { border-color: var(--accent); }
+#stStop {
+  flex: none;
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--err);
+  border-radius: 7px;
+  cursor: pointer;
+  font-size: 11px;
+  padding: 4px 8px;
+  line-height: 1;
+  margin-bottom: 3px;
+}
+#stStop[hidden] { display: none; }
+#stStop:hover { border-color: var(--err); }
+#stStatus {
+  flex: none;
+  align-self: center;
+  margin: 0 12px 6px;
+  padding: 3px 10px;
+  font-size: 11px;
+  color: var(--accent);
+  background: var(--accent-dim);
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  max-width: calc(100% - 24px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Studio eklentileri: dosya paneli araç ikonları da aynı boyutta dursun */
+#stAttach svg, #stMic svg { display: block; }
+
+/* ---------- Studio video bölümü ---------- */
+#stVideoHead {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+}
+#stVideoTitle { font-size: 11px; font-weight: 800; letter-spacing: 1px; color: var(--accent); flex: none; }
+#stVideoName {
+  color: var(--muted);
+  font-family: Consolas, monospace;
+  font-size: 11px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#stVideoHead button {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 11.5px;
+  cursor: pointer;
+  padding: 3px 8px;
+  border-radius: 6px;
+  line-height: 1.2;
+  flex: none;
+}
+#stVideoHead button:hover { background: var(--panel2); color: var(--text); border-color: var(--accent); }
+#stVideoBody {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #000;
+  position: relative;
+}
+#stVideoEl {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #000;
+}
+#stVideoEl[hidden] { display: none; }
+#stVideoEmpty {
+  color: #888;
+  font-size: 12px;
+  text-align: center;
+  line-height: 1.7;
+  padding: 16px;
+  user-select: none;
+}
+#stVideoBody.dragover::after {
+  content: '⤓ bırak — oynat';
+  position: absolute;
+  inset: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--accent);
+  border: 2px dashed var(--accent);
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.55);
+  font-size: 13px;
+  font-weight: 700;
+  pointer-events: none;
 }

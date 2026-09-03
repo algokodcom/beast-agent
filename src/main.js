@@ -1,6 +1,6 @@
 ﻿'use strict';
 
-const { app, BrowserWindow, WebContentsView, ipcMain, shell, dialog, Tray, Menu, nativeImage, desktopCapturer, session, net: electronNet } = require('electron');
+const { app, BrowserWindow, WebContentsView, ipcMain, shell, dialog, Tray, Menu, nativeImage, desktopCapturer, session, net: electronNet, clipboard } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const http = require('http');
@@ -2617,6 +2617,7 @@ function reloadBackend() {
       if (win && !win.isDestroyed()) win.webContents.send('agent:event', ev);
       flushDesktopOnDone(ev); /* biriken desktop mesajlarını sıraya bas */
       bcFlushOnDone(ev); /* Beast Code kuyruğunu iş bitiminde boşalt */
+      stFlushOnDone(ev); /* Beast Studio kuyruğunu iş bitiminde boşalt */
       /* BC canlı önizleme: ajan bir dev server başlattıysa adresi yakala —
          preview butonu ve otomatik açılış DAİMA bu sunucuyu öncelikli kullanır */
       if (ev.type === 'bc-preview' && /^https?:\/\/(?:localhost|127\.0\.0\.1)(?::\d{2,5})?/i.test(String(ev.url || ''))) {
@@ -2932,6 +2933,7 @@ app.whenReady().then(() => {
     watchers.start({ onTrigger: watcherFire });
     startEventBus();
     ideWatchStart(); // soldaki dosya ağacı canlı izlemede
+    studioWatchStart(); // Beast Studio klasörü canlı izlemede
     maybeRunWhereWasI();
     falloutResume();
     startAutoUpdater(); // #3 sessiz güncelleme
@@ -5857,10 +5859,302 @@ ipcMain.handle('beastcode:new', async () => {
   return { ok: true };
 });
 
+/* ---------------- Beast Studio paneli (video yapma/düzenleme modu) ----------------
+   Beast Code ile AYRI ve ÖZEL dünya: kendi çalışma klasörü (studioRoot), kendi
+   gizli engine oturumları (klasör bazlı), kendi sohbet kuyruğu. Studio
+   oturumları chat geçmişinde VE Beast Code panelinde ASLA görünmez; Beast Code
+   oturumları da Studio'ya sızmaz. Ajan studio=true ile açılır → buildStudioSystem:
+   klasör içeriğini video proje malzemesi olarak görür (ffmpeg/ffprobe farkında). */
+const studioSessions = new Map(); /* klasör yolu → sessionId */
+
+function studioRoot() {
+  /* Studio'nun KENDİ klasörü — IDE'nin ideRoot'undan bağımsız.
+     Ayar yoksa videolar klasörü (Windows Videos) makul başlangıçtır. */
+  if (settings.studioRoot) return path.resolve(settings.studioRoot);
+  let v = '';
+  try { v = app.getPath('videos'); } catch {}
+  return path.resolve(v || settings.workspace || app.getPath('home'));
+}
+
+function studioSafe(rel) {
+  const root = studioRoot();
+  const p = path.resolve(root, String(rel || ''));
+  if (p !== root && !p.startsWith(root + path.sep)) return null;
+  return p;
+}
+
+function studioGetSession(folder) {
+  let sid = studioSessions.get(folder);
+  if (sid) {
+    try {
+      const s = engine.cache.get(sid);
+      if (s) return s;
+    } catch {}
+    studioSessions.delete(folder);
+  }
+  const s = engine._load(engine.createSession().id);
+  s.messages = s.messages || [];
+  s.bgTitle = 'Beast Studio'; /* _view.isBg → sohbet geçmişi listesinde gizli */
+  s.bcCode = true; /* todo disiplini + hızlı iş kapanışı (engine) */
+  s.studio = true; /* engine: buildStudioSystem — video yapma/düzenleme ajanı */
+  try {
+    fs.appendFileSync(
+      engine._file(s.id),
+      JSON.stringify({ t: 'meta2', bgOf: '', title: 'Beast Studio', at: new Date().toISOString() }) + '\n'
+    );
+  } catch {}
+  engine.cache.set(s.id, s);
+  studioSessions.set(folder, s.id);
+  return s;
+}
+
+/* Studio mesaj kuyruğu: Beast Code kuyruğunun birebir karşılığı —
+   ajan çalışırken mesajlar birikir, iş bitince TEK pakette gönderilir */
+const ST_DEBOUNCE_MS = 900;
+const stQueue = new Map(); /* klasör yolu → { timer, msgs[] } */
+
+function stQueuePush(ws, text, attachments) {
+  let q = stQueue.get(ws);
+  if (!q) {
+    q = { timer: null, msgs: [] };
+    stQueue.set(ws, q);
+  }
+  q.msgs.push({
+    text,
+    attachments: Array.isArray(attachments) && attachments.length ? attachments : undefined,
+  });
+  return q;
+}
+
+function stFlush(folder) {
+  const q = stQueue.get(folder);
+  if (!q || !q.msgs.length) return;
+  const s = studioGetSession(folder);
+  if (engine.isBusy(s.id)) return;
+  let merged = '';
+  let mergedAtts = null;
+  for (const m of q.msgs) {
+    if (m.text) merged += (merged ? '\n' : '') + m.text;
+    if (!mergedAtts && Array.isArray(m.attachments) && m.attachments.length) mergedAtts = m.attachments;
+  }
+  if (!merged.trim() && !mergedAtts) {
+    stQueue.delete(folder);
+    clearTimeout(q.timer);
+    return;
+  }
+  s.workspace = folder;
+  s.bcCode = true;
+  s.studio = true;
+  engine.cache.set(s.id, s);
+  const payload = mergedAtts ? { text: merged, attachments: mergedAtts } : merged;
+  if (engine.send(s.id, payload, { userAction: true })) {
+    stQueue.delete(folder);
+    clearTimeout(q.timer);
+  } else {
+    q.retries = (q.retries || 0) + 1;
+    if (q.retries > 5) {
+      stQueue.delete(folder);
+      clearTimeout(q.timer);
+      try {
+        if (win && !win.isDestroyed()) {
+          win.webContents.send('agent:event', { sessionId: s.id, type: 'error', error: 'Beast Studio mesajı gönderilemedi — panele tekrar yaz' });
+        }
+      } catch {}
+      return;
+    }
+    setTimeout(() => { try { stFlush(folder); } catch {} }, 800);
+  }
+}
+
+function stFlushOnDone(ev) {
+  if (!ev || (ev.type !== 'done' && ev.type !== 'error') || !ev.sessionId) return;
+  for (const [folder, sid] of studioSessions) {
+    if (String(sid) === String(ev.sessionId) && stQueue.has(folder)) {
+      setTimeout(() => { try { stFlush(folder); } catch {} }, 150);
+    }
+  }
+}
+
+ipcMain.handle('studio:send', async (_e, payload) => {
+  const text = String((payload && payload.msg) || '').trim();
+  const attachments = Array.isArray(payload && payload.attachments) ? payload.attachments : [];
+  if (!text && !attachments.length) return { ok: false, error: 'boş mesaj' };
+  if (!engine) return { ok: false, error: 'ajan hazır değil' };
+  const ws = studioRoot();
+  const modeM = /^\/(plan|build|auto)\b/i.exec(text);
+
+  if (!engine.publicState().hasModel) return { ok: false, error: 'model yok — Ayarlar → Provider sekmesinden ekle' };
+  const s = studioGetSession(ws);
+  s.workspace = ws;
+  s.bcCode = true;
+  s.studio = true;
+  engine.cache.set(s.id, s);
+  const busy = engine.isBusy(s.id);
+  if (modeM) {
+    s.bcMode = modeM[1].toLowerCase();
+    if (win && !win.isDestroyed()) {
+      const body = modeM[1].toLowerCase() === 'plan'
+        ? 'PLAN MODU — malzemeyi inceler (list_dir/ffprobe), KOMUT ÇALIŞTIRMAZ; adım adım montaj planı verir.'
+        : modeM[1].toLowerCase() === 'build'
+          ? 'BUILD MODU — son montaj planını UYGULAR: ffmpeg işlerini çalıştırır, çıktıları doğrular.'
+          : 'OTOMATİK MOD — önce kısa plan, sonra uygulama + doğrulama.';
+      win.webContents.send('agent:event', { sessionId: s.id, type: 'st-mode', mode: s.bcMode, body });
+    }
+    return { ok: true, sessionId: s.id, mode: s.bcMode };
+  }
+  if (busy) {
+    const q = stQueuePush(ws, text, attachments);
+    return { ok: true, queued: true, count: q.msgs.length, sessionId: s.id };
+  }
+  const q = stQueuePush(ws, text, attachments);
+  clearTimeout(q.timer);
+  q.timer = setTimeout(() => { try { stFlush(ws); } catch {} }, ST_DEBOUNCE_MS);
+  return { ok: true, sessionId: s.id, pending: true };
+});
+
+ipcMain.handle('studio:stop', async () => {
+  const ws = studioRoot();
+  const sid = studioSessions.get(ws);
+  const q = stQueue.get(ws);
+  if (q) {
+    clearTimeout(q.timer);
+    stQueue.delete(ws);
+  }
+  const wasBusy = sid ? engine.isBusy(sid) : false;
+  let r = false;
+  if (wasBusy) {
+    try { r = engine.interrupt(sid, 'kullanıcı Beast Studio panelinden ■ ile durdurdu'); } catch {}
+  }
+  return { ok: true, wasBusy, interrupted: r };
+});
+
+ipcMain.handle('studio:new', async () => {
+  const ws = studioRoot();
+  const sid = studioSessions.get(ws);
+  if (sid && engine.isBusy(sid)) return { ok: false, error: 'mesaj sürüyor — önce ■ ile durdur' };
+  const q = stQueue.get(ws);
+  if (q) {
+    clearTimeout(q.timer);
+    stQueue.delete(ws);
+  }
+  if (sid) {
+    try { engine.deleteSession(sid); } catch {}
+    studioSessions.delete(ws);
+  }
+  return { ok: true };
+});
+
+ipcMain.handle('studio:setroot', async () => {
+  try {
+    const r = await dialog.showOpenDialog({
+      title: 'Beast Studio klasörü seç — videolar ve malzemeler bu klasörde',
+      defaultPath: studioRoot(),
+      properties: ['openDirectory'],
+    });
+    if (r.canceled || !r.filePaths || !r.filePaths[0]) return { ok: false, canceled: true };
+    settings.studioRoot = r.filePaths[0];
+    saveSettings();
+    studioWatchStart();
+    return { ok: true, root: settings.studioRoot };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+});
+
+ipcMain.handle('studio:tree', (_e, rel) => {
+  const p = studioSafe(rel);
+  if (!p) return { ok: false, error: 'geçersiz yol' };
+  try {
+    const entries = fs.readdirSync(p, { withFileTypes: true })
+      .filter((e) => e.name !== 'node_modules' && e.name !== '.git')
+      .map((e) => {
+        let size = 0;
+        try { if (e.isFile()) size = fs.statSync(path.join(p, e.name)).size; } catch {}
+        return { name: e.name, dir: e.isDirectory(), size };
+      })
+      .sort((a, b) => (a.dir === b.dir ? a.name.localeCompare(b.name) : a.dir ? -1 : 1));
+    return { ok: true, workspace: studioRoot(), entries };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+});
+
+/* Studio video seçici: video bölümündeki "Aç" düğmesi — medya dosyası seçilir,
+   yol düz döner (renderer file:// ile oynatır) */
+ipcMain.handle('studio:pickvideo', async () => {
+  try {
+    const r = await dialog.showOpenDialog({
+      title: 'Video/ses dosyası seç',
+      defaultPath: studioRoot(),
+      properties: ['openFile'],
+      filters: [
+        { name: 'Medya', extensions: ['mp4', 'mkv', 'mov', 'avi', 'webm', 'm4v', 'mpg', 'mpeg', 'wmv', 'flv', '3gp', 'ogv', 'mp3', 'wav', 'ogg', 'm4a', 'flac', 'aac', 'opus'] },
+        { name: 'Tüm dosyalar', extensions: ['*'] },
+      ],
+    });
+    if (r.canceled || !r.filePaths || !r.filePaths[0]) return { ok: false, canceled: true };
+    return { ok: true, path: r.filePaths[0] };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+});
+
+/* Studio ağaç canlı izleme: IDE izleyicisinin karşılığı — studioRoot kökü
+   izlenir, değişim 'ide-tree-changed' ile düşer (renderFileTree moduna göre
+   doğru ağacı tazeler). ffmpeg çıktısı da anında ağaca düşer. */
+let studioWatcher = null;
+let studioWatchTimer = null;
+let studioWatchRoot = '';
+function studioWatchStart() {
+  const root = studioRoot();
+  if (studioWatcher && studioWatchRoot === root) return;
+  studioWatchStop();
+  if (root === app.getPath('home')) return;
+  try { fs.accessSync(root); } catch { return; }
+  studioWatchRoot = root;
+  try {
+    studioWatcher = fs.watch(root, { recursive: true }, (_evType, fname) => {
+      const f = String(fname || '').replace(/\\/g, '/');
+      if (/^(node_modules|\.git|dist)(\/|$)/i.test(f)) return;
+      if (studioWatchTimer) return;
+      studioWatchTimer = setTimeout(() => {
+        studioWatchTimer = null;
+        try {
+          if (win && !win.isDestroyed()) {
+            win.webContents.send('agent:event', { type: 'ide-tree-changed' });
+          }
+        } catch {}
+      }, 500);
+    });
+    studioWatcher.on('error', () => {
+      studioWatchStop();
+      setTimeout(() => { try { studioWatchStart(); } catch {} }, 3000);
+    });
+  } catch {}
+}
+function studioWatchStop() {
+  if (studioWatcher) { try { studioWatcher.close(); } catch {} }
+  studioWatcher = null;
+  studioWatchRoot = '';
+  if (studioWatchTimer) { clearTimeout(studioWatchTimer); studioWatchTimer = null; }
+}
+
 /* düşünme (reasoning) seviyesi */
 ipcMain.handle('think:set', (_e, v) => {
   setThinkLevel(v);
   return engine.publicState();
+});
+
+/* ---------- PANO KÖPRÜSÜ (uygulama geneli sağ tık menüsü) ----------
+   Chromium rendererdaki execCommand('paste') güvenilir değil; Kes/Kopyala/
+   Yapıştır'ı pano köprüsüyle MANUEL yapıyoruz (imleç konumunda ekleme). */
+ipcMain.handle('clip:read', () => {
+  try { return clipboard.readText(); } catch { return ''; }
+});
+ipcMain.handle('clip:write', (_e, t) => {
+  try { clipboard.writeText(String(t ?? '')); return { ok: true }; } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
 });
 
 
@@ -5979,10 +6273,32 @@ ipcMain.handle('store:export', (_e, id) => storeMod.exportEntry(id));
 
 /* ---------- IDE MODU (sol: dosya gezgini · orta: chat · sağ: preview) ---------- */
 
+/* opencode disiplini: editör TÜM kod altyapısını açar — web-only değil.
+   İkili (binary) koruması uzantı listesiyle değil, okuma anındaki NUL-byte
+   sniffing ile yapılır (ide:read). Liste yalnız bilinen metin türlerini
+   hızlandırır; bilinmeyen uzantılar da denenir. */
 const IDE_TEXT_EXT = new Set([
-  '.html', '.htm', '.css', '.js', '.mjs', '.cjs', '.ts', '.jsx', '.tsx', '.json',
-  '.md', '.txt', '.csv', '.py', '.ps1', '.bat', '.cmd', '.sh', '.yaml', '.yml',
-  '.xml', '.ini', '.svg', '.gitignore',
+  '.html', '.htm', '.css', '.scss', '.sass', '.less', '.js', '.mjs', '.cjs', '.ts',
+  '.tsx', '.jsx', '.mts', '.cts', '.json', '.jsonc', '.json5', '.md', '.mdx', '.txt',
+  '.csv', '.tsv', '.log', '.py', '.pyi', '.pyw', '.ps1', '.psm1', '.bat', '.cmd',
+  '.sh', '.bash', '.zsh', '.yaml', '.yml', '.toml', '.xml', '.ini', '.cfg', '.conf',
+  '.env', '.properties', '.svg', '.gitignore', '.gitattributes', '.editorconfig',
+  '.npmrc', '.nvmrc', '.babelrc', '.prettierrc', '.eslintrc', '.go', '.mod', '.sum',
+  '.rs', '.java', '.kt', '.kts', '.swift', '.rb', '.erb', '.php', '.cs', '.csproj',
+  '.sln', '.vb', '.fs', '.c', '.h', '.cpp', '.hpp', '.cc', '.hh', '.cxx', '.hxx',
+  '.m', '.mm', '.sql', '.prisma', '.graphql', '.gql', '.proto', '.vue', '.svelte',
+  '.astro', '.lua', '.pl', '.pm', '.r', '.R', '.jl', '.dart', '.scala', '.groovy',
+  '.gradle', '.cmake', '.mk', '.make', '.dockerfile', '.terraform', '.tf', '.hcl',
+  '.asm', '.s', '.vbs', '.reg', '.htaccess', '.lock', '.patch', '.diff', '.ipynb',
+]);
+const IDE_BINARY_EXT = new Set([
+  '.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.ico', '.icns', '.tiff',
+  '.mp4', '.mkv', '.mov', '.avi', '.webm', '.m4v', '.mpg', '.mpeg', '.wmv', '.flv',
+  '.3gp', '.ogv', '.mp3', '.wav', '.ogg', '.m4a', '.flac', '.aac', '.opus', '.wma',
+  '.zip', '.7z', '.rar', '.gz', '.tar', '.bz2', '.xz', '.exe', '.dll', '.so',
+  '.dylib', '.bin', '.dat', '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt',
+  '.pptx', '.ttf', '.otf', '.woff', '.woff2', '.eot', '.db', '.sqlite', '.pyc',
+  '.class', '.jar', '.wasm', '.psd', '.ai', '.prproj', '.aep', '.fcpxml',
 ]);
 const IDE_MAX_BYTES = 400 * 1024;
 
@@ -6088,7 +6404,7 @@ ipcMain.handle('ide:read', (_e, rel) => {
   const p = ideSafe(rel);
   if (!p) return { ok: false, error: 'geçersiz yol' };
   const ext = path.extname(p).toLowerCase();
-  if (ext && !IDE_TEXT_EXT.has(ext)) return { ok: false, error: 'metin dosyası değil — düzenlenemez' };
+  if (ext && IDE_BINARY_EXT.has(ext)) return { ok: false, error: 'ikili (binary) dosya — düzenlenemez' };
   try {
     const st = fs.statSync(p);
     if (st.isDirectory()) return { ok: false, error: 'klasör' };
@@ -6105,7 +6421,7 @@ ipcMain.handle('ide:write', (_e, p) => {
   const target = ideSafe(p && p.rel);
   if (!target) return { ok: false, error: 'geçersiz yol' };
   const ext = path.extname(target).toLowerCase();
-  if (ext && !IDE_TEXT_EXT.has(ext)) return { ok: false, error: 'metin dosyası değil — yazılamaz' };
+  if (ext && IDE_BINARY_EXT.has(ext)) return { ok: false, error: 'ikili (binary) dosya — yazılamaz' };
   try {
     const body = String((p && p.content) ?? '');
     if (Buffer.byteLength(body, 'utf8') > IDE_MAX_BYTES) return { ok: false, error: 'içerik çok büyük (max 400KB)' };
@@ -6120,6 +6436,32 @@ ipcMain.handle('ide:write', (_e, p) => {
 ipcMain.handle('ide:delete', async (_e, rel) => {
   const p = ideSafe(rel);
   if (!p || p === ideRoot()) return { ok: false, error: 'geçersiz yol' };
+  try {
+    const st = fs.statSync(p);
+    const isDir = st.isDirectory();
+    const owner = win && !win.isDestroyed() ? win : undefined;
+    const r = owner
+      ? await dialog.showMessageBox(owner, {
+          type: 'warning',
+          title: 'Sil',
+          message: `"${rel}" ${isDir ? 'klasörünü (içi dahil)' : 'dosyasını'} silmek istiyor musun?`,
+          buttons: ['Sil', 'Vazgeç'],
+          defaultId: 1,
+          cancelId: 1,
+        })
+      : { response: 1 };
+    if (r.response !== 0) return { ok: false, canceled: true };
+    fs.rmSync(p, { recursive: true, force: true });
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+});
+
+/* Studio silme: IDE kökünden BAĞIMSIZ studioRoot üzerinde çalışır */
+ipcMain.handle('studio:delete', async (_e, rel) => {
+  const p = studioSafe(rel);
+  if (!p || p === studioRoot()) return { ok: false, error: 'geçersiz yol' };
   try {
     const st = fs.statSync(p);
     const isDir = st.isDirectory();

@@ -70,6 +70,7 @@ ok('pushed: main + ' + tag);
 /* ---------- 3) GitHub Release (kaynak — exe yok) ---------- */
 step('3/5 GitHub Release ' + tag);
 const gh = process.env.GH || 'gh';
+let ghOk = false;
 try {
   const notes = [
     `## Beast Agent ${tag}`,
@@ -85,8 +86,13 @@ try {
   try { run(`${gh} release delete ${tag} --yes --cleanup-tag`); } catch {}
   run(`${gh} release create ${tag} --title "Beast Agent ${tag}" --notes-file "${notesFile}"`, { inherit: true });
   ok('release yayında: https://github.com/algokodcom/beast-agent/releases/tag/' + tag);
+  ghOk = true;
 } catch (e) {
-  fail('GitHub release: ' + String(e));
+  /* gh kurulu değil / oturum yok → yayın atlanır, akış npm ile sürer */
+  warn('GitHub release atlandı (gh yok veya hata): ' + String(e).slice(0, 160));
+}
+if (!ghOk) {
+  warn('GitHub Release elle açılabilir: https://github.com/algokodcom/beast-agent/releases/new?tag=' + tag);
 }
 
 /* ---------- 4) npm publish ---------- */

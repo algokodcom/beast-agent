@@ -40,9 +40,9 @@ test('findByCode: kod ile oturumu bulur, hızlı indeks kullanır', async () => 
   fs.rmSync(eng.sessionsDir, { recursive: true, force: true });
 });
 
-test('ORTAM: yerel tarih/saat/dilim prompta girer', () => {
+test('ORTAM: yerel tarih/saat/dilim prompta girer', async () => {
   const eng = mkEng();
-  const sys = eng.buildSystem('test');
+  const sys = await eng.buildSystem('test');
   assert.match(sys, /Yerel tarih:/);
   assert.match(sys, /Yerel saat:/);
   assert.match(sys, /UTC varsayma/);

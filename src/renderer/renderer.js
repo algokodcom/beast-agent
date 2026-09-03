@@ -138,6 +138,8 @@ let renderQueued = false;
 
 /* #19 sağ panel tercih durumu (tarayıcı açılmadan önceki) — panel varsayılan KAPALI */
 let railPrefBeforeBrowser = false;
+/* kullanıcı rail'i ELLE mi açtı? — otomatik kapatma yalnız bizim açtıklarımıza dokunur */
+let railManualOpen = false;
 
 function toggleRail(hide) {
   document.body.classList.toggle('rail-hidden', !!hide);
@@ -691,6 +693,10 @@ function finishToolCard(callId, ok, result, diff) {
   st.classList.remove('run');
   st.classList.add(ok ? 'ok' : 'err');
   st.textContent = ok ? 'tamam' : 'hata';
+  /* outline: çalışan kart kalmadıysa HEMEN söner — grup kapanmasını beklemez
+     (sonraki tool-start yeniden yakar; terminal işi bitince mavi ring dönmez) */
+  const box = card.closest('.tool-box');
+  if (box && !box.querySelector('.tool-state.run')) box.classList.remove('running');
   const body = card.querySelector('.tool-body');
   if (diff && diff.path) {
     /* başlığa +/- rozetleri (opencode filediff additions/deletions) */
@@ -778,6 +784,7 @@ async function renderSessions(list) {
     if ((s.botId || 'beast') !== activeBotId) continue;
     const row = document.createElement('div');
     row.className = 'sess' + (s.id === activeId ? ' active' : '');
+    row.dataset.sid = s.id; /* en üstteki sohbeti otomatik aktif etmek için */
     row.title = _t('sess_drag');
     row.draggable = true;
     row.innerHTML =
@@ -3949,15 +3956,24 @@ async function refreshAgentsPane() {
   renderAgentRail();
 }
 
-/* ajanlar çalışmaya başladığında sağdaki Paralel Ajan konsolu otomatik açılır
-   (yalnız boştan-çalışıyor geçişinde; kullanıcı çalışırken elle kapatırsa ezilmez,
-   dahili tarayıcı açıkken de karışılmaz) */
+/* Paralel Ajan konsolu: DEFAULT KAPALI.
+   - Ajanlar çalışmaya başladığında otomatik AÇILIR (boştan-çalışıyor geçişinde;
+     kullanıcı çalışırken elle kapatırsa ezilmez; dahili tarayıcı ve IDE modu
+     açıkken karışılmaz — orada railBtn ile elle açılır)
+   - Tüm işler bitince otomatik KAPANIR (yalnız açılışı biz yaptıysak;
+     kullanıcı elle açtıysa açık kalır) */
 function maybeAutoOpenRail() {
   const hasRunning = agentState.jobs.some((j) => j.status === 'running');
-  if (hasRunning && !agentState.autoOpened && document.body.classList.contains('rail-hidden') &&
-      !document.body.classList.contains('browser-open')) {
+  const hidden = document.body.classList.contains('rail-hidden');
+  if (hasRunning && !agentState.autoOpened && hidden &&
+      !document.body.classList.contains('browser-open') && !ideModeOn()) {
     toggleRail(false);
     railPrefBeforeBrowser = true;
+  }
+  if (!hasRunning && agentState.autoOpened && !hidden &&
+      !railManualOpen && !document.body.classList.contains('browser-open')) {
+    toggleRail(true);
+    railManualOpen = false;
   }
   agentState.autoOpened = hasRunning;
 }
@@ -4328,6 +4344,12 @@ function onEvent(ev) {
     case 'todos':
       renderTodos(ev.todos);
       break;
+    case 'win-max': {
+      /* custom pencere butonu: büyüt/küçült ikonunu pencere durumuyla senkron tut */
+      const wm = $('#winMax');
+      if (wm) wm.innerHTML = ev.maximized ? '&#x2750;&#xFE0E;' : '&#x25A1;&#xFE0E;';
+      break;
+    }
     case 'cron':
       if (setTab === 'cron') renderCronList(ev.jobs || []);
       if (els.cronOverlay && !els.cronOverlay.hidden) renderCronModal();
@@ -5057,11 +5079,15 @@ async function init() {
   } catch {}
   applyState();
 
-  /* açılışta: oturum varsa SON oturumu otomatik yükle/göster; yoksa yeni oturum AÇMA (kullanıcı "Yeni Sohbet"e bassın) */
+  /* açılışta: oturum varsa SIDEBAR'IN EN ÜSTTEKİ sohbeti direkt aktif açılır
+     (elle sürükleme sırası + aktif bot filtresi gözetilir); yoksa yeni oturum
+     AÇMA (kullanıcı "Yeni Sohbet"e bassın) */
   const sessions = await beast.listSessions();
   if (sessions.length) {
-    const last = sessions.slice().sort((a, b) => (new Date(b.updatedAt || 0) - new Date(a.updatedAt || 0)))[0] || sessions[0];
-    await openSession(last.id);
+    await refreshSessions();
+    const firstRow = els.sessList.querySelector('.sess');
+    if (firstRow && firstRow.dataset.sid) await openSession(firstRow.dataset.sid);
+    else showEmpty(true);
   } else {
     showEmpty(true);
   }
@@ -5071,6 +5097,15 @@ async function init() {
     await openSession(created.id);
     els.input.focus();
   });
+
+  /* custom pencere butonları: küçült / büyüt / kapat — main'e window:ctrl ile gider.
+     Büyüt ikonu maximize/unmaximize olayıyla senkron (□ / ❐). */
+  const winMin = $('#winMin');
+  const winMax = $('#winMax');
+  const winClose = $('#winClose');
+  if (winMin) winMin.addEventListener('click', () => beast.winCtrl('minimize'));
+  if (winMax) winMax.addEventListener('click', () => beast.winCtrl('maximize'));
+  if (winClose) winClose.addEventListener('click', () => beast.winCtrl('close'));
 
   /* sağ panel — ayar/tema solda; burada yalnızca görev listesi */
 
@@ -5292,6 +5327,7 @@ async function init() {
     }
     toggleRail(!document.body.classList.contains('rail-hidden'));
     railPrefBeforeBrowser = !document.body.classList.contains('rail-hidden');
+    railManualOpen = willOpen; /* elle açıldı → otomatik kapatma dokunmaz */
   });
   if (els.railClear) {
     els.railClear.addEventListener('click', async () => {
@@ -5460,8 +5496,20 @@ async function init() {
   if ($('#botClose')) $('#botClose').addEventListener('click', () => botOverlaySetOpen(false));
   if ($('#botOverviewBack')) $('#botOverviewBack').addEventListener('click', () => openBotPage(null));
   if ($('#botChip')) $('#botChip').addEventListener('click', () => openBotPage(activeBotId));
-  /* kalıcı aktif bot: restart sonrası aynı botun UI'ı açılır */
-  beast.botsActiveGet().then((r) => { activeBotId = (r && r.id) || 'beast'; updateBotChip(); renderBotCards(); applyState(); }).catch(() => {});
+  /* kalıcı aktif bot: restart sonrası aynı botun UI'ı açılır. Bot bilgisi
+     asenkron geldiğinde oturum listesi de o bota göre yeniden filtrelenir ve
+     YİNE en üstteki sohbet aktif açılır (ilk açılış kuralı tutarlı kalır). */
+  beast.botsActiveGet().then((r) => {
+    activeBotId = (r && r.id) || 'beast';
+    updateBotChip();
+    renderBotCards();
+    applyState();
+    refreshSessions().catch(() => {});
+    const firstRow = els.sessList.querySelector('.sess');
+    if (firstRow && firstRow.dataset.sid && firstRow.dataset.sid !== activeId) {
+      openSession(firstRow.dataset.sid).catch(() => {});
+    }
+  }).catch(() => {});
   document.querySelectorAll('.btab').forEach((b) =>
     b.addEventListener('click', () => {
       document.querySelectorAll('.btab').forEach((x) => x.classList.remove('active'));
@@ -6137,8 +6185,10 @@ async function setIdeMode(on) {
   /* soldaki marka: chat modunda BEAST Agent, IDE modunda BEAST Code */
   const brandSub = document.querySelector('#brand .brand-sub');
   if (brandSub) brandSub.textContent = on ? 'Code' : 'Agent';
-  /* IDE modu oturumluk: uygulama HER AÇILIŞTA agent (chat) modunda başlar */
-  toggleRail(!!on);
+  /* rail her iki modda da DEFAULT KAPALI — çalışan paralel ajan varsa
+     aşağıda (agent moduna dönüşte) maybeAutoOpenRail otomatik açar */
+  toggleRail(true);
+  railManualOpen = false;
   /* IDE'den çıkış: açık tarayıcı da kapansın — her şey default haline dönsün */
   if (!on && document.body.classList.contains('browser-open')) {
     try { beast.toggleBrowser(); } catch {}
@@ -6149,6 +6199,11 @@ async function setIdeMode(on) {
     await loadIdeTree();
     bcBanner();
     codeGutterRender(); /* dosya açık olmasa bile rakamlar görünür */
+  } else {
+    /* agent moduna dönüş: koşan paralel ajan varsa rail otomatik açılır
+       (autoOpened sıfırlanır — Code modundayken başlayan iş için de tetiklensin) */
+    agentState.autoOpened = false;
+    try { await refreshAgentsPane(); } catch {}
   }
 }
 
@@ -7127,9 +7182,13 @@ function bcToolBoxEnd(callId, ok, result, diff) {
   const out = String(result || '').replace(/\s+$/, '');
   if (t) {
     const { sec } = t;
-    /* ring burada SÖNDÜRÜLMEZ — iş bitene kadar (bcCloseToolGroup) döner */
     sec.classList.add('done');
     if (!ok) sec.classList.add('failed');
+    /* ring: bu araç BİTİNCE sönür — grup kapanmasını beklemez.
+       (Yeni araç başlarsa bcToolBoxStart yeniden yakar; grup aynı kutuda kalır.) */
+    if (!t.box.querySelector('.bc-toolsection:not(.done)')) {
+      t.box.classList.remove('running');
+    }
     const pre = sec.querySelector('.bc-toolout');
     if (diff && diff.path) {
       /* opencode diff görünümü: başlığa +/- rozeti, gövdeye kırmızı/yeşil diff */

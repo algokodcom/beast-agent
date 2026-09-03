@@ -502,6 +502,41 @@ body.term-open #settingsOverlay { right: var(--tw, 520px); }
 }
 .drag-spacer { flex: 1; height: 100%; -webkit-app-region: drag; }
 
+/* ---------- custom pencere butonları (native overlay yerine) ----------
+   Arka plan YOK — topbar'ın kendi zemininde yüzüyor; hover'da uygulamanın
+   kendi accent-dim tonu, kapat Windows alışkanlığıyla kırmızı. */
+.win-controls {
+  display: flex;
+  align-items: center;
+  height: 100%;
+  margin-left: -4px;
+  -webkit-app-region: no-drag;
+}
+.win-controls button {
+  width: 42px;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  border-radius: 7px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1;
+  padding: 0;
+  cursor: pointer;
+}
+.win-controls button:hover {
+  background: var(--accent-dim);
+  color: var(--text);
+}
+.win-controls button:active { opacity: 0.7; }
+.win-controls button.win-close:hover {
+  background: #c42b1c;
+  color: #ffffff;
+}
+
 /* dropdown model picker */
 .dd { position: relative; -webkit-app-region: no-drag; }
 .dd-btn {
@@ -1802,8 +1837,9 @@ body.browser-open #settingsDialog { width: min(70vw, calc(100vw - var(--bw, 480p
   border-left: 1px solid var(--border);
   display: flex;
   flex-direction: column;
-  /* pencere kontrolleri (– □ ×) 46px'lik alana oturur; altından başla */
-  padding-top: 46px;
+  /* eskiden üstte 46px boşluk vardı: native titleBarOverlay butonları bu
+     alana oturuyordu. Butonlar artık topbar'ın içinde custom çizildiği için
+     rail tam yükseklikte başlar — mod geçişlerinde kaybolma yok. */
 }
 
 #railHead {

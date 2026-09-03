@@ -126,6 +126,14 @@ function save(file, content) {
     if (!ALLOWED_FILES.includes(file)) return { ok: false, error: 'bad file' };
     ensure();
     fs.writeFileSync(path.join(memDir(), file), String(content ?? ''), 'utf8');
+    /* UI/admin MEMORY.md'yi elle değiştirdiyse mem0 store'unu satırlardan yeniden kur
+       (store = arama doğruluk kaynağı; ayna dosyası kullanıcıya görünür kalır) */
+    if (file === 'MEMORY.md') {
+      try {
+        const mem0 = require('./mem0');
+        mem0.reindexFromLines('main', String(content ?? '').split('\n').map((l) => l.replace(/^[-*]\s*/, '').trim()).filter(Boolean));
+      } catch {}
+    }
     return { ok: true };
   } catch (e) {
     return { ok: false, error: String((e && e.message) || e) };

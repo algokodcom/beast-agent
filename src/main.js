@@ -194,6 +194,8 @@ try {
 try { nodemailer = require('nodemailer'); } catch {}
 
 const APP_DIR = path.join(app.getPath('appData'), 'beast');
+/* mem0-native embedding modeli whisper ile AYNI cache'i kullanır (src/agent/mem0.js okur) */
+process.env.BEAST_MODELS_DIR = path.join(APP_DIR, 'models');
 
 /* ÖNCÜ SAĞLAYICILAR (BÖLÜM 9): endpoint bilmeye gerek yok — picker'dan seç,
    sadece API key gir, modeller otomatik çekilir. Hepsi OpenAI-uyumlu. */
@@ -1671,7 +1673,7 @@ function botToolSet(cfg) {
     'event_list', 'event_subscribe', 'event_unsubscribe',
     'watcher_add', 'watcher_list', 'watcher_remove',
   ]);
-  if (s.web_search) { set.add('web_search'); set.add('http_fetch'); set.add('deep_search'); }
+  if (s.web_search) { set.add('web_search'); set.add('http_fetch'); set.add('webfetch'); set.add('deep_search'); }
   if (s.browser) {
     for (const t of ['browser_open', 'browser_read', 'browser_screenshot', 'browser_snapshot', 'browser_click', 'browser_type', 'browser_press', 'browser_scroll', 'browser_select', 'ocr_read']) set.add(t);
   }
@@ -2570,6 +2572,8 @@ function reloadBackend() {
       search: (id, q, l) => bots.searchMem(id, q, l),
       relevant: (id, q) => bots.relevantMem(id, q),
     },
+    /* mem0-native hafıza katmanı (semantik arama + konsolidasyon) — ayarlardan kapatılabilir */
+    mem0: settings.mem0 !== false,
     roleModels: settings.roleModels || {},
     deletedModels: settings.deletedModels || [],
     lockdown: !!settings.waLockdown,
@@ -3975,12 +3979,9 @@ function createWindow() {
     backgroundColor: dark ? '#0d0d0f' : '#f7f7f8',
     icon: path.join(__dirname, '..', 'assets', 'app.ico'),
     titleBarStyle: 'hidden',
-    titleBarOverlay: {
-      /* transparent Windows'ta beyaz buton arka planı veriyor — tema rengiyle başlat */
-      color: dark ? '#0d0d0f' : '#f7f7f8',
-      symbolColor: dark ? '#9a9aa2' : '#707078',
-      height: 46,
-    },
+    /* pencere butonları (küçült/büyüt/kapat) renderer'da TRANSPARAN custom
+       çizilir — native titleBarOverlay kendi arka planını dayattığı için
+       kaldırıldı; kontroller 'window:ctrl' IPC'siyle yönetilir */
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -4005,8 +4006,14 @@ function createWindow() {
     }
   });
   win.on('resize', layoutBrowser);
-  win.on('maximize', layoutBrowser);
-  win.on('unmaximize', layoutBrowser);
+  win.on('maximize', () => {
+    layoutBrowser();
+    try { if (win && !win.isDestroyed()) win.webContents.send('agent:event', { type: 'win-max', maximized: true }); } catch {}
+  });
+  win.on('unmaximize', () => {
+    layoutBrowser();
+    try { if (win && !win.isDestroyed()) win.webContents.send('agent:event', { type: 'win-max', maximized: false }); } catch {}
+  });
   win.on('show', layoutBrowser);
   // X'e basınca gizle — tepside yaşamaya devam, WhatsApp bağlantısı sürer
   win.on('close', (e) => {
@@ -5207,16 +5214,23 @@ ipcMain.handle('visible-models:set', (_e, list) => {
 ipcMain.handle('theme:set', (_e, t) => {
   settings.theme = t === 'dark' ? 'dark' : 'light';
   saveSettings();
-  if (win && !win.isDestroyed() && typeof win.setTitleBarOverlay === 'function') {
-    try {
-      win.setTitleBarOverlay(
-        settings.theme === 'dark'
-          ? { color: '#0d0d0f', symbolColor: '#9a9aa2' }
-          : { color: '#f7f7f8', symbolColor: '#707078' }
-      );
-    } catch {}
-  }
+  /* native titleBarOverlay kaldırıldı — buton renkleri CSS değişkenleriyle
+     otomatik uyar, main tarafında senkron gerekmez */
   return true;
+});
+
+/* custom pencere butonları (küçült/büyüt/kapat) — renderer'daki .win-controls */
+ipcMain.handle('window:ctrl', (_e, action) => {
+  if (!win || win.isDestroyed()) return { ok: false };
+  try {
+    if (action === 'minimize') win.minimize();
+    else if (action === 'maximize') win.isMaximized() ? win.unmaximize() : win.maximize();
+    else if (action === 'close') win.close(); /* close handler'ı tray'e gizleme kuralını işletir */
+    else return { ok: false };
+    return { ok: true, maximized: win.isMaximized() };
+  } catch {
+    return { ok: false };
+  }
 });
 
 /* ---------------- cron IPC ---------------- */

@@ -61,6 +61,7 @@ contextBridge.exposeInMainWorld('beast', {
   setVisibleModels: (list) => ipcRenderer.invoke('visible-models:set', list),
   refreshModels: () => ipcRenderer.invoke('models:refresh'),
   setTheme: (t) => ipcRenderer.invoke('theme:set', t),
+  winCtrl: (action) => ipcRenderer.invoke('window:ctrl', action),
   toggleBrowser: () => ipcRenderer.invoke('browser:toggle'),
   browserShownGet: () => ipcRenderer.invoke('browser:shown:get'),
   browserShownSet: (v) => ipcRenderer.invoke('browser:shown:set', v),

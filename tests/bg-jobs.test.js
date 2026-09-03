@@ -42,14 +42,14 @@ test('CEO yasaklı araç seti uygulayıcıları kapsar, yönetici araçlarını 
   assert.ok(E.BG_HIDDEN_TOOLS.has('run_background'));
 });
 
-test('buildSystem CEO modunda CEO bloğu içerir; kapalıyken içermez', () => {
+test('buildSystem CEO modunda CEO bloğu içerir; kapalıyken içermez', async () => {
   const { eng } = tmpEngine();
   eng.setCeoMode(true);
-  const onSys = eng.buildSystem('merhaba');
+  const onSys = await eng.buildSystem('merhaba');
   assert.ok(onSys.includes('# CEO MODU'), 'ceo bloğu');
   assert.ok(onSys.includes('PARALEL ajana devret'));
   eng.setCeoMode(false);
-  const offSys = eng.buildSystem('merhaba');
+  const offSys = await eng.buildSystem('merhaba');
   assert.ok(!offSys.includes('# CEO MODU'));
   assert.ok(offSys.includes('delegate_task ile devret'));
 });

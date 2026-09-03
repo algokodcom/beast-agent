@@ -56,18 +56,18 @@ test('eval: memory-hygiene-dedup', () => {
   for (const l of memory.entries()) if (/batuhan/i.test(l)) memory.removeRule('__none__'); // no-op koruması
 });
 
-test('eval: system-prompt-has-local-time', () => {
+test('eval: system-prompt-has-local-time', async () => {
   const os = require('os');
   const eng = new Engine({}, { sessionsDir: fs.mkdtempSync(path.join(os.tmpdir(), 'beast-eval-')) });
-  const sys = eng.buildSystem('x');
+  const sys = await eng.buildSystem('x');
   assert.match(sys, new RegExp(scenario('system-prompt-has-local-time').regex));
 });
 
-test('eval: system-prompt-rules-injected', () => {
+test('eval: system-prompt-rules-injected', async () => {
   const os = require('os');
   const eng = new Engine({}, { sessionsDir: fs.mkdtempSync(path.join(os.tmpdir(), 'beast-eval2-')) });
   memory.addRule('Eval test kuralı ABCXYZ');
-  const sys = eng.buildSystem('x');
+  const sys = await eng.buildSystem('x');
   assert.match(sys, /KURALLAR/);
   assert.match(sys, /Eval test kuralı ABCXYZ/);
   memory.removeRule('Eval test kuralı ABCXYZ');

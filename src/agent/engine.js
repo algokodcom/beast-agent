@@ -12,6 +12,7 @@ const tools = require('./tools');
 const research = require('./research');
 const agentdefs = require('./agentdefs');
 const memory = require('./memory');
+const mem0 = require('./mem0');
 const skills = require('./skills');
 const { estTokens, estMsgTokens } = require('./tokens');
 const log = require('./logger');
@@ -112,13 +113,13 @@ const FORMAT_RULES =
 const PERM_TOOL_SETS = {
   all: null, // tüm araçlar (filtre yok)
   web: new Set([
-    'web_search', 'http_fetch', 'deep_search',
+    'web_search', 'http_fetch', 'webfetch', 'deep_search',
     'browser_open', 'browser_read', 'browser_snapshot', 'browser_screenshot',
     'browser_click', 'browser_type', 'browser_press', 'browser_scroll', 'browser_select',
     'ocr_read',
   ]),
   read: new Set([
-    'web_search', 'http_fetch', 'deep_search',
+    'web_search', 'http_fetch', 'webfetch', 'deep_search',
     'browser_open', 'browser_read', 'browser_snapshot',
     'list_dir', 'read_file', 'grep', 'glob',
   ]),
@@ -130,7 +131,7 @@ const PERM_LEVELS = ['all', 'web', 'read', 'chat'];
    salt-okurdur — yazma/çalıştırma araçları setten düşer, sadece plan çıkar */
 const PLAN_ALLOW_TOOLS = new Set([
   'read_file', 'list_dir', 'grep', 'glob',
-  'web_search', 'http_fetch', 'deep_search',
+  'web_search', 'http_fetch', 'webfetch', 'deep_search',
   'browser_open', 'browser_read', 'browser_snapshot',
   'todo_write', 'memory_search', 'kb_search', 'ocr_read',
 ]);
@@ -151,7 +152,7 @@ function normalizePerms(p) {
 const CEO_EXEC_TOOLS = new Set([
   'run_command', 'read_file', 'write_file', 'edit_file', 'list_dir',
   'python_run',
-  'web_search', 'http_fetch', 'deep_search',
+  'web_search', 'http_fetch', 'webfetch', 'deep_search',
   'browser_open', 'browser_read', 'browser_screenshot', 'browser_snapshot',
   'browser_click', 'browser_type', 'browser_press', 'browser_scroll', 'browser_select',
   'computer_look', 'computer_act',
@@ -259,6 +260,9 @@ class Engine {
     this.resolveBot = opts.resolveBot || null; // botId -> bot bilgisi (main enjekte eder)
     /* bot oturumu hafıza köprüsü: botun kendi SOUL/USER/MEMORY dosyaları */
     this.botMemory = opts.botMemory || null;
+    /* mem0-native hafıza katmanı: semantik arama + LLM konsolidasyonu (bot başına izole store).
+       Ayarlardan kapatılabilir (mem0:false) — kapalıysa klasik keyword hafızası çalışır. */
+    this.mem0Enabled = opts.mem0 !== false;
     /* ANA KOD KİLİDİ: agent kendi kaynak koduna dokunamaz (yazma/silme yok, okuma serbest) */
     this.protectedDirs = (opts.protectedDirs || [])
       .map((d) => String(d).replace(/[\\/]+$/, '').toLowerCase().replace(/\//g, '\\'))
@@ -1414,7 +1418,7 @@ class Engine {
     );
   }
 
-  buildSystem(queryText, session) {
+  async buildSystem(queryText, session) {
     /* BOT OTURUMU: non-admin bota bağlıysa global Beast hafızası HIÇ girmez —
        o botun kendi SOUL/USER/MEMORY dosyaları kullanılır (tam izolasyon) */
     const bctx = this._sessionBotCtx(session);
@@ -1425,11 +1429,15 @@ class Engine {
         user: this.botMemory.read(bctx.id, 'USER.md'),
         memory: this.botMemory.read(bctx.id, 'MEMORY.md'),
       };
-      relevantMemory = this.botMemory.relevant(bctx.id, String(queryText || ''));
+      relevantMemory = this.mem0Enabled
+        ? await mem0.relevant('bot:' + bctx.id, String(queryText || ''))
+        : this.botMemory.relevant(bctx.id, String(queryText || ''));
       rules = []; // global kurallar Beast'e özeldir — müşteri botuna karışmaz
     } else {
       mem = memory.loadAll();
-      relevantMemory = memory.relevantFor(String(queryText || ''), {});
+      relevantMemory = this.mem0Enabled
+        ? await mem0.relevant('main', String(queryText || ''))
+        : memory.relevantFor(String(queryText || ''), {});
       rules = memory.listRules();
     }
     const sk = skills.scan().map((s) => `- ${s.name}: ${s.description} [${s.path}]`);
@@ -1501,7 +1509,7 @@ class Engine {
           this.ceoMode
             ? 'Bağımsız alt-işleri run_background ile PARALEL ajana devret; işi KENDİN YÜRÜTME — emri ver, takip et, raporla.'
             : 'Bağımsız alt-işleri delegate_task ile devret; kendi başına halledebileceğin işleri devretme.',
-          'Güncel/dış bilgi gerekiyorsa web_search kullan (zincir DAHİLİ tarayıcıyla başlar — gerçek Chromium ile Google); hızlı ham metin okuması için http_fetch kullan.',
+          'Güncel/dış bilgi gerekiyorsa web_search kullan (zincir DAHİLİ tarayıcıyla başlar — gerçek Chromium ile Google); hızlı ham metin okuması için webfetch (veya http_fetch) kullan.',
           'DERİN ARAŞTIRMA: web_search\u2019in sonucu yetersizse/istenen bilgi listede YOKSA aramayı tekrar tekrar deneme yerine deep_search kullan — 1-4 sorgu varyantını (eş anlamlı, Türkçe+İngilizce yazımlar) PARALEL aratır ve ilk sayfaları GİZLİ gerçek Chromium\u2019da açıp tam metin okur (paneli açmaz, kullanıcıyı rahatsız etmez; JS/SPA sayfalar çalışır). Fiyat karşılaştırma, çok kaynaklı araştırma, "her şeyi bul" işleri ve Türkçe sorgularda sonuç zayıfsa doğrudan deep_search seç. read_top=0 verirsen yalnız harmanlanmış sonuç listesi döner.',
           'ARAMA-DİSİPLİN: bir bilgiyi 2-3 denemede bulamazsan TAKILMA — farklı bir açıya/sorguya geç, yine yoksa bulabildiğin kısmi bilgiyle cevap ver ve neyi bulamadığını açıkça söyle. Kapalı/gizli içerik (private profil, login arkası veri) peşinde KOŞMA — bulunamayacağı belliyse hemen vazgeç.',
           'TARAYICI VARSAYILANI (ZORUNLU): kullanıcı "şu siteyi aç", "bunu ara / google\u2019da ara", "şu sayfaya git" gibi bir web isteği verdiğinde HEP DAHİLİ TARAYICIYI KULLAN (browser_open ile aç → açılış yanıtında hazır snapshot gelir → ref numaralarıyla browser_click/browser_type/browser_select ile hareket et; HER eylem yanıtında taze snapshot döner — ayrıca browser_snapshot çağırma, yanıttaki refleri kullan; browser_read ile metin oku; sadece görsel yerleşim/grafik gerekiyorsa browser_screenshot çek). Tarih/saat alanlarını (type=date/time) browser_type ile DÜZ METİN yaz ("15.03.2026", "2026-03-15") — takvimden tıklamaya çalışma, alan programatik ayarlanır. Panel ekranın sağında açılır ve kullanıcı da sayfayı anında görür; JS/login/SPA/dinamik içerik için idealdir. Bu kural TÜM oturumları kapsar — masaüstü sohbeti ve çok kullanıcılı botlar (WhatsApp vb.) dahil.' +
@@ -2843,7 +2851,7 @@ class Engine {
       ? this.buildBgSystem(session)
       : session.bcCode
         ? this.buildBcSystem(session)
-        : this.buildSystem(promptText, session);
+        : await this.buildSystem(promptText, session);
     // Granül izin: oturumun yetki seviyesine göre araç seti daraltılır.
     // Çoklu izin (ör. web+read) seçiliyse kümeler BİRLEŞİR — hepsinin araçları açık olur.
     const perms = this.sessionPermFor(session.id);
@@ -3350,8 +3358,11 @@ class Engine {
      Mesajları yeniden taramak yerine imza tutarız: session.toolsSinceReflect */
   /* ---------- otomatik memory döngüsü ----------
      Sohbetten kalıcı değerli bilgiyi (isim, tercih, proje, alışkanlık)
-     yakalayıp MEMORY.md'ye düşürür. Şişmeyi engelleme: her turda DEĞİL,
-     NOTES_TRIGGER mesajda bir; kısa tutulmuş madde; hygiene dedup'ı. */
+     yakalayıp hafızaya düşürür. mem0-native açıkken: scope bazlı store +
+     mem0 FACT_RETRIEVAL + ADD/UPDATE/DELETE konsolidasyonu (bot oturumu
+     kendi store'una gider — eskiden yanlışlıkla global hafızaya yazılıyordu).
+     Şişmeyi engelleme: her turda DEĞİL, NOTES_TRIGGER mesajda bir; kısa madde;
+     dedup (hash + semantic). */
   async _autoMemory(session, signal) {
     try {
       if (!this.sel) return;
@@ -3366,6 +3377,31 @@ class Engine {
       const transcript = this._renderTranscript(slice);
       if (transcript.trim().length < 200) return;
 
+      const llm = async (sys, user) => {
+        const res = await chatOnce(
+          this.sel,
+          { messages: [{ role: 'user', content: sys + '\n\n' + user }], temperature: 0.1 },
+          { signal }
+        );
+        return String(res.content || '');
+      };
+
+      /* mem0-native yol */
+      if (this.mem0Enabled) {
+        const bctx = this._sessionBotCtx(session);
+        const scope = bctx ? 'bot:' + bctx.id : 'main';
+        const existing = mem0.recentTexts(scope, 30).join('\n');
+        const facts = await mem0.extractFacts(llm, transcript.slice(0, 4000), existing, { max: 3 });
+        if (!facts.length) return;
+        const r = await mem0.add(scope, facts, { llm });
+        if (r.ok && (r.added || r.updated || r.deleted)) {
+          emitSafe(this, session.id, { type: 'status', status: 'hafıza güncellendi' });
+        }
+        mem0.syncMirror(scope);
+        return;
+      }
+
+      /* klasik yol (mem0 kapalı): tek LLM extraction + append */
       const existing = memory.entries().slice(-30).join('\n');
       const prompt =
         'Aşağıdaki konuşma parçasından UZUN VADELİ hatırlanmaya değer bilgileri çıkar ' +
@@ -3713,7 +3749,7 @@ class Engine {
       /* opencode general-agent portu: alt-ajan da edit/grep/glob kullanır */
       if (!(name === 'run_command' || name === 'read_file' || name === 'write_file' || name === 'edit_file' ||
             name === 'list_dir' || name === 'grep' || name === 'glob' ||
-            name === 'web_search' || name === 'http_fetch' || name === 'python_run')) {
+            name === 'web_search' || name === 'http_fetch' || name === 'webfetch' || name === 'python_run')) {
         return JSON.stringify({ ok: false, error: `unknown tool ${name}` });
       }
       return await tools.exec(name, args, { cwd: this.workspace, signal });
@@ -3796,13 +3832,27 @@ class Engine {
       /* GERİ ALMA GÜNLÜĞÜ: dosya yazımından ÖNCE eski içerik kayda geçer */
       this._journalBefore(sessionId, name, args);
       if (name === 'memory_write') {
-        /* bot oturumu → botun KENDİ MEMORY.md'sine yaz (global Beast hafızasına değil) */
+        /* bot oturumu → botun KENDİ hafıza store'una yaz (global Beast hafızasına değil).
+           mem0 açıkken: hash+semantic dedup'lı store'a gider, MEMORY.md aynası güncellenir. */
         const bctx = this._sessionBotCtx(sessionId ? this.cache.get(String(sessionId)) : null);
-        const r =
-          bctx && this.botMemory
-            ? this.botMemory.append(bctx.id, args.text)
-            : memory.append(args.text);
-        return JSON.stringify(r);
+        if (bctx && this.botMemory) {
+          if (this.mem0Enabled) {
+            const r = await mem0.add('bot:' + bctx.id, [args.text]).catch(() => null);
+            if (r && r.ok) {
+              mem0.syncMirror('bot:' + bctx.id);
+              return JSON.stringify({ ok: true, duplicate: r.skipped > 0, event: r.events[0] && r.events[0].event });
+            }
+          }
+          return JSON.stringify(this.botMemory.append(bctx.id, args.text));
+        }
+        if (this.mem0Enabled) {
+          const r = await mem0.add('main', [args.text]).catch(() => null);
+          if (r && r.ok) {
+            mem0.syncMirror('main');
+            return JSON.stringify({ ok: true, duplicate: r.skipped > 0, event: r.events[0] && r.events[0].event });
+          }
+        }
+        return JSON.stringify(memory.append(args.text));
       }
       if (name === 'user_write') {
         /* kullanıcı profili (ad/hitap/tercih) → USER.md (bot oturumunda botun kendi USER.md'si) */
@@ -3815,17 +3865,23 @@ class Engine {
       }
       if (name === 'memory_search') {
         const bctx = this._sessionBotCtx(sessionId ? this.cache.get(String(sessionId)) : null);
+        const q = String(args.query || '');
+        const limit = clamp(Number(args.limit) || 5, 1, 15);
         if (bctx && this.botMemory) {
+          const rows = this.mem0Enabled
+            ? await mem0.search('bot:' + bctx.id, q, { limit }).catch(() => [])
+            : [];
           return JSON.stringify({
             ok: true,
-            query: String(args.query || ''),
-            results: this.botMemory.search(bctx.id, String(args.query || ''), clamp(Number(args.limit) || 5, 1, 15)),
+            query: q,
+            results: rows.length ? rows : this.botMemory.search(bctx.id, q, limit),
           });
         }
+        const rows = this.mem0Enabled ? await mem0.search('main', q, { limit }).catch(() => []) : [];
         return JSON.stringify({
           ok: true,
-          query: String(args.query || ''),
-          results: memory.search(String(args.query || ''), clamp(Number(args.limit) || 5, 1, 15)),
+          query: q,
+          results: rows.length ? rows : memory.search(q, limit),
         });
       }
       if (name === 'todo_write') {
@@ -4089,7 +4145,7 @@ class Engine {
          bunlar olmadan model write_file + tam dosya okuma döngüsüne düşer */
       if (!(name === 'run_command' || name === 'read_file' || name === 'write_file' || name === 'edit_file' ||
             name === 'list_dir' || name === 'grep' || name === 'glob' ||
-            name === 'web_search' || name === 'http_fetch' || name === 'python_run')) {
+            name === 'web_search' || name === 'http_fetch' || name === 'webfetch' || name === 'python_run')) {
         return JSON.stringify({ ok: false, error: `unknown tool ${name}` });
       }
       return await tools.exec(name, args, { cwd: this._sessionWorkspace(sessionId), signal, wantDiff: true });

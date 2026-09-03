@@ -416,11 +416,23 @@ function writeMemoryFile(id, file, content) {
     const d = botDir(id);
     fs.mkdirSync(d, { recursive: true });
     fs.writeFileSync(path.join(d, file), String(content ?? ''), 'utf8');
+    /* admin MEMORY.md'yi elle değiştirdiyse botun mem0 store'unu yeniden kur */
+    if (file === 'MEMORY.md') {
+      try {
+        const mem0 = require('./mem0');
+        mem0.reindexFromLines('bot:' + id, String(content ?? '').split('\n').map((l) => l.replace(/^[-*]\s*/, '').trim()).filter(Boolean));
+      } catch {}
+    }
     logChange(id, `${file} admin tarafından güncellendi`);
     return { ok: true };
   } catch (e) {
     return { ok: false, error: String((e && e.message) || e) };
   }
+}
+
+/* botun MEMORY.md ayna dosyasının yolu (mem0 syncMirror kullanır) */
+function memPath(id) {
+  return path.join(botDir(id), 'MEMORY.md');
 }
 
 /* ---------- BOT OTURUMU hafıza operasyonları ----------
@@ -559,6 +571,7 @@ module.exports = {
   readMemoryFiles,
   writeMemoryFile,
   readMem,
+  memPath,
   appendMem,
   appendUserMem,
   searchMem,

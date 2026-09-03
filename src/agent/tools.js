@@ -364,6 +364,49 @@ function safeResolve(p, cwd) {
   return path.normalize(abs);
 }
 
+/* ---------- opencode read.ts port: binary tespit + fuzzy öneri ----------
+   opencode read.ts kuralı: uzantı kara listesi YA DA ilk 4KB'ta NUL byte YA DA
+   %30+'ı yazdırılamaz karakter → dosya binary sayılır, okunmaz. */
+const BINARY_EXT_RE =
+  /\.(zip|tar|gz|tgz|bz2|xz|7z|rar|exe|dll|so|dylib|bin|iso|img|msi|apk|jar|class|pyc|pyo|o|obj|a|lib|woff2?|ttf|otf|eot|mp3|mp4|avi|mkv|mov|flac|ogg|wav|webm|psd|ai|sketch|db|sqlite3?|pdb|docx?|xlsx?|pptx?|odt|ods|odp|pgp|gpg|keystore|jks|p12|traineddata|idx)$/i;
+
+function looksBinary(buf) {
+  const sample = buf.length > 4096 ? buf.subarray(0, 4096) : buf;
+  if (sample.includes(0)) return true;
+  let nonPrintable = 0;
+  for (const b of sample) {
+    if (b === 9 || b === 10 || b === 13) continue; // \t \n \r
+    if (b < 32 || b === 127 || b >= 0x80) nonPrintable++; // 0x80+ UTF-8 devam byte'ı olabilir ama kaba tarama yeterli
+  }
+  return sample.length > 0 && nonPrintable / sample.length > 0.3;
+}
+
+/* opencode read.ts: dosya yoksa aynı klasörde isim ön-ek benzerliği olan 3 kardeş öner */
+function fuzzySiblings(abs) {
+  try {
+    const dir = path.dirname(abs);
+    const base = path.basename(abs).toLowerCase();
+    const prefix = base.slice(0, 4);
+    const score = (name) => {
+      const n = name.toLowerCase();
+      if (n === base) return -1;
+      let s = 0;
+      if (n.startsWith(prefix)) s += 2;
+      for (let i = 0; i < Math.min(base.length, n.length); i++) if (base[i] === n[i]) s += 0.1;
+      return s;
+    };
+    return fs
+      .readdirSync(dir)
+      .map((name) => ({ name, s: score(name) }))
+      .filter((x) => x.s > 0)
+      .sort((a, b) => b.s - a.s)
+      .slice(0, 3)
+      .map((x) => x.name);
+  } catch {
+    return [];
+  }
+}
+
 /* ---------- opencode port: grep/glob altyapısı ----------
    ripgrep gitignore'u izler; Beast'te bağımlılık olmasın diye ağır klasörler
    statik atlanır (node_modules, .git, derleme çıktıları…). */
@@ -788,6 +831,27 @@ function htmlToText(html) {
   return t.trim();
 }
 
+/* opencode webfetch.ts tarzı HTML→Markdown (hafif sürüm — Turndown bağımlılığı yok):
+   başlıklar, linkler, kalık/italik, kod blokları, listeler korunur */
+function htmlToMarkdown(html) {
+  let h = String(html || '');
+  h = h.replace(/<script[\s\S]*?<\/script>/gi, '').replace(/<style[\s\S]*?<\/style>/gi, '').replace(/<!--[\s\S]*?-->/g, '');
+  h = h.replace(/<pre[^>]*>\s*<code[^>]*>([\s\S]*?)<\/code>\s*<\/pre>/gi, (_m, c) => '\n```\n' + decodeEntities(c) + '\n```\n');
+  h = h.replace(/<code[^>]*>([\s\S]*?)<\/code>/gi, (_m, c) => '`' + decodeEntities(c) + '`');
+  h = h.replace(/<h([1-6])[^>]*>([\s\S]*?)<\/h\1>/gi, (_m, lvl, c) => '\n' + '#'.repeat(Number(lvl)) + ' ' + decodeEntities(c.replace(/<[^>]+>/g, '')).trim() + '\n');
+  h = h.replace(/<a\s+[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi, (_m, href, c) => `[${decodeEntities(c.replace(/<[^>]+>/g, '')).trim()}](${href})`);
+  h = h.replace(/<(b|strong)[^>]*>([\s\S]*?)<\/\1>/gi, (_m, _t, c) => `**${decodeEntities(c.replace(/<[^>]+>/g, '')).trim()}**`);
+  h = h.replace(/<(i|em)[^>]*>([\s\S]*?)<\/\1>/gi, (_m, _t, c) => `*${decodeEntities(c.replace(/<[^>]+>/g, '')).trim()}*`);
+  h = h.replace(/<li[^>]*>([\s\S]*?)<\/li>/gi, (_m, c) => `\n- ${decodeEntities(c.replace(/<[^>]+>/g, '')).trim()}`);
+  h = h.replace(/<hr\s*\/?>/gi, '\n---\n');
+  h = h.replace(/<br\s*\/?>/gi, '\n');
+  h = h.replace(/<\/(p|div|section|article|tr|h[1-6])>/gi, '\n');
+  h = h.replace(/<[^>]+>/g, '');
+  h = decodeEntities(h);
+  h = h.replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n');
+  return h.trim();
+}
+
 /* DuckDuckGo HTML sonuç ayrıştırıcı — test edilebilir saf fonksiyon */
 function parseDdgResults(html, limit = 8) {
   const out = [];
@@ -864,12 +928,13 @@ async function webSearch(query, { maxResults = 8, signal } = {}) {
 
 const MAX_FETCH_CHARS = 9000;
 
-async function httpFetch(url, { maxChars = MAX_FETCH_CHARS, signal } = {}) {
+async function httpFetch(url, { maxChars = MAX_FETCH_CHARS, format = 'text', timeoutMs = 30000, signal } = {}) {
   const safe = assertPublicHttpUrl(url);
+  const t = Math.min(Math.max(Number(timeoutMs) || 30000, 1000), 120000); // opencode: default 30s, max 120s
   const res = await fetchWithTimeout(
     safe,
     { headers: { 'User-Agent': UA, Accept: 'text/html,text/plain,application/json;q=0.9,*/*;q=0.5' } },
-    20000,
+    t,
     signal
   );
   const ctype = String(res.headers.get('content-type') || '');
@@ -882,15 +947,23 @@ async function httpFetch(url, { maxChars = MAX_FETCH_CHARS, signal } = {}) {
   const cap = 400000;
   let body = await res.text();
   if (body.length > cap) body = body.slice(0, cap);
-  const text = /html/i.test(ctype) ? htmlToText(body) : body;
-  const truncated = text.length > maxChars;
+  let content;
+  if (/html/i.test(ctype)) {
+    if (format === 'html') content = body;
+    else if (format === 'markdown') content = htmlToMarkdown(body);
+    else content = htmlToText(body);
+  } else {
+    content = body;
+  }
+  const truncated = content.length > maxChars;
   return {
     ok: true,
     url: safe,
     status: res.status,
     contentType: ctype,
+    format,
     truncated,
-    content: text.slice(0, Math.max(1000, Math.min(Number(maxChars) || MAX_FETCH_CHARS, 50000))),
+    content: content.slice(0, Math.max(1000, Math.min(Number(maxChars) || MAX_FETCH_CHARS, 50000))),
   };
 }
 
@@ -1332,7 +1405,7 @@ const definitions = [
         type: 'object',
         properties: {
           command: { type: 'string', description: 'PowerShell command line to execute' },
-          timeout_ms: { type: 'number', description: 'Optional timeout in ms (default 90000)' },
+          timeout_ms: { type: 'number', description: 'Optional timeout in ms (default 120000)' },
         },
         required: ['command'],
       },
@@ -1422,13 +1495,14 @@ const definitions = [
     function: {
       name: 'grep',
       description:
-        'Fast content search tool that works with any codebase size. Searches file contents using regular expressions; supports full regex syntax (eg. "log.*Error", "function\\s+\\w+"). Filter files by pattern with include (eg. "*.js", "*.{ts,tsx}"). Returns file paths, line numbers and matching lines. node_modules/.git and similar dirs are skipped. Use this to find where functions/symbols/errors live before editing.',
+        'Fast content search tool that works with any codebase size. Searches file contents using regular expressions (case-SENSITIVE by default — pass case_insensitive:true to ignore case); supports full regex syntax (eg. "log.*Error", "function\\s+\\w+"). Filter files by pattern with include (eg. "*.js", "*.{ts,tsx}"). Returns grouped matches as `<path>:` + `  Line N: text`, capped at 100 matches. node_modules/.git and similar dirs are skipped. Use this to find where functions/symbols/errors live before editing.',
       parameters: {
         type: 'object',
         properties: {
           pattern: { type: 'string', description: 'Regular expression' },
           path: { type: 'string', description: 'File or directory to search; defaults to workspace root' },
           include: { type: 'string', description: 'Glob filter like "*.js" or "*.{ts,tsx}"' },
+          case_insensitive: { type: 'boolean', description: 'Ignore case (default false — search is case-sensitive)' },
         },
         required: ['pattern'],
       },
@@ -1439,7 +1513,7 @@ const definitions = [
     function: {
       name: 'glob',
       description:
-        'Fast file pattern matching tool that works with any codebase size. Supports glob patterns like "**/*.js" or "src/**/*.ts". Returns matching file paths. Use when you need to find files by name patterns; batch multiple speculative searches in one turn.',
+        'Fast file pattern matching tool that works with any codebase size. Supports glob patterns like "**/*.js" or "src/**/*.ts". Returns matching file paths (max 100; more specific pattern/path if truncated). Use when you need to find files by name patterns; batch multiple speculative searches in one turn.',
       parameters: {
         type: 'object',
         properties: {
@@ -1454,13 +1528,40 @@ const definitions = [
     type: 'function',
     function: {
       name: 'list_dir',
-      description: 'List entries of a directory with sizes and types.',
+      description: 'List entries of a directory (localeCompare sorted, directories suffixed with `/`, max 500 entries) with sizes and types.',
       parameters: {
         type: 'object',
         properties: {
           path: { type: 'string', description: 'Defaults to workspace root' },
         },
         required: [],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'webfetch',
+      description:
+        '- Fetches content from a specified URL\n' +
+        '- Takes a URL and optional format as input\n' +
+        '- Fetches the URL content, converts to requested format (markdown by default)\n' +
+        '- Returns the content in the specified format\n' +
+        '- Use this tool when you need to retrieve and analyze web content\n' +
+        '- IMPORTANT: if another tool is present that offers better web fetching capabilities, is more targeted to the task, or has fewer restrictions, prefer using that tool instead of this one.\n' +
+        '- The URL must be a fully-formed valid URL\n' +
+        '- HTTP URLs will be automatically upgraded to HTTPS\n' +
+        '- Format options: "text" (default), "markdown", or "html"\n' +
+        '- Local/private network addresses are blocked; timeout default 30s (max 120s)',
+      parameters: {
+        type: 'object',
+        properties: {
+          url: { type: 'string', format: 'uri', description: 'The URL to fetch content from' },
+          format: { type: 'string', enum: ['text', 'markdown', 'html'], description: 'The format to return the content in (defaults to text)' },
+          timeout: { type: 'number', description: 'Optional timeout in seconds (max 120)' },
+          max_chars: { type: 'number', description: 'Output character cap (default 9000, max 50000)' },
+        },
+        required: ['url'],
       },
     },
   },
@@ -1546,7 +1647,12 @@ async function exec(name, args, ctx) {
   try {
     switch (name) {
       case 'run_command': {
-        const t = Number(args.timeout_ms) || 90000;
+        /* opencode shell.ts kuralları: default 120s, negatif timeout reddi */
+        const tRaw = Number(args.timeout_ms);
+        if (Number.isFinite(tRaw) && args.timeout_ms != null && tRaw <= 0) {
+          return JSON.stringify({ ok: false, error: `Invalid timeout value: ${tRaw}. Timeout must be a positive number.` });
+        }
+        const t = Number.isFinite(tRaw) && tRaw > 0 ? tRaw : 120000;
         const shell = String(args.shell || 'powershell').toLowerCase();
         const r =
           shell === 'bash' || shell === 'sh'
@@ -1556,7 +1662,7 @@ async function exec(name, args, ctx) {
         return JSON.stringify({
           ok: !!(r && r.ok),
           code: r && r.code,
-          output: b.text,
+          output: b.text || '(no output)',
           ...(b.outputFile ? { outputFile: b.outputFile } : {}),
         });
       }
@@ -1613,10 +1719,52 @@ async function exec(name, args, ctx) {
         }
       }
       case 'read_file': {
+        /* opencode read.ts BİREBİR port: fuzzy not-found, binary tespiti,
+           dizin okuma, `N: içerik` formatı, 2000 satır / 2000 karakter /
+           50KB tavanları + opencode devam footer'ları */
         const abs = safeResolve(String(args.path || ''), cwd);
+        if (!fs.existsSync(abs)) {
+          const sibs = fuzzySiblings(abs);
+          const hint = sibs.length ? '\nDid you mean one of these?\n' + sibs.map((s) => `- ${path.join(path.dirname(abs), s)}`).join('\n') : '';
+          return JSON.stringify({ ok: false, error: `File not found: ${abs}${hint}` });
+        }
         const st = fs.statSync(abs);
+        /* DİZİN OKUMA (opencode read.ts dizin modu): localeCompare sıralı,
+           klasörler `/` ile, offset/limit sayfalı */
+        if (st.isDirectory()) {
+          let names = fs
+            .readdirSync(abs)
+            .sort((a, b) => a.localeCompare(b))
+            .map((name) => {
+              let isDir = false;
+              try { isDir = fs.statSync(path.join(abs, name)).isDirectory(); } catch {}
+              return isDir ? name + '/' : name;
+            });
+          const total = names.length;
+          const offset = Math.max(1, Math.floor(Number(args.offset) || 1));
+          const limit = Math.min(2000, Math.max(1, Math.floor(Number(args.limit) || 2000)));
+          names = names.slice(offset - 1, offset - 1 + limit);
+          const note =
+            names.length < total
+              ? `(Showing ${names.length} of ${total} entries. Use offset parameter to paginate.)`
+              : `(End of directory - total ${total} entries)`;
+          return JSON.stringify({
+            ok: true,
+            path: abs,
+            type: 'directory',
+            totalEntries: total,
+            offset,
+            truncated: offset - 1 + names.length < total,
+            note,
+            content: names.join('\n'),
+          });
+        }
         if (st.size > MAX_FILE_CHARS * 2) {
           return JSON.stringify({ ok: false, error: `file too large (${st.size} bytes)` });
+        }
+        /* binary tespiti uzantıdan — PDF'e dokunma (Beast'in pdf hattı var) */
+        if (BINARY_EXT_RE.test(abs)) {
+          return JSON.stringify({ ok: false, error: `Cannot read binary file: ${abs}` });
         }
         /* PDF: pdf-parse varsa metin çıkar (v2 class API — bkz. src/agent/pdf.js) */
         if (/\.pdf$/i.test(abs)) {
@@ -1635,7 +1783,28 @@ async function exec(name, args, ctx) {
             return JSON.stringify({ ok: false, error: 'pdf okuma hata: ' + String((e2 && e2.message) || e2) });
           }
         }
-        let raw = readCacheGet(abs, st);
+        /* binary tespiti: ilk 4KB'ta NUL / %30+ yazdırılamaz karakter (opencode kuralı) */
+        try {
+          const fd = fs.openSync(abs, 'r');
+          let probe;
+          try {
+            probe = Buffer.alloc(Math.min(4096, st.size));
+            fs.readSync(fd, probe, 0, probe.length, 0);
+          } finally {
+            fs.closeSync(fd);
+          }
+          if (looksBinary(probe)) {
+            return JSON.stringify({ ok: false, error: `Cannot read binary file: ${abs}` });
+          }
+        } catch (eProbe) {
+          if (eProbe && /Cannot read binary/.test(String(eProbe.message || ''))) throw eProbe;
+        }
+        let raw;
+        try {
+          raw = readCacheGet(abs, st);
+        } catch {
+          raw = fs.readFileSync(abs, 'utf8');
+        }
         /* opencode read.ts port: satır numaralı çıktı (`N: içerik`), offset/limit
            penceresi (1-indexed), 2000 satır varsayılan, uzun satır kırpma */
         const allLines = raw.split('\n');
@@ -1644,22 +1813,37 @@ async function exec(name, args, ctx) {
         let slice = allLines
           .slice(offset - 1, offset - 1 + limit)
           .map((l, i) => {
-            const line = l.length > 2000 ? l.slice(0, 2000) + '…[satır kırpıldı]' : l;
+            const line = l.length > 2000 ? l.slice(0, 2000) + '... (line truncated to 2000 chars)' : l;
             return `${offset + i}: ${line}`;
           });
         let truncated = offset - 1 + limit < allLines.length;
         let content = slice.join('\n');
-        /* byte tavanı: 200k karakteri aşan pencereler satır bazında kırpılır */
-        if (content.length > MAX_FILE_CHARS) {
+        /* opencode 50KB byte tavanı: aşarsa satır bazında kes + özel footer */
+        const MAX_BYTES = 50 * 1024;
+        let byteCapped = false;
+        if (Buffer.byteLength(content, 'utf8') > MAX_BYTES) {
           const keep = [];
           let used = 0;
           for (const l of slice) {
-            if (used + l.length > MAX_FILE_CHARS) break;
+            const need = Buffer.byteLength(l, 'utf8') + 1;
+            if (used + need > MAX_BYTES) break;
             keep.push(l);
-            used += l.length + 1;
+            used += need;
           }
+          slice = keep;
           content = keep.join('\n');
           truncated = true;
+          byteCapped = keep.length < allLines.length;
+        }
+        /* opencode read.ts footer'ları: byte-kesme → offset devam; satır-kesme →
+           offset devam; aksi → dosya sonu. Model BAŞTAN okuma döngüsüne girmez. */
+        let note;
+        if (byteCapped && slice.length) {
+          note = `(Output capped at 50 KB. Showing lines ${offset}-${offset + slice.length - 1}. Use offset=${offset + slice.length} to continue.)`;
+        } else if (truncated && slice.length) {
+          note = `(Showing lines ${offset}-${offset + slice.length - 1} of ${allLines.length}. Use offset=${offset + slice.length} to continue.)`;
+        } else {
+          note = `(End of file - total ${allLines.length} lines)`;
         }
         return JSON.stringify({
           ok: true,
@@ -1667,11 +1851,7 @@ async function exec(name, args, ctx) {
           totalLines: allLines.length,
           offset,
           truncated,
-          /* opencode read.ts çıktı işaretleri portu: model devamını offset ile
-             okur — BAŞTAN okuma döngüsü kırılır */
-          ...(truncated
-            ? { note: `(Devam ediyor — toplam ${allLines.length} satır. Kalan bölüm için offset:${offset + slice.length} ile oku; dosyayı BAŞTAN okuma.)` }
-            : { note: `(End of file - total ${allLines.length} lines)` }),
+          note,
           content,
         });
       }
@@ -1695,33 +1875,49 @@ async function exec(name, args, ctx) {
         return JSON.stringify(out);
       }
       case 'list_dir': {
+        /* opencode read.ts dizin modu kuralı: localeCompare sıralı, klasörler
+           `/` ile, 500 giriş tavanı + pagination notu */
         const abs = args.path ? safeResolve(String(args.path), cwd) : cwd;
-        const entries = fs.readdirSync(abs, { withFileTypes: true }).slice(0, 500);
+        if (!fs.existsSync(abs)) return JSON.stringify({ ok: false, error: `File not found: ${abs}` });
+        if (!fs.statSync(abs).isDirectory()) return JSON.stringify({ ok: false, error: `Path is a file, not a directory: ${abs}` });
+        const all = fs.readdirSync(abs, { withFileTypes: true });
+        const total = all.length;
+        const entries = all.slice(0, 500);
         const rows = entries.map((e) => {
           try {
             const st = fs.statSync(path.join(abs, e.name));
-            return `${e.isDirectory() ? 'd' : '-'} ${String(st.size).padStart(10)} ${e.name}`;
+            return `${e.isDirectory() ? 'd' : '-'} ${String(st.size).padStart(10)} ${e.isDirectory() ? e.name + '/' : e.name}`;
           } catch {
             return `-          ? ${e.name}`;
           }
         });
-        return JSON.stringify({ ok: true, path: abs, count: rows.length, entries: rows.join('\n') });
+        rows.sort((a, b) => a.slice(13).localeCompare(b.slice(13)));
+        return JSON.stringify({
+          ok: true,
+          path: abs,
+          count: rows.length,
+          ...(total > 500 ? { note: `(Showing 500 of ${total} entries. Use read_file with offset to paginate.)` } : {}),
+          entries: rows.join('\n'),
+        });
       }
       case 'grep': {
+        /* opencode grep.ts BİREBİR port: case-sensitive default (rg kuralı),
+           100 match limit, gruplu çıktı `<abs>:` + `  Line N: text`,
+           2000 karakter satır tavanı + truncation notu */
         const pattern = String(args.pattern || '');
         let re;
         try {
-          re = new RegExp(pattern, 'i');
+          re = new RegExp(pattern, args.case_insensitive || args.caseInsensitive ? 'i' : '');
         } catch (e) {
           return JSON.stringify({ ok: false, error: 'geçersiz regex: ' + String((e && e.message) || e) });
         }
         const root = args.path ? safeResolve(String(args.path), cwd) : cwd;
         if (!fs.existsSync(root)) return JSON.stringify({ ok: false, error: 'yol bulunamadı: ' + root });
         const incRe = globToRegExp(String(args.include || ''));
-        const matches = [];
-        const MAX_MATCHES = 200;
+        const hits = []; // { file, line, text }
+        const MAX_MATCHES = 100;
         walkFiles(root, incRe, (file) => {
-          if (matches.length >= MAX_MATCHES) return true; // dur
+          if (hits.length >= MAX_MATCHES) return true; // dur
           let text = '';
           try {
             const st = fs.statSync(file);
@@ -1731,36 +1927,63 @@ async function exec(name, args, ctx) {
             return false;
           }
           const lines = text.split('\n');
-          for (let i = 0; i < lines.length && matches.length < MAX_MATCHES; i++) {
+          for (let i = 0; i < lines.length && hits.length < MAX_MATCHES; i++) {
             if (re.test(lines[i])) {
-              matches.push(`${file}:${i + 1}: ${lines[i].trim().slice(0, 300)}`);
+              const t = lines[i].slice(0, 2000) + (lines[i].length > 2000 ? '...' : '');
+              hits.push({ file, line: i + 1, text: t });
             }
           }
           return false;
         });
+        /* opencode çıktı formatı: başlık + dosya gruplama + `  Line N: text` */
+        const groups = new Map();
+        for (const h of hits) {
+          if (!groups.has(h.file)) groups.set(h.file, []);
+          groups.get(h.file).push(`  Line ${h.line}: ${h.text}`);
+        }
+        const out = hits.length
+          ? `Found ${hits.length} matches` +
+            (hits.length >= MAX_MATCHES ? ' (more matches available)' : '') +
+            '\n\n' +
+            [...groups.entries()].map(([f, rows]) => `${f}:\n${rows.join('\n')}`).join('\n\n')
+          : 'No files found';
         return JSON.stringify({
           ok: true,
           pattern,
-          count: matches.length,
-          capped: matches.length >= MAX_MATCHES,
-          matches: matches.join('\n'),
+          count: hits.length,
+          capped: hits.length >= MAX_MATCHES,
+          ...(hits.length >= MAX_MATCHES ? { note: '(Results truncated. Consider using a more specific path or pattern.)' } : {}),
+          matches: out,
         });
       }
       case 'glob': {
+        /* opencode glob.ts BİREBİR port: 100 sonuç limiti + truncation notu,
+           "No files found", path-dosya hatası */
         const pat = String(args.pattern || '');
         if (!pat.trim()) return JSON.stringify({ ok: false, error: 'pattern boş olamaz' });
         const root = args.path ? safeResolve(String(args.path), cwd) : cwd;
         if (!fs.existsSync(root)) return JSON.stringify({ ok: false, error: 'yol bulunamadı: ' + root });
+        if (fs.statSync(root).isFile()) {
+          return JSON.stringify({ ok: false, error: `glob path must be a directory: ${root}` });
+        }
         const re = globToRegExp(pat);
+        const LIMIT = 100;
         const out = [];
         walkFiles(root, null, (file) => {
           const rel = path.relative(root, file).split(path.sep).join('/');
           if (re.test(rel) || re.test(path.basename(file))) {
             out.push(path.join(root, rel));
           }
-          return out.length >= 500; // dur
+          return out.length >= LIMIT; // dur
         });
-        return JSON.stringify({ ok: true, pattern: pat, count: out.length, files: out });
+        if (!out.length) return JSON.stringify({ ok: true, pattern: pat, count: 0, files: [], note: 'No files found' });
+        return JSON.stringify({
+          ok: true,
+          pattern: pat,
+          count: out.length,
+          files: out,
+          ...(out.length >= LIMIT ? { note: '(Results are truncated: showing first 100 results. Consider using a more specific path or pattern.)' } : {}),
+        });
       }
       case 'web_search': {
         const q = String(args.query || '');
@@ -1824,9 +2047,27 @@ async function exec(name, args, ctx) {
         if (madeTemp) { try { fs.unlinkSync(scriptPath); } catch {} }
         return JSON.stringify({ ok: r.ok, python: probe.source, exitCode: r.code, ms: Date.now() - t0, output: r.output });
       }
-      case 'http_fetch': {
+      case 'http_fetch':
+      case 'webfetch': {
+        /* opencode webfetch.ts port: format (text|markdown|html) + timeout
+           (default 30s, max 120s) — SSRF koruması Beast'te kalır */
+        const format = String(args.format || 'text').toLowerCase();
+        if (!['text', 'markdown', 'html'].includes(format)) {
+          return JSON.stringify({ ok: false, error: 'format: text | markdown | html' });
+        }
+        const timeoutRaw = Number(args.timeout);
+        if (args.timeout != null && (!Number.isFinite(timeoutRaw) || timeoutRaw <= 0)) {
+          return JSON.stringify({ ok: false, error: `Invalid timeout value: ${args.timeout}. Timeout must be a positive number.` });
+        }
+        /* opencode saniye cinsinden bekler; ms gelirse de tolere et */
+        let timeoutMs = 30000;
+        if (Number.isFinite(timeoutRaw) && timeoutRaw > 0) {
+          timeoutMs = Math.min(timeoutRaw <= 120 ? timeoutRaw * 1000 : timeoutRaw, 120000);
+        }
         const r = await httpFetch(String(args.url || ''), {
           maxChars: Number(args.max_chars) || MAX_FETCH_CHARS,
+          format,
+          timeoutMs,
           signal: ctx.signal,
         });
         return JSON.stringify(r);

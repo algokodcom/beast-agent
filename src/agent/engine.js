@@ -6,8 +6,9 @@
 
 const fs = require('fs');
 const path = require('path');
-const { chatStream, chatStreamAuto, chatOnce } = require('./llm');
-const { chatCompletionsUrl } = require('./config');
+const llm = require('./llm');
+const { chatStream, chatStreamAuto, chatOnce } = llm;
+const { chatCompletionsUrl, beastDir } = require('./config');
 const tools = require('./tools');
 const research = require('./research');
 const agentdefs = require('./agentdefs');
@@ -60,7 +61,8 @@ const OWNER_FAIL_EMAIL = 'info@algokod.com';
    OpenAI (reasoning.effort) ve OpenRouter (reasoning_effort) 2026 itibarıyla:
    none · minimal · low · medium · high · xhigh · max.
    0 (Kapalı) parametre göndermez; 1-5 API'ye reasoning_effort olarak gider.
-   Model desteklemiyorsa llm.js tek seferlik parametresiz retry yapar. */
+   Model desteklemiyorsa llm.js parametreyi atlayıp sessizce retry yapar ve
+   bu model için KALICI öğrenir (model-caps.json) → bir daha gönderilmez. */
 const THINK_LEVELS = [
   { v: 0, label: 'Kapalı', effort: null },
   { v: 1, label: 'Low', effort: 'low' },
@@ -249,6 +251,9 @@ class Engine {
     };
     this.sessionsDir = opts.sessionsDir;
     fs.mkdirSync(this.sessionsDir, { recursive: true });
+    /* model yetenek keşfi: reddedilen parametre/seviyeler kalıcı öğrenilir
+       (reasoning_effort seviyeleri, temperature, prompt_cache_key) */
+    try { llm.setCapsFile(path.join(beastDir(), 'model-caps.json')); } catch {}
     this.workspace = opts.workspace || process.env.USERPROFILE || '.';
     this.cfg.baseChain = (this.cfg.chain || []).slice();
     this.cfg.chain = [...this.cfg.baseChain, ...customChain(opts.customProviders)];
@@ -757,6 +762,16 @@ class Engine {
                   st === undefined || st === null
                     ? `bağlantı sorunu — internet dönünce ya da yeniden denemeyle sürer (${attempt}/6)`
                     : `sağlayıcı yanıtsız — tekrar deniyor (${attempt}/3)`,
+              }),
+            onEffortDowngrade: (from, to) =>
+              emitSafe(this, session.id, {
+                type: 'status',
+                status: `🧠 ${c.model}: düşünme seviyesi '${from}' kabul edilmedi → otomatik '${to}' (bu model için kalıcı)`,
+              }),
+            onParamDrop: (p) =>
+              emitSafe(this, session.id, {
+                type: 'status',
+                status: `⚠ ${c.model}: '${llm.PARAM_LABELS[p] || p}' kabul edilmedi → atlandı (bu model için kalıcı)`,
               }),
           }
         );
@@ -3731,7 +3746,19 @@ const skills = require('./skills');
             reasoningEffort: this._thinkEffort(),
             cacheKey: String(sessionId || 'subagent'),
           },
-          { signal: ctrl.signal }
+          {
+            signal: ctrl.signal,
+            onEffortDowngrade: (from, to) =>
+              emitSafe(this, sessionId, {
+                type: 'status',
+                status: `🧠 alt-agent: düşünme seviyesi '${from}' → '${to}' (otomatik uyum)`,
+              }),
+            onParamDrop: (p) =>
+              emitSafe(this, sessionId, {
+                type: 'status',
+                status: `⚠ alt-agent: '${llm.PARAM_LABELS[p] || p}' kabul edilmedi → atlandı`,
+              }),
+          }
         );
         const assistant = { role: 'assistant', content: res.content || '' };
         if (res.toolCalls && res.toolCalls.length) assistant.tool_calls = res.toolCalls;

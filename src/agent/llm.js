@@ -5,7 +5,11 @@
    KOPMASINDA (fetch failed) çok daha sabırlı: 6 deneme + internet dönene
    dek bekleme (main'deki net izleyicisinden beslenir). Akış ortasında kopan
    bağlantıda: hiç veri akmadıysa sessiz baştan dener, kısmi metin geldiyse
-   'length' gibi döner → chatStreamAuto kaldığı yerden DEVAM ETTİRİR. */
+   'length' gibi döner → chatStreamAuto kaldığı yerden DEVAM ETTİRİR.
+   Model reddettiği parametre/seviyeleri (reasoning_effort, temperature,
+   prompt_cache_key) 400'den otomatik öğrenir → model-caps.json'a kalıcı. */
+
+const fs = require('fs');
 
 const RETRYABLE_STATUS = new Set([408, 409, 425, 429, 500, 502, 503, 504]);
 const MAX_RETRIES = 3; /* sağlayıcı geçici HTTP hataları */
@@ -83,6 +87,173 @@ function wantsCacheKey(sel) {
   );
 }
 
+/* ---------- model yetenek keşfi (opencode provider.metadata muadili) ----------
+   Her model her parametreyi kabul etmez: Mimo gibi bazıları reasoning_effort'u,
+   GPT-5/o1 ailesi temperature'ı reddeder. Sağlayıcı 400 "Invalid request
+   parameters" diyorsa parametre TEK TEK atlanıp sessizce yeniden denenir;
+   kabul edilen kombinasyon KALICI öğrenilir (model-caps.json) → sonraki
+   isteklerde reddedilen parametre hiç gönderilmez. models.dev metadata'sına
+   internet bağımlılığı olmadan çalışma-zamanında eşdeğer davranır. */
+
+const CAPS_FLAGS = ['noReasoning', 'noTemperature', 'noCacheKey'];
+const PARAM_LABELS = {
+  noReasoning: 'reasoning_effort',
+  noTemperature: 'temperature',
+  noCacheKey: 'prompt_cache_key',
+};
+
+let _capsFile = null;
+const _caps = new Map(); /* "providerId::model" -> { noReasoning?, noTemperature?, noCacheKey? } */
+
+function capsKey(sel) {
+  return String((sel && sel.providerId) || '') + '::' + String((sel && sel.model) || '');
+}
+
+function capsFor(sel) {
+  return _caps.get(capsKey(sel)) || null;
+}
+
+function resetCaps() {
+  _caps.clear();
+}
+
+/* caps dosyasını bağla: mevcut öğrenimler yüklenir; null → kapat */
+function setCapsFile(p) {
+  _caps.clear();
+  _capsFile = typeof p === 'string' && p ? p : null;
+  if (!_capsFile) return;
+  try {
+    const j = JSON.parse(fs.readFileSync(_capsFile, 'utf8'));
+    for (const [k, v] of Object.entries(j.models || {})) {
+      if (v && typeof v === 'object') _caps.set(k, { ...v });
+    }
+  } catch {}
+}
+
+function learnCaps(sel, drops) {
+  const k = capsKey(sel);
+  const prev = _caps.get(k) || {};
+  const next = { ...prev };
+  let changed = false;
+  for (const f of CAPS_FLAGS) {
+    if (drops[f] && !prev[f]) {
+      next[f] = true;
+      changed = true;
+    }
+  }
+  /* reddedilen reasoning seviyeleri (["max","xhigh",...]) — seviye bazlı öğrenim */
+  if (Array.isArray(drops.failedEfforts) && drops.failedEfforts.length) {
+    const merged = [...(prev.failedEfforts || [])];
+    for (const e of drops.failedEfforts) {
+      if (!merged.includes(e)) merged.push(e);
+    }
+    if (merged.length !== (prev.failedEfforts || []).length) {
+      next.failedEfforts = merged;
+      changed = true;
+    }
+  }
+  if (!changed) return;
+  _caps.set(k, next);
+  if (!_capsFile) return;
+  try {
+    const all = {};
+    for (const [key, v] of _caps) all[key] = v;
+    fs.writeFileSync(_capsFile, JSON.stringify({ version: 1, models: all }, null, 2));
+  } catch {}
+}
+
+/* reasoning_effort merdiveni: reddedilen seviyede BİR ALT seviye denenir
+   (Mimo 2.5: max/xhigh reddediyor, low çalışıyor). low'un altı yok → null. */
+const EFFORT_LOWER = { max: 'xhigh', xhigh: 'high', high: 'medium', medium: 'low', low: null };
+
+/* Hangi hata metni "geçersiz istek" dili (Mimo: "Invalid request parameters").
+   friendlyError'ın kendi öneki ("HTTP 400 Bad Request") ile eşleşmemesine dikkat. */
+const GENERIC_400_RE =
+  /invalid request param|invalid_param|unsupported|not supported|unknown (param|field|argument)|unrecognized|unexpected/i;
+
+/* run(drops, body): verilen atlama seti + gövdeyle isteği çalıştırır.
+   400 gelirse ve hata parametre reddine işaret ediyorsa:
+   1) reasoning_effort önce SEVİYE düşürülerek denenir (max→xhigh→...→low),
+      en düşük de reddedilirse parametre tamamen bırakılır (noReasoning);
+   2) sonra temperature, prompt_cache_key atlanır;
+   Kabul edilen kombinasyon bu model için KALICI öğrenilir → sonraki isteklerde
+   reddedilen seviye/parametre hiç gönderilmez (otomatik reasoning uyumu). */
+async function withParamFallbacks(sel, body0, run, { signal, onParamDrop, onEffortDowngrade } = {}) {
+  const active = { ...(capsFor(sel) || {}) };
+  for (;;) {
+    /* seçilen seviyeyi öğrenilen redlere göre otomatik düşür */
+    let eff = body0.reasoningEffort ? String(body0.reasoningEffort) : null;
+    if (eff && !active.noReasoning) {
+      const failed = active.failedEfforts || [];
+      let guard = 0;
+      while (eff && failed.includes(eff) && guard++ < 5) eff = EFFORT_LOWER[eff] || null;
+    }
+    if (active.noReasoning) eff = null;
+    const body = eff && eff !== body0.reasoningEffort ? { ...body0, reasoningEffort: eff } : body0;
+    let res;
+    try {
+      res = await run({ ...active }, body);
+      learnCaps(sel, active);
+      return res;
+    } catch (e) {
+      if (!e || e.status !== 400 || (signal && signal.aborted)) throw e;
+      const msg = String(e.message || '');
+      const generic = GENERIC_400_RE.test(msg);
+      const reasonHint = /reason|effort|thinking/i.test(msg);
+      const tempHint = /temperature/i.test(msg);
+
+      /* denenecek atlamalar öncelik sırasıyla: önce reasoning merdiveni
+         (seviye düşür — Mimo: max reddedilir, low çalışır), sonra diğerleri */
+      const actions = [];
+      if ((reasonHint || generic) && body0.reasoningEffort && !active.noReasoning) actions.push('reasoning');
+      if ((generic || tempHint) && !active.noTemperature) actions.push('temperature');
+      if ((generic || /cache/i.test(msg)) && body0.cacheKey && wantsCacheKey(sel) && !active.noCacheKey) {
+        actions.push('cacheKey');
+      }
+      const act = actions[0];
+      if (!act) throw e;
+
+      if (act === 'reasoning') {
+        const cur = eff;
+        const lower = cur && cur in EFFORT_LOWER ? EFFORT_LOWER[cur] : null;
+        /* merdiven: generic red (gerçek sebep bilinmiyor → seviyeleri dene)
+           ya da red mesajı SEVİYE değerini zikrediyorsa ("effort 'max' invalid").
+           Mesaj parametrenin kendisini reddediyorsa ("not supported") direkt bırak. */
+        const valueQuoted = cur ? (msg.includes(`'${cur}'`) || msg.includes(`"${cur}"`)) : false;
+        /* ipucu parametrenin kendisini reddediyorsa merdivene gerek yok */
+        const ladder = valueQuoted || (generic && !reasonHint);
+        if (cur && lower && ladder) {
+          /* seviye reddedildi → bir alt seviyeye in, kalıcı öğren */
+          if (!Array.isArray(active.failedEfforts)) active.failedEfforts = [];
+          if (!active.failedEfforts.includes(cur)) {
+            active.failedEfforts.push(cur);
+            learnCaps(sel, active);
+          }
+          try {
+            onEffortDowngrade && onEffortDowngrade(cur, lower);
+          } catch {}
+        } else {
+          /* parametre tamamen reddedildi → bir daha gönderme */
+          active.noReasoning = true;
+          try {
+            onParamDrop && onParamDrop('noReasoning');
+          } catch {}
+        }
+      } else if (act === 'temperature') {
+        active.noTemperature = true;
+        try {
+          onParamDrop && onParamDrop('noTemperature');
+        } catch {}
+      } else if (act === 'cacheKey') {
+        active.noCacheKey = true;
+        try {
+          onParamDrop && onParamDrop('noCacheKey');
+        } catch {}
+      }
+    }
+  }
+}
+
 /* Retry-After başlığı: saniye ("2"), milisaniye ("120ms" / retry-after-ms)
    ya da HTTP-tarih olabilir (opencode session/retry.ts port) */
 function parseRetryAfter(v) {
@@ -157,21 +328,25 @@ async function withRetries(fn, { signal, onRetry } = {}) {
   }
 }
 
-async function openChat(sel, body, { stream, signal, omitReasoning } = {}) {
+async function openChat(sel, body, { stream, signal, drops } = {}) {
+  const d = drops || {};
   const payload = {
     model: sel.model,
     messages: body.messages,
     stream,
     ...(body.tools && body.tools.length ? { tools: body.tools } : {}),
-    temperature: body.temperature ?? 0.6,
   };
+  if (!d.noTemperature) {
+    payload.temperature = body.temperature ?? 0.6;
+  }
   /* Düşünme (reasoning) seviyesi: OpenAI-style reasoning_effort —
-     OpenRouter ve GPT-5 ailesi dahil uyumlu sağlayıcılar kabul eder. */
-  if (body.reasoningEffort && !omitReasoning) {
+     OpenRouter ve GPT-5 ailesi dahil uyumlu sağlayıcılar kabul eder.
+     Kabul etmeyenlerde (Mimo vb.): 400 → parametre atlanır + KALICI öğrenilir. */
+  if (body.reasoningEffort && !d.noReasoning) {
     payload.reasoning_effort = String(body.reasoningEffort);
   }
   /* prompt cache anahtarı: oturum başına sabit → sağlayıcı önek önbelleği tutar */
-  if (body.cacheKey && wantsCacheKey(sel)) {
+  if (body.cacheKey && wantsCacheKey(sel) && !d.noCacheKey) {
     payload.prompt_cache_key = String(body.cacheKey);
   }
   return fetch(sel.url, {
@@ -187,24 +362,18 @@ async function openChat(sel, body, { stream, signal, omitReasoning } = {}) {
   });
 }
 
-async function chatStream(sel, body, { signal, onDelta, onRetry } = {}) {
-  try {
-    return await streamOnce(sel, body, { signal, onDelta });
-  } catch (e) {
-    /* Model reasoning_effort'u desteklemiyorsa (400) parametreyi atlayıp
-       TEK seferlik sessiz retry — kullanıcı hatayı görmez. */
-    if (
-      body.reasoningEffort &&
-      e && e.status === 400 &&
-      /reason|effort|thinking/i.test(String(e.message || ''))
-    ) {
-      return await streamOnce(sel, body, { signal, onDelta }, true);
-    }
-    throw e;
-  }
+async function chatStream(sel, body, { signal, onDelta, onRetry, onParamDrop, onEffortDowngrade } = {}) {
+  /* 400 parametre/seviye reddinde: otomatik uyum (seviye düşür → parametre atla),
+     başarılı set kalıcı öğrenilir */
+  return withParamFallbacks(
+    sel,
+    body,
+    (drops, b) => streamOnce(sel, b, { signal, onDelta }, drops),
+    { signal, onParamDrop, onEffortDowngrade }
+  );
 }
 
-async function streamOnce(sel, body, { signal, onDelta, onRetry } = {}, omitReasoning = false) {
+async function streamOnce(sel, body, { signal, onDelta, onRetry } = {}, drops = {}) {
   /* akış durumu dışarıda tutulur: gövde okunurken bağlantı koparsa
      ne kadarı geldiğine bakılır (kısmi metin → devam; boş/araç → baştan) */
   const state = { content: '', reasoning: '', toolCalls: [], usage: null, finishReason: null };
@@ -213,7 +382,7 @@ async function streamOnce(sel, body, { signal, onDelta, onRetry } = {}, omitReas
   for (;;) {
     const res = await withRetries(
       async () => {
-        const r = await openChat(sel, body, { stream: true, signal, omitReasoning });
+        const r = await openChat(sel, body, { stream: true, signal, drops });
         if (!r.ok) {
           let detail = '';
           try {
@@ -385,25 +554,31 @@ async function chatStreamAuto(sel, body, opts = {}) {
   return last;
 }
 
-async function chatOnce(sel, body, { signal, onRetry } = {}) {
-  const res = await withRetries(
-    async () => {
-      const r = await openChat(sel, body, { stream: false, signal });
-      if (!r.ok) {
-        let detail = '';
-        try {
-          detail = (await r.text()).slice(0, 300);
-        } catch {}
-        const err = new Error(friendlyError(r.status, r.statusText, detail));
-        err.status = r.status;
-        err.retryAfterMs = parseRetryAfter(
-          r.headers && (r.headers.get('retry-after-ms') || r.headers.get('retry-after'))
-        );
-        throw err;
-      }
-      return r;
-    },
-    { signal, onRetry }
+async function chatOnce(sel, body, { signal, onRetry, onParamDrop, onEffortDowngrade } = {}) {
+  const res = await withParamFallbacks(
+    sel,
+    body,
+    (drops, b) =>
+      withRetries(
+        async () => {
+          const r = await openChat(sel, b, { stream: false, signal, drops });
+          if (!r.ok) {
+            let detail = '';
+            try {
+              detail = (await r.text()).slice(0, 300);
+            } catch {}
+            const err = new Error(friendlyError(r.status, r.statusText, detail));
+            err.status = r.status;
+            err.retryAfterMs = parseRetryAfter(
+              r.headers && (r.headers.get('retry-after-ms') || r.headers.get('retry-after'))
+            );
+            throw err;
+          }
+          return r;
+        },
+        { signal, onRetry }
+      ),
+    { signal, onParamDrop, onEffortDowngrade }
   );
   const json = await res.json();
   const msg = json.choices?.[0]?.message || {};
@@ -421,9 +596,14 @@ module.exports = {
   chatStreamAuto,
   chatOnce,
   withRetries,
+  withParamFallbacks,
   friendlyError,
   sumUsage,
   setNetProbe,
+  setCapsFile,
+  capsFor,
+  resetCaps,
+  PARAM_LABELS,
   isNetworkError,
   wantsCacheKey,
   parseRetryAfter,

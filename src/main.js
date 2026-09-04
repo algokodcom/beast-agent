@@ -5778,6 +5778,53 @@ ipcMain.handle('stt:transcribe', async (_e, b64, lang, priority) => {
 });
 
 ipcMain.handle('stt:lang:get', () => settings.sttLang || 'tr');
+
+/* STT DURUMU: ayarlar ekranı için — model indirildi mi/in-progress mi,
+   hangi motor, ne kadar disk */
+ipcMain.handle('stt:status', () => {
+  const provider = sttProvider();
+  const model = sttModelName();
+  const out = { provider, engineLabel: sttEngineLabel(), model };
+  if (provider !== 'local') { out.state = 'cloud'; return out; }
+  const dir = path.join(APP_DIR, 'models', ...model.split('/'));
+  let files = [];
+  try {
+    files = fs.readdirSync(dir, { recursive: true, withFileTypes: true })
+      .filter((d) => d.isFile())
+      .map((d) => path.join(d.parentPath || d.path, d.name));
+  } catch {}
+  let bytes = 0;
+  let tmp = 0;
+  let onnx = 0;
+  let hasConfig = false;
+  for (const p of files) {
+    try {
+      bytes += fs.statSync(p).size;
+      if (/\.tmp/i.test(p)) tmp++;
+      else if (/\.onnx$/i.test(p)) onnx++;
+      else if (/config\.json$/i.test(p)) hasConfig = true;
+    } catch {}
+  }
+  let state;
+  if (sttPipeline) state = 'ready';
+  else if (sttLoading) state = 'loading';
+  else if (hasConfig && onnx >= 2 && tmp === 0) state = 'downloaded';
+  else if (files.length) state = 'partial';
+  else state = 'missing';
+  out.state = state;
+  out.mb = Math.round(bytes / (1024 * 1024));
+  out.onnx = onnx;
+  out.tmp = tmp;
+  return out;
+});
+
+/* istenirse modeli şimdi indir/yükle (bloklamaz — arka planda) */
+ipcMain.handle('stt:prefetch', () => {
+  ensureStt()
+    .then(() => waLog('STT prefetch: hazır'))
+    .catch((e) => waLog('STT prefetch hata: ' + String((e && e.message) || e)));
+  return { ok: true, loading: true };
+});
 ipcMain.handle('stt:lang:set', (_e, lang) => {
   const v = ['auto', 'tr', 'en'].includes(String(lang)) ? String(lang) : 'tr';
   settings.sttLang = v;

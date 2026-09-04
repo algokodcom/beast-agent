@@ -53,6 +53,8 @@ contextBridge.exposeInMainWorld('beast', {
   approvalRespond: (id, ok, always) => ipcRenderer.invoke('approval:respond', { id, ok, always }),
   sttTranscribe: (b64, lang, priority) => ipcRenderer.invoke('stt:transcribe', b64, lang, priority),
   sttLangGet: () => ipcRenderer.invoke('stt:lang:get'),
+  sttStatus: () => ipcRenderer.invoke('stt:status'),
+  sttPrefetchNow: () => ipcRenderer.invoke('stt:prefetch'),
   sttLangSet: (lang) => ipcRenderer.invoke('stt:lang:set', lang),
   updateStatus: () => ipcRenderer.invoke('update:status'),
   updateCheck: () => ipcRenderer.invoke('update:check'),

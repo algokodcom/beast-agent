@@ -2097,9 +2097,23 @@ function ttsFlushTail() {
   if (rest) ttsEnqueueSentence(rest);
   else ttsKick();
 }
-
-async function renderTtsPane() {  const pane = $('#tab-tts');
+async function renderTtsPane() {
+  const pane = $('#tab-tts');
   if (!pane) return;
+  /* STT DURUMU: model indirildi mi / iniyor mu / hangi motor */
+  let stt = null;
+  try { stt = await beast.sttStatus(); } catch {}
+  const stateText = {
+    ready: 'HAZIR — model yüklü',
+    loading: 'İNİYOR / yükleniyor…',
+    downloaded: 'indirildi — ilk kullanımda yüklenir',
+    partial: 'kısmen indi — devam edecek',
+    missing: 'henüz indirilmedi',
+    cloud: 'bulut motoru — indirme gerekmez',
+  };
+  const sttLine = stt
+    ? stt.engineLabel + ' · ' + (stateText[stt.state] || stt.state) + (stt.mb ? ' · ' + stt.mb + ' MB' : '')
+    : (window.beast ? 'bilinmiyor' : '');
   const edgeOpts = [
     ['tr-TR-AhmetNeural', 'Ahmet — Türkçe (erkek)'],
     ['tr-TR-EmelNeural', 'Emel — Türkçe (kadın)'],
@@ -2112,6 +2126,10 @@ async function renderTtsPane() {  const pane = $('#tab-tts');
     .join('');
   pane.innerHTML =
     '<h2>' + _t('tts_h2') + '</h2><div class="sub">' + _t('tts_sub') + '</div>' +
+    '<div class="sub" style="margin:10px 0 4px;font-weight:700;color:var(--accent)">STT (Ses → Yazı)</div>' +
+    `<div class="sub" id="sttStatusTxt" style="margin-bottom:8px">${sttLine}</div>` +
+    `<button id="sttDlBtn" class="btn ghost" style="margin-bottom:14px">${_t('stt_download_now')}</button>` +
+    '<div class="sub" style="margin:10px 0 4px;font-weight:700;color:var(--accent)">TTS (Yazı → Ses)</div>' +
     `<div class="form-grid" style="grid-template-columns:auto 1fr 1fr;align-items:center;margin-top:10px">
       <label class="lock-row"><input type="checkbox" id="ttsOn" /><span>${_t('tts_active')}</span></label>
       <label style="grid-column:1">${_t('tts_engine')}</label>
@@ -2153,6 +2171,24 @@ async function renderTtsPane() {  const pane = $('#tab-tts');
   } catch {}
   syncEngineUi();
   $('#ttsEngine').addEventListener('change', syncEngineUi);
+
+  /* STT durum satırı: yenile + şimdi indir (yüklenirken 3 sn'de bir güncellenir) */
+  const refreshSttStatus = async () => {
+    try {
+      stt = await beast.sttStatus();
+      const el = $('#sttStatusTxt');
+      if (el && stt) el.textContent = stt.engineLabel + ' · ' + (stateText[stt.state] || stt.state) + (stt.mb ? ' · ' + stt.mb + ' MB' : '');
+      return stt;
+    } catch { return null; }
+  };
+  $('#sttDlBtn').addEventListener('click', async () => {
+    await beast.sttPrefetchNow().catch(() => {});
+    toast('STT modeli indiriliyor/yükleniyor…');
+    const poll = setInterval(async () => {
+      const s = await refreshSttStatus();
+      if (s && (s.state === 'ready' || s.state === 'cloud')) { clearInterval(poll); toast('STT hazır'); }
+    }, 3000);
+  });
   $('#ttsSave').addEventListener('click', async () => {
     await beast.waSetTts({
       enabled: $('#ttsOn').checked,

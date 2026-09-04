@@ -8,7 +8,7 @@ const dns = require('dns');
 const crypto = require('crypto');
 const { spawn } = require('child_process');
 const { Engine, OBSERVE_MARK } = require('./agent/engine');
-const { loadBeastConfig, beastDir } = require('./agent/config');
+const { loadBeastConfig, parseEnvFile, beastDir } = require('./agent/config');
 const bots = require('./agent/bots');
 const mqueue = require('./agent/mqueue');
 const memory = require('./agent/memory');
@@ -560,20 +560,114 @@ function isOwnerSender(senderNum) {
 
 let sttPipeline = null;
 let sttLoading = null;
+let sttModel = null;
+
+function sttModelName() {
+  /* Yerel motor SADECE whisper-large-v3-turbo: Hermes'in bulut varsayılanıyla
+     aynı model (q4f16 ONNX). Başka bir yerel STT (tiny/base/small) KULLANILMAZ. */
+  return String(settings.sttModel || process.env.BEAST_STT_MODEL || 'onnx-community/whisper-large-v3-turbo').trim();
+}
+
+/* ---------- STT sağlayıcı zinciri (Hermes transcription_tools.py port) ----------
+   Hermes otodetect sırası: groq → openai → local; varsayılan bulut motoru
+   Groq whisper-large-v3-turbo (STT_GROQ_MODEL varsayılanı). Anahtar sırası:
+   settings → %APPDATA%\beast\.env → process.env (Hermes env adları birebir). */
+const STT_GROQ_BASE = 'https://api.groq.com/openai/v1';
+const STT_OPENAI_BASE = 'https://api.openai.com/v1';
+
+function sttEnvKey(name) {
+  try {
+    const env = parseEnvFile(path.join(beastDir(), '.env'));
+    return String(env[name] || '').trim();
+  } catch {
+    return '';
+  }
+}
+function sttGroqKey() {
+  return String(settings.sttGroqKey || sttEnvKey('GROQ_API_KEY') || process.env.GROQ_API_KEY || '').trim();
+}
+function sttOpenaiKey() {
+  return String(settings.sttOpenaiKey || sttEnvKey('OPENAI_API_KEY') || process.env.OPENAI_API_KEY || '').trim();
+}
+function sttBaseUrl() {
+  return String(settings.sttBaseUrl || process.env.STT_OPENAI_BASE_URL || '').trim();
+}
+function sttProvider() {
+  const explicit = String(settings.sttProvider || '').trim().toLowerCase();
+  if (explicit === 'groq' || explicit === 'openai' || explicit === 'local') return explicit;
+  if (sttGroqKey()) return 'groq';
+  if (sttOpenaiKey() || sttBaseUrl()) return 'openai';
+  return 'local';
+}
+
+function sttEngineLabel() {
+  const p = sttProvider();
+  if (p === 'groq') {
+    const model = String(settings.sttGroqModel || process.env.STT_GROQ_MODEL || 'whisper-large-v3-turbo').trim();
+    return 'Groq ' + model + ' (Hermes STT motoru)';
+  }
+  if (p === 'openai') {
+    const base = sttBaseUrl() || STT_OPENAI_BASE;
+    const model = String(settings.sttOpenaiModel || process.env.STT_OPENAI_MODEL || 'whisper-1').trim();
+    return 'OpenAI-multipart ' + model + ' @ ' + base + ' (Hermes STT motoru)';
+  }
+  return 'yerel whisper-large-v3-turbo (' + (sttModel || sttModelName()) + ')';
+}
+
+/* Hermes _transcribe_groq / _transcribe_openai karşılığı: OpenAI-multipart upload.
+   Ham webm/ogg blobu gider; Groq whisper-large-v3-turbo webm/opus'u yerli yerinde alır. */
+async function transcribeCloud(provider, buf, mimetype, lang) {
+  const key = provider === 'groq' ? sttGroqKey() : sttOpenaiKey();
+  const base = (provider === 'groq' ? STT_GROQ_BASE : sttBaseUrl() || STT_OPENAI_BASE).replace(/\/+$/, '');
+  const model = provider === 'groq'
+    ? String(settings.sttGroqModel || process.env.STT_GROQ_MODEL || 'whisper-large-v3-turbo').trim()
+    : String(settings.sttOpenaiModel || process.env.STT_OPENAI_MODEL || 'whisper-1').trim();
+  const mime = String(mimetype || 'audio/webm');
+  const ext = /mp3/.test(mime) ? 'mp3' : /wav|x-wav/.test(mime) ? 'wav' : /ogg/.test(mime) ? 'ogg' : /mp4|m4a/.test(mime) ? 'm4a' : 'webm';
+  const form = new FormData();
+  form.append('file', new Blob([buf], { type: mime }), 'audio.' + ext);
+  form.append('model', model);
+  form.append('response_format', 'json');
+  if (lang === 'tr' || lang === 'en') form.append('language', lang);
+  const res = await fetch(base + '/audio/transcriptions', {
+    method: 'POST',
+    headers: { Authorization: 'Bearer ' + key },
+    body: form,
+  });
+  if (!res.ok) throw new Error(provider + ' ' + res.status + ': ' + String(await res.text()).slice(0, 180));
+  const data = await res.json();
+  return String((data && data.text) || '').trim();
+}
 
 async function ensureStt() {
-  if (sttPipeline) return sttPipeline;
-  if (!sttLoading) {
+  const model = sttModelName();
+  if (sttPipeline && sttModel === model) return sttPipeline;
+  if (!sttLoading || sttModel !== model) {
+    const wanted = model;
     sttLoading = (async () => {
-      waLog('STT: yerel whisper modeli hazırlanıyor (ilk kullanımda indirilir)');
-      const { pipeline, env } = require('@xenova/transformers');
+      waLog('STT: whisper-large-v3-turbo hazırlanıyor (ilk kurulumda arka planda iner)');
       const modelsDir = path.join(APP_DIR, 'models');
       fs.mkdirSync(modelsDir, { recursive: true });
-      env.cacheDir = modelsDir;
-      env.allowLocalModels = false;
-      sttPipeline = await pipeline('automatic-speech-recognition', 'Xenova/whisper-tiny', { quantized: true });
-      waLog('STT hazır');
-      return sttPipeline;
+      /* @huggingface/transformers: turbo repo yalnız bu paketle uyumlu.
+         Sırayla en sıkıştırılmış dtype denenir; BAŞKA MODEL falllback YOK —
+         yüklenemezse STT temiz hata verir (dandık STT'ye düşülmez). */
+      const hf = require('@huggingface/transformers');
+      hf.env.cacheDir = modelsDir;
+      hf.env.allowLocalModels = false;
+      let lastErr = null;
+      for (const dtype of ['q4f16', 'q4', 'q8']) {
+        try {
+          const p = await hf.pipeline('automatic-speech-recognition', wanted, { dtype });
+          sttPipeline = p;
+          sttModel = wanted;
+          waLog('STT hazır: ' + wanted + ' (dtype ' + dtype + ')');
+          return sttPipeline;
+        } catch (e) {
+          lastErr = e;
+          waLog('STT dtype ' + dtype + ' başarısız: ' + String((e && e.message) || e).slice(0, 140));
+        }
+      }
+      throw lastErr || new Error('whisper-large-v3-turbo yüklenemedi');
     })().catch((e) => {
       sttLoading = null;
       throw e;
@@ -610,27 +704,206 @@ function decodeAudioToPcm16k(buf) {
   });
 }
 
-async function transcribeAudio(buf, langOverride /* 'tr' | 'en' | 'auto' */) {
+/* ---------- Hermes anti-hallosinasyon katmanı (tools/voice_mode.py + transcription_tools.py portu) ----------
+
+   Whisper sessizlik/gürültüde "Thank you.", "You" gibi junk üretir. Üç katman:
+   1) Enerji kapısı: konuşma enerjisi yoksa model HİÇ çağrılmaz (Silero VAD muadili)
+   2) condition_on_previous_text=False muadili: transformers.js chunk çağrısında
+      birikimli bağlam yok — tek chunk tek karar
+   3) Hallosinasyon filtresi: bilinen junk cümleleri + tekrar kalıpları elenir */
+
+const STT_SILENCE_RMS = 200 / 32768; // Hermes SILENCE_RMS_THRESHOLD (int16 200)
+const STT_MIN_SPEECH_MS = 200; // bu kadar konuşma yoksa "sessiz" say
+
+function hasSpeechEnergy(f32) {
+  if (!f32 || !f32.length) return false;
+  const win = 1600; // 100ms @ 16kHz
+  let speechFrames = 0;
+  for (let i = 0; i < f32.length; i += win) {
+    let sum = 0;
+    const end = Math.min(i + win, f32.length);
+    for (let j = i; j < end; j++) sum += f32[j] * f32[j];
+    const rms = Math.sqrt(sum / Math.max(1, end - i));
+    if (rms >= STT_SILENCE_RMS) speechFrames++;
+  }
+  return speechFrames * 100 >= STT_MIN_SPEECH_MS;
+}
+
+/* Whisper sessizlikte sıkça uydurduğu cümleler (Hermes WHISPER_HALLUCINATIONS birebir
+   + Türkçe set: "thanks for watching" modeli Türkçeleşmiş halüsinasyonlardır) */
+const STT_HALLUCINATIONS = new Set([
+  'thank you.', 'thank you', 'thanks for watching.', 'thanks for watching',
+  'subscribe to my channel.', 'subscribe to my channel', 'like and subscribe.', 'like and subscribe',
+  'please subscribe.', 'please subscribe', 'thank you for watching.', 'thank you for watching',
+  'bye.', 'bye', 'you', 'the end.', 'the end',
+  'продолжение следует', 'продолжение следует...',
+  'sous-titres', "sous-titres réalisés par la communauté d'amara.org",
+  'sottotitoli creati dalla comunità amara.org', 'untertitel von stephanie geiges',
+  'amara.org', 'www.mooji.org', 'ご視聴ありがとうございました',
+  // Türkçe junk (sessizlikte gözlenenler)
+  'harika', 'tamam.', 'tamam',
+  'izlediğiniz için teşekkür ederim', 'izlediğiniz için teşekkürler', 'izlediğiniz için teşekkür ederiz',
+  'izlediğiniz için çok teşekkür ederim', 'izlediğiniz için teşekkür ederim.', 'izlemeniz için teşekkür ederim',
+  'teşekkür ederim', 'teşekkürler', 'teşekkür ederiz', 'çok teşekkürler', 'çok teşekkür ederim',
+  'abone olmayı unutmayın', 'kanalıma abone olun', 'abone olun', 'beğenmeyi unutmayın', 'like atmayı unutmayın',
+  'hoş geldiniz', 'bir sonraki videoda görüşürüz', 'bir sonraki videoda görüşmek üzere',
+  'sorusu olan var mı', 'izlemeye devam edin', 'altyazılar amara.org', 'altyazı: amara.org',
+  // alt yazı türevleri (sessizlikte en sık görülen hayalet transkript)
+  'altyazı mk', 'altyazı: mk', 'altyazı mk.', 'altyazi mk', 'altyazi', 'altyazı', 'altyazılar',
+  'altyazı: mk efendi', 'mk', 'm.k', 'm.k.', 'altyazı ekibi',
+]);
+
+/* Türkçe'ye özgü fold: whisper bazen diakritikleri DÜŞÜRÜR ("Izlediginiz icin"),
+   bazen İ→i̇ (combining dot) çıkarır — karşılaştırma ASCII-fold üzerinden yapılır */
+function sttFold(s) {
+  return String(s || '')
+    .toLowerCase()
+    .replace(/[çğıöşüâîûİÇĞÖŞÜ]/g, (ch) => ({ ç: 'c', ğ: 'g', ı: 'i', ö: 'o', ş: 's', ü: 'u', â: 'a', î: 'i', û: 'u', İ: 'i', Ç: 'c', Ğ: 'g', Ö: 'o', Ş: 's', Ü: 'u' }[ch] || ch))
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+}
+
+const STT_HALLUCINATION_FOLDED = new Set(
+  [...STT_HALLUCINATIONS].flatMap((p) => {
+    const f = sttFold(p);
+    return [f, f.replace(/[.!]+$/, '')];
+  })
+);
+
+/* Tekrarlı junk kalıbı: "Thank you. Thank you. Thank you." / "Teşekkürler. Teşekkürler." (Hermes _HALLUCINATION_REPEAT_RE + TR) */
+const STT_REPEAT_RE = /^(?:thank you|thanks|bye|you|ok|okay|the end|tamam|harika|tesekkur|tesekkurler|ederim|izlediginiz|icin|cok|\.|\s|,|!)+$/i;
+
+/* junk ÖNEKLERİ: bu kelimelerle BAŞLAYAN transkriptler alt yazı hayaletidir
+   ("Altyazı M.K. ..." gibi) — gerçek komutlar asla bunlarla başlamaz */
+const STT_JUNK_PREFIXES = ['altyazi', 'altyazılar', 'altyazilar', 'altyazı'];
+
+function isWhisperHallucination(transcript) {
+  const cleaned = String(transcript || '').trim().toLowerCase();
+  if (!cleaned) return true;
+  if (STT_HALLUCINATIONS.has(cleaned) || STT_HALLUCINATIONS.has(cleaned.replace(/[.!]+$/, ''))) return true;
+  const folded = sttFold(cleaned);
+  if (STT_HALLUCINATION_FOLDED.has(folded) || STT_HALLUCINATION_FOLDED.has(folded.replace(/[.!]+$/, ''))) return true;
+  if (STT_REPEAT_RE.test(folded)) return true;
+  if (STT_JUNK_PREFIXES.some((p) => folded.startsWith(p))) return true;
+  return false;
+}
+
+/* STT ÖNCELİKLİ SIRASI: whisper CPU'da yavaş — final transkript (öncelik 1)
+   kuyruktaki önizleme işlerinin (0) Önüne geçer; birikse bile konuşanın
+   cevabı önce gelir. Tek seferde tek iş (pipeline güvenliği korunur). */
+const sttQ = [];
+let sttRunning = false;
+function enqueueSttTask(task, priority) {
+  return new Promise((resolve, reject) => {
+    sttQ.push({ task, priority: priority || 0, resolve, reject });
+    if (!sttRunning) drainSttQ();
+  });
+}
+async function drainSttQ() {
+  sttRunning = true;
+  while (sttQ.length) {
+    let best = 0;
+    for (let i = 1; i < sttQ.length; i++) {
+      if ((sttQ[i].priority || 0) > (sttQ[best].priority || 0)) best = i;
+    }
+    const job = sttQ.splice(best, 1)[0];
+    try { job.resolve(await job.task()); } catch (e) { job.reject(e); }
+  }
+  sttRunning = false;
+}
+
+async function transcribeAudio(buf, langOverride /* 'tr' | 'en' | 'auto' */, mimetype, priority) {
+  return enqueueSttTask(() => transcribeAudioInner(buf, langOverride, mimetype), priority);
+}
+
+async function transcribeAudioInner(buf, langOverride /* 'tr' | 'en' | 'auto' */, mimetype) {
   try {
+    /* WAV HIZLI YOLU: eller-serbest segmentleri 16k mono WAV gelir —
+       ffmpeg decode atlanır, doğrudan PCM okunur */
+    if (buf.length > 44 && buf[0] === 0x52 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x46
+      && buf.readUInt32LE(24) === 16000 && buf.readUInt16LE(22) === 1 && buf.readUInt16LE(34) === 16) {
+      try {
+        const dataLen = buf.readUInt32LE(40);
+        const f32 = new Float32Array(Math.floor(dataLen / 2));
+        for (let i = 0; i < f32.length; i++) f32[i] = buf.readInt16LE(44 + i * 2) / 32768;
+        if (f32.length) return await transcribePcm(f32, langOverride);
+      } catch {}
+    }
     const audio = await decodeAudioToPcm16k(buf);
     if (!audio || !audio.length) return null;
-    const asr = await ensureStt();
-    /* dil: arayüz diline bağlı — UI Türkçe ise Türkçe, İngilizce ise İngilizce algılar */
+    if (!hasSpeechEnergy(audio)) return null;
+
     const lang = langOverride || settings.sttLang || 'tr';
-    const opts = { task: 'transcribe', chunk_length_s: 30, stride_length_s: 5 };
-    if (lang === 'en') opts.language = 'english';
-    else if (lang === 'tr') opts.language = 'turkish';
-    const out = await asr(audio, opts);
-    return String((out && out.text) || '').trim() || null;
+    const provider = sttProvider();
+    let text = '';
+
+    if (provider === 'groq' || provider === 'openai') {
+      try {
+        text = await transcribeCloud(provider, buf, mimetype, lang);
+      } catch (e) {
+        waLog('stt bulut (' + provider + ') hata: ' + String((e && e.message) || e).slice(0, 180));
+        /* yerel whisper YÜKLÜYSE sessizce devam et; yüklü değilse indirim BAŞLATMAZ */
+        if (!sttPipeline && !sttLoading) return null;
+        text = '';
+      }
+    }
+
+    if (!text) {
+      const asr = await ensureStt();
+      /* dil: arayüz diline bağlı — UI Türkçe ise Türkçe, İngilizce ise İngilizce algılar */
+      const opts = { task: 'transcribe', chunk_length_s: 30, stride_length_s: 5, return_timestamps: true };
+      if (lang === 'en') opts.language = 'english';
+      else if (lang === 'tr') opts.language = 'turkish';
+      const out = await asr(audio, opts);
+      text = String((out && out.text) || '').trim();
+    }
+
+    if (!text) return null;
+    /* katman 3: bilinen junk cümleleri elenir (her sağlayıcıda geçerli) */
+    if (isWhisperHallucination(text)) {
+      waLog('stt hallosinasyon filtrelendi: ' + text.slice(0, 60));
+      return null;
+    }
+    return text;
   } catch (e) {
     waLog('stt hata: ' + String((e && e.message) || e));
     return null;
   }
 }
 
+/* PCM zaten çözülmüşse model çağrısını doğrudan yap */
+async function transcribePcm(audio, langOverride) {
+  try {
+    if (!hasSpeechEnergy(audio)) return null;
+    const asr = await ensureStt();
+    const lang = langOverride || settings.sttLang || 'tr';
+    const opts = { task: 'transcribe', chunk_length_s: 30, stride_length_s: 5, return_timestamps: true };
+    if (lang === 'en') opts.language = 'english';
+    else if (lang === 'tr') opts.language = 'turkish';
+    const out = await asr(audio, opts);
+    const text = String((out && out.text) || '').trim();
+    if (!text) return null;
+    if (isWhisperHallucination(text)) return null;
+    return text;
+  } catch (e) {
+    waLog('stt pcm hata: ' + String((e && e.message) || e));
+    return null;
+  }
+}
+
 async function synthesizeSpeech(text) {
   const cfg = settings.waTts || {};
-  if (!cfg.enabled || !cfg.baseUrl || !cfg.key) return null;  try {
+  if (!cfg.enabled) return null;
+  try {
+    /* EDGE TTS: ücretsiz yerel motor — baseUrl/key GEREKMEZ */
+    if ((cfg.engine || 'edge') === 'edge') {
+      const edge = require('./agent/edgetts');
+      const audio = await edge.synthesize(String(text).slice(0, 4000), {
+        voice: cfg.edgeVoice || 'tr-TR-AhmetNeural',
+      });
+      return audio;
+    }
+    if (!cfg.baseUrl || !cfg.key) return null;
     const url = String(cfg.baseUrl).replace(/\/+$/, '') + '/audio/speech';
     const res = await fetch(url, {
       method: 'POST',
@@ -703,7 +976,7 @@ function waSlashHelp() {
     '• */block* – allow listesini numaralarıyla listele (*/block 3*: 3. kişiyi çıkar; 1 = sahip, silinemez)',
     '• */approve* – bekleyen riskli işlemi onayla (*/approve always*: bir daha sorulmasın · */deny*: reddet)',
     '• */update* – yeni sürüm kontrolü (*/update now*: indirileni hemen kur)',
-    '• */model* – aktif modeli göster (*/model* <isim> ile değiştir)',
+    '• */model* – aktif modeli göster (*/model* <isim> ile değiştir · */model refresh* – modelleri yeniden çek)',
     '• */skills* – kurulu skill\u2019ler',
     '• */usage* – bugünkü kullanım',
     '• */backup* – tüm veriyi ŞİFRELİ yedekle (Beast Kodu imzalı, Masaüstü\\Beast-Backups)',
@@ -1151,26 +1424,35 @@ async function tryWaSlash(jid, rawText, senderNum, payload0) {
         ? `*Şifreli yedek alındı*\n${r.path}\n(${Math.round(r.size / 1024)} KB)\nBeast Kodu: \`${r.code}\``
         : 'Yedek hata: ' + (r.error || '?');
     } else if (cmd === 'model') {
-      const st = engine.publicState();
-      if (arg) {
-        const hit = st.models.find((m) => m.sel === arg || m.model.toLowerCase().includes(arg.toLowerCase()));
-        if (hit) {
-          settings.modelOverride = hit.sel;
-          saveSettings();
-          engine.setModelOverride ? engine.setModelOverride(hit.sel) : null;
-          const st2 = engine.publicState();
-          out = st2.activeModel
-            ? `*Model değişti:* ${st2.activeModel.providerName} · ${st2.activeModel.model}`
-            : '*Model değişti.*';
-        } else {
-          out =
-            'Eşleşen model yok. *Kurulu modeller:*\n' +
-            st.models.slice(0, 10).map((m) => `- ${m.providerName} · ${m.model}`).join('\n');
-        }
-      } else if (st.activeModel) {
-        out = `*Aktif model:* ${st.activeModel.providerName} · ${st.activeModel.model}\nDeğiştirmek için: /model <isim-parçası>`;
+      if (arg === 'refresh') {
+        out = '*Modeller yeniden çekiliyor…* (tüm providerlar)';
+        sendWaSafe(jid, out).catch(() => {});
+        const st2 = await refreshModelsAll();
+        out =
+          `*Modeller tazelendi* — ${st2.models.length} model\n` +
+          (st2.activeModel ? `Aktif: ${st2.activeModel.providerName} · ${st2.activeModel.model}` : 'Aktif model yok');
       } else {
-        out = 'Model seçilmemiş.';
+        const st = engine.publicState();
+        if (arg) {
+          const hit = st.models.find((m) => m.sel === arg || m.model.toLowerCase().includes(arg.toLowerCase()));
+          if (hit) {
+            settings.modelOverride = hit.sel;
+            saveSettings();
+            engine.setModelOverride ? engine.setModelOverride(hit.sel) : null;
+            const st2 = engine.publicState();
+            out = st2.activeModel
+              ? `*Model değişti:* ${st2.activeModel.providerName} · ${st2.activeModel.model}`
+              : '*Model değişti.*';
+          } else {
+            out =
+              'Eşleşen model yok. *Kurulu modeller:*\n' +
+              st.models.slice(0, 10).map((m) => `- ${m.providerName} · ${m.model}`).join('\n');
+          }
+        } else if (st.activeModel) {
+          out = `*Aktif model:* ${st.activeModel.providerName} · ${st.activeModel.model}\nDeğiştirmek için: /model <isim-parçası>`;
+        } else {
+          out = 'Model seçilmemiş.';
+        }
       }
     } else if (cmd === 'skills') {
       const sk = skillsMod.scan();
@@ -2018,7 +2300,8 @@ async function processWaMessage(jid, payload, senderNum, requeues = 0) {
         attachments.push({ type: 'image', dataUrl: `data:${md.mimetype};base64,${md.buf.toString('base64')}`, name: md.name });
         text += `\n[resim eki alındı]`;
       } else if (md.kind === 'audio') {
-        const tr = await transcribeAudio(md.buf, md.mimetype);
+        /* mimetype langOverride olarak geçilemez — 3. parametre olarak medial türü gider */
+        const tr = await transcribeAudio(md.buf, undefined, md.mimetype);
         text += tr
           ? `\n[sesli mesaj transkripti]\n${tr}`
           : `\n[sesli mesaj alındı ama transkripte çevrilemedi — Entegrasyonlar'da sesli mesaj (STT) ayarı gerekli]`;
@@ -2578,6 +2861,9 @@ function reloadBackend() {
     /* OTOMATİK SKİLL SİSTEMİ: ayarlardan kapatılmadıysa öğrenilen prosedürler
        otomatik skill olur, mevcutların daha iyisi bulunursa güncellenir */
     autoSkills: settings.autoSkills !== false,
+    /* GECE YANSIMASI: her gece hafıza sıkılaştırma + öğrenme journal'i */
+    nightReflect: settings.nightReflect !== false,
+    nightReflectAt: settings.nightReflectAt || null,
     approvals: settings.security && settings.security.approvals ? approvalsBridge : null,
     alwaysAllowTools: (settings.security && settings.security.alwaysAllow) || [],
     crashFile: FALLOUT_CRASH_FILE,
@@ -2895,6 +3181,9 @@ function ensureDesktopShortcut() {
   }
 }
 
+/* TTS otomatik seslendirme: kullanıcı jesti olmadan Audio.play() çalışsın */
+app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
+
 app.whenReady().then(() => {
     // Tailscale modu: paketli uygulamada Windows ile otomatik başlat (sessiz, tepside)
     if (app.isPackaged) {
@@ -2945,13 +3234,18 @@ app.whenReady().then(() => {
     netCheck().catch(() => {});
     setInterval(() => { netCheck().catch(() => {}); }, NET_CHECK_MS).unref();
 
-    // #12 STT prefetch: whisper modelini arka planda hazırla (ilk sesli mesajda bekleme olmasın)
-    if (settings.sttPrefetch !== false) {
-      setTimeout(() => {
-        ensureStt()
-          .then(() => waLog('STT prefetch tamam'))
-          .catch((e) => waLog('STT prefetch atlandı: ' + String((e && e.message) || e)));
-      }, 10000);
+    // STT motoru: bulut anahtarı varsa Hermes zinciri (groq/openai) devrede —
+    // yerel model o zaman HEM indirme HEM prefetch yapılmaz. Prefetch yalnız local'da.
+    if (sttProvider() === 'local') {
+      if (settings.sttPrefetch !== false) {
+        setTimeout(() => {
+          ensureStt()
+            .then(() => waLog('STT prefetch tamam: ' + sttEngineLabel()))
+            .catch((e) => waLog('STT prefetch atlandı: ' + String((e && e.message) || e)));
+        }, 10000);
+      }
+    } else {
+      waLog('STT aktif: ' + sttEngineLabel() + ' — yerel model kullanılmayacak');
     }
 
     // WhatsApp köprüsünü otomatik başlat (eşleme varsa direkt bağlanır)
@@ -3024,12 +3318,59 @@ const PHONE_UA =
   'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/' +
   process.versions.chrome +
   ' Mobile Safari/537.36';
+/* TELEFON SİLUETİ (mobil önizleme): WebContentsView'ı cihaz ekranı boyutuna
+   küçültür, çerçeve DOM'da çizilir. Değerler renderer'daki PF_* sabitleriyle
+   BİREBİR aynı olmalı (PF_BEZEL / PF_STATUS / PF_HOME). */
+const PHONE_BEZEL = 12;   // cihaz çerçevesi kenar kalınlığı (üst/alt/yan hep aynı — halka çerçeve)
+const PHONE_STATUS = 0;   // çentik/durum çubuğu KALDIRILDI — ekran tam görünür
+const PHONE_HOME = 0;     // home çubuğu çerçeve halkasının içine taşındı (ekrandan yer almaz)
+const DEV_PORTS = [8081, 19006, 5173, 3000, 5174, 19001, 4200, 4321];
+const DEV_URL_RE = /https?:\/\/(?:localhost|127\.0\.0\.1|\[::1\]|(?:192\.168|10\.\d+|172\.(?:1[6-9]|2\d|3[01]))\.\d+\.\d+):(\d{2,5})/;
+
+/* CİHAZ KATALOĞU: gerçek CSS piksel ölçüleri (portrait). apple=true → çentik
+   (Dynamic Island), değilse punch-hole kamera noktası çizilir. UA cihaz başına. */
+const PHONE_DEVICES = {
+  iphone15promax: { name: 'iPhone 15 Pro Max', w: 430, h: 932, apple: true },
+  iphone15pro:    { name: 'iPhone 15 Pro',     w: 393, h: 852, apple: true },
+  iphone14:       { name: 'iPhone 14',         w: 390, h: 844, apple: true },
+  iphonese:       { name: 'iPhone SE',         w: 375, h: 667, apple: true },
+  pixel8:         { name: 'Pixel 8',           w: 412, h: 915, apple: false },
+  galaxys23:      { name: 'Galaxy S23',        w: 360, h: 780, apple: false },
+  android:        { name: 'Android (genel)',   w: 360, h: 800, apple: false },
+};
+const PHONE_UA_IOS =
+  'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) ' +
+  'Version/17.5 Mobile/15E148 Safari/604.1';
+
+function phoneDevice() {
+  return PHONE_DEVICES[browser.deviceKey] || PHONE_DEVICES.iphone14;
+}
+
+function isDevServerUrl(url) {
+  const m = DEV_URL_RE.exec(String(url || ''));
+  if (!m) return false;
+  const port = Number(m[1]);
+  /* expo native/log portları web önizleme değildir */
+  return port !== 19000 && port !== 19001 && port !== 19002;
+}
+
 /* Tarayıcı state: visible=false → ajanlar GİZLİ kullanır (headless);
    göz ikonuyla görünür mod açılır. open=view aktif, visible=panelde görünürlük */
-const browser = { view: null, open: false, visible: false, width: 0, attached: false, started: false, phone: false, desktopUA: '' };
+const browser = { view: null, open: false, visible: false, width: 0, attached: false, started: false, phone: false, mobile: false, mobileRect: null, deviceKey: 'iphone14', bottomInset: 0, desktopUA: '' };
+browser.mobile = settings.browserMobile === true; // mobil önizleme tercihi kalıcı
+if (PHONE_DEVICES[settings.browserDevice]) browser.deviceKey = settings.browserDevice;
 
 function browserEmit(payload) {
-  if (win && !win.isDestroyed()) win.webContents.send('agent:event', { type: 'browser', visible: browser.visible, phone: browser.phone, ...payload });
+  /* phoneRect/device HER olayda taşınır — site değişse bile siluet bozulmaz */
+  if (win && !win.isDestroyed()) win.webContents.send('agent:event', {
+    type: 'browser',
+    visible: browser.visible,
+    phone: browser.phone,
+    mobile: browser.mobile,
+    phoneRect: browser.mobileRect,
+    device: browser.deviceKey,
+    ...payload,
+  });
 }
 
 function browserWidthFor(w) {
@@ -3044,9 +3385,146 @@ function browserW() {
 
 function browserShownWidth(w) {
   const avail = Math.max(320, w - 320);
+  /* MOBİL ÖNİZLEME: siluet + çerçeve payı — siluet tam otursun (phone-mode'dan önce) */
+  if (browser.mobile) return Math.min(470, avail);
   /* TELEFON MODU: dock KENDİSİ daralır (~430px) — sayfa mobil düzenle
      kenarlara tam oturur; kapatınca kullanıcı genişliği geri gelir */
-  return browser.phone ? Math.min(430, avail) : Math.min(browser.width, avail);
+  if (browser.phone) return Math.min(430, avail);
+  return Math.min(browser.width, avail);
+}
+
+/* Telefon siluetinin EKRAN dikdörtgeni (WebContentsView buraya oturur;
+   çerçeve/çentik/home bar DOM'da çizilir). ÖNCE cihazın GERÇEK ölçüsü denenir
+   (ör. tam 393×844 — uygulama device-width'i gerçekten cihaz genişliği görür,
+   mobile TAM uyum); sığmazsa orana göre küçültülür, tavan dock'un %80'i,
+   dikeyde ortalanır. */
+function browserPhoneRect(w, h) {
+  const dev = phoneDevice();
+  const shownWidth = browserShownWidth(w);
+  const dockX = Math.max(0, w - shownWidth);
+  const availH = Math.max(240, h - BROWSER_TOOLBAR_H - (browser.bottomInset || 0));
+  const chromeH = PHONE_BEZEL * 2 + PHONE_STATUS + PHONE_HOME;
+  const outerCap = Math.max(320, Math.round(availH * 0.8));
+  let ph = Math.min(availH - chromeH, outerCap - chromeH);
+  let pw;
+  if (dev.h + chromeH <= availH && dev.w + PHONE_BEZEL * 2 + 8 <= shownWidth) {
+    /* 1) doğal boyut: cihaz ekranı sığıyorsa BİREBİR o ölçü kullanılır */
+    ph = dev.h;
+    pw = dev.w;
+  } else {
+    /* 2) sığmıyor: yükseklik bütçesine göre orana küçült */
+    pw = Math.round(ph * (dev.w / dev.h));
+    const maxPw = shownWidth - PHONE_BEZEL * 2 - 8;
+    if (pw > maxPw) {
+      pw = Math.max(200, maxPw);
+      ph = Math.round(pw * (dev.h / dev.w));
+    }
+  }
+  const outerH = ph + chromeH;
+  const y0 = BROWSER_TOOLBAR_H + Math.max(0, Math.round((availH - outerH) / 2));
+  return {
+    x: dockX + Math.round((shownWidth - pw) / 2),
+    y: y0 + PHONE_BEZEL + PHONE_STATUS,
+    width: pw,
+    height: Math.max(240, ph),
+  };
+}
+
+/* Mobil önizleme scrollbar'ı gizle: kaydırma yine de siluetin İÇİNDE çalışır,
+   sadece masaüstü çubuğu görünmez (telefon hissi). Sayfa değişiminde yeniden enjekte edilir. */
+const PHONE_SCROLL_CSS =
+  '::-webkit-scrollbar{width:0!important;height:0!important}' +
+  '::-webkit-scrollbar-thumb{background:transparent!important}' +
+  'html{scrollbar-width:none!important} body{overscroll-behavior:contain}';
+
+/* DOKUNMATİK SÜRÜKLE-KAYDIR: tut + aşağı çek = sayfa telefonda olduğu gibi
+   akar (atalet/momentum dahil). Bağlantı/buton/giriş alanlarına dokunmaz —
+   tıklamalar normal çalışır; 4px eşikini aşan sürükleme tıkı yutar. */
+const PHONE_SCROLL_JS = `(function(){
+  if (window.__beastTouchScroll) return; window.__beastTouchScroll = true;
+  var S = null;
+  var INTERACTIVE = 'a,button,input,textarea,select,label,summary,option,[contenteditable="true"],video,audio,iframe,canvas,svg,[draggable="true"]';
+  function scrollableAt(x, y) {
+    var el = document.elementFromPoint(x, y);
+    while (el && el !== document.documentElement) {
+      var cs = getComputedStyle(el);
+      var oy = cs.overflowY;
+      if ((oy === 'auto' || oy === 'scroll' || oy === 'overlay') && el.scrollHeight > el.clientHeight + 2) return el;
+      el = el.parentElement;
+    }
+    return document.scrollingElement || document.documentElement;
+  }
+  window.addEventListener('mousedown', function (e) {
+    if (e.button !== 0 || e.defaultPrevented) return;
+    var t = e.target;
+    if (t && t.closest && t.closest(INTERACTIVE)) return;
+    var el = scrollableAt(e.clientX, e.clientY);
+    if (!el) return;
+    S = { el: el, y0: e.clientY, y: e.clientY, top: el.scrollTop, moved: false, vel: 0, lt: performance.now() };
+  }, true);
+  window.addEventListener('mousemove', function (e) {
+    if (!S) return;
+    var dy = e.clientY - S.y; S.y = e.clientY;
+    if (!S.moved && Math.abs(e.clientY - S.y0) < 4) return;
+    if (!S.moved) { S.moved = true; document.body.style.userSelect = 'none'; }
+    var now = performance.now();
+    var dt = Math.max(1, now - S.lt); S.lt = now;
+    S.vel = 0.8 * (-dy / dt * 16.7) + 0.2 * S.vel;
+    S.el.scrollTop = S.top - (e.clientY - S.y0);
+    e.preventDefault(); e.stopPropagation();
+  }, true);
+  window.addEventListener('click', function (e) {
+    if (S && S.moved) { e.preventDefault(); e.stopPropagation(); }
+  }, true);
+  window.addEventListener('mouseup', function (e) {
+    if (!S) return;
+    var s = S; S = null;
+    document.body.style.userSelect = '';
+    if (!s.moved) return;
+    e.preventDefault();
+    var v = s.vel;
+    (function step() {
+      v *= 0.94;
+      if (Math.abs(v) < 0.6) return;
+      s.el.scrollTop -= v;
+      requestAnimationFrame(step);
+    })();
+  }, true);
+  var st = document.createElement('style');
+  st.textContent = '*{touch-action:pan-y}';
+  document.documentElement.appendChild(st);
+})();`;
+
+function injectPhoneScrollCss() {
+  try {
+    const wc = browser.view && browser.view.webContents;
+    if (wc && browser.mobile) {
+      wc.insertCSS(PHONE_SCROLL_CSS, { cssOrigin: 'user' }).catch(() => {});
+      wc.executeJavaScript(PHONE_SCROLL_JS, false).catch(() => {});
+    }
+  } catch {}
+}
+
+/* GERÇEK TELEFON DOKUNMASI: Chromium dokunma emülasyonu — fare sürükleme gerçek
+   dokunma olayına döner; sayfa NATİVE momentumla kayar (tut-aşağı-çek tam telefon
+   gibi). RN web/Pressable da gerçek touch alır. CDP oturumu gezinmelerde kalıcıdır. */
+async function applyPhoneTouchEmulation() {
+  try {
+    const wc = browser.view && browser.view.webContents;
+    if (!wc || !browser.mobile) return;
+    if (!wc.debugger.isAttached()) wc.debugger.attach('1.3');
+    await wc.debugger.sendCommand('Emulation.setEmitTouchEventsForMouse', { enabled: true, configuration: 'mobile' });
+  } catch (e) {
+    waLog('telefon dokunma emülasyonu: ' + String((e && e.message) || e).slice(0, 120));
+  }
+}
+
+function clearPhoneTouchEmulation() {
+  try {
+    const wc = browser.view && browser.view.webContents;
+    if (!wc || !wc.debugger.isAttached()) return;
+    wc.debugger.sendCommand('Emulation.setEmitTouchEventsForMouse', { enabled: false }).catch(() => {});
+  } catch {}
 }
 
 function layoutBrowser() {
@@ -3069,8 +3547,26 @@ function layoutBrowser() {
     } catch {}
   }
   try {
-    view.setBounds({ x: Math.max(0, w - shownWidth), y: BROWSER_TOOLBAR_H, width: shownWidth, height: Math.max(0, h - BROWSER_TOOLBAR_H) });
+    /* MOBİL ÖNİZLEME: view cihaz ekranı boyutuna küçülür — çerçeve DOM'da çizilir */
+    let bounds = { x: Math.max(0, w - shownWidth), y: BROWSER_TOOLBAR_H, width: shownWidth, height: Math.max(0, h - BROWSER_TOOLBAR_H - (browser.bottomInset || 0)) };
+    if (browser.mobile && browser.visible) {
+      const r = browserPhoneRect(w, h);
+      browser.mobileRect = r;
+      bounds = r;
+    } else {
+      browser.mobileRect = null;
+    }
+    view.setBounds(bounds);
     view.setVisible(browser.open && browser.visible);
+    /* pencere boyutu değişince (maximize/restore) dock genişliği clamp'lenir —
+       renderer'a YENİ genişlik bildirilmezse DOM'un ayırdığı --bw alanı bayat
+       kalır ve Beast Code chat native view'ın ALTINA girer (iç içe geçme bug'ı) */
+    if (browser._lastEmittedW !== shownWidth) {
+      browser._lastEmittedW = shownWidth;
+      browserEmit({ open: true, width: shownWidth });
+    }
+    /* siluet çerçevesinin hizası için renderer'a ekran dikdörtgeni bildirilir */
+    browserEmit({ mobile: browser.mobile, phoneRect: browser.mobileRect });
   } catch {}
 }
 
@@ -3110,7 +3606,11 @@ function ensureBrowser() {
       browserEmit({ open: true, width: browserShownWidth(browserW()), ...extra });
     }
   };
-  wc.on('did-navigate', (_e, url) => notify({ url, loading: false }));
+  wc.on('did-navigate', (_e, url) => {
+    /* mobil önizleme: her sayfada scrollbar gizleme CSS'i yeniden enjekte edilir */
+    injectPhoneScrollCss();
+    notify({ url, loading: false });
+  });
   wc.on('did-navigate-in-page', (_e, url) => notify({ url, loading: false }));
   wc.on('did-start-loading', () => notify({ loading: true }));
   wc.on('did-stop-loading', () => {
@@ -3147,6 +3647,14 @@ function setBrowserOpen(v, forceVisible) {
     const wasOpen = browser.open;
     browser.open = false;
     browser.visible = false;
+    browser.mobileRect = null; /* telefon silueti de kaybolur — bayat rect taşınmaz */
+    /* mobil önizleme modu da KAPANIR — siluet + cihaz seçici + emülasyon temizlenir */
+    if (browser.mobile) {
+      browser.mobile = false;
+      settings.browserMobile = false;
+      saveSettings();
+      clearPhoneTouchEmulation();
+    }
     detachBrowser();
     browserEmit({ open: false });
     return;
@@ -3193,7 +3701,8 @@ function browserGate(job) {
    basar (browser:toggle gizli paneli görünür kılar). Zaten açıksa (kullanıcı
    paneli açık tutuyorsa) görünürlüğe dokunulmaz. */
 function setBrowserOpenForAgent() {
-  if (!browser.open) setBrowserOpen(true, false);
+  /* mobil önizleme açıkken ajan gezinmeleri GÖRÜNÜR açılır — siluet canlı kalsın */
+  if (!browser.open) setBrowserOpen(true, browser.mobile ? true : false);
 }
 
 async function browserNavigate(raw, signal, ctx) {
@@ -4002,15 +4511,34 @@ function createWindow() {
       }, 1200);
     }
   });
-  win.on('resize', layoutBrowser);
+  /* maximize/fullscreen geçişlerinde dock hizası + görünürlük KESİN senkronlanır —
+   aksi halde tam ekranda tarayıcı "kapanmış" gibi görünür */
+function resyncBrowserUi() {
+  try {
+    if (browser.view) browser.view.setVisible(browser.open && browser.visible);
+  } catch {}
+  if (browser.open) {
+    const wShown = browserShownWidth(browserW());
+    browser._lastEmittedW = wShown;
+    browserEmit({ open: true, width: wShown });
+  } else {
+    browserEmit({ open: false });
+  }
+}
+
+win.on('resize', layoutBrowser);
   win.on('maximize', () => {
     layoutBrowser();
+    resyncBrowserUi();
     try { if (win && !win.isDestroyed()) win.webContents.send('agent:event', { type: 'win-max', maximized: true }); } catch {}
   });
   win.on('unmaximize', () => {
     layoutBrowser();
+    resyncBrowserUi();
     try { if (win && !win.isDestroyed()) win.webContents.send('agent:event', { type: 'win-max', maximized: false }); } catch {}
   });
+  win.on('enter-full-screen', () => { layoutBrowser(); resyncBrowserUi(); });
+  win.on('leave-full-screen', () => { layoutBrowser(); resyncBrowserUi(); });
   win.on('show', layoutBrowser);
   // X'e basınca gizle — tepside yaşamaya devam, WhatsApp bağlantısı sürer
   win.on('close', (e) => {
@@ -4114,6 +4642,21 @@ ipcMain.handle('agent:send', (_e, { sessionId, text }) => {
   }
   if (t === '/model' || t.startsWith('/model ')) {
     const arg = t.slice(6).trim();
+    if (arg === 'refresh') {
+      /* tüm provider modellerini yeniden çek — sağ üstteki yenile düğmesiyle aynı */
+      desktopEcho(sessionId, t, '**Modeller yeniden çekiliyor…** (tüm providerlar)');
+      refreshModelsAll()
+        .then((st) => {
+          desktopEcho(
+            sessionId,
+            t,
+            `**Modeller tazelendi** — ${st.models.length} model · ${st.activeModel ? `aktif: ${st.activeModel.providerName} · ${st.activeModel.model}` : 'aktif model yok'}`
+          );
+          if (win && !win.isDestroyed()) win.webContents.send('agent:event', { type: 'modelChanged', sessionId: String(sessionId || '') });
+        })
+        .catch((e) => desktopEcho(sessionId, t, 'Model yenileme başarısız: ' + String((e && e.message) || e)));
+      return true;
+    }
     const st = engine.publicState();
     if (arg) {
       const hit = st.models.find(
@@ -4272,7 +4815,7 @@ function desktopSlashHelp() {
     '**/restart** – uygulamayı yeniden başlat',
     '**/stop** – koşan işleri durdur · **/start** – devam ettir',
     '**/change [n]** – modelleri listele · n. modele geç',
-    '**/model [isim]** – aktif modeli göster / değiştir',
+    '**/model [isim]** – aktif modeli göster / değiştir · **/model refresh** – tüm provider modellerini yeniden çek',
     '**/think 0-5** – düşünme seviyesi (0 kapalı · 5 max)',
     '**/agent [isim]** – özel ajan bağla / listele (%APPDATA%\\beast\\agents\\*.md)',
     '**/clear** – oturum geçmişini gerçekten sil (kod korunur)',
@@ -4415,7 +4958,7 @@ function handleGlobalStopStart(sessionId, cmd) {
   }
 }
 
-ipcMain.handle('agent:interrupt', (_e, sessionId) => {
+ipcMain.handle('agent:interrupt', (_e, sessionId, reason) => {
   /* durdurma: bekleyen birleştirme kuyruğunu da boşalt (kullanıcı vazgeçti) */
   try {
     const q = desktopQueue.get(String(sessionId));
@@ -4424,7 +4967,10 @@ ipcMain.handle('agent:interrupt', (_e, sessionId) => {
       desktopQueue.delete(String(sessionId));
     }
   } catch {}
-  return engine.interrupt(sessionId, 'kullanıcı sohbetteki durdurma (■) düğmesiyle iptal etti');
+  return engine.interrupt(
+    sessionId,
+    String(reason || '').trim() || 'kullanıcı sohbetteki durdurma (■) düğmesiyle iptal etti'
+  );
 });
 
 /* ---------- masaüstü sohbet birleştirme ----------
@@ -4833,6 +5379,37 @@ ipcMain.handle('skills:auto:set', (_e, v) => {
   return settings.autoSkills;
 });
 
+/* GECE YANSIMASI: elle tetikleme + son rapor/öğrenme günlükleri */
+ipcMain.handle('reflect:run', async () => {
+  if (!engine) return { ok: false, error: 'motor hazır değil' };
+  const r = await engine.runNightReflection({ manual: true });
+  if (r && r.ok) waLog(`gece yansıması (manuel): ${r.memory.before}→${r.memory.after} kayıt`);
+  return r;
+});
+ipcMain.handle('reflect:last', () => {
+  try {
+    return JSON.parse(require('fs').readFileSync(require('path').join(memory.memDir(), 'reflections', 'last.json'), 'utf8'));
+  } catch {
+    return null;
+  }
+});
+ipcMain.handle('reflect:reports', () => {
+  try {
+    const dir = require('path').join(memory.memDir(), 'reflections');
+    return require('fs').readdirSync(dir)
+      .filter((f) => f.endsWith('.json') && f !== 'last.json')
+      .sort()
+      .reverse()
+      .slice(0, 30)
+      .map((f) => {
+        try { return JSON.parse(require('fs').readFileSync(require('path').join(dir, f), 'utf8')); } catch { return null; }
+      })
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+});
+
 /* taslak skill'ler (#2 yansıma ürünleri) */
 ipcMain.handle('skills:drafts:list', () => skillsMod.listDrafts());
 ipcMain.handle('skills:drafts:accept', (_e, id) => {
@@ -5189,11 +5766,11 @@ async function runUpdateCommand(reply /* fn(text) */) {
 
 /* #STT: sohbet mikrofonu — MediaRecorder sesini (webm/opus) yerel whisper'a çevir */
 /* #STT: sohbet mikrofonu — MediaRecorder sesini (webm/opus) yerel whisper'a çevir */
-ipcMain.handle('stt:transcribe', async (_e, b64, lang) => {
+ipcMain.handle('stt:transcribe', async (_e, b64, lang, priority) => {
   try {
     const buf = Buffer.from(String(b64 || '').split(',').pop() || '', 'base64');
     if (!buf.length) return { ok: false, error: 'boş ses kaydı' };
-    const text = await transcribeAudio(buf, lang === 'en' || lang === 'auto' ? lang : undefined);
+    const text = await transcribeAudio(buf, lang === 'en' || lang === 'auto' ? lang : undefined, 'audio/webm', priority === 1 ? 1 : 0);
     return text ? { ok: true, text } : { ok: false, error: 'konuşma algılanamadı' };
   } catch (e) {
     return { ok: false, error: String((e && e.message) || e) };
@@ -5521,6 +6098,109 @@ function setBrowserPhone(on) {
   return { ok: true, phone: browser.phone };
 }
 ipcMain.handle('browser:phone', (_e, on) => setBrowserPhone(on));
+
+/* MOBİL ÖNİZLEME (telefon silueti): view cihaz ekranı boyutuna küçülür, çerçeve
+   DOM'da çizilir; açıkken dev sunucu (Expo/Metro/Vite) aranır ve bulunursa
+   doğrudan ona gidilir. Ajan bir dev sunucu başlattığında renderer tool
+   çıktısından URL yakalayıp browserNavigate ile buraya yönlendirir. */
+function setBrowserMobile(on) {
+  const want = !!on;
+  if (browser.mobile === want && (want ? browser.mobileRect : true)) return { ok: true, mobile: want };
+  browser.mobile = want;
+  settings.browserMobile = want;
+  saveSettings();
+  try {
+    const wc = browser.view && browser.view.webContents;
+    if (wc) wc.setUserAgent(want ? phoneDeviceUA() : browser.desktopUA || PHONE_UA);
+  } catch {}
+  if (want) setBrowserOpen(true, true); // tarayıcı kapalıysa görünür aç
+  if (browser.open && win && !win.isDestroyed()) {
+    layoutBrowser();
+    const [w] = win.getContentSize();
+    browserEmit({ open: true, width: browserShownWidth(w), mobile: browser.mobile, phoneRect: browser.mobileRect });
+    if (want) {
+      injectPhoneScrollCss();
+      applyPhoneTouchEmulation();
+    } else {
+      clearPhoneTouchEmulation();
+    }
+  }
+  if (want) {
+    /* dev sunucu ara: canlı mobil uygulama önizlemesine git */
+    devServerDetect()
+      .then((url) => {
+        if (!url || !browser.mobile || !win || win.isDestroyed()) return;
+        let cur = '';
+        try { cur = browser.view.webContents.getURL(); } catch {}
+        if (!isDevServerUrl(cur)) browserNavigate(url).catch(() => {});
+      })
+      .catch(() => {});
+  }
+  return { ok: true, mobile: browser.mobile };
+}
+ipcMain.handle('browser:mobile', (_e, on) => setBrowserMobile(on));
+
+/* CİHAZ SEÇİMİ: iPhone/Android ölçüleri — oran değişir, UA tazelenir */
+function phoneDeviceUA() {
+  const d = phoneDevice();
+  return d.apple ? PHONE_UA_IOS : PHONE_UA;
+}
+
+function setBrowserDevice(key) {
+  const k = String(key || '').trim();
+  if (!PHONE_DEVICES[k]) return { ok: false, error: 'bilinmeyen cihaz' };
+  if (browser.deviceKey === k) return { ok: true, device: k, mobile: browser.mobile };
+  browser.deviceKey = k;
+  settings.browserDevice = k;
+  saveSettings();
+  try {
+    const wc = browser.view && browser.view.webContents;
+    if (wc && browser.mobile) {
+      wc.setUserAgent(phoneDeviceUA());
+      let url = '';
+      try { url = wc.getURL(); } catch {}
+      /* UA değişimi için sayfa taze yüklenir (setBrowserPhone ile aynı mantık) */
+      if (url && /^https?:/i.test(url)) wc.loadURL(url).catch(() => {});
+    }
+  } catch {}
+  if (browser.open && win && !win.isDestroyed()) {
+    layoutBrowser(); // yeni ekran oranı — siluet yeniden hizalanır
+    const [w] = win.getContentSize();
+    browserEmit({ open: true, width: browserShownWidth(w) });
+  }
+  return { ok: true, device: k, mobile: browser.mobile };
+}
+ipcMain.handle('browser:device', (_e, key) => setBrowserDevice(key));
+
+async function probeDevUrl(url, timeoutMs = 1200) {
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
+    return res.status < 500;
+  } catch {
+    return false;
+  }
+}
+
+async function devServerDetect() {
+  for (const port of DEV_PORTS) {
+    const url = 'http://localhost:' + port + '/';
+    /* eslint-disable-next-line no-await-in-loop */
+    if (await probeDevUrl(url)) return url;
+  }
+  return null;
+}
+ipcMain.handle('devserver:detect', () => devServerDetect());
+
+/* ALT TERMINAL PAYI: alt dock terminal açıkken view yüksekliğini kısar —
+   DOM terminali native view'ın altında kalmaz */
+ipcMain.handle('browser:bottomInset', (_e, px) => {
+  /* terminal yüksekliği pencerenin %70'i olabildiğinden tavan 1200 */
+  const v = Math.max(0, Math.min(Math.round(Number(px) || 0), 1200));
+  if (browser.bottomInset === v) return { ok: true, inset: v };
+  browser.bottomInset = v;
+  layoutBrowser();
+  return { ok: true, inset: v };
+});
 ipcMain.handle('browser:screenshot', async () => {
   const r = await browserScreenshot();
   if (!r.ok) return { ok: false, error: r.error };
@@ -6491,6 +7171,113 @@ ipcMain.handle('studio:delete', async (_e, rel) => {
    servis edilir; ajan kendi dev sunucusunu başlattıysa o adres önceliklidir. */
 let bcLastServerUrl = ''; /* ajanın başlattığı dev server adresi (bc-preview'dan yakalanır) */
 const bcStatic = { server: null, root: '', base: '' };
+/* MOBİL PROJE önizleme: npm run web (expo start --web) süreci + canlı adres */
+const bcMobile = { proc: null, url: '', root: '' };
+
+/* workspace bir MOBİL UYGULAMA projesi mi? (expo / react-native / app.json) */
+function ideMobileProject(root) {
+  try {
+    const pkgPath = path.join(root, 'package.json');
+    if (!fs.existsSync(pkgPath)) return { mobile: false };
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+    const deps = { ...(pkg.dependencies || {}), ...(pkg.devDependencies || {}) };
+    const isExpo = !!(deps.expo || deps['react-native'] || deps['react-native-web']);
+    const hasAppJson = fs.existsSync(path.join(root, 'app.json')) || fs.existsSync(path.join(root, 'app.config.js'));
+    const scripts = pkg.scripts || {};
+    const hasReact = !!(deps.react || deps.next);
+    const mobile = (isExpo || hasAppJson) && hasReact;
+    let cmd = '';
+    if (mobile) {
+      if (scripts.web) cmd = 'npm run web';
+      else if (deps.expo) cmd = 'npx expo start --web';
+      else if (scripts.start) cmd = 'npm start';
+    }
+    return { mobile, cmd };
+  } catch {
+    return { mobile: false, cmd: '' };
+  }
+}
+
+function killMobilePreview() {
+  const p = bcMobile.proc;
+  if (p) {
+    try { spawn('taskkill', ['/pid', String(p.pid), '/T', '/F'], { windowsHide: true }); } catch {}
+    try { p.kill(); } catch {}
+  }
+  bcMobile.proc = null;
+  bcMobile.url = '';
+}
+
+/* npm run web'i başlat; dev sunucu ayağa kalkınca adresi döner (çıktı taraması +
+   port yoklaması çift kanal). Süreç UZUN ÖMÜRLÜDÜR — yeni preview onu öldürür. */
+function mobilePreviewStart(root) {
+  return new Promise((resolve) => {
+    const info = ideMobileProject(root);
+    if (!info.mobile || !info.cmd) return resolve({ ok: false, error: 'mobil web scripti yok — package.json scripts.web ekleyin' });
+    /* zaten çalışıyor mu? */
+    if (bcMobile.proc && bcMobile.url && bcMobile.root === root) {
+      probeDevUrl(bcMobile.url, 800).then((alive) => {
+        if (alive) resolve({ ok: true, url: bcMobile.url });
+        else {
+          killMobilePreview();
+          mobilePreviewStart(root).then(resolve, () => resolve({ ok: false, error: 'başlatılamadı' }));
+        }
+      });
+      return;
+    }
+    if (bcMobile.root !== root) killMobilePreview();
+    bcMobile.url = '';
+    bcMobile.root = root;
+    let out = '';
+    let settled = false;
+    waLog('mobil önizleme başlatılıyor: ' + info.cmd + ' @ ' + root);
+    const child = spawn(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', info.cmd], { cwd: root, windowsHide: true });
+    bcMobile.proc = child;
+    const scan = () => {
+      const m = /https?:\/\/(?:localhost|127\.0\.0\.1):(\d{2,5})/.exec(out);
+      if (m && Number(m[1]) !== 19000 && Number(m[1]) !== 19001 && Number(m[1]) !== 19002) {
+        bcMobile.url = m[0].replace(/\/+$/, '') + '/';
+      }
+    };
+    child.stdout.on('data', (d) => { out += String(d); if (out.length > 60000) out = out.slice(-30000); scan(); });
+    child.stderr.on('data', (d) => { out += String(d); if (out.length > 60000) out = out.slice(-30000); scan(); });
+    child.on('exit', () => { if (bcMobile.proc === child) bcMobile.proc = null; });
+    const t0 = Date.now();
+    const timer = setInterval(async () => {
+      scan();
+      let url = bcMobile.url;
+      if (!url) {
+        for (const port of [8081, 19006, 5173]) {
+          /* eslint-disable-next-line no-await-in-loop */
+          if (await probeDevUrl('http://localhost:' + port + '/', 500)) { url = 'http://localhost:' + port + '/'; break; }
+        }
+      }
+      if (url) {
+        bcMobile.url = url;
+        clearInterval(timer);
+        settled = true;
+        resolve({ ok: true, url });
+      } else if (Date.now() - t0 > 120000) {
+        clearInterval(timer);
+        if (!settled) resolve({ ok: false, error: 'dev sunucu 120 sn içinde ayağa kalkmadı — çıktıyı terminalden kontrol et' });
+      }
+    }, 1200);
+  });
+}
+
+/* ajana sessiz bilgi: dev sunucu zaten çalışıyor — ikinci sunucu başlatmasın */
+function bcTellMobileServe(url) {
+  try {
+    const ws = ideRoot();
+    const sid = bcSessions.get(ws);
+    if (!sid) return;
+    engine.observe(sid,
+      '[PREVIEW] Kullanıcı mobil önizlemeyi açtı — `npm run web` dev sunucusu şu adreste ÇALIŞIYOR: ' + url + '\n' +
+      'KENDİ dev sunucunu BAŞLATMA (port çakışır); uygulamayı bu adres üzerinden değerlendir,\n' +
+      'kod düzenlemeleri hot-reload ile siluette canlı görünür.'
+    );
+  } catch {}
+}
 const BC_MIME = {
   '.html': 'text/html; charset=utf-8', '.htm': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8',
@@ -6582,6 +7369,27 @@ ipcMain.handle('ide:previewFile', async (_e, rel) => {
 ipcMain.handle('ide:preview', async () => {
   try {
     const root = ideRoot();
+    /* MOBİL UYGULAMA PROJESİ (expo/react-native): statik sunucu değil,
+       `npm run web` başlat → telefon silueti içinde canlı önizleme */
+    const mob = ideMobileProject(root);
+    if (mob.mobile) {
+      let url = '';
+      /* ajanın kendi dev sunucusu canlıysa öncelikli */
+      if (bcLastServerUrl && isDevServerUrl(bcLastServerUrl)) {
+        const alive = await probeDevUrl(bcLastServerUrl, 800).catch(() => false);
+        if (alive) url = bcLastServerUrl;
+      }
+      if (!url) {
+        const r = await mobilePreviewStart(root);
+        if (!r.ok) return { ok: false, error: r.error };
+        url = r.url;
+      }
+      setBrowserMobile(true); /* siluet + görünür tarayıcı */
+      try { browser.view.webContents.loadURL(url).catch(() => {}); } catch {}
+      browserEmit({ open: true, width: browserShownWidth(browserW()), url, mobile: true, phoneRect: browser.mobileRect });
+      bcTellMobileServe(url);
+      return { ok: true, url, mobile: true };
+    }
     const pick = (name) => {
       const p = path.join(root, name);
       try { return fs.existsSync(p) ? p : null; } catch { return null; }
@@ -6667,7 +7475,10 @@ ipcMain.handle('custom:set', (_e, list) => {
 
 /* #Model refresh: taban zinciri tazele + kayıtlı tüm custom providerların
    modellerini yeniden çek (picker anında güncellenir). */
-ipcMain.handle('models:refresh', async () => {
+/* Tüm provider modellerini yeniden çek: taban zincir (config.yaml) + custom
+   provider /models listeleri. UI düğmesi, /model refresh (chat + WhatsApp)
+   aynı bu fonksiyonu kullanır. */
+async function refreshModelsAll() {
   try {
     const cfg = loadBeastConfig();
     if (cfg && engine.refreshBaseChain) engine.refreshBaseChain(cfg);
@@ -6711,7 +7522,9 @@ ipcMain.handle('models:refresh', async () => {
   }
   log.info('main', `model refresh: taban tazelendi, ${updated} custom provider güncellendi`);
   return engine.publicState();
-});
+}
+
+ipcMain.handle('models:refresh', async () => refreshModelsAll());
 
 ipcMain.handle('providers:builtin', () => BUILTIN_PROVIDERS);
 
@@ -7074,6 +7887,10 @@ ipcMain.handle('wa:tts:get', () => settings.waTts || {});
 ipcMain.handle('wa:tts:set', (_e, cfg) => {
   settings.waTts = {
     enabled: !!(cfg && cfg.enabled),
+    /* motor: 'edge' (ücretsiz yerel, varsayılan) | 'openai' (OpenAI-uyumlu API) */
+    engine: (cfg && cfg.engine) === 'openai' ? 'openai' : 'edge',
+    edgeVoice: String((cfg && cfg.edgeVoice) || 'tr-TR-AhmetNeural').trim(),
+    chatAutoSpeak: !!(cfg && cfg.chatAutoSpeak),
     baseUrl: String((cfg && cfg.baseUrl) || '').trim(),
     key: String((cfg && cfg.key) || '').trim(),
     model: String((cfg && cfg.model) || '').trim(),
@@ -7081,6 +7898,22 @@ ipcMain.handle('wa:tts:set', (_e, cfg) => {
   };
   saveSettings();
   return settings.waTts;
+});
+
+/* CHAT TTS: masaüstü sohbetinde ajanın son yazısını seslendirir (base64 mp3).
+   chatAutoSpeak açıkken renderer 'done' olayında bu kanalı çağırır. */
+ipcMain.handle('tts:synthesize', async (_e, text) => {
+  const cfg = settings.waTts || {};
+  if (!cfg.enabled) return { ok: false, error: 'tts kapalı' };
+  const t = String(text || '').trim();
+  if (!t) return { ok: false, error: 'boş metin' };
+  const audio = await synthesizeSpeech(t.slice(0, 4000));
+  if (!audio) {
+    waLog('tts chat seslendirilemedi — motor: ' + (cfg.engine || 'edge'));
+    return { ok: false, error: 'seslendirilemedi' };
+  }
+  waLog('tts chat ok: ' + audio.length + ' bayt, motor: ' + (cfg.engine || 'edge') + ', ses: ' + (cfg.edgeVoice || '-'));
+  return { ok: true, audioB64: audio.toString('base64'), mime: 'audio/mpeg' };
 });
 
 /* ---------- Telegram IPC (FEATURE 3) ---------- */

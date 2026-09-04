@@ -14,6 +14,7 @@ const research = require('./research');
 const agentdefs = require('./agentdefs');
 const memory = require('./memory');
 const mem0 = require('./mem0');
+const nightref = require('./nightref');
 const skills = require('./skills');
 const mcp = require('./mcp');
 const { estTokens, estMsgTokens } = require('./tokens');
@@ -290,6 +291,12 @@ class Engine {
     this._codeIndex = new Map(); // kısa oturum kodu -> session id
     /* yansıma: oturumda 5+ yeni araç çağrısında skill taslağı denenir */
     this.reflection = { enabled: opts.reflection !== false, minTools: 3 };
+    /* GECE YANSIMASI: her gece (varsayılan 03:30) hafıza sıkılaştırma + günlük
+       öğrenme journal'i. Ayarlardan kapatılabilir (nightReflect:false),
+       saati BEAST_REFLECT_AT / nightReflectAt ile değiştirilebilir. */
+    this.nightReflect = opts.nightReflect !== false;
+    this.nightReflectAt = String(opts.nightReflectAt || process.env.BEAST_REFLECT_AT || '').trim() || nightref.DEFAULT_AT;
+    this._nrRunning = false;
     /* OTOMATİK SKİLL SİSTEMİ: öğrenilen prosedür taslak onayı beklemeden
        kurulu skill olur; mevcut skillin daha iyisi bulunursa üzerine günceller */
     this.autoSkills = opts.autoSkills !== false;
@@ -331,6 +338,16 @@ class Engine {
       try { this._supervise(); } catch {}
     }, SUP_CHECK_MS);
     if (this._supTimer.unref) this._supTimer.unref();
+    /* gece yansıma tick'i: 10 dk'da bir hedef saati kontrol eder;
+       app gece kapalıysa açılıştan 3 dk sonra catch-up dener */
+    this._nrTimer = setInterval(() => {
+      try { this._nightRefTick(); } catch {}
+    }, 10 * 60 * 1000);
+    if (this._nrTimer.unref) this._nrTimer.unref();
+    const nrBoot = setTimeout(() => {
+      try { this._nightRefTick(); } catch {}
+    }, 3 * 60 * 1000);
+    if (nrBoot.unref) nrBoot.unref();
     skills.seedIfEmpty();
     agentdefs.seedIfEmpty();
   }
@@ -2772,11 +2789,15 @@ class Engine {
     } catch {}
   }
 
-  /* Eski motor örneğini kapat (reloadBackend) — supervisor zamanlayıcısı durur */
+  /* Eski motor örneğini kapat (reloadBackend) — supervisor + gece yansıma zamanlayıcısı durur */
   dispose() {
     if (this._supTimer) {
       clearInterval(this._supTimer);
       this._supTimer = null;
+    }
+    if (this._nrTimer) {
+      clearInterval(this._nrTimer);
+      this._nrTimer = null;
     }
   }
 
@@ -3589,6 +3610,77 @@ const skills = require('./skills');
       body: String(draft.body),
     });
     return r.ok ? skills.slugify(draft.name) : null;
+  }
+
+  /* ---------- gece yansıması: hafıza sıkılaştırma + günlük öğrenme ----------
+
+     Her gece hedef saatte (nightReflectAt) otomatik; app kapalıysa açılışta
+     yakalanır. İçerik: bugün ne öğrendim (journal), MEMORY.md'de gereksiz ne
+     var (doğrulanmış drop/merge), bağlam sıkılaştırma raporu (token tasarrufu).
+     Elle de tetiklenebilir: runNightReflection({ manual: true }). */
+  _nightRefTick() {
+    if (!this.nightReflect || this._stopped) return;
+    if (!this.sel || this._nrRunning) return;
+    const last = nightref.readLast(memory.memDir());
+    if (!nightref.due({ now: new Date(), lastAt: last && last.at, at: this.nightReflectAt })) return;
+    this.runNightReflection({}).catch(() => {});
+  }
+
+  async runNightReflection({ manual = false } = {}) {
+    if (this._nrRunning) return { ok: false, error: 'gece yansıması zaten çalışıyor' };
+    if (!this.sel) return { ok: false, error: 'model seçili değil' };
+    this._nrRunning = true;
+    try {
+      const last = nightref.readLast(memory.memDir());
+      const sinceIso = (last && last.at) || null;
+      /* kapsamda olan oturumlar: son yansımadan sonra güncellenenler;
+         mesajlarda zaman damgası olmadığından oturum başına son dilim alınır */
+      const cutoff = sinceIso ? new Date(sinceIso).getTime() : nightref.startOfDay(new Date()).getTime();
+      const sessions = [];
+      let used = 0;
+      for (const v of this.listSessions()) {
+        if (sessions.length >= 12) break;
+        if (new Date(v.updatedAt).getTime() < cutoff) continue;
+        let s;
+        try { s = this._load(v.id); } catch { continue; }
+        if (!s.messages.length) continue;
+        const tr = this._renderTranscript(
+          s.messages.filter((m) => m.role !== 'tool').slice(-nightref.TRANSCRIPT_TAIL)
+        );
+        if (!tr.trim()) continue;
+        const slice = tr.slice(0, nightref.DAY_TRANSCRIPT_CAP - used);
+        if (!slice.trim()) break;
+        used += slice.length;
+        sessions.push({ id: v.id, title: v.title, updatedAt: v.updatedAt, transcript: slice });
+        if (used >= nightref.DAY_TRANSCRIPT_CAP) break;
+      }
+      const llm = async (prompt) => {
+        const ctrl = new AbortController();
+        const kill = setTimeout(() => ctrl.abort(), nightref.LLM_TIMEOUT_MS);
+        try {
+          const res = await chatOnce(
+            this.sel,
+            { messages: [{ role: 'user', content: prompt }], temperature: 0.2 },
+            { signal: ctrl.signal }
+          );
+          return String(res.content || '');
+        } finally {
+          clearTimeout(kill);
+        }
+      };
+      return await nightref.run({
+        llm,
+        memory,
+        mem0Enabled: this.mem0Enabled,
+        sessions,
+        sinceIso,
+        manual,
+        now: new Date(),
+        log: (msg) => log.info('gece-yansima', msg),
+      });
+    } finally {
+      this._nrRunning = false;
+    }
   }
 
   /* ---------- BOTLAR ARASI DM (FEATURE) ----------

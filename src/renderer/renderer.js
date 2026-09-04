@@ -59,6 +59,8 @@ const els = {
   bbClose: $('#bbClose'),
   bbResize: $('#bbResize'),
   bbPhone: $('#bbPhone'),
+  bbMobile: $('#bbMobile'),
+  bbDevice: $('#bbDevice'),
   termCBtn: $('#termCBtn'),
   termPanel: $('#termPanel'),
   termCwd: $('#termCwd'),
@@ -137,6 +139,7 @@ const els = {
   setClose: $('#setClose'),
   setVersion: $('#setVersion'),
   attachBtn: $('#attachBtn'),
+  ttsBtn: $('#ttsBtn'),
   micBtn: $('#micBtn'),
   fileInput: $('#fileInput'),
   fileTasks: $('#fileTasks'),
@@ -1891,38 +1894,293 @@ async function renderSkillsPane() {
 
 /* ---------------- sesli yanıt (TTS) ---------------- */
 
-async function renderTtsPane() {
-  const pane = $('#tab-tts');
+/* ---------------- CHAT TTS: ajan yazılarını otomatik seslendirme ----------------
+   Ayarlar → Sesli Yanıt'ta "chat'te otomatik seslendir" açıksa her tur sonunda
+   ajanın son yazısı Edge TTS (veya seçili motor) ile okunur. */
+let ttsCfgCache = null;
+let ttsAudioEl = null;
+let ttsLastSpoken = '';
+let chatTtsOn = false; // hoparlör düğmesi: chat'te otomatik seslendirme
+
+async function ttsCfg() {
+  if (!ttsCfgCache) {
+    try { ttsCfgCache = await beast.waGetTts(); } catch { ttsCfgCache = {}; }
+  }
+  return ttsCfgCache || {};
+}
+
+/* açılışta TTS tercihini yükle + düğme durumunu senkronla */
+(async () => {
+  const cfg = await ttsCfg();
+  chatTtsOn = !!cfg.chatAutoSpeak;
+  if (els.ttsBtn) els.ttsBtn.classList.toggle('on', chatTtsOn);
+})();
+  if (els.ttsBtn) {
+    els.ttsBtn.addEventListener('click', async () => {
+      chatTtsOn = !chatTtsOn;
+      els.ttsBtn.classList.toggle('on', chatTtsOn);
+      /* KAPATMA = ANINDA SUS: çalan cümle durur + kuyruktaki tüm cümleler atılır */
+      if (!chatTtsOn) ttsQueueReset();
+      const cfg = await ttsCfg();
+      ttsCfgCache = { ...cfg, chatAutoSpeak: chatTtsOn };
+      await beast.waSetTts(ttsCfgCache).catch(() => {});
+      if (!cfg.enabled) {
+        toast(chatTtsOn ? 'TTS motoru kapalı — Ayarlar → Sesli Yanıttan etkinleştir' : 'Otomatik seslendirme kapalı');
+      } else {
+        toast(chatTtsOn ? 'Otomatik seslendirme AÇIK' : 'Otomatik seslendirme kapalı');
+      }
+    });
+  }
+
+async function speakText(text) {
+  try {
+    const cfg = await ttsCfg();
+    /* chatTtsOn tek doğruluk kaynağı: hoparlör düğmesi + ayar paneli + boot yükleme
+       üçü de senkron tutar. Yalnız chat modunda; terminal/BC/Studio asla okunmaz. */
+    if (!cfg.enabled || !chatTtsOn || ideModeOn() || studioModeOn()) return;
+    const clean = speechReadyText(text);
+    if (!clean) return;
+    if (clean === ttsLastSpoken) return; // aynı yazıyı iki kez okuma
+    const r = await beast.ttsSpeak(clean.slice(0, 4000));
+    if (!(r && r.ok && r.audioB64)) {
+      toast('TTS: ' + ((r && r.error) || 'seslendirilemedi'));
+      return;
+    }
+    ttsLastSpoken = clean;
+    /* STT YANKI KÖPRÜSÜ: mikrofon, seslendirme bitene kadar tetiklenmez */
+    const st = window.BeastHandsFree && window.BeastHandsFree.ttsState;
+    if (st) { st.lastText = clean; st.playing = true; }
+    await playTtsB64(r);
+  } catch {}
+}
+
+/* base64 mp3 → Blob URL → Audio. data: URL CSP'de engellendiği için blob kullanılır.
+   Promise, çalma BİTTİĞİNDE çözülür (cümle kuyruğu sırayı böyle kurar);
+   kesinti (pause/barge) ttsPlayResolve üzerinden anında çözer. */
+async function playTtsB64(r) {
+  const bin = atob(r.audioB64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  const blob = new Blob([bytes], { type: r.mime || 'audio/mpeg' });
+  const url = URL.createObjectURL(blob);
+  if (ttsAudioEl) { try { ttsAudioEl.pause(); } catch {} }
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = () => {
+      if (settled) return;
+      settled = true;
+      ttsPlayResolve = null;
+      try { URL.revokeObjectURL(url); } catch {}
+      const st2 = window.BeastHandsFree && window.BeastHandsFree.ttsState;
+      if (st2) st2.lastEndedAt = Date.now(); // yankı penceresi için
+      setTimeout(() => {
+        const st = window.BeastHandsFree && window.BeastHandsFree.ttsState;
+        if (st) st.playing = false;
+      }, 300);
+      resolve();
+    };
+    ttsPlayResolve = done;
+    ttsAudioEl = new Audio(url);
+    ttsAudioEl.onended = done;
+    ttsAudioEl.onerror = done;
+    const st0 = window.BeastHandsFree && window.BeastHandsFree.ttsState;
+    if (st0) st0.playing = true; // ses başlıyor — mikrofon adaptif zemin moduna geçer
+    ttsAudioEl.play().catch((e) => {
+      const st = window.BeastHandsFree && window.BeastHandsFree.ttsState;
+      if (st) st.playing = false;
+      toast('TTS çalınamadı: ' + String((e && e.message) || e));
+      done();
+    });
+  });
+}
+
+/* ---------------- CÜMLE CÜMLE STREAMING TTS ----------------
+   Ajan yazarken tamamlanan her cümle kuyruğa girer ve SIRAYLA okunur —
+   cevabın bitmesi beklenmez. Kesinti (barge/stop) jenerasyonu artırır:
+   eski cümleler anında çöker, yeni cevap temiz başlar. */
+let ttsQList = [];       // seslendirilecek cümleler (sıra)
+let ttsReady = [];       // sentezlenmiş: { text, r } — sırayla çalınır
+let ttsSynthBusy = false; // tek sentez biriminde PREFETCH: cümle 1 çalarken 2 sentezlenir
+let ttsQBusy = false;    // şu an bir cümle ÇALIYOR mu
+let ttsQGen = 0;
+let ttsPending = '';
+let ttsPlayResolve = null;
+
+function ttsAutoOn() {
+  return !!chatTtsOn && !ideModeOn() && !studioModeOn();
+}
+
+/* openclaw tts-payload politikası: kısa metin okunmaz; kod-ağır metnin yerine
+   "ekranda bıraktım" denir — kod okumak anlamsız ve kafa karıştırır */
+function speechReadyText(t) {
+  const s = String(t || '').replace(/\s+/g, ' ').trim();
+  if (s.length < 10) return '';
+  const codeChars = (s.match(/[{}();=<>[\]\\]/g) || []).length;
+  if (/```/.test(s) || codeChars / s.length >= 0.3) return 'Kod bloklarını ekranda bıraktım.';
+  return s;
+}
+
+function ttsQueueReset() {
+  ttsQList = [];
+  ttsReady = [];
+  ttsPending = '';
+  ttsQGen++;
+  ttsSynthBusy = false; // in-flight sentez sonuçları gen kontrolüyle atılır
+  ttsQBusy = false;
+  try { if (ttsAudioEl) ttsAudioEl.pause(); } catch {}
+  const st = window.BeastHandsFree && window.BeastHandsFree.ttsState;
+  if (st) st.playing = false;
+  if (ttsPlayResolve) { const r = ttsPlayResolve; ttsPlayResolve = null; r(); }
+}
+
+function ttsEnqueueSentence(sentence) {
+  ttsQList.push(sentence);
+  ttsKick();
+}
+
+/* PREFETCH: çalan cümlenin süresi boyunca SIRADAKİ cümle sentezlenir →
+   cümleler arasında boşluk kalmaz (Edge istek gecikmesi gizlenir) */
+function ttsKick() {
+  const myGen = ttsQGen;
+  if (ttsSynthBusy) { ttsPump(); return; }
+  if (!ttsQList.length) { ttsPump(); return; }
+  const sentence = ttsQList.shift();
+  ttsSynthBusy = true;
+  beast.ttsSpeak(sentence.slice(0, 800))
+    .then((r) => {
+      ttsSynthBusy = false;
+      if (myGen !== ttsQGen) return;
+      if (r && r.ok && r.audioB64) ttsReady.push({ text: sentence, r });
+      ttsKick();
+      ttsPump();
+    })
+    .catch(() => {
+      ttsSynthBusy = false;
+      if (myGen !== ttsQGen) return;
+      ttsKick();
+      ttsPump();
+    });
+}
+
+async function ttsPump() {
+  if (ttsQBusy) return;
+  const myGen = ttsQGen;
+  while (ttsReady.length) {
+    if (myGen !== ttsQGen) return;
+    const item = ttsReady.shift();
+    ttsQBusy = true;
+    try {
+      ttsLastSpoken = item.text;
+      const st = window.BeastHandsFree && window.BeastHandsFree.ttsState;
+      if (st) { st.lastText = item.text; st.playing = true; }
+      await playTtsB64(item.r);
+    } catch {}
+    ttsQBusy = false;
+    if (myGen !== ttsQGen) return;
+    ttsKick(); // çalma bitince sıradaki sentezi hemen başlat
+  }
+}
+
+function ttsFeedDelta(delta) {
+  if (!ttsAutoOn()) return;
+  ttsPending += String(delta || '');
+  const parts = ttsPending.split(/(?<=[.!?…])\s+|\n+/);
+  if (parts.length <= 1) return;
+  const done = parts.slice(0, -1).map((s) => speechReadyText(s)).filter(Boolean);
+  ttsPending = parts[parts.length - 1] || '';
+  for (const s of done) ttsEnqueueSentence(s);
+}
+
+function ttsFlushTail() {
+  const rest = speechReadyText(ttsPending);
+  ttsPending = '';
+  if (rest) ttsEnqueueSentence(rest);
+  else ttsKick();
+}
+
+async function renderTtsPane() {  const pane = $('#tab-tts');
   if (!pane) return;
+  const edgeOpts = [
+    ['tr-TR-AhmetNeural', 'Ahmet — Türkçe (erkek)'],
+    ['tr-TR-EmelNeural', 'Emel — Türkçe (kadın)'],
+    ['en-US-GuyNeural', 'Guy — English (male)'],
+    ['en-US-AriaNeural', 'Aria — English (female)'],
+    ['de-DE-KatjaNeural', 'Katja — Deutsch'],
+    ['ar-SA-HamedNeural', 'Hamed — العربية'],
+  ]
+    .map(([v, n]) => `<option value="${v}">${n}</option>`)
+    .join('');
   pane.innerHTML =
     '<h2>' + _t('tts_h2') + '</h2><div class="sub">' + _t('tts_sub') + '</div>' +
     `<div class="form-grid" style="grid-template-columns:auto 1fr 1fr;align-items:center;margin-top:10px">
       <label class="lock-row"><input type="checkbox" id="ttsOn" /><span>${_t('tts_active')}</span></label>
-      <input id="ttsUrl" class="inp" placeholder="https://api.openai.com/v1" autocomplete="off" />
-      <input id="ttsKey" class="inp" type="password" placeholder="API Key" autocomplete="off" />
-      <input id="ttsModel" class="inp" placeholder="tts-1" autocomplete="off" />
-      <input id="ttsVoice" class="inp" placeholder="ses: alloy" autocomplete="off" />
-      <button id="ttsSave" class="btn ghost">${_t('tts_save')}</button>
+      <label style="grid-column:1">${_t('tts_engine')}</label>
+      <select id="ttsEngine" class="inp" style="grid-column:2/4">
+        <option value="edge">Edge TTS — yerel & ücretsiz (Ahmet/Emel…)</option>
+        <option value="openai">OpenAI-uyumlu API (tts-1, ses: alloy…)</option>
+      </select>
+      <label style="grid-column:1">${_t('tts_edge_voice')}</label>
+      <select id="ttsEdgeVoice" class="inp" style="grid-column:2/4">${edgeOpts}</select>
+      <label class="lock-row" style="grid-column:1/4"><input type="checkbox" id="ttsChatAuto" /><span>${_t('tts_chat_auto')}</span></label>
+      <span id="ttsOpenaiWrap" style="display:contents">
+        <input id="ttsUrl" class="inp" placeholder="https://api.openai.com/v1" autocomplete="off" />
+        <input id="ttsKey" class="inp" type="password" placeholder="API Key" autocomplete="off" />
+        <input id="ttsModel" class="inp" placeholder="tts-1" autocomplete="off" />
+        <input id="ttsVoice" class="inp" placeholder="ses: alloy" autocomplete="off" />
+      </span>
+      <button id="ttsSave" class="btn ghost" style="grid-column:1">${_t('tts_save')}</button>
+      <button id="ttsTest" class="btn ghost" style="grid-column:2;justify-self:start">${_t('tts_test')}</button>
     </div>` +
     '<div class="sub" style="margin-top:8px">' + _t('tts_note') + '</div>';
+
+  const syncEngineUi = () => {
+    const isEdge = $('#ttsEngine').value === 'edge';
+    $('#ttsEdgeVoice').disabled = !isEdge;
+    $('#ttsOpenaiWrap').style.opacity = isEdge ? '0.35' : '1';
+    $('#ttsOpenaiWrap').querySelectorAll('input').forEach((i) => (i.disabled = isEdge));
+  };
 
   try {
     const tts = await beast.waGetTts();
     $('#ttsOn').checked = !!tts.enabled;
+    $('#ttsEngine').value = tts.engine === 'openai' ? 'openai' : 'edge';
+    $('#ttsEdgeVoice').value = tts.edgeVoice || 'tr-TR-AhmetNeural';
+    $('#ttsChatAuto').checked = !!tts.chatAutoSpeak;
     $('#ttsUrl').value = tts.baseUrl || '';
     $('#ttsKey').value = tts.key || '';
     $('#ttsModel').value = tts.model || 'tts-1';
     $('#ttsVoice').value = tts.voice || 'alloy';
   } catch {}
+  syncEngineUi();
+  $('#ttsEngine').addEventListener('change', syncEngineUi);
   $('#ttsSave').addEventListener('click', async () => {
     await beast.waSetTts({
       enabled: $('#ttsOn').checked,
+      engine: $('#ttsEngine').value,
+      edgeVoice: $('#ttsEdgeVoice').value,
+      chatAutoSpeak: $('#ttsChatAuto').checked,
       baseUrl: $('#ttsUrl').value.trim(),
       key: $('#ttsKey').value.trim(),
       model: $('#ttsModel').value.trim(),
       voice: $('#ttsVoice').value.trim(),
     });
-    toast($('#ttsOn').checked ? 'TTS açık — cevaplar sesli de gider' : 'TTS kapalı');
+    ttsCfgCache = null; // ayar önbelleğini tazele
+    /* hoparlör düğmesiyle TEK doğruluk kaynağı senkronu — asıl seslendirmeme bug'ı */
+    chatTtsOn = $('#ttsChatAuto').checked;
+    if (els.ttsBtn) els.ttsBtn.classList.toggle('on', chatTtsOn);
+    toast($('#ttsOn').checked ? 'TTS açık — cevaplar sesli' : 'TTS kapalı');
+  });
+  $('#ttsTest').addEventListener('click', async () => {
+    /* motor + IPC + çalma zincirini uçtan uca dener — sorun neredeyse görünür */
+    toast('TTS test ediliyor…');
+    const r = await beast.ttsSpeak('Merhaba kanka, Edge TTS testi. Ben Beast.').catch((e) => ({ ok: false, error: String((e && e.message) || e) }));
+    if (!(r && r.ok)) { toast('TTS test HATA: ' + ((r && r.error) || '?')); return; }
+    try {
+      await playTtsB64(r);
+      toast('TTS test OK — ses geliyor');
+    } catch (e) {
+      toast('TTS test çalma hatası: ' + String((e && e.message) || e));
+    }
   });
 }
 
@@ -4420,10 +4678,17 @@ function onEvent(ev) {
       if (shown && ev.width) document.body.style.setProperty('--bw', ev.width + 'px');
       document.body.classList.toggle('phone-mode', !!ev.phone);
       if (els.bbPhone) els.bbPhone.classList.toggle('on', !!ev.phone);
+      /* MOBİL ÖNİZLEME: telefon silueti çerçevesi + düğme durumu + cihaz seçimi */
+      document.body.classList.toggle('mobile-preview', !!ev.mobile);
+      if (els.bbMobile) els.bbMobile.classList.toggle('on', !!ev.mobile);
+      if (ev.device) {
+        document.body.dataset.pfDevice = ev.device;
+        if (els.bbDevice) els.bbDevice.value = ev.device;
+      }
+      renderPhoneFrame(ev.phoneRect || null);
       els.browserBar.hidden = !shown;
       els.bbResize.hidden = !shown;
-      /* terminal de sağ dock'u kullanır — tarayıcı açılınca yerini bırak */
-      if (shown && termOpen) termSetOpen(false);
+      /* terminal artık ALT dock — tarayıcıyla birlikte yaşar, kapatılmaz */
       /* #19 tarayıcı açılınca paralel ajan konsolu (sağ panel) yerini bırakır;
          kapanınca önceki durumuna döner — istenirse railBtn ile elle açılır.
          GİZLİ ajan gezinmeleri (shown=false, wasShown=false) rail'e DOKUNMAZ —
@@ -4485,10 +4750,20 @@ function onEvent(ev) {
       break;
     case 'done':
       closeChatToolGroup();
-      /* iptal/durdurma sebebini SOHBETE yaz — sebepsiz durdurma yok */
-      if (ev.aborted) addStopNote(ev.reason);
+      /* iptal sebebini SOHBETE yaz — ANCAK sesle kesilen turlarda not DÜŞÜLMEZ
+         ("■ durdurma" hayaleti olmasın; handsfree'in kendi iş akışı) */
+      if (ev.aborted) {
+        if (!/eller serbest/i.test(String(ev.reason || ''))) addStopNote(ev.reason);
+        ttsQueueReset();
+      }
       setBusy(false);
-      setStatus(''); /* son durum balonu ("düşünüyor…" vb.) yapışmasın */
+      setStatus('');
+      /* TTS (eski hal): cevap bitince TAMAMINI seslendir */
+      if (!ev.aborted && (!ev.sessionId || String(ev.sessionId) === String(activeId))) {
+        const mdEl = [...els.msgs.querySelectorAll('.msg-assistant .md')].pop();
+        const replyText = mdEl ? mdEl.innerText.trim() : '';
+        if (replyText) void speakText(replyText);
+      }
       /* cevabın SONU görünsün: markdown son render sonrası iki kez en alta kilitle */
       scrollDown(true);
       setTimeout(() => scrollDown(true), 80);
@@ -4498,6 +4773,7 @@ function onEvent(ev) {
       break;
     case 'error':
       closeChatToolGroup();
+      ttsQueueReset(); // hata — konuşma kuyruğunu da temizle
       setBusy(false);
       setStatus('');
       addErrorBubble(ev.error);
@@ -4559,17 +4835,28 @@ function termSetShell(s) {
   if (changed && termOpen && termBannerDone) termLine('t-sys', 'Kabuk: ' + TERM_SHELLS[s].label);
 }
 
-function termSetWidth(w) {
-  document.body.style.setProperty('--tw', Math.round(w) + 'px');
-  try { localStorage.setItem('beast.termW', String(Math.round(w))); } catch {}
+function termSetHeight(h) {
+  const v = Math.max(120, Math.min(Math.round(h), Math.round(window.innerHeight * 0.7)));
+  document.body.style.setProperty('--th', v + 'px');
+  try { localStorage.setItem('beast.termH', String(v)); } catch {}
+  /* native tarayıcı view'ına alt payı bildir — view yüksekliğini kısar */
+  beast.browserSetBottomInset(termOpen ? v : 0).catch(() => {});
 }
 
 function termSetOpen(v) {
+  /* BEAST CODE modunda terminal HEP AÇIK: kapatma denemeleri IDE modunda yok sayılır */
+  if (!v && ideModeOn()) {
+    toast('Beast Code modunda terminal açık kalır');
+    return;
+  }
   termOpen = !!v;
   els.termPanel.hidden = !v;
   els.termResize.hidden = !v;
   document.body.classList.toggle('term-open', v);
   termSetShell(termShell);
+  /* alt dock: tarayıcı view'ı terminal payını boşaltır */
+  const th = parseInt(getComputedStyle(document.body).getPropertyValue('--th')) || 180;
+  beast.browserSetBottomInset(v ? th : 0).catch(() => {});
   if (v) {
     els.termInput.focus();
     termScroll(true);
@@ -4611,6 +4898,56 @@ function termShortTool(name, args) {
   } catch { return ''; }
 }
 
+/* ---------------- MOBİL ÖNİZLEME: telefon silueti ----------------
+   main, WebContentsView'ı cihaz EKRANI boyutuna küçültür (phoneRect olayıyla
+   gelir); çerçeve TEK YUVARLAK HALKA (border 12px, radius 42 — üst/alt köşeler
+   birebir aynı) DOM'da çizilir; home çubuğu alt kenar içindedir. */
+const PF_BEZEL = 12;
+
+function renderPhoneFrame(rect) {
+  const pk = document.getElementById('bbDevice');
+  let f = document.getElementById('phoneFrame');
+  if (!rect) {
+    if (f) f.style.display = 'none';
+    if (pk) pk.style.display = 'none';
+    return;
+  }
+  if (!f) {
+    f = document.createElement('div');
+    f.id = 'phoneFrame';
+    f.innerHTML = '<div class="pf-home"></div>';
+    document.body.appendChild(f);
+  }
+  f.style.display = 'block';
+  f.style.left = (rect.x - PF_BEZEL) + 'px';
+  f.style.top = (rect.y - PF_BEZEL) + 'px';
+  f.style.width = (rect.width + PF_BEZEL * 2) + 'px';
+  f.style.height = (rect.height + PF_BEZEL * 2) + 'px';
+  /* cihaz seçici: çerçevenin altında ortalanmış */
+  if (pk) {
+    const frameBottom = rect.y + rect.height + PF_BEZEL;
+    pk.hidden = false;
+    pk.style.display = 'block';
+    pk.style.top = (frameBottom + 12) + 'px';
+    pk.style.left = Math.max(8, rect.x + rect.width / 2 - pk.offsetWidth / 2) + 'px';
+  }
+}
+
+/* ajan dev sunucu başlattı mı? (expo/metro/vite/next) — mobil önizleme
+   açıksa oraya otomatik gidilir, kapatılsa da son URL hatırlanır */
+let devSeenUrl = '';
+const DEV_URL_RE_R = /https?:\/\/(?:localhost|127\.0\.0\.1|\[::1\]|(?:192\.168|10\.\d+|172\.(?:1[6-9]|2\d|3[01]))\.\d+\.\d+):(\d{2,5})/;
+function devServerSeen(text) {
+  const m = DEV_URL_RE_R.exec(String(text || ''));
+  if (!m) return;
+  const port = Number(m[1]);
+  if (port === 19000 || port === 19001 || port === 19002) return; // expo native/log portları
+  const url = m[0].replace(/\/+$/, '') + '/';
+  if (devSeenUrl === url) return;
+  devSeenUrl = url;
+  if (document.body.classList.contains('mobile-preview')) beast.browserNavigate(url).catch(() => {});
+}
+
 /* ajan araç etkinliğini terminale akıt (tüm oturumlar: ana sohbet + paralel ajanlar + cron) */
 function termAgentEvent(ev) {
   if (ev.type === 'tool-start') {
@@ -4618,6 +4955,8 @@ function termAgentEvent(ev) {
     const args = termShortTool(ev.name, ev.args);
     termLine('t-agent', sid + '▸ ' + ev.name + (args ? ': ' + args : ''));
   } else if (ev.type === 'tool-end') {
+    /* mobil önizleme: dev sunucu çıktısı yakala ("Local: http://localhost:8081" vb.) */
+    devServerSeen(ev.result);
     const shellish = /bash|shell|powershell|cmd|command|script|terminal/i.test(String(ev.name || ''));
     const out = String(ev.result || '').replace(/\s+$/, '');
     const cap = shellish ? 1600 : 240;
@@ -4929,6 +5268,7 @@ async function saveVisible(v) {
 async function sendCurrent() {
   const text = els.input.value.trim();
   if ((!text && !pending.length) || !activeId) return;
+  ttsQueueReset(); // yeni tur — eski seslendirme kuyruğu temizlenir
   /* #25 /clear artık main'e gider: oturum kayıtları GERÇEKTEN silinir
      (engine.clearMessages) ve 'clear' olayıyla ekran da temizlenir */
   if (text === '/screenshot') {
@@ -5170,7 +5510,10 @@ async function init() {
   refreshAgentsPane();
 
   els.sendBtn.addEventListener('click', sendCurrent);
-  els.stopBtn.addEventListener('click', () => activeId && beast.interrupt(activeId));
+  els.stopBtn.addEventListener('click', () => {
+    ttsQueueReset(); // ■ = konuşan ajan da susturulur
+    if (activeId) beast.interrupt(activeId);
+  });
 
   els.input.addEventListener('keydown', (e) => {
     if (!els.slashMenu.hidden) {
@@ -5282,68 +5625,88 @@ async function init() {
     els.fileInput.value = '';
   });
 
-  /* ---- Sesli komut (yerel Whisper): kayıt → yazıya çevir → hedef input'a koy ----
-     Aynı düzenek chat composer VE Beast Code girişinde çalışır. */
-  const setupMicButton = (btn, apply) => {
-    if (!btn) return;
-    let micRec = null;
-    let micChunks = [];
-    let micStream = null;
-    const blobToDataUrl = (b) =>
-      new Promise((res) => {
-        const fr = new FileReader();
-        fr.onload = () => res(fr.result);
-        fr.readAsDataURL(b);
-      });
-    btn.addEventListener('click', async () => {
-      if (micRec && micRec.state === 'recording') {
-        micRec.stop();
-        return;
-      }
-      try {
-        micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      } catch {
-        toast(_t('mic_denied'));
-        return;
-      }
-      micChunks = [];
-      micRec = new MediaRecorder(micStream);
-      micRec.ondataavailable = (e) => { if (e.data && e.data.size) micChunks.push(e.data); };
-      micRec.onstop = async () => {
-        try { micStream.getTracks().forEach((t) => t.stop()); } catch {}
-        btn.classList.remove('rec');
-        const blob = new Blob(micChunks, { type: micRec.mimeType || 'audio/webm' });
-        if (!blob.size) return;
-        toast(_t('mic_transcribing'));
-        const b64 = await blobToDataUrl(blob);
-        /* arayüz dili = Whisper dili: TR ise Türkçe, EN ise İngilizce algılar */
-        const uiLang = (window.I18N && window.I18N.lang) || 'tr';
-        const r = await beast.sttTranscribe(b64, uiLang).catch(() => ({ ok: false, error: 'ipc' }));
-        if (r && r.ok && r.text) apply(r.text);
-        else toast(_t('mic_fail'));
-      };
-      micRec.start();
-      btn.classList.add('rec');
-      toast(_t('mic_listening'));
+  /* ---- ELLER SERBEST KONUŞMA (Hermes portu — handsfree.js) ----
+     Tek tık: sürekli dinleme döngüsü. Konuş, susunca cümle kendiliğinden
+     kesilir → yazıya çevrilir → OTOMATİK GÖNDERİLİR → cevap bitince mikrofon
+     yeniden açılır. "dur/yeter/goodbye" döngüyü bitirir. Tekrar tık (dinlerken)
+     = şimdi gönder; düşünürken tık = modu kapat. Üç panelde aynı düzenek:
+     chat, Beast Code, Beast Studio. */
+  const hfBlobToDataUrl = (b) =>
+    new Promise((res) => {
+      const fr = new FileReader();
+      fr.onload = () => res(fr.result);
+      fr.readAsDataURL(b);
     });
+  /* STT çağrıları main'deki öncelikli sıraya gider: final (priority 1)
+     önizlemelerin (0) önüne geçer — whisper CPU'da yavaş olsa bile
+     konuşanın cevabı önce transkribe edilir */
+  let hfSttChain = Promise.resolve();
+  const hfTranscribe = (blob, isStale, priority) => {
+    const run = async () => {
+      if (isStale && isStale()) throw new Error('stale');
+      const b64 = await hfBlobToDataUrl(blob);
+      /* arayüz dili = Whisper dili: TR ise Türkçe, EN ise İngilizce algılar */
+      const uiLang = (window.I18N && window.I18N.lang) || 'tr';
+      const r = await beast.sttTranscribe(b64, uiLang, priority).catch(() => ({ ok: false, error: 'ipc' }));
+      if (r && r.ok && r.text) return String(r.text);
+      throw new Error((r && r.error) || 'stt-fail');
+    };
+    const p = hfSttChain.then(run, run);
+    hfSttChain = p.then(() => {}, () => {});
+    return p;
   };
-  setupMicButton(els.micBtn, (t) => {
-    els.input.value = (els.input.value ? els.input.value.replace(/\s+$/, '') + ' ' : '') + t;
-    els.input.focus();
-    els.input.dispatchEvent(new Event('input'));
-  });
-  setupMicButton(els.bcMic, (t) => {
-    if (!els.bcInput) return;
-    els.bcInput.value = (els.bcInput.value ? els.bcInput.value.replace(/\s+$/, '') + ' ' : '') + t;
-    els.bcInput.focus();
-    bcInputResize();
-  });
-  setupMicButton(els.stMic, (t) => {
-    if (!els.stInput) return;
-    els.stInput.value = (els.stInput.value ? els.stInput.value.replace(/\s+$/, '') + ' ' : '') + t;
-    els.stInput.focus();
-    stInputResize();
-  });
+  if (window.BeastHandsFree) {
+    const mkHF = (cfg) => { if (cfg.btn) window.BeastHandsFree.createPanel(cfg); };
+    /* DOĞAL KONUŞMA: barge tetiklenince TTS anında kesilir → mikrofon temizlenir */
+    const cutTts = () => {
+      try { if (ttsAudioEl) ttsAudioEl.pause(); } catch {}
+      const st = window.BeastHandsFree && window.BeastHandsFree.ttsState;
+      if (st) st.playing = false;
+    };
+    mkHF({
+      btn: els.micBtn,
+      isBusy: () => busy,
+      submit: async (text) => { els.input.value = text; await sendCurrent(); },
+      transcribe: hfTranscribe,
+      draft: (text) => {
+        els.input.value = text;
+        els.input.dispatchEvent(new Event('input'));
+        autosize();
+      },
+      interrupt: () => { if (activeId) beast.interrupt(activeId, 'eller serbest: konuşunca tur kesildi').catch(() => {}); },
+      cutTts,
+      status: (m) => setStatus(m),
+      statusHide: () => setStatus(''),
+      toast,
+      t: _t,
+    });
+    mkHF({
+      btn: els.bcMic,
+      isBusy: () => bcRunning,
+      submit: async (text) => { els.bcInput.value = text; bcRunCurrent(); },
+      transcribe: hfTranscribe,
+      draft: (text) => { els.bcInput.value = text; bcInputResize(); },
+      interrupt: () => { beast.beastcodeStop().catch(() => {}); },
+      cutTts,
+      status: (m) => bcStatusShow(m),
+      statusHide: () => bcStatusHide(),
+      toast,
+      t: _t,
+    });
+    mkHF({
+      btn: els.stMic,
+      isBusy: () => stRunning,
+      submit: async (text) => { els.stInput.value = text; stRunCurrent(); },
+      transcribe: hfTranscribe,
+      draft: (text) => { els.stInput.value = text; stInputResize(); },
+      interrupt: () => { beast.studioStop().catch(() => {}); },
+      cutTts,
+      status: (m) => stStatusShow(m),
+      statusHide: () => stStatusHide(),
+      toast,
+      t: _t,
+    });
+  }
 
   beast.onWaEvent(onWaEvent);
   beast.onTgEvent(onTgEvent);
@@ -5400,8 +5763,25 @@ async function init() {
       beast.browserPhone(on).catch(() => {});
     });
   }
+  if (els.bbMobile) {
+    els.bbMobile.addEventListener('click', () => {
+      /* MOBİL ÖNİZLEME: telefon silueti içinde canlı dev-server önizlemesi */
+      const on = !document.body.classList.contains('mobile-preview');
+      beast.browserMobileSet(on).catch(() => {});
+    });
+  }
+  if (els.bbDevice) {
+    els.bbDevice.addEventListener('change', () => {
+      beast.browserDeviceSet(els.bbDevice.value).catch(() => {});
+    });
+  }
   els.bbClose.addEventListener('click', () => {
     document.body.classList.remove('browser-open');
+    /* mobil önizleme KESİN kapansın: main tarafı zaten kapatıyor, DOM tarafı da
+       beklemeden temizlenir (siluet + cihaz seçici + mod düğmesi) */
+    document.body.classList.remove('mobile-preview');
+    if (els.bbMobile) els.bbMobile.classList.remove('on');
+    renderPhoneFrame(null);
     els.browserBar.hidden = true;
     els.bbResize.hidden = true;
     els.browserBtn.classList.remove('on');
@@ -5472,7 +5852,7 @@ async function init() {
   });
 
   /* terminal paneli — olay bağlama */
-  try { termSetWidth(parseInt(localStorage.getItem('beast.termW')) || 520); } catch {}
+  try { termSetHeight(parseInt(localStorage.getItem('beast.termH')) || 180); } catch {}
   if (els.termCBtn) els.termCBtn.addEventListener('click', () => termToggle('cmd'));
   if (els.termClose) els.termClose.addEventListener('click', () => termSetOpen(false));
   if (els.termClear) els.termClear.addEventListener('click', () => { els.termOut.innerHTML = ''; });
@@ -5495,18 +5875,19 @@ async function init() {
       }
     }
   });
-  /* terminal sürükle-boyutlandır */
+  /* terminal sürükle-boyutlandır (alt dock: üst kenardan dikey sürükle) */
   let trz = null;
-  const twNow = () => parseInt(getComputedStyle(document.body).getPropertyValue('--tw')) || 520;
+  const thNow = () => parseInt(getComputedStyle(document.body).getPropertyValue('--th')) || 180;
   if (els.termResize) els.termResize.addEventListener('mousedown', (e) => {
     e.preventDefault();
-    trz = { sx: e.clientX, sw: twNow() };
+    trz = { sy: e.clientY, sh: thNow() };
     document.body.classList.add('term-dragging');
   });
   document.addEventListener('mousemove', (e) => {
     if (!trz) return;
-    const w = Math.max(340, Math.min(trz.sw - (e.clientX - trz.sx), window.innerWidth - 340));
-    termSetWidth(w);
+    /* yukarı çek = yükseklik artar; aşağı çek = azalır */
+    const h = Math.max(120, Math.min(trz.sh + (trz.sy - e.clientY), Math.round(window.innerHeight * 0.7)));
+    termSetHeight(h);
   });
   document.addEventListener('mouseup', () => {
     if (!trz) return;
@@ -6258,9 +6639,13 @@ async function setIdeMode(on) {
   if (!on && document.body.classList.contains('browser-open')) {
     try { beast.toggleBrowser(); } catch {}
   }
+  /* ALT TERMINAL: yalnız Beast Code'a özgü — Agent/Studio moduna dönüşte kapanır */
+  if (!on && termOpen) termSetOpen(false);
   if (on) {
     ideSplitRestore();
     setEditorHidden(localStorage.getItem('beast.editorHidden') === '1');
+    /* BEAST CODE modunda terminal HEP AÇIK — mod girilirken otomatik açılır */
+    if (!termOpen) termSetOpen(true);
     await loadIdeTree();
     bcBanner();
     codeGutterRender(); /* dosya açık olmasa bile rakamlar görünür */
@@ -6291,6 +6676,8 @@ async function setStudioMode(on) {
   if (on && ideModeOn()) await setIdeMode(false); /* IDE açıkken Studio'ya geçiş — IDE kapanır */
   document.body.classList.toggle('studio-mode', !!on);
   if (els.studioBtn) els.studioBtn.classList.toggle('on', !!on);
+  /* ALT TERMINAL: yalnız Beast Code'a özgü — Studio'ya geçişte kapanır */
+  if (on && termOpen) termSetOpen(false);
   const brandSub = document.querySelector('#brand .brand-sub');
   if (brandSub) brandSub.textContent = on ? 'Studio' : 'Agent';
   /* klasör konsolunun en üstü: Studio modunda "BEAST STUDIO" yazar */
@@ -7091,6 +7478,8 @@ $('#filePreview').addEventListener('click', async () => {
   const r = await beast.idePreview().catch(() => null);
   if (r && r.ok) {
     if (ideModeOn() === false) setIdeMode(true);
+    /* mobil proje: npm run web + telefon silueti — kullanıcıya net geri bildirim */
+    if (r.mobile) toast('Mobil önizleme: dev sunucu başlatıldı — telefon siluetine bak');
   } else {
     toast((r && r.error) || 'preview açılamadı');
   }

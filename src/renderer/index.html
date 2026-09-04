@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="tr">
 <head>
   <meta charset="UTF-8" />
@@ -51,7 +51,7 @@
       <header id="topbar">
         <span id="botChip" title="Aktif bot">🦁 Beast</span>
         <div id="modelDD" class="dd">
-          <button id="modelBtn" class="dd-btn" title="Model seç" data-i18n-title="tipModel"><span id="modelBtnLabel">Model</span><span class="dd-caret">▾</span></button>
+          <button id="modelBtn" class="dd-btn" title="Model seç" data-i18n-title="tipModel"><span id="modelBtnLabel">Model</span><span class="dd-caret">Ⓘ</span></button>
           <div id="modelMenu" class="dd-menu" hidden>
             <input id="modelFilter" class="dd-filter" placeholder="Model ara…" autocomplete="off" />
             <div id="modelList" class="dd-list"></div>
@@ -65,7 +65,7 @@
         </div>
         <button id="modelRefreshBtn" class="dd-btn dd-icon-btn" title="Modelleri yeniden çek" data-i18n-title="tipModelRefresh">&#x27F3;</button>
         <div id="pickCfg" class="dd">
-          <button id="pickCfgBtn" class="dd-btn dd-icon-btn" title="Picker'da görünecek modeller" data-i18n-title="tipPickCfg">⚙</button>
+          <button id="pickCfgBtn" class="dd-btn dd-icon-btn" title="Picker'da görünecek modeller" data-i18n-title="tipPickCfg"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h9"/><circle cx="16.5" cy="6" r="2.5"/><path d="M20 6h0.01"/><path d="M4 12h3"/><circle cx="10.5" cy="12" r="2.5"/><path d="M15 12h5"/><path d="M4 18h11"/><circle cx="18.5" cy="18" r="2.5"/></svg></button>
           <div id="pickCfgMenu" class="dd-menu cfg-menu" hidden>
             <div class="cfg-head">
               <span>Picker modelleri</span>
@@ -103,8 +103,9 @@
         <div id="slashMenu" hidden></div>
         <div id="composer">
           <div id="composerLeft" class="dd">
+            <button id="ttsBtn" title="Otomatik seslendirme (TTS) — ajanın cevaplarını sesli okur" data-i18n-title="tip_tts_btn"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4V5z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M18.5 5.5a9 9 0 0 1 0 13"/></svg></button>
             <button id="attachBtn" title="Dosya / resim ekle" data-i18n-title="tipAttach">+</button>
-            <button id="micBtn" title="Sesli komut — konuş, bırakınca yazıya çevirsin" data-i18n-title="tipMic"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><path d="M12 19v3"/></svg></button>
+            <button id="micBtn" title="Eller serbest: bas, konuş, susunca gönderir" data-i18n-title="tipMic"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><path d="M12 19v3"/></svg></button>
           </div>
           <textarea id="input" rows="1" placeholder="Bir şey sor ya da görev ver…  (Enter: gönder · Shift+Enter: satır · /: komutlar)" data-i18n-ph="composerPh"></textarea>
           <button id="stopBtn" title="Durdur" hidden data-i18n-title="tipStop">■</button>
@@ -152,7 +153,7 @@
             <span id="bcCwd" title=""></span>
             <span class="file-spacer"></span>
             <button id="codeShow" title="Editörü göster" data-i18n-title="tipCodeShow" hidden>&#x25A3;&#xFE0E;</button>
-            <button id="bcNew" title="Yeni oturum" data-i18n-title="bc_new">＋</button>
+            <button id="bcNew" title="Yeni oturum" data-i18n-title="bc_new">＊</button>
             <button id="bcClear" title="Çıktıyı temizle" data-i18n-title="bc_clear">Temizle</button>
           </div>
           <div id="bcOut"></div>
@@ -174,7 +175,7 @@
             <span id="stTitle">BEAST STUDIO</span>
             <span id="stCwd" title=""></span>
             <span class="file-spacer"></span>
-            <button id="stNew" title="Yeni oturum" data-i18n-title="bc_new">＋</button>
+            <button id="stNew" title="Yeni oturum" data-i18n-title="bc_new">＊</button>
             <button id="stClear" title="Çıktıyı temizle" data-i18n-title="bc_clear">Temizle</button>
           </div>
           <div id="stOut"></div>
@@ -365,7 +366,7 @@
               <button data-range="2w" class="on" title="Son 2 hafta">2 Hafta</button>
               <button data-range="1w" title="Son 1 hafta">1 Hafta</button>
             </div>
-            <button id="ghSortBtn" title="Yıldız sırası: azalan / artan">↓ Yıldız</button>
+            <button id="ghSortBtn" title="Yıldız sırası: azalan / artan">⅏ Yıldız</button>
             <input id="ghSearch" placeholder="Repo ara… (Enter)" spellcheck="false" />
             <button id="ghTrendRefresh" class="gh-refresh" title="Sıfırla ve yenile — modal ilk açıldığı gibi">&#x27F3;</button>
           </div>
@@ -414,6 +415,7 @@
     <button id="bbReload" title="Yenile" data-i18n-title="tip_bb_reload">&#x21BB;</button>
     <input id="bbUrl" placeholder="adres yaz veya ara…" autocomplete="off" spellcheck="false" data-i18n-ph="bb_ph" />
     <button id="bbPhone" title="Telefon modu — mobil versiyon / web versiyonu" data-i18n-title="tip_bb_phone"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="7" y="2" width="10" height="20" rx="2.5"/><line x1="11" y1="18" x2="13" y2="18"/></svg></button>
+    <button id="bbMobile" title="Mobil önizleme — telefon silueti (Expo/Metro dev server)" data-i18n-title="tip_bb_mobile"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="1.5" width="14" height="21" rx="3.5"/><line x1="9.5" y1="4.5" x2="14.5" y2="4.5"/><line x1="10.5" y1="19.5" x2="13.5" y2="19.5"/></svg></button>
     <button id="bbOpenExt" title="Tarayıcıda aç" data-i18n-title="tip_bb_open">&#x2197;</button>
     <button id="bbClose" title="Kapat" data-i18n-title="btn_close">&#x00D7;</button>
   </div>
@@ -442,7 +444,19 @@
   <input type="file" id="fileInput" multiple hidden
          accept="image/*,.txt,.md,.json,.csv,.log,.js,.ts,.py,.ps1,.bat,.cmd,.html,.css,.yaml,.yml,.xml,.ini" />
 
+  <!-- mobil önizleme cihaz seçici: telefonun ALTINDA yüzen modern picker -->
+  <select id="bbDevice" title="Cihaz ölçüleri" hidden>
+    <option value="iphone15promax">iPhone 15 Pro Max · 430×932</option>
+    <option value="iphone15pro">iPhone 15 Pro · 393×852</option>
+    <option value="iphone14">iPhone 14 · 390×844</option>
+    <option value="iphonese">iPhone SE · 375×667</option>
+    <option value="pixel8">Pixel 8 · 412×915</option>
+    <option value="galaxys23">Galaxy S23 · 360×780</option>
+    <option value="android">Android · 360×800</option>
+  </select>
+
   <script src="i18n.js"></script>
+  <script src="handsfree.js"></script>
   <script src="renderer.js"></script>
 </body>
 </html>

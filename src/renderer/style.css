@@ -66,9 +66,14 @@ body {
   color: var(--text);
   font-size: 14px;
   overflow: hidden;
+  /* pencere = dikey kolon: [içerik (#app)] + [alt terminal] — terminal
+     overlay DEĞİL, akışın parçası; içerik kendiliğinden yukarı küçülür */
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
 }
 
-#app { display: flex; height: 100vh; }
+#app { display: flex; flex: 1 1 auto; min-height: 0; }
 
 /* ---------- sidebar ---------- */
 
@@ -357,48 +362,115 @@ body.rail-hidden #rail { display: none; }
 /* telefon modu: aktif buton vurgulu + dar dockta mobil çerçeve hissi */
 #bbPhone.on { color: var(--accent); background: var(--panel2); box-shadow: inset 0 -2px 0 var(--accent); }
 body.phone-mode #bbPhone { color: var(--accent); }
+/* mobil önizleme: telefon silueti çerçevesi */
+#bbMobile.on { color: var(--accent); background: var(--panel2); box-shadow: inset 0 -2px 0 var(--accent); }
+body.mobile-preview #bbMobile { color: var(--accent); }
+/* cihaz seçici: telefonun ALTINDA yüzen modern pill picker (konumu renderPhoneFrame) */
+#bbDevice {
+  position: fixed;
+  display: none;
+  z-index: 10000;
+  height: 34px;
+  padding: 0 34px 0 16px;
+  border-radius: 17px;
+  border: 1px solid var(--border);
+  background-color: var(--panel2);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: .2px;
+  outline: none;
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%23888890' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 14px center;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, .3);
+}
+#bbDevice:hover { border-color: var(--accent); }
+#bbDevice:focus { border-color: var(--accent); }
+
+/* ---------- MOBİL ÖNİZLEME: telefon silueti çerçevesi ----------
+   WebContentsView ekranın kendisidir (main'deki PHONE_* sabitleriyle birebir);
+   çerçeve/çentik/durum çubuğu/home bar DOM'da çizilir — pointer-events yok,
+   native view'a asla dokunmaz (kenar şeritleri view sınırlarının dışındadır) */
+#phoneFrame {
+  position: fixed;
+  display: none;
+  pointer-events: none;
+  z-index: 9999;
+  box-sizing: border-box; /* border rect sınırlarının İÇİNDE kalır — view ile birebir hizalı */
+  border: 12px solid #0a0a0e;
+  border-radius: 42px;
+  filter: drop-shadow(0 12px 32px rgba(0, 0, 0, .55));
+}
+#phoneFrame .pf-home {
+  /* alt kenar çerçeve bandının İÇİNDE — native view'ın dışında, görünür */
+  position: absolute;
+  bottom: -9px; left: 50%;
+  transform: translateX(-50%);
+  width: 38%; height: 4px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, .8);
+}
 
 /* sürükle-boyutlandır tutamacı (görünmez) */
+/* Beast Code chat ↔ tarayıcı arası ayırıcı: ideSplit ile BİREBİR aynı çizgi
+   (6px, border rengi, col-resize). Görünmez genişletilmiş tutma alanı yok —
+   çizginin kendisi hem görsel hem tutamaçtır. */
 #bbResize {
   position: fixed;
   top: 46px;
   right: var(--bw, 480px);
-  width: 8px;
+  width: 6px;
   height: calc(100vh - 46px);
   cursor: col-resize;
+  background: var(--border);
+  opacity: 0.55;
   z-index: 60;
+  transition: opacity 0.15s, background 0.15s;
+}
+#bbResize::before {
+  /* çizginin solundaki görünmez genişletilmiş tutma alanı (kolay kavrama) */
+  content: '';
+  position: absolute;
+  top: 0; bottom: 0; left: -10px;
+  width: 10px;
+}
+#bbResize:hover,
+body.bb-dragging #bbResize {
+  opacity: 1; /* renk DEĞİŞMEZ — sadece netleşir */
 }
 body.bb-dragging { user-select: none; }
 body.bb-dragging * { cursor: col-resize !important; }
 
-/* ---------- terminal panel (sağ dock — tarayıcı gibi) ---------- */
+/* ---------- terminal panel (ALT DOCK — akışın parçası, overlay değil) ---------- */
 
 #termBtn.on { background: var(--accent-dim); color: var(--accent); }
 
-body.term-open #app { margin-right: var(--tw, 520px); }
-body.term-open #topbar { width: auto; }
+/* tarayıcı dock'u terminal payını boşaltır (main view yüksekliğini kısaltır) */
+body.term-open #bbResize { height: calc(100vh - 46px - var(--th, 180px)); }
 
 #termPanel {
-  position: fixed;
-  top: 0;
-  right: 0;
-  bottom: 0;
-  width: var(--tw, 520px);
+  position: relative;
+  flex: 0 0 auto;
+  height: var(--th, 180px);
+  min-height: 0;
   display: flex;
   flex-direction: column;
   background: var(--panel);
-  border-left: 1px solid var(--border);
+  border-top: 1px solid var(--border);
   z-index: 55;
 }
 #termPanel[hidden] { display: none; }
 
 #termHead {
-  height: 46px;
+  height: 38px;
   flex: none;
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 0 148px 0 10px; /* sağ: sabit pencere butonları (win-controls) alanı */
+  padding: 0 10px;
   border-bottom: 1px solid var(--border);
 }
 #termTitle { font-size: 11px; font-weight: 800; letter-spacing: 1px; color: var(--accent); flex: none; }
@@ -483,19 +555,17 @@ body.term-open #topbar { width: auto; }
 #termStop:hover { border-color: var(--err); }
 
 #termResize {
-  position: fixed;
-  top: 0;
-  right: var(--tw, 520px);
-  width: 8px;
-  height: 100vh;
-  cursor: col-resize;
-  z-index: 60;
+  position: absolute;
+  top: -5px;
+  left: 0;
+  right: 0;
+  height: 10px;
+  cursor: row-resize;
+  z-index: 62;
 }
+#termResize:hover { background: var(--accent-dim); }
 body.term-dragging { user-select: none; }
-body.term-dragging * { cursor: col-resize !important; }
-
-body.term-open .mini-overlay { right: var(--tw, 520px); }
-body.term-open #settingsOverlay { right: var(--tw, 520px); }
+body.term-dragging * { cursor: row-resize !important; }
 
 #topbar {
   height: 46px;
@@ -1170,6 +1240,20 @@ body.term-open #settingsOverlay { right: var(--tw, 520px); }
 /* composer sol grubu: + mikrofon — yanyana boşluksuz */
 #composerLeft { display: flex; align-items: center; gap: 0; flex-shrink: 0; }
 
+#ttsBtn {
+  width: 32px; height: 32px;
+  border-radius: 9px;
+  border: none;
+  cursor: pointer;
+  font-size: 17px;
+  line-height: 1;
+  flex-shrink: 0;
+  background: none;
+  color: var(--muted);
+}
+#ttsBtn:hover { background: var(--panel); color: var(--accent); }
+#ttsBtn.on { color: var(--ok); background: var(--accent-dim); }
+
 #micBtn {
   width: 32px; height: 32px;
   border-radius: 9px;
@@ -1184,6 +1268,8 @@ body.term-open #settingsOverlay { right: var(--tw, 520px); }
 #micBtn:hover { background: var(--panel); color: var(--accent); }
 #micBtn.rec { color: #e5484d; animation: mic-pulse 1.2s ease-in-out infinite; }
 @keyframes mic-pulse { 50% { opacity: .45; } }
+/* eller-serbest mod: dinlerken .rec (kırmızı nabız), aktif ama dinlemezken .hf (vurgu) */
+#micBtn.hf, #bcMic.hf, #stMic.hf { color: var(--accent); animation: mic-pulse 2.4s ease-in-out infinite; }
 
 /* Beast Code girişi: + ve mikrofon (chat composer ile aynı stil) */
 #bcAttach, #bcMic {
@@ -2652,6 +2738,10 @@ body.ide-mode #codePane { display: flex; }
   cursor: col-resize;
   background: var(--border);
   opacity: 0.55;
+  transition: opacity 0.15s;
+}
+#ideSplit:hover {
+  opacity: 1; /* renk DEĞİŞMEZ — sadece netleşir */
 }
 /* editör kapatılabilir: kod bölmesi + ayırıcı gizlenir, Beast Code tam genişlik */
 body.ide-mode.editor-hidden #codePane,

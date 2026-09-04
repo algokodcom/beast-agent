@@ -1,7 +1,7 @@
 {
     "name": "beast-agent",
     "productName": "Beast Agent",
-    "version": "2.2.1",
+    "version": "2.3.0",
     "description": "Ultra-fast local agent shell for Windows.",
     "author": "algokodcom (AlgoKod)",
     "license": "MIT",
@@ -45,10 +45,11 @@
         "postpublish": "node scripts/swap-electron.js devdeps"
     },
     "devDependencies": {
-        "electron-builder": "^26.15.3",
-        "electron": "40.10.2"
+        "electron": "40.10.2",
+        "electron-builder": "^26.15.3"
     },
     "dependencies": {
+        "@huggingface/transformers": "3.7.5",
         "@pdf-lib/fontkit": "^1.1.1",
         "@whiskeysockets/baileys": "^7.0.0-rc14",
         "@xenova/transformers": "^2.17.2",
@@ -102,6 +103,11 @@
         "asarUnpack": [
             "node_modules/ffmpeg-static/**",
             "node_modules/@xenova/transformers/**",
+            "node_modules/@huggingface/transformers/**",
+            "node_modules/onnxruntime-node/**",
+            "node_modules/onnxruntime-web/**",
+            "node_modules/onnxruntime-common/**",
+            "node_modules/sharp/**",
             "**/node_modules/@napi-rs/canvas/**",
             "**/node_modules/tesseract.js/**",
             "**/node_modules/tesseract.js-core/**"

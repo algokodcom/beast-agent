@@ -68,15 +68,22 @@ test('stopAll: akan ana oturum turunu keser — token akışı durur', async () 
     const ok = eng.send(sess.id, 'uzun bir cevap üret');
     assert.ok(ok, 'send başlamalı');
 
-    await sleep(450); // ilk 1-2 token aksın
-    const tokensBefore = events.filter((e) => e.type === 'token').length;
+    /* sabit sleep yerine ilk token bekle — yüklü makinede 450ms yetmeyebiliyor */
+    let tokensBefore = 0;
+    for (let i = 0; i < 50; i++) {
+      await sleep(100);
+      tokensBefore = events.filter((e) => e.type === 'token').length;
+      if (tokensBefore >= 1) break;
+    }
     assert.ok(tokensBefore >= 1, 'abort öncesi token gelmeli: ' + tokensBefore);
 
     const n = eng.stopAll();
     assert.ok(n >= 1, 'en az 1 iş kesilmeli: ' + n);
 
-    await sleep(700); // abort sonrası akış bitmeli + finally ctrls'i temizlemeli
-    assert.ok(eng.ctrls.size === 0, 'ctrls temizlenmeli, kaldı: ' + eng.ctrls.size);
+    /* abort sonrası akış bitmeli + finally ctrls'i temizlemeli — poll ile bekle */
+    let ctrlsLeft = eng.ctrls.size;
+    for (let i = 0; i < 50 && (ctrlsLeft = eng.ctrls.size) > 0; i++) await sleep(100);
+    assert.ok(ctrlsLeft === 0, 'ctrls temizlenmeli, kaldı: ' + ctrlsLeft);
     const tokensAfter = events.filter((e) => e.type === 'token').length;
     const doneEv = events.find((e) => e.type === 'done');
 

@@ -101,11 +101,16 @@ function loadPipeline() {
   _pipeLoading = (async () => {
     try {
       const { pipeline, env } = require('@xenova/transformers');
+      const bus = require('./progressbus');
       const modelsDir = process.env.BEAST_MODELS_DIR || path.join(beastRoot(), 'models');
       fs.mkdirSync(modelsDir, { recursive: true });
       env.cacheDir = modelsDir;
       env.allowLocalModels = false;
-      const p = await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2', { quantized: true });
+      const p = await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2', {
+        quantized: true,
+        progress_callback: bus.fileProgressAggregator('emb'),
+      });
+      bus.emitInstallProgress('emb', { pct: 100 });
       _pipe = async (texts) => {
         const out = [];
         for (const t of texts) {

@@ -2146,13 +2146,26 @@ async function renderInstallPane() {
     if (!el) return;
     if (!rows || !rows.length) { el.innerHTML = '<div class="sub">Durum alınamadı</div>'; return; }
     autoStart(rows);
+    const hasPct = (r) => typeof r.pct === 'number' && ['missing', 'partial', 'loading'].includes(r.state);
+    const pctLabel = (r) => {
+      if (!hasPct(r)) return '<span id="inst-pct-' + r.id + '" style="display:none"></span>';
+      const mb = (r.loadedMb && r.totalMb) ? ' · ' + r.loadedMb + '/' + r.totalMb + ' MB' : '';
+      return '<span id="inst-pct-' + r.id + '" style="color:#d9a441;font-weight:700;font-size:11px;flex:none">%' + Math.round(r.pct) + mb + '</span>';
+    };
+    const bar = (r) => {
+      if (!hasPct(r)) return '<div id="inst-bar-' + r.id + '" style="display:none"></div>';
+      return '<div id="inst-bar-' + r.id + '" style="margin-top:7px;height:6px;border-radius:3px;background:var(--border);overflow:hidden">' +
+        '<div id="inst-fill-' + r.id + '" style="height:100%;width:' + Math.max(2, Math.round(r.pct)) + '%;background:#d9a441;border-radius:3px;transition:width .4s ease"></div></div>';
+    };
     el.innerHTML = rows.map((r) => (
       '<div style="display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid var(--border)">' +
       '<div style="flex:1;min-width:0">' +
       '<div style="font-size:13px">' + escapeHtml(r.name) + '</div>' +
       '<div class="sub" style="font-size:11px">' + escapeHtml(r.detail || '') + (r.mb ? ' · ' + r.mb + ' MB' : '') + '</div>' +
+      bar(r) +
       '</div>' +
       badge(r.state) +
+      pctLabel(r) +
       '</div>'
     )).join('');
   };
@@ -2166,6 +2179,26 @@ async function renderInstallPane() {
   if (refreshTimer) clearInterval(refreshTimer);
   await refresh();
   refreshTimer = setInterval(refresh, 4000);
+}
+
+/* Kurulum progress event'i: sekme açıksa bar'ı anında güncelle (4 sn polling beklemeden).
+   Sekme kapalıysa yok say — açılınca install:status zaten kayıtlı yüzeyi getirir. */
+function updateInstallPct(ev) {
+  try {
+    if (!ev || !ev.id) return;
+    const pane = document.getElementById('tab-install');
+    if (!pane || pane.hidden) return;
+    const bar = document.getElementById('inst-bar-' + ev.id);
+    const fill = document.getElementById('inst-fill-' + ev.id);
+    const label = document.getElementById('inst-pct-' + ev.id);
+    if (!bar || !fill || !label) return;
+    const pct = Math.max(0, Math.min(100, Math.round(ev.pct || 0)));
+    const mb = (ev.loaded && ev.total) ? ' · ' + Math.round(ev.loaded / 1048576) + '/' + Math.round(ev.total / 1048576) + ' MB' : '';
+    bar.style.display = '';
+    fill.style.width = Math.max(2, pct) + '%';
+    label.style.display = '';
+    label.textContent = '%' + pct + mb;
+  } catch {}
 }
 
 async function renderTtsPane() {  const pane = $('#tab-tts');
@@ -4672,6 +4705,7 @@ function onEvent(ev) {
     showApprovalCard(ev);
     return;
   }
+  if (ev.type === 'install-progress') { updateInstallPct(ev); return; }
   if (ev.type === 'update') {
     if (ev.downloaded) toast(_t('up_downloaded') + ' (v' + (ev.version || '?') + ') — /update now');
     else if (ev.available && ev.version && ev.version !== ev.current) toast(_t('up_available') + ' (v' + ev.version + ')');

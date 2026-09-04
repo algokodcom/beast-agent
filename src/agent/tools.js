@@ -695,21 +695,25 @@ async function findSystemPython() {
   return null;
 }
 
-function httpsGetBuffer(url, redirectsLeft = 4, signal) {
+function httpsGetBuffer(url, redirectsLeft = 4, signal, onProgress) {
   return new Promise((resolve, reject) => {
     const req = https.get(url, { headers: { 'User-Agent': 'BeastAgent/1.0 (+python bootstrap)' } }, (res) => {
       if ([301, 302, 303, 307, 308].includes(res.statusCode) && res.headers.location && redirectsLeft > 0) {
         res.resume();
-        return resolve(httpsGetBuffer(new URL(res.headers.location, url).toString(), redirectsLeft - 1, signal));
+        return resolve(httpsGetBuffer(new URL(res.headers.location, url).toString(), redirectsLeft - 1, signal, onProgress));
       }
       if (res.statusCode !== 200) {
         res.resume();
         return reject(new Error(`indirme başarısız: HTTP ${res.statusCode}`));
       }
+      const total = parseInt(res.headers['content-length'] || '0', 10) || 0;
       const chunks = [];
       let size = 0;
       res.on('data', (c) => {
         size += c.length;
+        if (typeof onProgress === 'function') {
+          try { onProgress(size, total); } catch {}
+        }
         if (size > 80 * 1024 * 1024) {
           req.destroy(new Error('dosya çok büyük'));
           return;
@@ -731,7 +735,10 @@ async function installEmbeddedPython(signal) {
   const dest = path.join(beastAppDir(), 'py');
   fs.mkdirSync(dest, { recursive: true });
   const zipPath = path.join(os.tmpdir(), 'beast-py-embed.zip');
-  const buf = await httpsGetBuffer(PYTHON_EMBED_URL, 4, signal);
+  const bus = require('./progressbus');
+  const buf = await httpsGetBuffer(PYTHON_EMBED_URL, 4, signal, (size, total) => {
+    if (total > 0) bus.emitInstallProgress('python', { pct: (size / total) * 100, loaded: size, total });
+  });
   fs.writeFileSync(zipPath, buf);
   const r = await runCommand(
     `Expand-Archive -LiteralPath "${zipPath}" -DestinationPath "${dest}" -Force`,

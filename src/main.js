@@ -655,11 +655,16 @@ async function ensureStt() {
       hf.env.cacheDir = modelsDir;
       hf.env.allowLocalModels = false;
       let lastErr = null;
+      const bus = require('./agent/progressbus');
       for (const dtype of ['q4f16', 'q4', 'q8']) {
         try {
-          const p = await hf.pipeline('automatic-speech-recognition', wanted, { dtype });
+          const p = await hf.pipeline('automatic-speech-recognition', wanted, {
+            dtype,
+            progress_callback: bus.fileProgressAggregator('stt'),
+          });
           sttPipeline = p;
           sttModel = wanted;
+          bus.emitInstallProgress('stt', { pct: 100 });
           waLog('STT hazır: ' + wanted + ' (dtype ' + dtype + ')');
           return sttPipeline;
         } catch (e) {
@@ -674,6 +679,37 @@ async function ensureStt() {
     });
   }
   return sttLoading;
+}
+
+/* ---------- Kurulum yüzde göstergesi: agent modüllerinden gelen progress
+   renderer'a 'install-progress' event'i olarak akıtılır (throttle'lı);
+   installPctState'i install:status da okur (sekme sonradan açılırsa ilk
+   çizimde yüzde zaten dolu gelir). ---------- */
+const installPctState = {}; // id -> { pct, loaded, total, ts }
+{
+  const bus = require('./agent/progressbus');
+  const lastSent = new Map(); // id -> { t, pct }
+  bus.onInstallProgress((id, d) => {
+    try {
+      if (!id || !d || typeof d.pct !== 'number' || !isFinite(d.pct)) return;
+      const cur = {
+        pct: Math.max(0, Math.min(100, Math.round(d.pct))),
+        loaded: d.loaded || 0,
+        total: d.total || 0,
+        ts: Date.now(),
+      };
+      installPctState[id] = cur;
+      const now = Date.now();
+      const prev = lastSent.get(id) || { t: 0, pct: -1 };
+      /* aynı yüzde tekrarını ve <500ms'lik küçük sıçramaları yut (event fırtınası olmasın) */
+      if (cur.pct === prev.pct && now - prev.t < 3000) return;
+      if (now - prev.t < 500 && Math.abs(cur.pct - prev.pct) < 2) return;
+      lastSent.set(id, { t: now, pct: cur.pct });
+      if (win && !win.isDestroyed()) {
+        win.webContents.send('agent:event', { type: 'install-progress', id, pct: cur.pct, loaded: cur.loaded, total: cur.total });
+      }
+    } catch {}
+  });
 }
 
 /* ogg/opus/mp3 → mono 16kHz Float32 PCM (ffmpeg ile) */
@@ -3918,7 +3954,18 @@ async function ocrRead({ image, lang = 'tur+eng' } = {}) {
     if (!worker) {
       const tessDir = path.join(APP_DIR, 'tessdata');
       fs.mkdirSync(tessDir, { recursive: true });
-      worker = await t.createWorker(langKey, 1, { cachePath: tessDir, logger: () => {} });
+      const bus = require('./agent/progressbus');
+      worker = await t.createWorker(langKey, 1, {
+        cachePath: tessDir,
+        logger: (m) => {
+          try {
+            /* dil verisi (.traineddata) inerken yüzde üret — OCR çalışma anını kirletme */
+            if (m && /traineddata/i.test(String(m.status || '')) && typeof m.progress === 'number' && isFinite(m.progress)) {
+              bus.emitInstallProgress('ocr', { pct: m.progress * 100 });
+            }
+          } catch {}
+        },
+      });
       _ocrWorkers.set(langKey, worker);
     }
     let input = image;
@@ -5839,6 +5886,20 @@ ipcMain.handle('stt:prefetch', () => {
 ipcMain.handle('install:status', async () => {
   const rows = [];
   const pkgOk = (id) => { try { require.resolve(id); return true; } catch { return false; } };
+  /* progress bus'tan canlı yüzde (10 dk taze ise güvenilir sayılır) */
+  const pctOf = (id) => {
+    const s = installPctState[id];
+    return s && Date.now() - s.ts < 10 * 60 * 1000 ? s : null;
+  };
+  const pctFields = (id) => {
+    const s = pctOf(id);
+    if (!s) return {};
+    return {
+      pct: s.pct,
+      loadedMb: s.loaded ? Math.round(s.loaded / 1048576) : undefined,
+      totalMb: s.total ? Math.round(s.total / 1048576) : undefined,
+    };
+  };
   const scanModel = (rel) => {
     const dir = path.join(APP_DIR, 'models', ...rel.split('/'));
     let files = [];
@@ -5870,14 +5931,28 @@ ipcMain.handle('install:status', async () => {
     else if (s.hasCfg && s.onnx >= 2 && s.tmp === 0) state = 'downloaded';
     else if (s.files.length) state = 'partial';
     else state = 'missing';
-    rows.push({ id: 'stt', name: 'STT modeli — whisper-large-v3-turbo', state, detail: sttEngineLabel(), mb: Math.round(s.bytes / 1048576) });
+    rows.push({
+      id: 'stt',
+      name: 'STT modeli — whisper-large-v3-turbo',
+      state,
+      detail: sttEngineLabel(),
+      mb: Math.round(s.bytes / 1048576),
+      ...(['missing', 'partial', 'loading'].includes(state) ? pctFields('stt') : {}),
+    });
   }
 
   /* 2) Embedding modeli (hafıza semantik arama) */
   {
     const s = scanModel('Xenova/all-MiniLM-L6-v2');
     const state = s.hasCfg && s.onnx >= 1 && s.tmp === 0 ? 'ok' : (s.files.length ? 'partial' : 'missing');
-    rows.push({ id: 'emb', name: 'Embedding modeli — all-MiniLM-L6-v2', state, detail: 'hafıza semantik arama', mb: Math.round(s.bytes / 1048576) });
+    rows.push({
+      id: 'emb',
+      name: 'Embedding modeli — all-MiniLM-L6-v2',
+      state,
+      detail: 'hafıza semantik arama',
+      mb: Math.round(s.bytes / 1048576),
+      ...(['missing', 'partial', 'loading'].includes(state) ? pctFields('emb') : {}),
+    });
   }
 
   /* 3) ffmpeg */
@@ -5890,7 +5965,17 @@ ipcMain.handle('install:status', async () => {
   rows.push({ id: 'ort', name: 'ONNX Runtime — model motoru', state: pkgOk('onnxruntime-node') ? 'ok' : 'missing', detail: 'npm paketi' });
 
   /* 5) OCR */
-  rows.push({ id: 'ocr', name: 'OCR — Tesseract (ekran okuma)', state: pkgOk('tesseract.js') ? 'ok' : 'missing', detail: pkgOk('tesseract.js') ? 'kurulu — dil verisi ilk kullanımda iner' : 'npm paketi eksik' });
+  {
+    const po = pctOf('ocr');
+    const dl = pkgOk('tesseract.js') && po && po.pct < 100; // dil verisi şu an iniyor
+    rows.push({
+      id: 'ocr',
+      name: 'OCR — Tesseract (ekran okuma)',
+      state: dl ? 'loading' : (pkgOk('tesseract.js') ? 'ok' : 'missing'),
+      detail: dl ? 'dil verisi iniyor — ilk OCR kullanımında' : (pkgOk('tesseract.js') ? 'kurulu — dil verisi ilk kullanımda iner' : 'npm paketi eksik'),
+      ...(dl ? pctFields('ocr') : {}),
+    });
+  }
 
   /* 6) Python (opsiyonel — betikler) */
   let pyVer = '';
@@ -5900,7 +5985,15 @@ ipcMain.handle('install:status', async () => {
       if (pyVer) break;
     } catch {}
   }
-  rows.push({ id: 'python', name: 'Python — betikler / web arama', state: pyVer ? 'ok' : 'optional', detail: pyVer ? 'v' + pyVer : 'sistemde bulunamadı — opsiyonel' });
+  if (!pyVer) {
+    const ps = pctOf('python');
+    if (ps && ps.pct < 100) { // gömülü python zip'i şu an iniyor
+      rows.push({ id: 'python', name: 'Python — betikler / web arama', state: 'loading', detail: 'gömülü python indiriliyor', ...pctFields('python') });
+    }
+  }
+  if (pyVer || !rows.some((r) => r.id === 'python')) {
+    rows.push({ id: 'python', name: 'Python — betikler / web arama', state: pyVer ? 'ok' : 'optional', detail: pyVer ? 'v' + pyVer : 'sistemde bulunamadı — opsiyonel' });
+  }
 
   /* 7) Edge TTS (bulut) */
   rows.push({ id: 'edge', name: 'Edge TTS — seslendirme', state: 'cloud', detail: 'bulut — kurulum gerekmez' });

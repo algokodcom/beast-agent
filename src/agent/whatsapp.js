@@ -36,6 +36,83 @@ function waLogSafe(line) {
 
 const TRACK_CAP = 500;
 
+/* ---------- TTS → WhatsApp sesli not (OGG/Opus) ---------- */
+
+let _ffmpegPath = null;
+function getFfmpegPath() {
+  if (_ffmpegPath !== null) return _ffmpegPath;
+  try { _ffmpegPath = require('ffmpeg-static') || ''; } catch { _ffmpegPath = ''; }
+  return _ffmpegPath;
+}
+
+function runFfmpeg(args, input) {
+  return new Promise((resolve, reject) => {
+    try {
+      const { spawn } = require('child_process');
+      const p = spawn(getFfmpegPath(), args, { windowsHide: true });
+      const out = [];
+      let err = '';
+      p.stdout.on('data', (c) => out.push(c));
+      p.stderr.on('data', (c) => { if (err.length < 400) err += c.toString(); });
+      p.on('error', reject);
+      p.on('close', (code) => {
+        if (code !== 0) return reject(new Error(`ffmpeg ${code}: ${err.slice(0, 200)}`));
+        resolve(Buffer.concat(out));
+      });
+      p.stdin.on('error', () => {});
+      p.stdin.write(input);
+      p.stdin.end();
+    } catch (e) {
+      reject(e);
+    }
+  });
+}
+
+/* Herhangi bir ses buffer'ı → OGG/Opus (WhatsApp sesli not formatı). Zaten OggS ise olduğu gibi döner. */
+async function toVoiceOggOpus(buf) {
+  if (buf.length > 4 && buf.subarray(0, 4).toString('latin1') === 'OggS') return buf;
+  const ff = getFfmpegPath();
+  if (!ff) throw new Error('ffmpeg bulunamadı');
+  return runFfmpeg([
+    '-hide_banner', '-loglevel', 'error',
+    '-i', 'pipe:0',
+    '-c:a', 'libopus', '-b:a', '48k', '-ar', '24000', '-ac', '1',
+    '-application', 'voip', '-vbr', 'on',
+    '-f', 'ogg', 'pipe:1',
+  ], buf);
+}
+
+/* Sesli not dalga formu: 64 segmentlik normalize genlik histogramı (Uint8Array) */
+async function audioWaveform(buf) {
+  try {
+    const ff = getFfmpegPath();
+    if (!ff) return undefined;
+    const pcm = await runFfmpeg([
+      '-hide_banner', '-loglevel', 'error',
+      '-i', 'pipe:0', '-f', 's16le', '-ar', '16000', '-ac', '1', 'pipe:1',
+    ], buf);
+    const SEG = 64;
+    const step = Math.max(1, Math.floor(pcm.length / 2 / SEG));
+    const wave = new Uint8Array(SEG);
+    let max = 1;
+    for (let i = 0; i < SEG; i++) {
+      let sum = 0;
+      const start = i * step;
+      for (let j = 0; j < step; j++) {
+        const off = (start + j) * 2;
+        if (off + 1 < pcm.length) sum += Math.abs(pcm.readInt16LE(off));
+      }
+      const v = Math.round(sum / step);
+      wave[i] = v;
+      if (v > max) max = v;
+    }
+    for (let i = 0; i < SEG; i++) wave[i] = Math.min(255, Math.round((wave[i] / max) * 255));
+    return wave;
+  } catch {
+    return undefined;
+  }
+}
+
 /* lastKnownPresence etiketleri */
 const PRESENCE_LABELS = {
   available: 'çevrimiçi',
@@ -470,11 +547,29 @@ class WhatsAppBridge {
     return id ? { id } : true;
   }
 
-  /* Sesli not olarak yanıtla (TTS çıktısı mp3 buffer) */
+  /* Sesli not olarak yanıtla (TTS çıktısı mp3 buffer → WhatsApp sesli not formatı OGG/Opus'a çevrilir;
+     ptt sesli notlar mp3 ile açılmaz, mutlaka audio/ogg; codecs=opus olmalı) */
   async sendAudio(jid, audioBuf) {
     if (!this.sock || !this.connected || !audioBuf) return false;
     try {
-      const ret = await this.sock.sendMessage(jid, { audio: audioBuf, ptt: true, mimetype: 'audio/mpeg' });
+      let voice = audioBuf;
+      let mime = 'audio/mpeg';
+      let ptt = false;
+      let waveform;
+      try {
+        voice = await toVoiceOggOpus(audioBuf);
+        mime = 'audio/ogg; codecs=opus';
+        ptt = true;
+        waveform = await audioWaveform(voice);
+      } catch {
+        /* ffmpeg dönüşümü başarısızsa mp3'ü ptt'siz ses mesajı olarak dene */
+        voice = audioBuf;
+        mime = 'audio/mpeg';
+        ptt = false;
+      }
+      const msg = { audio: voice, ptt, mimetype: mime };
+      if (waveform) msg.waveform = waveform;
+      const ret = await this.sock.sendMessage(jid, msg);
       this._trackOutgoing(jid, '[sesli yanıt]', ret);
       return true;
     } catch (e) {

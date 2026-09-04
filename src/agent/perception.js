@@ -93,6 +93,161 @@ function saveState(st) {
   } catch {}
 }
 
+/* ---------- empati hafızası: sohbet kaydı + öğrenilen ilgi alanları ----------
+   Sohbet akışı (chat/WA/TG/DC) main tarafından buraya düşürülür; kullanıcı
+   mesajlarından anlamlı kelimeler toplanır, sık geçenler "öğrenilen ilgi
+   alanı" olur. Tarama filtresi ve bildirim mesajı bu hafızayla kişiselleşir:
+   elle girilen ilgi alanları + öğrenilenler birlikte prompta girer. */
+
+const CHAT_CAP = 120;    // son sohbet kaydı tavanı
+const INTEREST_CAP = 24; // öğrenilen ilgi etiketi tavanı
+const CHAT_SNIPPET = 220;
+
+const TR_FOLD_MEM = { ç: 'c', ğ: 'g', ı: 'i', ö: 'o', ş: 's', ü: 'u', â: 'a', î: 'i', û: 'u' };
+
+function memFold(s) {
+  return String(s || '').toLowerCase().replace(/[çğıöşüâîû]/g, (ch) => TR_FOLD_MEM[ch] || ch);
+}
+
+/* gereksiz kelimeler — ilgi alanı sayılmaz. Set FOLD'LU kurulur: kelimeler
+   zaten memFold ile ASCII'ye indirgendikten sonra arandığı için 'bugün' gibi
+   stopword'ler fold'lu haliyle ('bugun') listede olmalı. */
+const MEM_STOP_RAW =
+  'the and for with this that have from was are were been will would could should ' +
+  'bir bu şu o ve ile için gibi ama fakat çok daha en ne mi mı mu mü de da ki ise ya ' +
+  'veya yani bana bize sana ona beni bizi seni onun benim bizim senin onları var yok ' +
+  'olur olan olarak nasıl neden niye şey şeyi her hem acaba lazım gerek evet hayır ' +
+  'tamam tmm kanka abi hocam merhaba selam hey lütfen teşekkür sağol eyvallah bugün ' +
+  'yarın dün şimdi sonra önce hala henüz yine tekrar biraz az kadar çünkü eğer ' +
+  'yapabilir misin musun isterim istiyorum lazım gerekiyor beast asistan önemli ' +
+  'hakkında üzerine konuştuk konuşuyoruz konuşmak kendi aynı başka diğer belki ' +
+  'sanırım galiba gerekli olsun olmuyor oluyor bakalım biriyle hangi kim nerede';
+
+const MEM_STOP = new Set(MEM_STOP_RAW.split(/\s+/).map((w) => memFold(w)).filter(Boolean));
+
+function chatFile() {
+  return path.join(beastRoot(), 'perception', 'chatmem.json');
+}
+
+function loadChatMem() {
+  try {
+    const r = JSON.parse(fs.readFileSync(chatFile(), 'utf8'));
+    return {
+      chats: Array.isArray(r.chats) ? r.chats : [],
+      learned: r.learned && typeof r.learned === 'object' ? r.learned : {},
+    };
+  } catch {
+    return { chats: [], learned: {} };
+  }
+}
+
+function saveChatMem(cm) {
+  try {
+    fs.mkdirSync(path.dirname(chatFile()), { recursive: true });
+    fs.writeFileSync(chatFile(), JSON.stringify(cm));
+  } catch {}
+}
+
+/* Sohbet parçasını hafızaya yaz (kullanıcı + beast cevapları + proaktif mesajlar) */
+function rememberConversation(text, channel) {
+  try {
+    const t = String(text || '').replace(/\s+/g, ' ').trim().slice(0, CHAT_SNIPPET);
+    if (t.length < 4) return false;
+    const cm = loadChatMem();
+    /* birebir tekrar yut */
+    if (cm.chats.length && cm.chats[cm.chats.length - 1].t === t) return false;
+    cm.chats.push({ ts: new Date().toISOString(), ch: String(channel || 'sohbet').slice(0, 12), t });
+    while (cm.chats.length > CHAT_CAP) cm.chats.shift();
+    saveChatMem(cm);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/* Kullanıcı mesajından ilgi alanı öğren: fold + stopword temizliği, sayaca yaz */
+function learnInterests(text) {
+  try {
+    const toks = (memFold(text).match(/[a-z0-9_+#.]{3,}/g) || [])
+      .filter((w) => !MEM_STOP.has(w) && !/^\d+$/.test(w))
+      .slice(0, 12);
+    if (!toks.length) return false;
+    const cm = loadChatMem();
+    const now = Date.now();
+    for (const w of toks) {
+      const cur = cm.learned[w] || { c: 0, at: 0 };
+      cur.c++;
+      cur.at = now;
+      cm.learned[w] = cur;
+    }
+    /* tavana in: en sık + en taze etiketler kalır */
+    const keys = Object.keys(cm.learned);
+    if (keys.length > INTEREST_CAP) {
+      keys.sort((a, b) => (cm.learned[b].c - cm.learned[a].c) || (cm.learned[b].at - cm.learned[a].at));
+      for (const k of keys.slice(INTEREST_CAP)) delete cm.learned[k];
+    }
+    saveChatMem(cm);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/* Elle girilen + öğrenilen ilgi alanları birleşik (promptlar bunu kullanır) */
+function combinedInterests(cfg) {
+  const manual = String((cfg && cfg.interests) || '').trim();
+  try {
+    const cm = loadChatMem();
+    const learned = Object.keys(cm.learned)
+      .sort((a, b) => cm.learned[b].c - cm.learned[a].c)
+      .slice(0, 12);
+    return [manual, learned.join(', ')].filter(Boolean).join(', ');
+  } catch {
+    return manual;
+  }
+}
+
+/* Son konuşma satırları — compose/filtre promptuna bağlam olarak girer */
+function chatContextLine(max = 8) {
+  try {
+    const cm = loadChatMem();
+    const items = cm.chats.slice(-Math.max(1, Number(max) || 8));
+    if (!items.length) return '';
+    const when = (iso) => {
+      try {
+        const d = new Date(iso);
+        return ('0' + d.getDate()).slice(-2) + '.' + ('0' + (d.getMonth() + 1)).slice(-2);
+      } catch { return ''; }
+    };
+    return (
+      'SON KONUŞMALAR (kullanıcıyla yakın zamanda konuşulanlar):\n' +
+      items.map((c) => '- [' + when(c.ts) + ' ' + (c.ch || 'sohbet') + '] ' + c.t).join('\n')
+    );
+  } catch {
+    return '';
+  }
+}
+
+/* UI için hafıza görünümü: öğrenilen etiketler + son konuşmalar */
+function memSnapshot(limit = 40) {
+  const cm = loadChatMem();
+  const learned = Object.keys(cm.learned)
+    .sort((a, b) => (cm.learned[b].c - cm.learned[a].c) || (cm.learned[b].at - cm.learned[a].at))
+    .slice(0, 30)
+    .map((w) => ({ w, c: cm.learned[w].c || 0 }));
+  const n = Math.max(1, Math.min(80, Number(limit) || 40));
+  return { learned, chats: cm.chats.slice(-n).reverse(), total: cm.chats.length };
+}
+
+function memClear() {
+  try {
+    fs.rmSync(chatFile(), { force: true });
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+}
+
 /* ---------- normalize / dedup ---------- */
 
 function normTitle(t) {
@@ -174,9 +329,11 @@ function heuristicScores(ev, cfg) {
   const URGENT = URGENT_RE.test(t);
   let importance = ev.type === 'news' ? 40 : 65;
   if (URGENT) importance += 20;
-  const words = String(cfg.interests || '').toLowerCase().split(/[,\s]+/).filter((w) => w.length > 2);
+  /* ilgi kelimeleri fold'lanır (öğrenilen etiketler zaten fold'lu) */
+  const words = String(cfg.interests || '').split(/[,\s]+/).map((w) => memFold(w).trim()).filter((w) => w.length > 2);
   let hits = 0;
-  for (const w of words) if (t.includes(w)) hits++;
+  const hay = memFold(t);
+  for (const w of words) if (hay.includes(w)) hits++;
   const relevance = hits ? Math.min(100, 55 + hits * 15) : (ev.type === 'news' ? 30 : 60);
   const urgency = URGENT ? 75 : (ev.type === 'news' ? 35 : 45);
   const novelty = ev.type === 'news' ? 80 : 60;
@@ -203,7 +360,7 @@ const FILTER_SYSTEM =
   '"notify": kullanıcıya bildirmeye gerçekten değer mi (önemsiz/spam/klasik haberlerde false). ' +
   '"reason": en fazla 60 karakter kısa gerekçe.';
 
-function filterPrompt(events, interests) {
+function filterPrompt(events, interests, chatCtx) {
   const list = events.map((e) => ({
     id: e.id,
     type: e.type,
@@ -212,6 +369,7 @@ function filterPrompt(events, interests) {
   }));
   return (
     'KULLANICI İLGİLERİ: ' + (String(interests || '').trim() || '(belirtilmemiş)') + '\n' +
+    (String(chatCtx || '').trim() ? String(chatCtx).trim() + '\n' : '') +
     'OLAYLAR:\n' + JSON.stringify(list) + '\n\n' +
     'Her olay için {"id","relevant","importance","urgency","novelty","notify","reason"} içeren ' +
     'TEK bir JSON dizisi döndür. Sadece JSON, başka metin yok.'
@@ -244,13 +402,15 @@ const COMPOSE_SYSTEM =
   'Alarm spam\'i yok; başlık/emoji/Markdown ekleme, yalnız düz metin yaz.';
 
 function composePrompt(ev, cfg) {
+  const ctx = chatContextLine(5);
   return (
     'OLAY: ' + ev.title + '\n' +
     (ev.detail ? 'DETAY: ' + ev.detail + '\n' : '') +
     'KAYNAK: ' + ev.source + '\n' +
     'ÖNCELİK: ' + ev.priority + '/100 · ' + (ev.reason || '') + '\n' +
-    'KULLANICI İLGİLERİ: ' + (String((cfg && cfg.interests) || '').trim() || '(belirtilmemiş)') + '\n\n' +
-    'Bu olay için kullanıcıya gönderilecek proaktif kısa mesajı yaz.'
+    'KULLANICI İLGİLERİ: ' + (combinedInterests(cfg) || '(belirtilmemiş)') + '\n' +
+    (ctx ? ctx + '\n' : '') +
+    '\nBu olay için kullanıcıya gönderilecek proaktif kısa mesajı yaz.'
   );
 }
 
@@ -310,11 +470,14 @@ async function runCycle({ cfg, signals, llmFilter, now = new Date(), log = () =>
     for (const k of seenKeys.slice(0, seenKeys.length - SEEN_CAP)) delete st.seen[k];
   }
 
-  /* UCUZ FİLTRE: tüm adaylar TEK toplu çağrıda (maliyet freni). Çökerse deterministik. */
+  /* UCUZ FİLTRE: tüm adaylar TEK toplu çağrıda (maliyet freni). Çökerse deterministik.
+     İlgi alanları: elle girilen + sohbetlerden öğrenilenler; son konuşmalar bağlam. */
+  const interests = combinedInterests(cfg);
+  const chatCtx = chatContextLine(8);
   let graded = null;
   if (typeof llmFilter === 'function' && pending.length) {
     try {
-      const out = await llmFilter(filterPrompt(pending.slice(0, FILTER_MAX), cfg.interests));
+      const out = await llmFilter(filterPrompt(pending.slice(0, FILTER_MAX), interests, chatCtx));
       graded = parseFilterJson(out);
       if (graded.size) log('filtre: LLM ' + graded.size + ' olayı puanladı');
     } catch {
@@ -334,7 +497,7 @@ async function runCycle({ cfg, signals, llmFilter, now = new Date(), log = () =>
           urgency: Math.max(0, Math.min(100, Math.round(Number(g.urgency) || 0))),
           novelty: Math.max(0, Math.min(100, Math.round(Number(g.novelty) || 0))),
         }
-      : heuristicScores(ev, cfg);
+      : heuristicScores(ev, { ...cfg, interests });
     ev.priority = compositePriority(ev.scores, cfg);
     ev.reason = g ? String(g.reason || '').slice(0, 80) : 'deterministik puan';
     if (g && g.notify === false && ev.priority < cfg.minNotifyPriority) {
@@ -438,6 +601,12 @@ module.exports = {
   markNotified,
   listEvents,
   lastRunAt,
+  rememberConversation,
+  learnInterests,
+  combinedInterests,
+  chatContextLine,
+  memSnapshot,
+  memClear,
   FILTER_SYSTEM,
   COMPOSE_SYSTEM,
   filterPrompt,

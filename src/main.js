@@ -2937,6 +2937,7 @@ function reloadBackend() {
     },
     emit: (ev) => {
       if (win && !win.isDestroyed()) win.webContents.send('agent:event', ev);
+      try { empatiRememberFromEvent(ev); } catch {} /* empati hafızası: sohbet → kayıt + ilgi öğrenme */
       flushDesktopOnDone(ev); /* biriken desktop mesajlarını sıraya bas */
       bcFlushOnDone(ev); /* Beast Code kuyruğunu iş bitiminde boşalt */
       stFlushOnDone(ev); /* Beast Studio kuyruğunu iş bitiminde boşalt */
@@ -6200,6 +6201,32 @@ function empatiCfg() {
   return empati.mergeCfg(settings.empati || {});
 }
 
+/* EMPATİ HAFIZASI: sohbet akışını kaydet + kullanıcı ilgi alanlarını öğren.
+   - user mesajı → hafızaya yaz + sık kelimelerden ilgi etiketi öğren
+   - assistant cevabı → hafızaya yaz (konuşmanın iki yanı da kalsın)
+   Beast Code/Studio iş mesajları, /komutlar ve bağlam enjeksiyonları kayda girmez. */
+function empatiRememberFromEvent(ev) {
+  if (!ev || ev.type !== 'message' || !ev.message || !ev.message.role) return;
+  const m = ev.message;
+  if (m.role !== 'user' && m.role !== 'assistant') return;
+  const txt = typeof m.content === 'string' ? m.content : '';
+  if (!txt.trim()) return;
+  if (txt.startsWith((engine && engine.OBSERVE_MARK) || '[BAĞLAM')) return; /* sessiz bağlam — sohbet değil */
+  if (m.role === 'user' && txt.startsWith('/')) return; /* slash komut gürültüsü */
+  let bc = false;
+  try {
+    const s = engine && engine.cache && engine.cache.get(String(ev.sessionId || ''));
+    bc = !!(s && (s.bcCode || s.bcMode));
+  } catch {}
+  if (bc) return; /* kod işi — ilgi alanını bulanıklaştırır */
+  if (m.role === 'user') {
+    empati.rememberConversation(txt, 'sohbet');
+    empati.learnInterests(txt);
+  } else {
+    empati.rememberConversation(txt, 'beast');
+  }
+}
+
 function empatiLog(line) {
   try { waLog('[EMPATİ] ' + line); } catch {}
 }
@@ -6318,13 +6345,18 @@ async function empatiCycle(manual) {
   if (!cfg.enabled && !manual) return { ok: false, error: 'kapalı' };
   empatiRuntime.running = true;
   try {
-    const r = await empati.runCycle({
-      cfg,
-      signals: { self: empatiSignalSelf, news: empatiSignalNews },
-      llmFilter: empatiLlmFilter,
-      now: new Date(),
-      log: empatiLog,
-    });
+    /* zaman aşımı emniyeti: sinyal/LLM takılırsa `running` bayrağı sonsuz kilitlenmesin
+       (yoksa "Şimdi Tara" sürekli 'döngü zaten çalışıyor' der) */
+    const r = await Promise.race([
+      empati.runCycle({
+        cfg,
+        signals: { self: empatiSignalSelf, news: empatiSignalNews },
+        llmFilter: empatiLlmFilter,
+        now: new Date(),
+        log: empatiLog,
+      }),
+      new Promise((_, rej) => setTimeout(() => rej(new Error('döngü zaman aşımı (2 dk)')), 120000).unref()),
+    ]);
     let notified = 0;
     for (const a of r.actions) {
       let text = '';
@@ -6332,6 +6364,7 @@ async function empatiCycle(manual) {
       if (!text) text = empati.composeFallback(a.event);
       empatiNotify(text, a.event);
       empati.markNotified(a.event.id, a.level, text, cfg.cooldownMin);
+      try { empati.rememberConversation('[proaktif] ' + text, 'empati'); } catch {}
       notified++;
     }
     if (notified && win && !win.isDestroyed()) {
@@ -6374,6 +6407,8 @@ ipcMain.handle('empati:scan', async () => {
   try { return await empatiCycle(true); } catch (e) { return { ok: false, error: String((e && e.message) || e).slice(0, 200) }; }
 });
 ipcMain.handle('empati:events', () => empati.listEvents(80));
+ipcMain.handle('empati:memory', () => empati.memSnapshot(40));
+ipcMain.handle('empati:memclear', () => empati.memClear());
 
 ipcMain.handle('cron:list', () => cron.list());
 /* #23 Fallout: provider → kayıtlı API key haritası.

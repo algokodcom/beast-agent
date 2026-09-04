@@ -211,4 +211,6 @@ contextBridge.exposeInMainWorld('beast', {
   empatiSet: (patch) => ipcRenderer.invoke('empati:set', patch),
   empatiScan: () => ipcRenderer.invoke('empati:scan'),
   empatiEvents: () => ipcRenderer.invoke('empati:events'),
+  empatiMemory: () => ipcRenderer.invoke('empati:memory'),
+  empatiMemClear: () => ipcRenderer.invoke('empati:memclear'),
 });

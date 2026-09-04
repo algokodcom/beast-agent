@@ -2333,47 +2333,49 @@ async function renderEmailPane() {
   const PASS_MASK = '••••••••';
   let savedPass = '';
   let passChanged = false;
+  /* ID'ler mail* önekiyle: empati sekmesindeki em* ID'leriyle ÇAKIŞMASIN —
+     aynı ID iki panelde olursa $() ilkini bulur, empati butonları ölü kalırdı */
   pane.innerHTML =
-    '<h2>' + _t('em_h2') + '</h2><div class="sub">' + _t('em_sub') + '</div>' +
+    '<h2>' + _t('mail_h2') + '</h2><div class="sub">' + _t('mail_sub') + '</div>' +
     `<div class="form-grid" style="grid-template-columns:1fr 1fr;align-items:center;margin-top:10px">
-      <input id="emHost" class="inp" placeholder="imap.gmail.com" autocomplete="off" />
-      <input id="emUser" class="inp" placeholder="adres@gmail.com" autocomplete="off" />
-      <input id="emPass" class="inp" type="password" placeholder="Uygulama Şifresi" autocomplete="off" />
-      <input id="emSmtpHost" class="inp" placeholder="smtp.gmail.com" autocomplete="off" />
-      <input id="emSmtpPort" class="inp" placeholder="465" autocomplete="off" />
-      <button id="emSave" class="btn ghost">${_t('em_save')}</button>
+      <input id="mailHost" class="inp" placeholder="imap.gmail.com" autocomplete="off" />
+      <input id="mailUser" class="inp" placeholder="adres@gmail.com" autocomplete="off" />
+      <input id="mailPass" class="inp" type="password" placeholder="Uygulama Şifresi" autocomplete="off" />
+      <input id="mailSmtpHost" class="inp" placeholder="smtp.gmail.com" autocomplete="off" />
+      <input id="mailSmtpPort" class="inp" placeholder="465" autocomplete="off" />
+      <button id="mailSave" class="btn ghost">${_t('mail_save')}</button>
     </div>` +
-    '<div class="sub" style="margin-top:8px">' + _t('em_note') + '</div>';
+    '<div class="sub" style="margin-top:8px">' + _t('mail_note') + '</div>';
 
   try {
     const em = await beast.getEmail();
-    $('#emHost').value = em.host || 'imap.gmail.com';
-    $('#emUser').value = em.user || '';
-    $('#emSmtpHost').value = em.smtpHost || 'smtp.gmail.com';
-    $('#emSmtpPort').value = em.smtpPort || 465;
+    $('#mailHost').value = em.host || 'imap.gmail.com';
+    $('#mailUser').value = em.user || '';
+    $('#mailSmtpHost').value = em.smtpHost || 'smtp.gmail.com';
+    $('#mailSmtpPort').value = em.smtpPort || 465;
     savedPass = em.pass || '';
   } catch {}
-  const emPass = $('#emPass');
+  const mailPass = $('#mailPass');
   if (savedPass) {
     /* kayıtlı şifre maskelenir; sadece kullanıcı değiştirirse yenisi gönderilir */
-    emPass.value = PASS_MASK;
-    emPass.placeholder = window.I18N ? window.I18N.t('em_pass_masked') : 'Mevcut şifre korunuyor — değiştirmek için yeniden gir';
+    mailPass.value = PASS_MASK;
+    mailPass.placeholder = window.I18N ? window.I18N.t('mail_pass_masked') : 'Mevcut şifre korunuyor — değiştirmek için yeniden gir';
   }
-  emPass.addEventListener('focus', () => { if (emPass.value === PASS_MASK) emPass.value = ''; });
-  emPass.addEventListener('input', () => { passChanged = true; });
-  $('#emSave').addEventListener('click', async () => {
-    const entered = emPass.value;
+  mailPass.addEventListener('focus', () => { if (mailPass.value === PASS_MASK) mailPass.value = ''; });
+  mailPass.addEventListener('input', () => { passChanged = true; });
+  $('#mailSave').addEventListener('click', async () => {
+    const entered = mailPass.value;
     const pass = passChanged ? entered : savedPass;
     await beast.setEmail({
-      host: $('#emHost').value.trim() || 'imap.gmail.com',
+      host: $('#mailHost').value.trim() || 'imap.gmail.com',
       port: 993,
-      user: $('#emUser').value.trim(),
+      user: $('#mailUser').value.trim(),
       pass,
-      smtpHost: $('#emSmtpHost').value.trim() || 'smtp.gmail.com',
-      smtpPort: Number($('#emSmtpPort').value) || 465,
+      smtpHost: $('#mailSmtpHost').value.trim() || 'smtp.gmail.com',
+      smtpPort: Number($('#mailSmtpPort').value) || 465,
     });
-    if (pass && pass !== PASS_MASK) { savedPass = pass; emPass.value = PASS_MASK; passChanged = false; }
-    toast(_t('em_saved'));
+    if (pass && pass !== PASS_MASK) { savedPass = pass; mailPass.value = PASS_MASK; passChanged = false; }
+    toast(_t('mail_saved'));
   });
 }
 
@@ -3028,9 +3030,14 @@ async function renderEventsPane() {
 async function renderEmpatiPane() {
   const pane = $('#tab-empati');
   if (!pane) return;
+  /* pane-scope: e-posta sekmesinde eskiden aynı ID'ler vardı; $() global arar
+     ve YANLIŞ butona bağlardı — tüm aramalar bu panelin içinde kalır */
+  const q = (sel) => pane.querySelector(sel);
   const cfg = await beast.empatiGet().catch(() => null);
   let events = [];
   try { events = await beast.empatiEvents(); } catch {}
+  let mem = null;
+  try { mem = await beast.empatiMemory(); } catch {}
   let models = [];
   try { models = (await beast.getState()).models || []; } catch {}
   if (!cfg) {
@@ -3101,6 +3108,7 @@ async function renderEmpatiPane() {
       <div style="margin-top:8px">
         <label class="sub">${_t('em_interests')}</label>
         <textarea id="emInterests" class="inp" rows="2" placeholder="${_t('em_interests_ph')}">${escapeHtml(cfg.interests || '')}</textarea>
+        <div class="sub">${_t('em_interests_auto')}</div>
       </div>
       <label class="lock-row" style="margin-top:8px"><input type="checkbox" id="emNews" ${cfg.newsTopics ? 'checked' : ''}/><span>${_t('em_news')}</span></label>
       <input id="emTopics" class="inp" style="${cfg.newsTopics ? '' : 'opacity:.5'}" placeholder="${_t('em_news_topics_ph')}" value="${escapeHtml(cfg.newsTopics || '')}" spellcheck="false"/>
@@ -3111,46 +3119,85 @@ async function renderEmpatiPane() {
       </div>
       <div class="sub" style="margin-top:6px">${_t('em_note')}</div>
     </div>
+    <h3 style="margin-top:16px;color:var(--muted)">${_t('em_mem_h2')}</h3>
+    <div class="sub">${_t('em_mem_sub')}</div>
+    <div style="margin-top:6px"><label class="sub">${_t('em_mem_learned')}</label>${(() => {
+      const learned = (mem && Array.isArray(mem.learned)) ? mem.learned : [];
+      if (!learned.length) return '<div class="sub" style="margin-top:2px">' + _t('em_mem_no_learned') + '</div>';
+      return '<div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:4px">' +
+        learned.map((x) =>
+          '<span style="font-size:11px;padding:2px 8px;border:1px solid var(--border);border-radius:10px">' +
+          escapeHtml(x.w) + ' <span style="color:var(--muted)">×' + (x.c || 0) + '</span></span>'
+        ).join('') + '</div>';
+    })()}</div>
+    <div style="margin-top:8px"><label class="sub">${_t('em_mem_recent')}</label>${(() => {
+      const chats = (mem && Array.isArray(mem.chats)) ? mem.chats : [];
+      if (!chats.length) return '<div class="sub" style="margin-top:2px">' + _t('em_mem_no_recent') + '</div>';
+      return '<div style="margin-top:4px">' + chats.map((c) =>
+        '<div class="usage-row" style="align-items:flex-start">' +
+        '<div style="min-width:0;flex:1">' +
+        '<div style="font-size:12px">' + escapeHtml(c.t || '') + '</div>' +
+        '<div class="ur-meta">' + escapeHtml(c.ch || '') + ' · ' + when(c.ts) + '</div>' +
+        '</div></div>').join('') + '</div>';
+    })()}
+      <button id="emMemClear" class="btn ghost" style="margin-top:8px;font-size:12px">${_t('em_mem_clear')}</button>
+    </div>
     <h3 style="margin-top:16px;color:var(--muted)">${_t('em_events')}</h3>`;
   const wrap = document.createElement('div');
   if (!rows) wrap.innerHTML = '<p class="sub">' + _t('em_no_events') + '</p>';
   else wrap.innerHTML = rows;
   pane.appendChild(wrap);
 
-  const emOn = $('#emOn');
-  const emDetail = $('#emDetail');
-  const emNews = $('#emNews');
-  const emTopics = $('#emTopics');
-  emOn.addEventListener('change', () => { emDetail.style.opacity = emOn.checked ? '' : '.5'; });
-  emNews.addEventListener('change', () => { emTopics.style.opacity = emNews.checked ? '' : '.5'; });
-  $('#emSave').addEventListener('click', async () => {
+  const emOn = q('#emOn');
+  const emDetail = q('#emDetail');
+  const emNews = q('#emNews');
+  const emTopics = q('#emTopics');
+  if (emOn && emDetail) emOn.addEventListener('change', () => { emDetail.style.opacity = emOn.checked ? '' : '.5'; });
+  if (emNews && emTopics) emNews.addEventListener('change', () => { emTopics.style.opacity = emNews.checked ? '' : '.5'; });
+  const emSaveBtn = q('#emSave');
+  if (emSaveBtn) emSaveBtn.addEventListener('click', async () => {
     const patch = {
       enabled: emOn.checked,
-      intervalMin: Number($('#emInterval').value) || cfg.intervalMin,
-      minNotifyPriority: Number($('#emMin').value),
-      cooldownMin: Number($('#emCd').value),
-      notifyTarget: $('#emTarget') ? $('#emTarget').value : '',
-      filterModel: $('#emModel') ? $('#emModel').value : '',
-      interests: $('#emInterests').value.trim(),
+      intervalMin: Number(q('#emInterval').value) || cfg.intervalMin,
+      minNotifyPriority: Number(q('#emMin').value),
+      cooldownMin: Number(q('#emCd').value),
+      notifyTarget: q('#emTarget') ? q('#emTarget').value : '',
+      filterModel: q('#emModel') ? q('#emModel').value : '',
+      interests: q('#emInterests').value.trim(),
       newsTopics: emNews.checked ? emTopics.value.trim() : '',
     };
     const r = await beast.empatiSet(patch).catch(() => null);
     toast(r ? _t('em_saved') : 'Hata');
     if (r) renderEmpatiPane();
   });
-  $('#emScan').addEventListener('click', async () => {
-    const msg = $('#emMsg');
-    msg.textContent = '⏳';
+  const emScanBtn = q('#emScan');
+  if (emScanBtn) emScanBtn.addEventListener('click', async () => {
+    emScanBtn.disabled = true; /* çift tık → 'döngü zaten çalışıyor' kilitlenmesin */
+    const msg = q('#emMsg');
+    if (msg) msg.textContent = '⏳';
     const r = await beast.empatiScan().catch(() => null);
     if (r && r.ok) {
-      msg.textContent = _t('em_scan_ok')
+      const txt = _t('em_scan_ok')
         .replace('{raw}', String(r.raw || 0))
         .replace('{queued}', String(r.queued || 0))
         .replace('{stored}', String(r.stored || 0));
-      renderEmpatiPane();
+      toast(txt);
+      await renderEmpatiPane(); /* olay + hafıza listeleri tazelensin */
+      const m2 = q('#emMsg');
+      if (m2) m2.textContent = txt; /* yeniden çizim mesajı silmesin */
     } else {
-      msg.textContent = (r && r.error) || 'hata';
+      const err = (r && r.error) || 'hata';
+      if (msg) msg.textContent = /zaten çalışıyor/.test(err) ? _t('em_scan_busy') : err;
+      toast('Tarama hatası: ' + err);
     }
+    const b2 = q('#emScan');
+    if (b2) b2.disabled = false;
+  });
+  const emMemClearBtn = q('#emMemClear');
+  if (emMemClearBtn) emMemClearBtn.addEventListener('click', async () => {
+    const r = await beast.empatiMemClear().catch(() => null);
+    toast(r && r.ok ? _t('em_mem_cleared') : 'Hata');
+    if (r && r.ok) renderEmpatiPane();
   });
 }
 

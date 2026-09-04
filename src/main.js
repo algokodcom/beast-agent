@@ -3248,6 +3248,15 @@ app.whenReady().then(() => {
       waLog('STT aktif: ' + sttEngineLabel() + ' — yerel model kullanılmayacak');
     }
 
+    /* EMBEDDING modeli (hafıza semantik arama) — açılışta otomatik indir */
+    setTimeout(() => {
+      try {
+        require('./agent/mem0').search('beast', 'warmup')
+          .then(() => waLog('embedding modeli hazır (all-MiniLM-L6-v2)'))
+          .catch(() => {});
+      } catch {}
+    }, 20000);
+
     // WhatsApp köprüsünü otomatik başlat (eşleme varsa direkt bağlanır)
     ensureWa().start().catch((e) => waLog('autostart failed: ' + (e && e.message)));
 
@@ -5823,6 +5832,90 @@ ipcMain.handle('stt:prefetch', () => {
   ensureStt()
     .then(() => waLog('STT prefetch: hazır'))
     .catch((e) => waLog('STT prefetch hata: ' + String((e && e.message) || e)));
+  return { ok: true, loading: true };
+});
+
+/* KURULUM SEKMESİ: gerekli bileşenlerin durum taraması */
+ipcMain.handle('install:status', async () => {
+  const rows = [];
+  const pkgOk = (id) => { try { require.resolve(id); return true; } catch { return false; } };
+  const scanModel = (rel) => {
+    const dir = path.join(APP_DIR, 'models', ...rel.split('/'));
+    let files = [];
+    try {
+      files = fs.readdirSync(dir, { recursive: true, withFileTypes: true })
+        .filter((d) => d.isFile())
+        .map((d) => path.join(d.parentPath || d.path, d.name));
+    } catch {}
+    let bytes = 0, tmp = 0, onnx = 0, hasCfg = false;
+    for (const p of files) {
+      try {
+        bytes += fs.statSync(p).size;
+        if (/\.tmp/i.test(p)) tmp++;
+        else if (/\.onnx$/i.test(p)) onnx++;
+        else if (/config\.json$/i.test(p)) hasCfg = true;
+      } catch {}
+    }
+    return { files, bytes, tmp, onnx, hasCfg };
+  };
+
+  /* 1) STT modeli */
+  if (sttProvider() !== 'local') {
+    rows.push({ id: 'stt', name: 'STT modeli — ' + sttModelName(), state: 'cloud', detail: 'bulut motoru — indirme gerekmez' });
+  } else {
+    const s = scanModel(sttModelName());
+    let state;
+    if (sttPipeline) state = 'ok';
+    else if (sttLoading) state = 'loading';
+    else if (s.hasCfg && s.onnx >= 2 && s.tmp === 0) state = 'downloaded';
+    else if (s.files.length) state = 'partial';
+    else state = 'missing';
+    rows.push({ id: 'stt', name: 'STT modeli — whisper-large-v3-turbo', state, detail: sttEngineLabel(), mb: Math.round(s.bytes / 1048576) });
+  }
+
+  /* 2) Embedding modeli (hafıza semantik arama) */
+  {
+    const s = scanModel('Xenova/all-MiniLM-L6-v2');
+    const state = s.hasCfg && s.onnx >= 1 && s.tmp === 0 ? 'ok' : (s.files.length ? 'partial' : 'missing');
+    rows.push({ id: 'emb', name: 'Embedding modeli — all-MiniLM-L6-v2', state, detail: 'hafıza semantik arama', mb: Math.round(s.bytes / 1048576) });
+  }
+
+  /* 3) ffmpeg */
+  let ffOk = false;
+  try { const p = require('ffmpeg-static'); ffOk = !!p && fs.existsSync(p); } catch {}
+  rows.push({ id: 'ffmpeg', name: 'ffmpeg — ses/video dönüşüm', state: ffOk ? 'ok' : 'missing', detail: ffOk ? 'kurulu' : 'npm paketi eksik' });
+
+  /* 4) çalışma zamanı npm paketleri */
+  rows.push({ id: 'hf', name: 'Transformers.js — STT çalışma zamanı', state: pkgOk('@huggingface/transformers') ? 'ok' : 'missing', detail: 'npm paketi' });
+  rows.push({ id: 'ort', name: 'ONNX Runtime — model motoru', state: pkgOk('onnxruntime-node') ? 'ok' : 'missing', detail: 'npm paketi' });
+
+  /* 5) OCR */
+  rows.push({ id: 'ocr', name: 'OCR — Tesseract (ekran okuma)', state: pkgOk('tesseract.js') ? 'ok' : 'missing', detail: pkgOk('tesseract.js') ? 'kurulu — dil verisi ilk kullanımda iner' : 'npm paketi eksik' });
+
+  /* 6) Python (opsiyonel — betikler) */
+  let pyVer = '';
+  for (const cmd of ['python -c "import sys;print(sys.version.split()[0])"', 'py -3 -c "import sys;print(sys.version.split()[0])"']) {
+    try {
+      pyVer = String(require('child_process').execSync(cmd, { timeout: 4000, stdio: 'pipe', encoding: 'utf8' })).trim();
+      if (pyVer) break;
+    } catch {}
+  }
+  rows.push({ id: 'python', name: 'Python — betikler / web arama', state: pyVer ? 'ok' : 'optional', detail: pyVer ? 'v' + pyVer : 'sistemde bulunamadı — opsiyonel' });
+
+  /* 7) Edge TTS (bulut) */
+  rows.push({ id: 'edge', name: 'Edge TTS — seslendirme', state: 'cloud', detail: 'bulut — kurulum gerekmez' });
+
+  return rows;
+});
+
+/* embedding modelini şimdi indir (mem0 arama yolu ısıtılır) */
+ipcMain.handle('embed:prefetch', () => {
+  try {
+    const mem0 = require('./agent/mem0');
+    mem0.search('beast', 'warmup')
+      .then(() => waLog('embedding modeli hazır'))
+      .catch(() => {});
+  } catch {}
   return { ok: true, loading: true };
 });
 ipcMain.handle('stt:lang:set', (_e, lang) => {

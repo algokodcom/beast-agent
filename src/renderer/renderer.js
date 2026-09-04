@@ -1060,6 +1060,7 @@ async function renderActiveSettingsTab() {
     case 'fallout': await refreshFalloutPane(); break;
     case 'skills': await renderSkillsPane(); break;
     case 'tts': await renderTtsPane(); break;
+    case 'install': await renderInstallPane(); break;
     case 'email': await renderEmailPane(); break;
     case 'integrations': await renderIntegrationsPane(); break;
     case 'websearch': await renderWebSearchPane(); break;
@@ -1150,13 +1151,14 @@ function switchTab(name) {
   document.querySelectorAll('#setTabs .tab').forEach((b) =>
     b.classList.toggle('active', b.dataset.tab === name)
   );
-  for (const p of ['lang', 'provider', 'fallout', 'skills', 'agents', 'tts', 'email', 'integrations', 'websearch', 'mcp', 'events', 'cron', 'usage', 'logs', 'dash', 'sec', 'update']) {
+  for (const p of ['lang', 'provider', 'fallout', 'skills', 'agents', 'tts', 'install', 'email', 'integrations', 'websearch', 'mcp', 'events', 'cron', 'usage', 'logs', 'dash', 'sec', 'update']) {
     const el = $('#tab-' + p);
     if (el) el.hidden = p !== name; // guard: eksik pane tüm sekmeleri kilitlemesin
   }
   if (name === 'lang') renderLangPane();
   if (name === 'cron') openCron();
   if (name === 'usage') renderUsagePane();
+  if (name === 'install') renderInstallPane();
   if (name === 'events') renderEventsPane();
   if (name === 'logs') renderLogPane();
   if (name === 'dash') renderDashboardPane();
@@ -2097,8 +2099,76 @@ function ttsFlushTail() {
   if (rest) ttsEnqueueSentence(rest);
   else ttsKick();
 }
-async function renderTtsPane() {
-  const pane = $('#tab-tts');
+/* ---------------- KURULUM SEKMESİ: bileşenler OTOMATİK kurulur ----------------
+   Eksik/kısmen inmiş bileşen sekme açılınca kendiliğinden indirilir; kullanıcı
+   hiçbir düğmeye basmaz. Durum canlı güncellenir (4 sn'de bir). */
+async function renderInstallPane() {
+  const pane = $('#tab-install');
+  if (!pane) return;
+  pane.innerHTML =
+    '<h2>Kurulum</h2><div class="sub">Gerekli bileşenler otomatik indirilir ve kurulur — eksik varsa aşağıda İNİYOR olarak görürsün.</div>' +
+    '<div id="instRows" style="margin-top:10px">Taranıyor…</div>';
+
+  const autoStarted = new Set(); // bu pane oturumunda otomatik başlatılanlar
+  let refreshTimer = null;
+
+  const badge = (st) => {
+    const map = {
+      ok: ['KURULU', 'var(--ok)'],
+      downloaded: ['İNDİRİLDİ', 'var(--ok)'],
+      loading: ['İNİYOR…', '#d9a441'],
+      partial: ['İNİYOR… (devam)', '#d9a441'],
+      missing: ['İNDİRİLİYOR…', '#d9a441'],
+      cloud: ['BULUT', 'var(--muted)'],
+      optional: ['OPSİYONEL', 'var(--muted)'],
+    };
+    const [txt, color] = map[st] || [st, 'var(--muted)'];
+    return '<span style="color:' + color + ';font-weight:700;font-size:11px;flex:none">' + txt + '</span>';
+  };
+
+  /* eksik bileşenleri OTOMATİK başlat (bileşen başına bir kez) */
+  const autoStart = (rows) => {
+    for (const r of rows) {
+      if (autoStarted.has(r.id)) continue;
+      if (r.id === 'stt' && ['missing', 'partial', 'loading'].includes(r.state)) {
+        autoStarted.add('stt');
+        beast.sttPrefetchNow().catch(() => {});
+      }
+      if (r.id === 'emb' && ['missing', 'partial'].includes(r.state)) {
+        autoStarted.add('emb');
+        beast.embedPrefetch().catch(() => {});
+      }
+    }
+  };
+
+  const render = (rows) => {
+    const el = $('#instRows');
+    if (!el) return;
+    if (!rows || !rows.length) { el.innerHTML = '<div class="sub">Durum alınamadı</div>'; return; }
+    autoStart(rows);
+    el.innerHTML = rows.map((r) => (
+      '<div style="display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid var(--border)">' +
+      '<div style="flex:1;min-width:0">' +
+      '<div style="font-size:13px">' + escapeHtml(r.name) + '</div>' +
+      '<div class="sub" style="font-size:11px">' + escapeHtml(r.detail || '') + (r.mb ? ' · ' + r.mb + ' MB' : '') + '</div>' +
+      '</div>' +
+      badge(r.state) +
+      '</div>'
+    )).join('');
+  };
+
+  const refresh = async () => {
+    if (pane.hidden) return;
+    const rows = await beast.installStatus().catch(() => []);
+    render(rows);
+  };
+
+  if (refreshTimer) clearInterval(refreshTimer);
+  await refresh();
+  refreshTimer = setInterval(refresh, 4000);
+}
+
+async function renderTtsPane() {  const pane = $('#tab-tts');
   if (!pane) return;
   /* STT DURUMU: model indirildi mi / iniyor mu / hangi motor */
   let stt = null;

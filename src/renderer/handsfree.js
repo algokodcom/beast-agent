@@ -134,15 +134,15 @@
             if (normalized < floor) floor += (normalized - floor) * 0.08;
             else floor += (normalized - floor) * 0.01;
 
-            /* tetik = zemin × 6.0 (openclaw speechBoostFactor), konuşma alt sınırı ile */
-            trigger = Math.max(speechThreshold, Math.min(TRIGGER_CEILING, floor * 6.0));
+            /* tetik = zemin × 5.0 (uzaktan ses de geçsin), konuşma alt sınırı ile */
+            trigger = Math.max(speechThreshold, Math.min(TRIGGER_CEILING, floor * 5.0));
 
-            /* TTS çalarken: hoparlör sızıntısı ayrı hızlı zemin — tetik sızıntı × 2.2;
-               kullanıcı sesi sızıntıyı ezerse keser (doğal konuşma) */
+            /* TTS çalarken: hoparlör sızıntısı ayrı hızlı zemin — tetik sızıntı × 1.9;
+               kullanıcı erken başlarsa da yakalanır (Chrome AEC sızıntıyı dener) */
             if (ttsState.playing) {
               ttsWin.push(normalized);
               if (ttsWin.length > 12) ttsWin.shift();
-              trigger = Math.max(BARGE_MIN_TRIGGER, Math.min(0.5, percentile90(ttsWin) * 2.2));
+              trigger = Math.max(BARGE_MIN_TRIGGER, Math.min(0.5, percentile90(ttsWin) * 1.9));
             }
 
             /* grace: submit sonrası kısa süre konuşma tetiklenmez (zemin yine güncellenir) */
@@ -302,8 +302,8 @@
 
   /* ---------- panel döngüsü (use-voice-conversation.ts portu) ---------- */
 
-  const SILENCE_LEVEL = 0.10; // konuşma eşiği alt sınırı — TV/gürültü zemini geçmesin
-  const BARGE_MIN_TRIGGER = 0.17; // barge kesme eşiği — daha katı
+  const SILENCE_LEVEL = 0.085; // konuşma eşiği alt sınırı (uzaktan ses de geçsin)
+  const BARGE_MIN_TRIGGER = 0.15; // barge kesme eşiği
   const SILENCE_MS = 700; // openclaw: 700ms sessizlik = cümle sonu (hızlı tur)
   const IDLE_SILENCE_MS = 12000; // boş hava timeout
   const TURN_TIMEOUT_MS = 90000; // tek dinleme turu tavanı
@@ -522,6 +522,7 @@
             silenceLevel: BARGE_MIN_TRIGGER,
             silenceMs: SILENCE_MS,
             idleSilenceMs: IDLE_SILENCE_MS,
+            graceMs: 600, // kısa grace — erken başlayan sözler kaybolmasın
             triggerWinFrames: 30, // ~500ms pencerede %85 çoğunluk — TV kesintisi zor
             onTrigger: () => {
               triggered = true;
@@ -542,8 +543,24 @@
         ]);
         if (!active) return;
         if (first === 'done' && !triggered) {
+          /* çalma bitti — kullanıcı TAM O anda konuşuyor olabilir: kısa kontrol,
+             sonra 500ms drive beklemadan ANINDA dinlemeye dön */
+          if (monitorRes === null) {
+            monitorRes = await Promise.race([
+              monP.catch(() => null),
+              new Promise((r) => setTimeout(() => r(null), 250)),
+            ]);
+          }
+          if (!active) return;
+          if (monitorRes && monitorRes.heardSpeech) {
+            const outcome = await utteranceTurn(monitorRes.audio);
+            if (outcome === 'closed' || !active) return;
+            if (outcome === 'echo') { if (!isBusy()) { rearm(); void startListening(); return; } continue; }
+            continue;
+          }
           recorder.cancel();
           rearm();
+          void startListening(); // bekleme yok — mikrofon hemen dinleme modunda
           return;
         }
         if (monitorRes === null) monitorRes = await monP.catch(() => null);

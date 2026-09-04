@@ -207,4 +207,8 @@ contextBridge.exposeInMainWorld('beast', {
   ideDelete: (rel) => ipcRenderer.invoke('ide:delete', rel),
   onWaEvent: (cb) => ipcRenderer.on('wa:event', (_e, ev) => cb(ev)),
   onEvent: (cb) => ipcRenderer.on('agent:event', (_e, ev) => cb(ev)),
+  empatiGet: () => ipcRenderer.invoke('empati:get'),
+  empatiSet: (patch) => ipcRenderer.invoke('empati:set', patch),
+  empatiScan: () => ipcRenderer.invoke('empati:scan'),
+  empatiEvents: () => ipcRenderer.invoke('empati:events'),
 });

@@ -1066,6 +1066,7 @@ async function renderActiveSettingsTab() {
     case 'websearch': await renderWebSearchPane(); break;
     case 'mcp': await renderMcpPane(); break;
     case 'events': await renderEventsPane(); break;
+    case 'empati': await renderEmpatiPane(); break;
     case 'cron': await openCron(); break;
     case 'usage': await renderUsagePane(); break;
     case 'agents': await refreshAgentsPane(); break;
@@ -1151,7 +1152,7 @@ function switchTab(name) {
   document.querySelectorAll('#setTabs .tab').forEach((b) =>
     b.classList.toggle('active', b.dataset.tab === name)
   );
-  for (const p of ['lang', 'provider', 'fallout', 'skills', 'agents', 'tts', 'install', 'email', 'integrations', 'websearch', 'mcp', 'events', 'cron', 'usage', 'logs', 'dash', 'sec', 'update']) {
+    for (const p of ['lang', 'provider', 'fallout', 'skills', 'agents', 'tts', 'install', 'email', 'integrations', 'websearch', 'mcp', 'events', 'empati', 'cron', 'usage', 'logs', 'dash', 'sec', 'update']) {
     const el = $('#tab-' + p);
     if (el) el.hidden = p !== name; // guard: eksik pane tüm sekmeleri kilitlemesin
   }
@@ -1160,6 +1161,7 @@ function switchTab(name) {
   if (name === 'usage') renderUsagePane();
   if (name === 'install') renderInstallPane();
   if (name === 'events') renderEventsPane();
+  if (name === 'empati') renderEmpatiPane();
   if (name === 'logs') renderLogPane();
   if (name === 'dash') renderDashboardPane();
   if (name === 'sec') renderSecurityPane();
@@ -3022,6 +3024,136 @@ async function renderEventsPane() {
   });
 }
 
+/* ---------------- EMPATİ LOOP (proaktif algı sekmesi) ---------------- */
+async function renderEmpatiPane() {
+  const pane = $('#tab-empati');
+  if (!pane) return;
+  const cfg = await beast.empatiGet().catch(() => null);
+  let events = [];
+  try { events = await beast.empatiEvents(); } catch {}
+  let models = [];
+  try { models = (await beast.getState()).models || []; } catch {}
+  if (!cfg) {
+    pane.innerHTML = '<h2>' + _t('em_h2') + '</h2><div class="sub">' + _t('em_ipc_err') + '</div>';
+    return;
+  }
+  const modelOpts =
+    '<option value="">' + _t('em_model_main') + '</option>' +
+    models.map((m) =>
+      '<option value="' + escapeHtml(m.sel || '') + '"' + (cfg.filterModel === m.sel ? ' selected' : '') + '>' +
+      escapeHtml((m.providerName || '') + ' · ' + (m.model || '')) + '</option>'
+    ).join('');
+  const targetOpts = [
+    ['whatsapp', _t('em_notify_wa')],
+    ['telegram', _t('em_notify_tg')],
+    ['discord', _t('em_notify_dc')],
+  ].map(([v, lbl]) =>
+    '<option value="' + v + '"' + (cfg.notifyTarget === v ? ' selected' : '') + '>' + escapeHtml(lbl) + '</option>'
+  ).join('');
+  const when = (iso) => {
+    try {
+      return new Date(iso).toLocaleString('tr-TR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+    } catch { return String(iso || ''); }
+  };
+  const statusT = { notified: _t('em_st_notified'), queued: _t('em_st_queued'), stored: _t('em_st_stored'), ignored: _t('em_st_ignored') };
+  const lvBadge = (e) => {
+    if (!e.level) return '';
+    const color = e.level === 'high' ? '#e06c75' : '#d9a441';
+    return ' · <b style="color:' + color + '">' + (e.level === 'high' ? _t('em_lv_high') : _t('em_lv_medium')) + '</b>';
+  };
+  let rows = '';
+  for (const e of events) {
+    rows +=
+      '<div class="usage-row" style="align-items:flex-start">' +
+      '<div style="min-width:0;flex:1">' +
+      '<div style="font-size:12px">' + escapeHtml(e.title || '') + '</div>' +
+      '<div class="ur-meta">' + escapeHtml(e.source || '') + ' · ' + when(e.ts) + ' · %' + (e.priority || 0) +
+      (e.reason ? ' · ' + escapeHtml(e.reason) : '') + '</div>' +
+      (e.text ? '<div class="sub" style="font-size:11px">' + escapeHtml(e.text) + '</div>' : '') +
+      '</div>' +
+      '<span style="flex:none;font-size:11px;color:var(--muted)">' + (statusT[e.status] || e.status) + lvBadge(e) + '</span>' +
+      '</div>';
+  }
+
+  pane.innerHTML =
+    '<h2>' + _t('em_h2') + '</h2>' +
+    '<div class="sub">' + _t('em_sub') + '</div>' +
+    (cfg.lastRunAt ? '<div class="sub">' + _t('em_lastrun') + ': ' + when(cfg.lastRunAt) + (cfg.running ? ' · ⏳' : '') + '</div>' : '') +
+    `<div class="fo-toggles" style="margin-top:10px">
+      <label class="lock-row"><input type="checkbox" id="emOn" ${cfg.enabled ? 'checked' : ''}/><span>${_t('em_on')}</span></label>
+    </div>
+    <div id="emDetail" style="${cfg.enabled ? '' : 'opacity:.5'}">
+      <div class="form-grid" style="grid-template-columns:1fr 1fr 1fr;margin-top:8px">
+        <div><label class="sub">${_t('em_interval')}</label><input id="emInterval" class="inp" type="number" min="3" max="1440" value="${cfg.intervalMin}"/></div>
+        <div><label class="sub">${_t('em_min_notify')}</label><input id="emMin" class="inp" type="number" min="0" max="100" value="${cfg.minNotifyPriority}"/></div>
+        <div><label class="sub">${_t('em_cooldown')}</label><input id="emCd" class="inp" type="number" min="0" max="10080" value="${cfg.cooldownMin}"/></div>
+      </div>
+      <div style="margin-top:8px">
+        <label class="sub">${_t('em_model')}</label>
+        <select id="emModel" class="inp">${modelOpts}</select>
+        <div class="sub">${_t('em_model_sub')}</div>
+      </div>
+      <div style="margin-top:8px">
+        <label class="sub">${_t('em_notify')}</label>
+        <select id="emTarget" class="inp"><option value="">${_t('em_notify_auto')}</option>${targetOpts}</select>
+        <div class="sub">${_t('em_notify_sub')}</div>
+      </div>
+      <div style="margin-top:8px">
+        <label class="sub">${_t('em_interests')}</label>
+        <textarea id="emInterests" class="inp" rows="2" placeholder="${_t('em_interests_ph')}">${escapeHtml(cfg.interests || '')}</textarea>
+      </div>
+      <label class="lock-row" style="margin-top:8px"><input type="checkbox" id="emNews" ${cfg.newsTopics ? 'checked' : ''}/><span>${_t('em_news')}</span></label>
+      <input id="emTopics" class="inp" style="${cfg.newsTopics ? '' : 'opacity:.5'}" placeholder="${_t('em_news_topics_ph')}" value="${escapeHtml(cfg.newsTopics || '')}" spellcheck="false"/>
+      <div style="display:flex;gap:8px;margin-top:10px;align-items:center">
+        <button id="emSave" class="btn">${_t('mcp_save')}</button>
+        <button id="emScan" class="btn ghost">${_t('em_scan')}</button>
+        <span id="emMsg" class="sub" style="margin:0"></span>
+      </div>
+      <div class="sub" style="margin-top:6px">${_t('em_note')}</div>
+    </div>
+    <h3 style="margin-top:16px;color:var(--muted)">${_t('em_events')}</h3>`;
+  const wrap = document.createElement('div');
+  if (!rows) wrap.innerHTML = '<p class="sub">' + _t('em_no_events') + '</p>';
+  else wrap.innerHTML = rows;
+  pane.appendChild(wrap);
+
+  const emOn = $('#emOn');
+  const emDetail = $('#emDetail');
+  const emNews = $('#emNews');
+  const emTopics = $('#emTopics');
+  emOn.addEventListener('change', () => { emDetail.style.opacity = emOn.checked ? '' : '.5'; });
+  emNews.addEventListener('change', () => { emTopics.style.opacity = emNews.checked ? '' : '.5'; });
+  $('#emSave').addEventListener('click', async () => {
+    const patch = {
+      enabled: emOn.checked,
+      intervalMin: Number($('#emInterval').value) || cfg.intervalMin,
+      minNotifyPriority: Number($('#emMin').value),
+      cooldownMin: Number($('#emCd').value),
+      notifyTarget: $('#emTarget') ? $('#emTarget').value : '',
+      filterModel: $('#emModel') ? $('#emModel').value : '',
+      interests: $('#emInterests').value.trim(),
+      newsTopics: emNews.checked ? emTopics.value.trim() : '',
+    };
+    const r = await beast.empatiSet(patch).catch(() => null);
+    toast(r ? _t('em_saved') : 'Hata');
+    if (r) renderEmpatiPane();
+  });
+  $('#emScan').addEventListener('click', async () => {
+    const msg = $('#emMsg');
+    msg.textContent = '⏳';
+    const r = await beast.empatiScan().catch(() => null);
+    if (r && r.ok) {
+      msg.textContent = _t('em_scan_ok')
+        .replace('{raw}', String(r.raw || 0))
+        .replace('{queued}', String(r.queued || 0))
+        .replace('{stored}', String(r.stored || 0));
+      renderEmpatiPane();
+    } else {
+      msg.textContent = (r && r.error) || 'hata';
+    }
+  });
+}
+
 async function renderWaAllow() {
   const wrap = $('#waAllowChips');
   if (!wrap) return;
@@ -4706,6 +4838,15 @@ function onEvent(ev) {
     return;
   }
   if (ev.type === 'install-progress') { updateInstallPct(ev); return; }
+  /* EMPATİ LOOP: proaktif bildirim (masaüstü) + sekme canlı yenileme */
+  if (ev.type === 'proactive') {
+    toast('🫡 ' + (ev.text || ev.title || ''));
+    return;
+  }
+  if (ev.type === 'empati') {
+    if (!els.settingsOverlay.hidden && setTab === 'empati') renderEmpatiPane();
+    return;
+  }
   if (ev.type === 'update') {
     if (ev.downloaded) toast(_t('up_downloaded') + ' (v' + (ev.version || '?') + ') — /update now');
     else if (ev.available && ev.version && ev.version !== ev.current) toast(_t('up_available') + ' (v' + ev.version + ')');

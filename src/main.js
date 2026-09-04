@@ -3256,6 +3256,7 @@ app.whenReady().then(() => {
     createTray();
     cron.init({ onFire: cronFire });
     watchers.start({ onTrigger: watcherFire });
+    empatiKickoff(); // empati loop: açılış + 90 sn sonra ilk tarama, sonra cfg aralığı
     startEventBus();
     ideWatchStart(); // soldaki dosya ağacı canlı izlemede
     studioWatchStart(); // Beast Studio klasörü canlı izlemede
@@ -6186,6 +6187,193 @@ function watcherFire(w, value) {
     });
   } catch {}
 }
+
+/* ---------- EMPATİ LOOP: proaktif algı/event alt sistemi ----------
+   Ana sohbet motorundan bağımsız: sinyal topla → ucuz filtre modeliyle puanla →
+   kompozit öncelik → değerliyse ANA modelle kısa proaktif mesaj üret →
+   masaüstü + WA'ya bildir. Önemsiz olaylar yalnız depoya yazılır, rahatsız etmez. */
+
+const empati = require('./agent/perception');
+const empatiRuntime = { running: false, timer: null };
+
+function empatiCfg() {
+  return empati.mergeCfg(settings.empati || {});
+}
+
+function empatiLog(line) {
+  try { waLog('[EMPATİ] ' + line); } catch {}
+}
+
+/* tarama (filtre) modeli: sekmeden seçilmişse onu çöz; seçilmemişse ANA model */
+function empatiFilterSel() {
+  const fm = empatiCfg().filterModel;
+  if (fm) {
+    try {
+      const r = engine._resolve(fm);
+      if (r) return r;
+    } catch {}
+  }
+  return engine.sel;
+}
+
+/* sinyal toplayıcılar — perception modülü saf kalır, engine/köprülerle burada konuşur */
+async function empatiSignalSelf() {
+  const out = [];
+  try {
+    const w = engine.lastWhereWasI();
+    if (w && w.pendingTodos && w.pendingTodos.length) {
+      out.push({
+        type: 'todo',
+        title: 'Yarım kalan görevler: ' + w.pendingTodos.map((t) => t.title).join(' · ').slice(0, 200),
+        detail: 'oturum ' + (w.code || '') + ' · ' + w.pendingTodos.length + ' görev bekliyor',
+      });
+    }
+  } catch {}
+  return out;
+}
+
+async function empatiSignalNews() {
+  const topics = String(empatiCfg().newsTopics || '').split(',').map((s) => s.trim()).filter(Boolean);
+  if (!topics.length) return [];
+  return empati.fetchNews(topics);
+}
+
+/* tek toplu filtre çağrısı (maliyet freni); model yok/çökerse boş → deterministik puan */
+function empatiLlmFilter(prompt) {
+  const sel = empatiFilterSel();
+  if (!sel) return Promise.resolve('');
+  const ctrl = new AbortController();
+  const kill = setTimeout(() => ctrl.abort(), 45000);
+  return require('./agent/llm')
+    .chatOnce(sel, {
+      messages: [
+        { role: 'system', content: empati.FILTER_SYSTEM },
+        { role: 'user', content: prompt },
+      ],
+      temperature: 0.1,
+    }, { signal: ctrl.signal })
+    .then((r) => String(r.content || ''))
+    .catch(() => '')
+    .finally(() => clearTimeout(kill));
+}
+
+/* compose her zaman ANA model kullanır — filtre ucuz, anlamlandırma güçlü */
+function empatiLlmCompose(prompt) {
+  if (!engine.sel) return Promise.resolve('');
+  const ctrl = new AbortController();
+  const kill = setTimeout(() => ctrl.abort(), 60000);
+  return require('./agent/llm')
+    .chatOnce(engine.sel, {
+      messages: [
+        { role: 'system', content: empati.COMPOSE_SYSTEM },
+        { role: 'user', content: prompt },
+      ],
+      temperature: 0.6,
+    }, { signal: ctrl.signal })
+    .then((r) => String(r.content || '').trim().slice(0, 600))
+    .catch(() => '')
+    .finally(() => clearTimeout(kill));
+}
+
+/* bildirim hedefi: sekmeden seçilen entegrasyon; seçilmemişse bağlı olanlar.
+   Hiçbir entegrasyon yazılamazsa masaüstü chat UI (toast) kalır. */
+function empatiNotify(text, ev) {
+  const cfg = empatiCfg();
+  const senders = [];
+  const tryWa = () => {
+    try {
+      const own = waOwnerNum();
+      if (own && wa && wa.connected) senders.push(() => sendWaSafe(own + '@s.whatsapp.net', '🫡 *Beast proaktif:*\n' + text));
+    } catch {}
+  };
+  const tryTg = () => {
+    try {
+      if (tg && tg.connected) for (const id of tgOwnerIds()) senders.push(() => sendTgSafe(id, '🫡 *Beast proaktif:*\n' + text));
+    } catch {}
+  };
+  const tryDc = () => {
+    try {
+      if (dc && dc.connected) for (const id of dcOwnerIds()) senders.push(() => sendDcSafe(id, '🫡 **Beast proaktif:**\n' + text));
+    } catch {}
+  };
+  if (cfg.notifyTarget === 'whatsapp') tryWa();
+  else if (cfg.notifyTarget === 'telegram') tryTg();
+  else if (cfg.notifyTarget === 'discord') tryDc();
+  else { tryWa(); tryTg(); tryDc(); } // auto: ekli/bağlı entegrasyonlar
+  let sent = 0;
+  for (const fn of senders) {
+    try { fn(); sent++; } catch {}
+  }
+  /* hiçbir entegrasyona yazılamadıysa yalnız masaüstü chat UI'a düş */
+  try {
+    if (!sent && win && !win.isDestroyed()) {
+      win.webContents.send('agent:event', { type: 'proactive', id: ev.id, level: ev.level, title: ev.title, text });
+    }
+  } catch {}
+}
+
+async function empatiCycle(manual) {
+  if (empatiRuntime.running) return { ok: false, error: 'döngü zaten çalışıyor' };
+  const cfg = empatiCfg();
+  if (!cfg.enabled && !manual) return { ok: false, error: 'kapalı' };
+  empatiRuntime.running = true;
+  try {
+    const r = await empati.runCycle({
+      cfg,
+      signals: { self: empatiSignalSelf, news: empatiSignalNews },
+      llmFilter: empatiLlmFilter,
+      now: new Date(),
+      log: empatiLog,
+    });
+    let notified = 0;
+    for (const a of r.actions) {
+      let text = '';
+      try { text = await empatiLlmCompose(empati.composePrompt(a.event, cfg)); } catch {}
+      if (!text) text = empati.composeFallback(a.event);
+      empatiNotify(text, a.event);
+      empati.markNotified(a.event.id, a.level, text, cfg.cooldownMin);
+      notified++;
+    }
+    if (notified && win && !win.isDestroyed()) {
+      win.webContents.send('agent:event', { type: 'empati', notified });
+    }
+    return { ok: true, ...r.summary, notified };
+  } finally {
+    empatiRuntime.running = false;
+  }
+}
+
+function empatiSchedule() {
+  if (empatiRuntime.timer) clearTimeout(empatiRuntime.timer);
+  empatiRuntime.timer = null;
+  const cfg = empatiCfg();
+  if (!cfg.enabled) return;
+  empatiRuntime.timer = setTimeout(async () => {
+    try { await empatiCycle(false); } catch {}
+    empatiSchedule();
+  }, cfg.intervalMin * 60000);
+}
+
+/* açılış + 90 sn: ilk tarama (başlangıç fırtınasını önle), sonra cfg aralığı */
+function empatiKickoff() {
+  setTimeout(() => {
+    empatiCycle(false).catch(() => {});
+    empatiSchedule();
+  }, 90 * 1000);
+}
+
+ipcMain.handle('empati:get', () => ({ ...empatiCfg(), running: empatiRuntime.running, lastRunAt: empati.lastRunAt() }));
+ipcMain.handle('empati:set', (_e, patch) => {
+  const cfg = empati.mergeCfg({ ...empatiCfg(), ...(patch || {}) });
+  settings.empati = cfg;
+  saveSettings();
+  empatiSchedule(); // aralık/model değişmiş olabilir
+  return { ...cfg };
+});
+ipcMain.handle('empati:scan', async () => {
+  try { return await empatiCycle(true); } catch (e) { return { ok: false, error: String((e && e.message) || e).slice(0, 200) }; }
+});
+ipcMain.handle('empati:events', () => empati.listEvents(80));
 
 ipcMain.handle('cron:list', () => cron.list());
 /* #23 Fallout: provider → kayıtlı API key haritası.

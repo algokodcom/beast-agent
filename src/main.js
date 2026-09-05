@@ -229,17 +229,20 @@ startHealthServer(); /* splash/boot aşamasından itibaren /health ayakta */
 try { setSearchChain(settings.searchChain); } catch {}
 try { setTinyfishKey(settings.tinyfishKey || null); } catch {}
 let wa = null;
-let waChats = new Map(); // jid -> aktif session id
+let waChats = new Map(); // jid -> aktif session id (hepsi KANAL TEK OTURUMUNA bağlı)
+let waSingleSid = null; // KANAL TEK OTURUMU: WhatsApp için BİR oturum — silinmedikçe hep aynı
 let waHistory = new Map(); // jid -> [sid,...] bu sohbete ait tüm oturumlar
 let waBcMode = new Set(); // jid -> BeastCode modu AKTİF (WhatsApp'tan uzaktan kodlama)
 let waJidPn = new Map(); // jid -> gerçek telefon numarası (LID fallback için)
 const WA_HISTORY_CAP = 20;
 let tg = null;
-let tgChats = new Map(); // telegram chatId -> aktif session id
+let tgChats = new Map(); // telegram chatId -> aktif session id (hepsi KANAL TEK OTURUMUNA bağlı)
+let tgSingleSid = null; // KANAL TEK OTURUMU: Telegram için BİR oturum
 let tgHistory = new Map(); // chatId -> [sid,...]
 const TG_HISTORY_CAP = 20;
 let dc = null;
-let dcChats = new Map(); // discord channelId -> aktif session id
+let dcChats = new Map(); // discord channelId -> aktif session id (hepsi KANAL TEK OTURUMUNA bağlı)
+let dcSingleSid = null; // KANAL TEK OTURUMU: Discord için BİR oturum
 let dcHistory = new Map(); // channelId -> [sid,...]
 const DC_HISTORY_CAP = 20;
 const DC_CHATS_FILE = path.join(APP_DIR, 'dc-chats.json');
@@ -278,6 +281,8 @@ try {
       if (!h.includes(s)) h.push(s);
       waHistory.set(j, h.slice(-WA_HISTORY_CAP));
     }
+    /* kanal tek oturumu: kayıtlı aktif id (geçersizse ensure yeniden seçer) */
+    if (typeof raw.active === 'string' && raw.active) waSingleSid = raw.active;
     /* BeastCode modu: hangi sohbetler uzaktan kodlama yapıyor */
     if (Array.isArray(raw.bcMode)) {
       for (const j of raw.bcMode) if (typeof j === 'string') waBcMode.add(j);
@@ -293,6 +298,7 @@ function saveWaChats() {
         chats: Object.fromEntries(waChats),
         history: Object.fromEntries([...waHistory.entries()].map(([j, a]) => [j, a.slice(-WA_HISTORY_CAP)])),
         bcMode: [...waBcMode],
+        active: waSingleSid || '',
       })
     );
   } catch {}
@@ -1268,12 +1274,26 @@ async function tryWaSlash(jid, rawText, senderNum, payload0) {
     if (cmd === 'help') {
       out = waSlashHelp();
     } else if (cmd === 'new') {
+      /* /new: kanalın TEK oturumunu kapat, yenisini aç — aynı anda iki
+         WhatsApp sohbet oturumu olmaz; eski oturum silinir */
+      const oldSid = waSingleSid || waChats.get(jid) || '';
+      if (oldSid) {
+        let olds = null;
+        try { olds = engine.cache.get(oldSid) || null; } catch {}
+        if (!olds || !olds.bcCode) {
+          /* Beast Code panel oturumuysa dokunma — yalnız pointer taşınır */
+          try { engine.deleteSession(oldSid); } catch {}
+          for (const [j, h] of waHistory.entries()) waHistory.set(j, h.filter((x) => x !== oldSid));
+        }
+      }
       const v = engine.createSession();
+      waSingleSid = v.id;
+      for (const j of [...waChats.keys()]) waChats.set(j, v.id);
       waChats.set(jid, v.id);
       waRememberSession(jid, v.id);
       saveWaChats();
       wa.setWatchJids([...waChats.keys()]);
-      out = `*Yeni oturum* \`${v.code}\` açıldı — anlatabilirsin.\nDiğer oturumlara geçiş: \`/open <kod>\``;
+      out = `*Yeni oturum* \`${v.code}\` açıldı — eski oturum kapatıldı, artık buradan devam.\nVar olan başka oturuma geçiş: \`/open <kod>\``;
     } else if (cmd === 'open') {
       if (!arg) {
         out = 'Kullanım: `/open <kod>` — kodları görmek için /sessions';
@@ -1282,7 +1302,9 @@ async function tryWaSlash(jid, rawText, senderNum, payload0) {
         if (!hit) {
           out = `\`${arg.toUpperCase()}\` kodlu oturum bulunamadı. Listeyi görmek için /sessions`;
         } else {
-          waChats.set(jid, hit.id);
+          /* /open: kanal TEK oturumunu bu oturuma çevirir — tüm jid'ler bağlanır */
+          waSingleSid = hit.id;
+          for (const j of [...waChats.keys()]) waChats.set(j, hit.id);
           waRememberSession(jid, hit.id);
           saveWaChats();
           wa.setWatchJids([...waChats.keys()]);
@@ -1564,14 +1586,15 @@ async function tryWaSlash(jid, rawText, senderNum, payload0) {
           try { engine.interrupt(sid, 'kullanıcı /beastagent ile sohbet moduna döndü'); } catch {}
         }
         waBcMode.delete(jid);
-        const v = engine.createSession();
-        waChats.set(jid, v.id);
-        waRememberSession(jid, v.id);
+        /* KANAL TEK OTURUMU: yeni oturum AÇILMAZ — sohbet oturumuna dönülür
+           (silinmediyse hep aynı; ilk kez ise burada oluşur) */
+        const chatSid = ensureWaSession(jid);
+        const chatS = engine.cache.get(chatSid);
         saveWaChats();
         if (wa) wa.setWatchJids([...waChats.keys()]);
         emitWaEventSafe({ type: 'bc-screen', on: false });
         out =
-          `*💬 Sohbet moduna dönüldü* — masaüstünde chat ekranı açıldı, yeni oturum \`${v.code}\`.\n` +
+          `*💬 Sohbet moduna dönüldü* — masaüstünde chat ekranı açıldı, sohbet oturumu \`${(chatS && chatS.code) || '?'}\`.\n` +
           `Kodlar duruyor: \`${waBcWorkspace()}\`\n` +
           `Tekrar kodlamak için: /beastcode`;
       }
@@ -1682,19 +1705,58 @@ function waGroupSenderInfo(payload) {
   return { label, name: (hitP && hitP.name) || '', isOwner: !!(hitP && hitP.owner) };
 }
 
-/* Oturum yoksa oluştur (processWaMessage ile aynı kalıp) */
+/* ---------- KANAL TEK OTURUMU (WA/TG/DC) ----------
+   Her kanalın BİR aktif sohbet oturumu vardır; eskisi silinmedikçe hep
+   AYNI oturumdan devam edilir — Beast kendi kendine oturum kapatıp
+   yenisiyle değiştirmez. Yenisi yalnızca: (1) kayıtlı oturum dosyası
+   yoksa (kullanıcı UI'dan sildi), (2) kullanıcı WA'da /new yazarsa.
+   Masaüstü chat UI'daki "+ Yeni Sohbet" bu kuralın dışındadır. */
+function sessionFileAlive(sid) {
+  try {
+    return !!sid && fs.existsSync(path.join(engine.sessionsDir, String(sid) + '.jsonl'));
+  } catch {
+    return false;
+  }
+}
+
+/* kanalın yaşayan tek oturumunu döndürür; geçersizse eski bağlamdan devralır,
+   o da yoksa (ilk kullanım) yeni açar ve tüm jid'leri ona bağlar */
 function ensureWaSession(jid) {
-  let sid = waChats.get(jid);
-  if (!sid) {
-    const v = engine.createSession();
-    sid = v.id;
-    waChats.set(jid, sid);
+  if (!waSingleSid || !sessionFileAlive(waSingleSid)) {
+    let best = '';
+    let bestTs = '';
+    for (const c of new Set([...waChats.values(), waSingleSid])) {
+      if (!c || !sessionFileAlive(c)) continue;
+      let ts = '';
+      try {
+        const s = engine.cache.get(c) || engine._load(c);
+        ts = String((s && s.updatedAt) || '');
+      } catch {}
+      if (!best || ts > bestTs) {
+        best = c;
+        bestTs = ts;
+      }
+    }
+    waSingleSid = best || engine.createSession().id;
+    saveWaChats();
+  }
+  let dirty = false;
+  for (const [j, s] of waChats.entries()) {
+    if (s !== waSingleSid) {
+      waChats.set(j, waSingleSid);
+      dirty = true;
+    }
+  }
+  if (jid != null && waChats.get(String(jid)) !== waSingleSid) {
+    waChats.set(String(jid), waSingleSid);
+    dirty = true;
+  }
+  waRememberSession(String(jid), waSingleSid);
+  if (dirty) {
     saveWaChats();
     if (wa) wa.setWatchJids([...waChats.keys()]);
-  } else {
-    waRememberSession(jid, sid);
   }
-  return sid;
+  return waSingleSid;
 }
 
 /* ---------- GRUP BAĞLAM AKIŞI (mentionOnly + seeAll) ----------
@@ -2232,7 +2294,7 @@ async function processWaMessage(jid, payload, senderNum, requeues = 0) {
     waLog(`skip flush: izinli eşleşme yok (sender=+${senderNum || '?'})`);
     return;
   }
-  let sid = waChats.get(jid);
+  let sid = waChats.get(jid) || waSingleSid;
   if (sid && engine.isBusy(sid)) {
     /* oturum hâlâ önceki işle uğraşıyor — KAYBETME: sınırı kaldırdık,
        iş bitene dek her debounce turunda yeniden deneriz; kullanıcıya
@@ -2246,16 +2308,8 @@ async function processWaMessage(jid, payload, senderNum, requeues = 0) {
   if (!isGroup && requeues > 0) {
     // retry sonrası izin yeniden kontrol edilir (yukarıda hit zaten alınıyor)
   }
-  if (!sid) {
-    const v = engine.createSession();
-    sid = v.id;
-    waChats.set(jid, sid);
-    waRememberSession(jid, sid);
-    saveWaChats();
-    if (wa) wa.setWatchJids([...waChats.keys()]);
-  } else {
-    waRememberSession(jid, sid);
-  }
+  /* KANAL TEK OTURUMU: eskisi silinmedikçe hep aynı oturumdan devam */
+  sid = ensureWaSession(jid);
   // Cevap verilecek — karşı telefonda "yazıyor…" göstergesi (medya işlenene dek sürer)
   wa.setComposing(jid, true);
   // Kişi bazlı granül izin: all/web/read/chat
@@ -2462,6 +2516,8 @@ function ensureWa() {
         if (Array.isArray(arr)) tgHistory.set(c, arr.filter((x) => typeof x === 'string').slice(-TG_HISTORY_CAP));
       }
     }
+    /* kanal tek oturumu: kayıtlı aktif id (geçersizse ensure yeniden seçer) */
+    if (raw && typeof raw.active === 'string' && raw.active) tgSingleSid = raw.active;
     for (const [c, s] of tgChats.entries()) {
       const h = tgHistory.get(c) || [];
       if (!h.includes(s)) h.push(s);
@@ -2477,6 +2533,7 @@ function saveTgChats() {
       JSON.stringify({
         chats: Object.fromEntries(tgChats),
         history: Object.fromEntries([...tgHistory.entries()].map(([c, a]) => [c, a.slice(-TG_HISTORY_CAP)])),
+        active: tgSingleSid || '',
       })
     );
   } catch {}
@@ -2549,21 +2606,14 @@ async function processTgMessage(chatId, payload, requeues = 0) {
     tgLog(`skip flush: izinli eşleşme yok (sender=${payload.senderId || '?'})`);
     return;
   }
-  let sid = tgChats.get(chatId);
+  let sid = tgChats.get(chatId) || tgSingleSid;
   if (sid && engine.isBusy(sid)) {
     /* oturum meşgul — WA ile aynı: kaybetme, iş bitene dek yeniden dene */
     await new Promise((r) => setTimeout(r, TG_DEBOUNCE_MS));
     return processTgMessage(chatId, payload, requeues + 1);
   }
-  if (!sid) {
-    const v = engine.createSession();
-    sid = v.id;
-    tgChats.set(chatId, sid);
-    tgRememberSession(chatId, sid);
-    saveTgChats();
-  } else {
-    tgRememberSession(chatId, sid);
-  }
+  /* KANAL TEK OTURUMU: eskisi silinmedikçe hep aynı oturumdan devam */
+  sid = ensureTgSession(chatId);
   /* Kişi bazlı granül izin: all/web/read/chat */
   let perm = hit.perm || (hit.lockdown ? 'chat' : 'all');
   engine.setSessionPerm(sid, perm);
@@ -2686,6 +2736,8 @@ function dcFind(senderId, username) {
         if (Array.isArray(arr)) dcHistory.set(c, arr.filter((x) => typeof x === 'string').slice(-DC_HISTORY_CAP));
       }
     }
+    /* kanal tek oturumu: kayıtlı aktif id (geçersizse ensure yeniden seçer) */
+    if (raw && typeof raw.active === 'string' && raw.active) dcSingleSid = raw.active;
     for (const [c, s] of dcChats.entries()) {
       const h = dcHistory.get(c) || [];
       if (!h.includes(s)) h.push(s);
@@ -2701,6 +2753,7 @@ function saveDcChats() {
       JSON.stringify({
         chats: Object.fromEntries(dcChats),
         history: Object.fromEntries([...dcHistory.entries()].map(([c, a]) => [c, a.slice(-DC_HISTORY_CAP)])),
+        active: dcSingleSid || '',
       })
     );
   } catch {}
@@ -2767,21 +2820,14 @@ async function processDcMessage(channelId, payload) {
     dcLog(`skip flush: izinli eşleşme yok (sender=${payload.senderId || '?'})`);
     return;
   }
-  let sid = dcChats.get(channelId);
+  let sid = dcChats.get(channelId) || dcSingleSid;
   if (sid && engine.isBusy(sid)) {
     /* oturum meşgul — WA/TG ile aynı: kaybetme, iş bitene dek yeniden dene */
     await new Promise((r) => setTimeout(r, DC_DEBOUNCE_MS));
     return processDcMessage(channelId, payload, 1);
   }
-  if (!sid) {
-    const v = engine.createSession();
-    sid = v.id;
-    dcChats.set(channelId, sid);
-    dcRememberSession(channelId, sid);
-    saveDcChats();
-  } else {
-    dcRememberSession(channelId, sid);
-  }
+  /* KANAL TEK OTURUMU: eskisi silinmedikçe hep aynı oturumdan devam */
+  sid = ensureDcSession(channelId);
   /* Kişi bazlı granül izin: all/web/read/chat */
   let perm = hit.perm || (hit.lockdown ? 'chat' : 'all');
   engine.setSessionPerm(sid, perm);
@@ -6330,13 +6376,19 @@ function empatiLlmCompose(prompt) {
 const PROACTIVE_MARK = '🫡 *Beast proaktif:*';
 
 /* bildirimin ALTINA YAZILAN KAYNAK: haberin gerçek linki varsa o, yoksa kaynak adı.
-   Kullanıcı "bu proje neymiş?" diye sorduğunda linkten bulabilsin. */
+   Kullanıcı "bu proje neymiş?" diye sorduğunda linkten bulabilsin.
+   TEK SATIR kuralı: satır sonu/boşluklar temizlenir, uzunsa sona "..." gelir. */
 function empatiSourceLine(ev) {
   if (!ev) return '';
-  const url = String(ev.url || '').trim();
-  if (/^https?:\/\//i.test(url)) return '🔗 ' + url;
-  const src = String(ev.source || '').trim();
-  return src ? '🔗 kaynak: ' + src.slice(0, 80) : '';
+  const oneLine = (s) =>
+    String(s || '').replace(/\s*\n+\s*/g, ' ').replace(/\s{2,}/g, ' ').trim();
+  const ELLIPSIS = '...';
+  const cap = (s, max) =>
+    oneLine(s).length > max ? oneLine(s).slice(0, max - ELLIPSIS.length) + ELLIPSIS : oneLine(s);
+  const url = oneLine(ev.url);
+  if (/^https?:\/\//i.test(url)) return '🔗 ' + cap(url, 100);
+  const src = oneLine(ev.source);
+  return src ? '🔗 kaynak: ' + cap(src, 80) : '';
 }
 
 function empatiInjectToSession(sid, out) {
@@ -6360,28 +6412,74 @@ function empatiInjectText(ev, out) {
   );
 }
 
-/* Oturum yoksa oluştur (processTgMessage/processDcMessage ile aynı kalıp) */
+/* kanalın yaşayan tek oturumu (WA kuralının aynısı — Telegram/Discord) */
 function ensureTgSession(chatId) {
-  let sid = tgChats.get(chatId);
-  if (!sid) {
-    const v = engine.createSession();
-    sid = v.id;
-    tgChats.set(chatId, sid);
-    tgRememberSession(chatId, sid);
+  if (!tgSingleSid || !sessionFileAlive(tgSingleSid)) {
+    let best = '';
+    let bestTs = '';
+    for (const c of new Set([...tgChats.values(), tgSingleSid])) {
+      if (!c || !sessionFileAlive(c)) continue;
+      let ts = '';
+      try {
+        const s = engine.cache.get(c) || engine._load(c);
+        ts = String((s && s.updatedAt) || '');
+      } catch {}
+      if (!best || ts > bestTs) {
+        best = c;
+        bestTs = ts;
+      }
+    }
+    tgSingleSid = best || engine.createSession().id;
     saveTgChats();
   }
-  return sid;
+  let dirty = false;
+  for (const [c, s] of tgChats.entries()) {
+    if (s !== tgSingleSid) {
+      tgChats.set(c, tgSingleSid);
+      dirty = true;
+    }
+  }
+  if (chatId != null && tgChats.get(String(chatId)) !== tgSingleSid) {
+    tgChats.set(String(chatId), tgSingleSid);
+    dirty = true;
+  }
+  tgRememberSession(String(chatId), tgSingleSid);
+  if (dirty) saveTgChats();
+  return tgSingleSid;
 }
 function ensureDcSession(channelId) {
-  let sid = dcChats.get(channelId);
-  if (!sid) {
-    const v = engine.createSession();
-    sid = v.id;
-    dcChats.set(channelId, sid);
-    dcRememberSession(channelId, sid);
+  if (!dcSingleSid || !sessionFileAlive(dcSingleSid)) {
+    let best = '';
+    let bestTs = '';
+    for (const c of new Set([...dcChats.values(), dcSingleSid])) {
+      if (!c || !sessionFileAlive(c)) continue;
+      let ts = '';
+      try {
+        const s = engine.cache.get(c) || engine._load(c);
+        ts = String((s && s.updatedAt) || '');
+      } catch {}
+      if (!best || ts > bestTs) {
+        best = c;
+        bestTs = ts;
+      }
+    }
+    dcSingleSid = best || engine.createSession().id;
     saveDcChats();
   }
-  return sid;
+  let dirty = false;
+  for (const [c, s] of dcChats.entries()) {
+    if (s !== dcSingleSid) {
+      dcChats.set(c, dcSingleSid);
+      dirty = true;
+    }
+  }
+  if (channelId != null && dcChats.get(String(channelId)) !== dcSingleSid) {
+    dcChats.set(String(channelId), dcSingleSid);
+    dirty = true;
+  }
+  dcRememberSession(String(channelId), dcSingleSid);
+  if (dirty) saveDcChats();
+  return dcSingleSid;
 }
 
 /* Masaüstü yedeği: en güncel (bg/bot-DM'siz, meşgul olmayan) sohbet — yoksa yeni */

@@ -452,6 +452,18 @@
 
   <div id="fileCtxMenu" hidden></div>
 
+  <!-- in-app onay penceresi: window.confirm Electron/Windows'ta input focus'unu
+       bozuyor (electron#31917) — native dialog YOK, hepsi bu modaldan döner -->
+  <div id="confirmOverlay" class="mini-overlay" hidden>
+    <div class="confirm-dialog">
+      <div id="confirmText" class="confirm-text"></div>
+      <div class="confirm-btns">
+        <button id="confirmCancel" class="btn ghost"></button>
+        <button id="confirmOk" class="btn danger"></button>
+      </div>
+    </div>
+  </div>
+
   <input type="file" id="fileInput" multiple hidden
          accept="image/*,.txt,.md,.json,.csv,.log,.js,.ts,.py,.ps1,.bat,.cmd,.html,.css,.yaml,.yml,.xml,.ini" />
 

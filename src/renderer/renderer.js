@@ -362,6 +362,33 @@ function toast(msg) {
   }, 2200);
 }
 
+/* IN-APP CONFIRM: window.confirm Electron/Windows'ta kapanınca input focus'unu
+   bozuyor (electron#31917 — yazma kabul etmez, klavye ölür). Native dialog
+   HİÇ açılmaz; bu modal söz verir (promise) ve kapanınca odağı geri verir. */
+let confirmResolve = null;
+function uiConfirm(msg, okLabel, cancelLabel) {
+  return new Promise((resolve) => {
+    const ov = $('#confirmOverlay');
+    if (!ov) { resolve(window.confirm(msg)); return; }
+    $('#confirmText').textContent = String(msg || '');
+    $('#confirmOk').textContent = okLabel || _t('cf_ok');
+    $('#confirmCancel').textContent = cancelLabel || _t('cf_cancel');
+    ov.hidden = false;
+    confirmResolve = resolve;
+    $('#confirmOk').focus();
+  });
+}
+function closeConfirm(result) {
+  const ov = $('#confirmOverlay');
+  if (ov) ov.hidden = true;
+  if (confirmResolve) {
+    const r = confirmResolve;
+    confirmResolve = null;
+    r(result);
+    els.input.focus(); /* odayı input'a geri ver — yazma asla kilitli kalmasın */
+  }
+}
+
 /* ---------------- messages ---------------- */
 
 function addUserBubble(content, atts) {
@@ -829,12 +856,23 @@ async function renderSessions(list) {
     row.addEventListener('click', () => openSession(s.id));
     row.querySelector('.sess-del').addEventListener('click', async (e) => {
       e.stopPropagation();
-      if (!window.confirm((_t('sess_del_confirm') || 'Bu sohbet oturumunu silmek istediğine emin misin?') + '\n\n' + (s.title || 'Yeni Sohbet'))) return;
+      const ok = await uiConfirm(
+        (_t('sess_del_confirm') || 'Bu sohbet oturumunu silmek istediğine emin misin?') + '\n\n' + (s.title || 'Yeni Sohbet')
+      );
+      if (!ok) return;
       await beast.deleteSession(s.id);
       if (s.id === activeId) {
+        /* aktif sohbet silindi: ÖLÜ UÇ bırakma — taze oturum aç, input yazılabilir
+           kalsın (activeId null kalırsa sendCurrent sessizce return eder) */
         activeId = null;
+        streamEl = null;
         els.msgs.innerHTML = '';
         showEmpty(true);
+        try {
+          const created = await beast.createSession();
+          await openSession(created.id);
+        } catch {}
+        els.input.focus();
       }
       sessionOrder = sessionOrder.filter((x) => x !== s.id);
       refreshSessions();
@@ -4400,8 +4438,8 @@ function renderBotSettings(pane, b) {
     else toast(r.error || _t('bot_save_fail'));
   });
   const delBtn = $('#bDel');
-  if (delBtn) delBtn.addEventListener('click', async () => {
-    if (!confirm(_ti('bot_confirm_del', b.name))) return;
+    if (delBtn) delBtn.addEventListener('click', async () => {
+      if (!(await uiConfirm(_ti('bot_confirm_del', b.name)))) return;
     const r = await beast.botsRemove(b.id);
     if (r.ok) {
       /* bot silme sonrası main otomatik restart atar — yeniden çizmeye kalkışma */
@@ -4943,7 +4981,13 @@ function onEvent(ev) {
       ingestAgentActivity(ev);
       return;
     }
-    if (ev.type === 'done' || ev.type === 'error') refreshSessions();
+    if (ev.type === 'done' || ev.type === 'error') {
+      /* başka oturumun işi bitti (silinen oturum dahil): busy'i de bırak —
+         yoksa stopBtn görünür kalır, sonraki mesajlar 'kuyruğa eklendi'
+         deyip sonsuza dek bekler (sohbet silince kilitlenme bu yüzden) */
+      if (busy) setBusy(false);
+      refreshSessions();
+    }
     return;
   }
 
@@ -5791,10 +5835,29 @@ async function init() {
   }
 
   els.newChat.addEventListener('click', async () => {
-    const created = await beast.createSession();
-    await openSession(created.id);
+    try {
+      const created = await beast.createSession();
+      await openSession(created.id);
+    } catch (e) {
+      toast('Yeni sohbet açılamadı: ' + ((e && e.message) || e));
+    }
     els.input.focus();
   });
+
+  /* in-app confirm modal düğmeleri + Enter/Esc kısayolları */
+  {
+    const ok = $('#confirmOk');
+    const cancel = $('#confirmCancel');
+    const ov = $('#confirmOverlay');
+    if (ok && cancel && ov) {
+      ok.addEventListener('click', () => closeConfirm(true));
+      cancel.addEventListener('click', () => closeConfirm(false));
+      ov.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') { e.stopPropagation(); closeConfirm(false); }
+        else if (e.key === 'Enter') { e.stopPropagation(); closeConfirm(true); }
+      });
+    }
+  }
 
   /* custom pencere butonları: küçült / büyüt / kapat — main'e window:ctrl ile gider.
      Büyüt ikonu maximize/unmaximize olayıyla senkron (□ / ❐). */
@@ -6052,7 +6115,7 @@ async function init() {
   });
   if (els.railClear) {
     els.railClear.addEventListener('click', async () => {
-      if (!confirm('TÜM paralel ajan geçmişi silinsin mi?\n(Çalışan ajanlar da iptal edilir — geri alınamaz)')) return;
+      if (!(await uiConfirm('TÜM paralel ajan geçmişi silinsin mi?\n(Çalışan ajanlar da iptal edilir — geri alınamaz)'))) return;
       try {
         const r = await beast.agentsClearAll();
         if (r && r.ok) toast('Paralel ajan geçmişi silindi' + (r.removed ? ' — ' + r.removed + ' iş' : ''));
@@ -7616,15 +7679,16 @@ async function codeOpen(rel) {
   els.codeTa.focus();
 }
 
-function codeClose(i) {
+async function codeClose(i) {
   if (i < 0 || i >= codeTabs.length) return;
   /* KAYIT DİSİPLİNİ: düzenlemeler yalnız Kaydet/Ctrl+S ile diske yazılır.
      Kaydedilmemiş sekme kapatılırken kullanıcıya sorulur — sessiz kayıp yok. */
   if (codeTabs[i].dirty) {
-    const ok = confirm(
+    const ok = await uiConfirm(
       '"' + codeTabs[i].rel + '" kaydedilmedi.\n\n' +
       'Tamam = kaydetmeden kapat\n' +
-      'İptal = editörde kal (kaydetmek için Ctrl+S)'
+      'İptal = editörde kal (kaydetmek için Ctrl+S)',
+      'Kaydetmeden kapat'
     );
     if (!ok) return;
   }
@@ -8217,7 +8281,7 @@ function bcResetPanel() {
 /* TEK oturum silme — onay sorulur */
 async function bcDeleteHistory(id, title) {
   if (!id) return;
-  if (!confirm('"' + (title || 'Beast Code oturumu') + '" silinsin mi?\n\nBu işlem geri alınamaz.')) return;
+  if (!(await uiConfirm('"' + (title || 'Beast Code oturumu') + '" silinsin mi?\n\nBu işlem geri alınamaz.'))) return;
   const r = await beast.bcDelete(id).catch(() => null);
   if (!r || !r.ok) { toast((r && r.error) || 'silinemedi'); return; }
   if (bcSessionId === id) {
@@ -8234,7 +8298,7 @@ if (els.bcHistClear) els.bcHistClear.addEventListener('click', async () => {
   const r0 = await beast.bcHistory().catch(() => null);
   const n = r0 && r0.ok ? (r0.items || []).length : 0;
   if (!n) { toast('Silinecek oturum yok'); return; }
-  if (!confirm(n + ' Beast Code oturumunun TÜMÜ silinsin mi?\n\nBu işlem geri alınamaz.')) return;
+  if (!(await uiConfirm(n + ' Beast Code oturumunun TÜMÜ silinsin mi?\n\nBu işlem geri alınamaz.'))) return;
   const r = await beast.bcDeleteAll().catch(() => null);
   if (!r || !r.ok) { toast((r && r.error) || 'silinemedi'); return; }
   /* aktif oturum da silindiyse panel tazelensin */

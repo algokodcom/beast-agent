@@ -1575,6 +1575,23 @@ body.browser-open #settingsDialog { width: min(70vw, calc(100vw - var(--bw, 480p
 }
 .btn:hover { filter: brightness(1.08); }
 .btn.ghost { background: var(--panel2); color: var(--text); border: 1px solid var(--border); }
+.btn.danger { background: var(--err); color: var(--bg); }
+
+/* in-app confirm (window.confirm Electron'ta input focus'unu bozuyor) */
+.confirm-dialog {
+  width: min(420px, 88vw);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 18px 20px 16px;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.25);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.confirm-text { font-size: 13.5px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
+.confirm-btns { display: flex; justify-content: flex-end; gap: 8px; }
+.confirm-btns .btn { margin-top: 0; }
 
 .inp {
   width: 100%;

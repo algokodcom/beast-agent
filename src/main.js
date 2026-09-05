@@ -6420,6 +6420,20 @@ function empatiSourceLinePlain(ev) {
   return src ? '🔗 kaynak: ' + cap(src, 80) : '';
 }
 
+/* WhatsApp: kullanıcı tercihi — ham URL GÖRÜNMEZ, haber başlığı gider.
+   (WA düz metinde başlık-linki desteklemez; gerçek link yine de ajanın
+   BAĞLAM bloğunda durur — "linki at" derse model oradan paylaşıır.) */
+function empatiSourceLineWa(ev) {
+  if (!ev) return '';
+  const oneLine = (s) =>
+    String(s || '').replace(/\s*\n+\s*/g, ' ').replace(/\s{2,}/g, ' ').trim();
+  const ELLIPSIS = '...';
+  const cap = (s, max) =>
+    oneLine(s).length > max ? oneLine(s).slice(0, max - ELLIPSIS.length) + ELLIPSIS : oneLine(s);
+  const title = oneLine(ev.title || ev.source || '').trim();
+  return title ? '🔗 ' + cap(title, 80) : '';
+}
+
 function empatiInjectToSession(sid, out) {
   try {
     if (!sid || engine.isBusy(sid)) return; /* tur ortasında geçmişi karıştırma — bildirim kanala zaten gitti */
@@ -6525,12 +6539,14 @@ function empatiDesktopSid() {
    Hiçbir entegrasyon yazılamazsa masaüstü chat UI (toast) kalır. */
 function empatiNotify(text, ev) {
   const cfg = empatiCfg();
-  /* desktop + Discord: başlık-linki (markdown); WA/TG: ham URL (tıklanabilir
-     olması için şart) — kanallar kendi biçimini alır */
+  /* desktop + Discord: başlık-linki (markdown); TG: ham URL (tıklanabilir
+     olması için şart); WA: yalnız başlık (kullanıcı tercihi — ham URL yok) */
   const src = empatiSourceLine(ev);
   const srcPlain = empatiSourceLinePlain(ev);
+  const srcWa = empatiSourceLineWa(ev);
   const out = PROACTIVE_MARK + '\n' + text + (src ? '\n' + src : '');
   const outPlain = PROACTIVE_MARK + '\n' + text + (srcPlain ? '\n' + srcPlain : '');
+  const outWa = PROACTIVE_MARK + '\n' + text + (srcWa ? '\n' + srcWa : '');
   const inject = empatiInjectText(ev, out);
   const senders = [];
   const tryWa = () => {
@@ -6539,7 +6555,7 @@ function empatiNotify(text, ev) {
       if (own && wa && wa.connected) {
         const jid = own + '@s.whatsapp.net';
         senders.push(() =>
-          Promise.resolve(sendWaSafe(jid, outPlain))
+          Promise.resolve(sendWaSafe(jid, outWa))
             .then(() => empatiInjectToSession(ensureWaSession(jid), inject))
             .catch(() => {})
         );

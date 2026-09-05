@@ -304,6 +304,35 @@ function topicKey(type, title) {
   return normTitle(type + ' ' + title).split(' ').slice(0, 5).join(' ');
 }
 
+/* ---------- benzer haber dedup (kelime-kümesi benzerliği) ----------
+   Aynı olayın farklı kaynak varyasyonları farklı başlıkla gelir → fingerprint
+   kaçırır ("X yaptırım" / "ABD X'e yeni yaptırım"). Bu katman: TR fold'lu
+   stopword temizli kelime kümeleriyle containment/Jaccard benzerliği. */
+
+const SIM_CONTAIN = 0.6;  /* kısa başlık, uzun varyantın alt kümesiyse */
+const SIM_JACCARD = 0.55; /* genel örtüşme eşiği */
+
+const TITLE_STOP = new Set(
+  ('ve veya ya ile için ama fakat da de ki mi mu mu mü bir bu şu o en daha çok az olarak gibi sonra önce yeni son sonucunda ' +
+   'the a an of in on to for and or is are was were be been at by with as it its this that from after before new').split(' ')
+);
+
+function titleTokens(t) {
+  const words = normTitle(String(t || '')).split(' ').filter((w) => w.length > 1 && !TITLE_STOP.has(w));
+  return new Set(words.slice(0, 24));
+}
+
+function tokensSimilar(a, b) {
+  if (!a || !b || !a.size || !b.size) return false;
+  const min = Math.min(a.size, b.size);
+  if (min < 2) return false; /* tek anahtar kelimelik başlık güvenilir değil */
+  let inter = 0;
+  for (const t of a) if (b.has(t)) inter++;
+  if (!inter) return false;
+  if (inter / min >= SIM_CONTAIN) return true;
+  return inter / (a.size + b.size - inter) >= SIM_JACCARD;
+}
+
 function uid() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 }
@@ -516,6 +545,41 @@ async function runCycle({ cfg, signals, llmFilter, now = new Date(), log = () =>
     for (const k of seenKeys.slice(0, seenKeys.length - SEEN_CAP)) delete st.seen[k];
   }
 
+  /* FAZ 1 — döngü içi benzer birleştirme: aynı haberin farklı kaynak
+     varyasyonları TEK adaya iner (kaynaklar birleşir, LLM'e tekrar gitmez) */
+  const mergedPending = [];
+  let similar = 0;
+  for (const ev of pending) {
+    const tk = titleTokens(ev.title);
+    const twin = mergedPending.find((m) => tokensSimilar(m._tk, tk));
+    if (twin) {
+      if (!twin.sources.includes(ev.source)) twin.sources.push(ev.source);
+      similar++;
+      continue;
+    }
+    ev._tk = tk;
+    mergedPending.push(ev);
+  }
+  pending.splice(0, pending.length, ...mergedPending);
+
+  /* FAZ 2 — bildirim geçmişine karşı: son 24 saatte BENZER bir haber zaten
+     BİLDİRİLDİYSE aday sönüklenir (aynı haberin 3 varyasyon spam'i olmasın) */
+  const counts = { ignored: 0, stored: 0, queued: 0, dup: dups, raw: raws.length, similar };
+  const passable = [];
+  for (const ev of pending) {
+    const twin = st.events.find(
+      (s) => s.status === 'notified' && tokensSimilar(titleTokens(s.title), ev._tk)
+    );
+    if (twin) {
+      ev.status = 'ignored';
+      ev.reason = 'benzer haber zaten bildirildi: ' + String(twin.title || '').slice(0, 50);
+      counts.similar++;
+      continue;
+    }
+    passable.push(ev);
+  }
+  pending.splice(0, pending.length, ...passable);
+
   /* UCUZ FİLTRE: tüm adaylar TEK toplu çağrıda (maliyet freni). Çökerse deterministik.
      İlgi alanları: elle girilen + sohbetlerden öğrenilenler; son konuşmalar bağlam. */
   const interests = combinedInterests(cfg);
@@ -532,7 +596,6 @@ async function runCycle({ cfg, signals, llmFilter, now = new Date(), log = () =>
   }
   if (!graded || !graded.size) log('filtre: deterministik puanlama');
 
-  const counts = { ignored: 0, stored: 0, queued: 0, dup: dups, raw: raws.length };
   const actions = [];
   for (const ev of pending) {
     const g = graded && graded.get(String(ev.id).toLowerCase());
@@ -603,7 +666,7 @@ async function runCycle({ cfg, signals, llmFilter, now = new Date(), log = () =>
   st.lastRunAt = now.toISOString();
   saveState(st);
   log(
-    'cycle tamam: raw=' + counts.raw + ' dup=' + dups +
+    'cycle tamam: raw=' + counts.raw + ' dup=' + dups + ' similar=' + counts.similar +
     ' ignored=' + counts.ignored + ' stored=' + counts.stored + ' queued=' + counts.queued +
     ' (' + (Date.now() - t0) + 'ms)'
   );

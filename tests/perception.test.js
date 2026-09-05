@@ -50,6 +50,64 @@ test('empati: yüksek puanlı olay queued kalır + depoda durur', async () => {
   assert.strictEqual(hit.status, 'queued');
 });
 
+test('empati: aynı haberin farklı varyasyonları TEK bildirim alır (3x spam yok)', async () => {
+  const cfg = perception.mergeCfg({ maxNotifyPerCycle: 5 });
+  const high = (t) => ({ notify: true, relevant: 90, importance: 90, urgency: 70, novelty: 70, reason: 'kritik' });
+
+  /* 1. döngü: haberin ilk varyasyonu bildirilir */
+  const r1 = await perception.runCycle({
+    cfg,
+    signals: { self: async () => [{ type: 'news', source: 'AA', title: "Golden Bank'a yaptırım uygulandı", detail: '' }] },
+    llmFilter: async (p) => gradeFromPrompt(p, high('x')),
+    now: new Date(),
+  });
+  assert.strictEqual(r1.summary.queued, 1, 'ilk varyasyon queued olmalı: ' + JSON.stringify(r1.summary));
+  const acted = r1.actions[0] && r1.actions[0].event;
+  assert.ok(acted, 'aksiyon olmalı');
+  perception.markNotified(acted.id, 'medium', 'Golden Bank yaptırım haberi', 30);
+
+  /* 2. döngü: farklı kaynakların farklı kelimelerle yazdığı AYNI haber → sönümlenmeli */
+  const r2 = await perception.runCycle({
+    cfg,
+    signals: {
+      self: async () => [
+        { type: 'news', source: 'Hürriyet', title: "ABD'den Golden Bank'a yeni yaptırım kararları açıklandı" },
+        { type: 'news', source: 'BBC', title: 'Golden Bank yaptırım listesine alındı — tüm detaylar' },
+      ],
+    },
+    llmFilter: async (p) => gradeFromPrompt(p, high('x')),
+    now: new Date(),
+  });
+  assert.ok(r2.summary.similar >= 2, 'iki varyasyon benzer sayılmalı: ' + JSON.stringify(r2.summary));
+  assert.strictEqual(r2.summary.queued, 0, 'tekrar bildirim OLMAmalı: ' + JSON.stringify(r2.summary));
+  assert.ok(!r2.actions.length, 'aksiyon olmamalı');
+  /* listede yalnız orijinal notified haber olmalı, varyasyonlar yok */
+  const titles = perception.listEvents(200).map((e) => e.title);
+  const gold = titles.filter((t) => /golden bank/i.test(t.replace(/'/g, '')));
+  assert.strictEqual(gold.length, 1, 'tek Golden Bank olayı kalmalı: ' + JSON.stringify(titles));
+});
+
+test('empati: FARKLI haberler benzer sayılmaz (false positive yok)', async () => {
+  const cfg = perception.mergeCfg({ maxNotifyPerCycle: 5 });
+  const high = { notify: true, relevant: 90, importance: 90, urgency: 70, novelty: 70, reason: 'kritik' };
+  const r1 = await perception.runCycle({
+    cfg,
+    signals: { self: async () => [{ type: 'news', source: 'AA', title: 'Bitcoin tarihi rekor kırdı' }] },
+    llmFilter: async (p) => gradeFromPrompt(p, high),
+    now: new Date(),
+  });
+  assert.strictEqual(r1.summary.queued, 1);
+  if (r1.actions[0]) perception.markNotified(r1.actions[0].event.id, 'medium', 'x', 30);
+  const r2 = await perception.runCycle({
+    cfg,
+    signals: { self: async () => [{ type: 'news', source: 'AA', title: 'Bitcoin sert düşüşle günü kapattı' }] },
+    llmFilter: async (p) => gradeFromPrompt(p, high),
+    now: new Date(),
+  });
+  assert.strictEqual(r2.summary.similar, 0, 'farklı yöndeki haber benzer sayılmamalı: ' + JSON.stringify(r2.summary));
+  assert.strictEqual(r2.summary.queued, 1, 'yeni haber bildirilmeli');
+});
+
 test('empati: eski depodaki ignored kalıntıları sonraki döngüde temizlenir', async () => {
   /* kalıntı ignored olay elle depoya yazılır */
   const stFile = path.join(beastRoot(), 'perception', 'events.json');

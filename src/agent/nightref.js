@@ -318,6 +318,20 @@ async function run(deps) {
     report.notes.push('bugün değerli transkript yok — öğrenme adımı atlandı');
   }
 
+  /* 2b) LLM'siz derin hijyen: yakın-kayıt dedup + gürültü temizliği.
+     LLM (429/limit) çökse bile memory her yansımada sadeleşir. */
+  if (deps.memory && typeof deps.memory.hygiene === 'function') {
+    try {
+      const h = deps.memory.hygiene({ deep: true });
+      if (h && typeof h.removed === 'number' && h.removed > 0) {
+        report.hygiene = { removed: h.removed, remaining: h.remaining || 0 };
+        report.notes.push('derin hijyen: ' + h.removed + ' kayıt temizlendi');
+      }
+    } catch (e) {
+      report.errors.push('hijyen: ' + String((e && e.message) || e).slice(0, 100));
+    }
+  }
+
   /* 3) memory sıkılaştırma: drop/merge kararları → yedek → uygula */
   const entriesNow = deps.memory.entries();
   if (!noLlm && entriesNow.length >= CONSOLIDATE_MIN) {
@@ -401,6 +415,7 @@ async function run(deps) {
       ? '\n## İlgi alanları (günlük çıkarım)\n' + report.interests.labels.map((l) => '- ' + l).join('\n') + '\n'
       : '') +
     '\n## Bellek bakımı\n' +
+    (report.hygiene ? '- Derin hijyen (LLM\u2019siz): ' + report.hygiene.removed + ' kayıt temizlendi\n' : '') +
     '- Kayıt: ' + m.before + ' → ' + m.after + ' (düşülen ' + m.dropped + ', ' + m.merged + ' kayıt birleşti)\n' +
     '- Boyut: ' + m.charsBefore + ' → ' + m.charsAfter + ' char (~' + m.tokensSaved + ' token tasarruf)\n' +
     (report.notes.length ? '- Not: ' + report.notes.join('; ') + '\n' : '') +

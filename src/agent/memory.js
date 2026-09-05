@@ -265,65 +265,178 @@ function removeRule(textOrIndex) {
 }
 
 /* ---------- bellek hijyeni (#5) ----------
-   MEMORY.md: dedup + eskime; periyodik çağrıyla şişme engellenir. */
+   MEMORY.md: yakın-kayıt dedup + gürültü temizliği + eskime. LLM'siz
+   deterministik — gece yansıması 429/limit'e takılsa bile memory sadeleşir. */
 
 const MEMORY_CAP = 400; // maksimum kayıt sayısı
 const MEMORY_MAX_AGE_DAYS = 120; // hiç skor üretmeyen kayıtların ömrü
 
-/** Duplike + çok eski kayıtları temizler; silinen sayısını döner */
-function hygiene({ maxAgeDays = MEMORY_MAX_AGE_DAYS, cap = MEMORY_CAP } = {}) {
+/* kelime-kümesi benzerliği: fold + stopword temiz. "adı Batuhan, hitap kanka"
+   ≡ "kullanıcı Batuhan Bozoklu, hitap 'kanka'" gibi TEKRARLARI yakalar. */
+const MEM_STOP = new Set(
+  ('ve veya ya ile için ama fakat da de ki mi mi mu mü bir bu şu o en daha çok az olarak gibi sonra önce yeni son ' +
+   'the a an of in on to for and or is are was were be been at by with as it its this that from').split(' ')
+);
+
+function lineTokens(s) {
+  const words = fold(s)
+    .replace(/[^a-z0-9]+/g, ' ')
+    .split(' ')
+    .filter((w) => w.length > 1 && !MEM_STOP.has(w) && !/^kullanici/.test(w));
+  return new Set(words.slice(0, 30));
+}
+
+function linesSimilar(a, b) {
+  const A = lineTokens(a);
+  const B = lineTokens(b);
+  if (!A.size || !B.size) return false;
+  let inter = 0;
+  for (const t of A) if (B.has(t)) inter++;
+  if (!inter) return false;
+  const min = Math.min(A.size, B.size);
+  return inter / min >= 0.7 || inter / (A.size + B.size - inter) >= 0.6;
+}
+
+/* 'X'i sildi / X ile ilgilenmiyor' beyanı — aynı X için eski kurulum satırları düşürülür */
+const RETIRE_DECL_RE = /(indirdikten sonra sildi|bilerek sildi|art[i]?k ilgilenmiyor|ilgilenmiyor)/i;
+const INSTALL_VERB_RE = /(indiriyor|indirdi|indirmek|kuruyor|kurulu|kurulum|y[kü]kl)/i;
+
+function retiredToolNames(list) {
+  const retired = new Set();
+  for (const l of list) {
+    if (!RETIRE_DECL_RE.test(l)) continue;
+    for (const w of String(l).match(/[A-Za-z][A-Za-z0-9-]{2,}/g) || []) {
+      const f = fold(w);
+      if (!MEM_STOP.has(f) && f.length >= 4) retired.add(f);
+    }
+  }
+  return retired;
+}
+
+/* repo/araç indirme-inceleme günlüğü: kalıcı profil değil, bir kez değdi */
+function isRepoNoise(l) {
+  if (RETIRE_DECL_RE.test(l)) return false; /* emeklilik beyanı değerli — korunur */
+  if (/(repo|github)/i.test(l) && /(indir|incel|kopya|kar[sş]ıla[sş]tır|ilgilen)/i.test(l)) return true;
+  if (/ilgilen/i.test(l) && /(inceliyor|kar[sş]ıla[sş]tır)/i.test(l)) return true;
+  return false;
+}
+
+/** Duplike + yakın-kayıt + gürültü + çok eski kayıtları temizler.
+    deep: LLM'siz temizlik katmanı (yakın-kayıt birleştirme — SON kopya kazanır). */
+function hygiene({ maxAgeDays = MEMORY_MAX_AGE_DAYS, cap = MEMORY_CAP, deep = true } = {}) {
   const list = entries();
   if (!list.length) return { ok: true, removed: 0, reason: 'boş' };
-  const seen = new Set();
-  const kept = [];
-  let dupes = 0;
-  for (const l of list) {
-    const key = fold(l).replace(/[^a-z0-9]+/g, ' ').trim();
-    if (seen.has(key)) {
-      dupes++;
-      continue;
-    }
-    seen.add(key);
-    kept.push(l);
+  let working = list.slice();
+  const dropped = [];
+
+  /* 0) birebir dedup — her modda (ucuz) */
+  {
+    const seen = new Set();
+    working = working.filter((l) => {
+      const key = fold(l).replace(/[^a-z0-9]+/g, ' ').trim();
+      if (seen.has(key)) {
+        dropped.push(l);
+        return false;
+      }
+      seen.add(key);
+      return true;
+    });
   }
+
+  if (deep) {
+    /* 1) emekli araç beyanları: 'X'i sildi/ilgilenmiyor' → X'in eski kurulum satırları düşer */
+    const retired = retiredToolNames(working);
+    if (retired.size) {
+      working = working.filter((l) => {
+        if (RETIRE_DECL_RE.test(l)) return true; /* beyanın kendisi korunur */
+        if (!INSTALL_VERB_RE.test(l)) return true;
+        for (const t of lineTokens(l)) {
+          if (retired.has(t)) {
+            dropped.push(l);
+            return false;
+          }
+        }
+        return true;
+      });
+    }
+    /* 2) repo/araç gürültüsü */
+    working = working.filter((l) => {
+      if (isRepoNoise(l)) {
+        dropped.push(l);
+        return false;
+      }
+      return true;
+    });
+    /* 3) yakın-kayıt dedup — aynı şeyin yeniden yazımı TEK satırda; SON kopya kazanır (en taze) */
+    const kept2 = [];
+    for (const l of working) {
+      const idx = kept2.findIndex((k) => linesSimilar(k, l));
+      if (idx >= 0) {
+        dropped.push(kept2[idx]);
+        kept2[idx] = l;
+      } else {
+        kept2.push(l);
+      }
+    }
+    working = kept2;
+  }
+
   let aged = 0;
-  if (kept.length > cap || maxAgeDays > 0) {
+  if (working.length > cap || maxAgeDays > 0) {
     /* tarih etiketli olmayanlar en eski kabul edilir (append-only başlangıç) */
     const cut = Date.now() - maxAgeDays * 86400000;
     const filtered = [];
     /* kronolojik varsayım: dosya sırası = ekleme sırası */
-    const overflow = Math.max(0, kept.length - cap);
-    kept.forEach((l, idx) => {
+    const overflow = Math.max(0, working.length - cap);
+    working.forEach((l, idx) => {
       const m = l.match(/\b(\d{4}-\d{2}-\d{2})\b/);
       const tooOld = m && new Date(m[1]).getTime() < cut;
-      if (tooOld && idx < kept.length - 20) { // son 20 kayıt asla yaşla silinmez
+      if (tooOld && idx < working.length - 20) { // son 20 kayıt asla yaşla silinmez
         aged++;
         return;
       }
       if (overflow > 0 && idx < overflow) {
         // kap aşımı: en eskilerden düş ama yine de son 20 korunur
-        if (idx < kept.length - 20) {
+        if (idx < working.length - 20) {
           aged++;
           return;
         }
       }
       filtered.push(l);
     });
-    return writeKept(filtered, dupes + aged);
+    return writeKept(list, filtered, dropped.length + aged);
   }
-  return writeKept(kept, dupes);
+  return writeKept(list, working, dropped.length + aged);
 }
 
-function writeKept(kept, removedCount) {
+function writeKept(originalList, kept, removedCount) {
   try {
-    fs.writeFileSync(
-      path.join(memDir(), 'MEMORY.md'),
-      kept.map((l) => '- ' + l).join('\n') + (kept.length ? '\n' : '')
-    );
-    return { ok: true, removed: removedCount, remaining: kept.length };
+    /* yedek: hijyen geri alınabilir olsun (nightref backups klasörü ortak) */
+    if (removedCount > 0 && originalList.length) {
+      try {
+        const dir = path.join(memDir(), 'backups');
+        fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(
+          path.join(dir, 'MEMORY-hygiene-' + new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19) + '.md'),
+          originalList.map((l) => '- ' + l).join('\n') + '\n',
+          'utf8'
+        );
+      } catch {}
+    }
+    /* save() → mem0 store'u satırlardan yeniden kurar (ham yazımda store bayat kalırdı) */
+    const w = save('MEMORY.md', kept.map((l) => '- ' + l).join('\n') + (kept.length ? '\n' : ''));
+    if (w && !w.ok) return { ok: false, error: w.error || 'yazılamadı' };
+    return { ok: true, removed: removedCount, remaining: kept.length, ...(droppedPreview(originalList, kept)) };
   } catch (e) {
     return { ok: false, error: String((e && e.message) || e) };
   }
+}
+
+/* silinenleri özet olarak döndür (admin/araç yanıtı + audit) — ilk 40 */
+function droppedPreview(originalList, kept) {
+  const keptSet = new Set(kept);
+  const gone = originalList.filter((l) => !keptSet.has(l)).slice(0, 40);
+  return gone.length ? { dropped: gone } : {};
 }
 
 /* ---------- #12 kişilik kalibrasyonu ----------

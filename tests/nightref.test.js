@@ -94,7 +94,10 @@ test('nightref parseDecision + parseLearnings: fence\u2019li/gömülü JSON', ()
 
 test('nightref run: journal + rapor yazar, MEMORY.md sıkılaşır, fact eklenir', async () => {
   const md = path.join(memory.memDir(), 'MEMORY.md');
-  const seed = Array.from({ length: 12 }, (_, i) => '- Gereksiz kayit-' + i + ' (tek seferlik detay)').join('\n') + '\n';
+  /* her satır ayrı KONU kelimesiyle ayırt edici — derin hijyen (yakın-kayıt
+     dedup) bunları birleştirmesin, LLM sıkılaştırma akışı test edilsin */
+  const topics = ['mcp', 'whatsapp', 'studio', 'cron', 'rail', 'tts', 'pdf', 'excel', 'gitara', 'mem0', 'searxng', 'oyun'];
+  const seed = topics.map((t) => '- Gereksiz kayit ' + t).join('\n') + '\n';
   fs.mkdirSync(memory.memDir(), { recursive: true });
   fs.writeFileSync(md, seed);
   fs.rmSync(path.join(memory.memDir(), 'reflections'), { recursive: true, force: true });

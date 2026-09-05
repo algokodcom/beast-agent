@@ -185,8 +185,7 @@ body {
 #langBtn,
 #storeBtn,
 #gitBtn,
-#ideBtn,
-#studioBtn {
+#ideBtn {
   background: none;
   border: none;
   color: var(--muted);
@@ -204,18 +203,18 @@ body {
 #langBtn:hover,
 #storeBtn:hover,
 #gitBtn:hover,
-#ideBtn:hover,
-#studioBtn:hover { background: var(--panel2); color: var(--text); }
+#ideBtn:hover { background: var(--panel2); color: var(--text); }
 #gearBtn:focus,
 #themeBtn:focus,
 #langBtn:focus,
 #storeBtn:focus,
 #gitBtn:focus,
-#ideBtn:focus,
-#studioBtn:focus { outline: none; }
-/* aktif mod rozeti: IDE/Studio tuşu basılıyken vurgulanır */
-#ideBtn.on,
-#studioBtn.on { color: var(--accent); background: var(--panel2); }
+#ideBtn:focus { outline: none; }
+/* aktif mod rozeti: IDE tuşu basılıyken vurgulanır */
+#ideBtn.on { color: var(--accent); background: var(--panel2); }
+
+/* Studio tuşu artık topbar'da (dd-btn dd-icon-btn) — aktif rozet diğer topbar ikonlarıyla aynı */
+#studioBtn.on { background: var(--accent-dim); color: var(--accent); }
 
 /* model refresh butonu — çekerken döner */
 #modelRefreshBtn.spin { opacity: .7; pointer-events: none; }

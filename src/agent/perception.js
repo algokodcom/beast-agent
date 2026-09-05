@@ -21,6 +21,7 @@ const DEFAULTS = {
   notifyTarget: '',       // bildirim hedefi: '' = bağlı entegrasyonlar | whatsapp | telegram | discord
   filterModel: '',        // ucuz filtre modeli ('provider::model'); boşsa ana model
   interests: '',          // kullanıcı ilgi alanları (relevance ağırlığı)
+  behavior: '',           // AJAN DAVRANIŞI: proaktif mesajlarda nasıl konuşacağı (kullanıcı yazar)
   newsTopics: '',         // Google News RSS sorguları (virgülle)
   weights: { importance: 0.40, relevance: 0.25, urgency: 0.20, novelty: 0.15 },
 };
@@ -56,6 +57,7 @@ function mergeCfg(raw) {
       : '',
     filterModel: String(r.filterModel || '').trim(),
     interests: String(r.interests || '').slice(0, 400),
+    behavior: String(r.behavior || '').slice(0, 800),
     newsTopics: String(r.newsTopics || '').slice(0, 400),
     weights: {
       importance: clampW(w.importance, DEFAULTS.weights.importance),
@@ -94,10 +96,11 @@ function saveState(st) {
 }
 
 /* ---------- empati hafızası: sohbet kaydı + öğrenilen ilgi alanları ----------
-   Sohbet akışı (chat/WA/TG/DC) main tarafından buraya düşürülür; kullanıcı
-   mesajlarından anlamlı kelimeler toplanır, sık geçenler "öğrenilen ilgi
-   alanı" olur. Tarama filtresi ve bildirim mesajı bu hafızayla kişiselleşir:
-   elle girilen ilgi alanları + öğrenilenler birlikte prompta girer. */
+   Sohbet akışı (chat/WA/TG/DC) main tarafından buraya düşürülür. İlgi
+   alanları artık KELİME SAYIMIYLA değil, gece yansımasında (günde bir)
+   modelin konuşma hafızasından LLM ÇIKARIMIYLA üretilir. Tarama filtresi
+   ve bildirim mesajı bu hafızayla kişiselleşir: elle girilen ilgi alanları
+   + çıkarılanlar birlikte prompta girer. */
 
 const CHAT_CAP = 120;    // son sohbet kaydı tavanı
 const INTEREST_CAP = 24; // öğrenilen ilgi etiketi tavanı
@@ -109,22 +112,6 @@ function memFold(s) {
   return String(s || '').toLowerCase().replace(/[çğıöşüâîû]/g, (ch) => TR_FOLD_MEM[ch] || ch);
 }
 
-/* gereksiz kelimeler — ilgi alanı sayılmaz. Set FOLD'LU kurulur: kelimeler
-   zaten memFold ile ASCII'ye indirgendikten sonra arandığı için 'bugün' gibi
-   stopword'ler fold'lu haliyle ('bugun') listede olmalı. */
-const MEM_STOP_RAW =
-  'the and for with this that have from was are were been will would could should ' +
-  'bir bu şu o ve ile için gibi ama fakat çok daha en ne mi mı mu mü de da ki ise ya ' +
-  'veya yani bana bize sana ona beni bizi seni onun benim bizim senin onları var yok ' +
-  'olur olan olarak nasıl neden niye şey şeyi her hem acaba lazım gerek evet hayır ' +
-  'tamam tmm kanka abi hocam merhaba selam hey lütfen teşekkür sağol eyvallah bugün ' +
-  'yarın dün şimdi sonra önce hala henüz yine tekrar biraz az kadar çünkü eğer ' +
-  'yapabilir misin musun isterim istiyorum lazım gerekiyor beast asistan önemli ' +
-  'hakkında üzerine konuştuk konuşuyoruz konuşmak kendi aynı başka diğer belki ' +
-  'sanırım galiba gerekli olsun olmuyor oluyor bakalım biriyle hangi kim nerede';
-
-const MEM_STOP = new Set(MEM_STOP_RAW.split(/\s+/).map((w) => memFold(w)).filter(Boolean));
-
 function chatFile() {
   return path.join(beastRoot(), 'perception', 'chatmem.json');
 }
@@ -132,12 +119,22 @@ function chatFile() {
 function loadChatMem() {
   try {
     const r = JSON.parse(fs.readFileSync(chatFile(), 'utf8'));
-    return {
+    const cm = {
       chats: Array.isArray(r.chats) ? r.chats : [],
       learned: r.learned && typeof r.learned === 'object' ? r.learned : {},
+      learnedSource: String(r.learnedSource || ''),
+      learnedAt: r.learnedAt || null,
     };
+    /* TEK SEFERLİK GÖÇ: eski kelime-frekans öğrenici çöp etiket üretiyordu
+       ("whatsapp", "gonderen", telefon numarası…). İlgi alanları artık gece
+       yansımasında LLM çıkarımı — eski kayıtlar ilk yüklemede temizlenir. */
+    if (cm.learnedSource !== 'llm' && Object.keys(cm.learned).length) {
+      cm.learned = {};
+      try { saveChatMem(cm); } catch {}
+    }
+    return cm;
   } catch {
-    return { chats: [], learned: {} };
+    return { chats: [], learned: {}, learnedSource: '', learnedAt: null };
   }
 }
 
@@ -165,32 +162,70 @@ function rememberConversation(text, channel) {
   }
 }
 
-/* Kullanıcı mesajından ilgi alanı öğren: fold + stopword temizliği, sayaca yaz */
-function learnInterests(text) {
+/* ---------- ilgi alanı çıkarımı (gece yansımasında, günde bir, LLM) ----------
+   Kelime-frekans sayımı YOK — taşıma etiketleri ("gönderen", kanal adı,
+   telefon) ve rastgele kelimeler ilgi sanılıyordu. Bunun yerine biriken
+   konuşma hafızasını model okur, gerçek KONU etiketleri çıkarır. */
+
+const INTEREST_INFER_MAX_CHATS = 80;
+
+function interestPrompt() {
+  const cm = loadChatMem();
+  const items = cm.chats.slice(-INTEREST_INFER_MAX_CHATS);
+  if (items.length < 5) return ''; // veri yetersiz — çıkarıma değmez
+  const lines = items.map((c) => '- [' + (c.ch || 'sohbet') + '] ' + c.t).join('\n').slice(0, 9000);
+  return (
+    'Sen bir kullanıcı profili çıkarıcısısın. Aşağıdaki son sohbet kayıtlarından ' +
+    'KULLANICININ GERÇEK İLGİ ALANLARINI çıkar.\n' +
+    'KURALLAR:\n' +
+    '- 3-12 etiket; her biri 1-3 kelimelik KONU/ALAN adı (Türkçe) — örn. "kripto para", "yapay zeka", "web geliştirme", "futbol"\n' +
+    '- Yalnız kullanıcının gerçekten ilgilendiği/tekrar konuştuğu konular; tek seferlik rastgele kelimeler ve sohbet dolguları ETİKET DEĞİL\n' +
+    '- Kişi adı, telefon numarası, kanal/uygulama adı (whatsapp, telegram), hitap sözleri (kanka, abi), istek fiilleri ("yap", "ara", "gönder") KESİNLİKLE etiket olamaz\n' +
+    '- Emin olamadığın konuyu yazma; az ama doğru etiket — uydurma yok\n' +
+    'SADECE JSON dön: {"interests":["...","..."]}\n\n' +
+    '# SON KONUŞMALAR (beast = asistanın cevabı, sohbet/empati = kullanıcı tarafı)\n' + lines
+  );
+}
+
+/* LLM cevabından etiket listesi: sert temizlik + dedupe (fold'lu) + tavan */
+function parseInterestJson(raw) {
   try {
-    const toks = (memFold(text).match(/[a-z0-9_+#.]{3,}/g) || [])
-      .filter((w) => !MEM_STOP.has(w) && !/^\d+$/.test(w))
-      .slice(0, 12);
-    if (!toks.length) return false;
-    const cm = loadChatMem();
-    const now = Date.now();
-    for (const w of toks) {
-      const cur = cm.learned[w] || { c: 0, at: 0 };
-      cur.c++;
-      cur.at = now;
-      cm.learned[w] = cur;
+    const t = String(raw || '').replace(/```(?:json)?/gi, '');
+    const a = t.indexOf('{');
+    const b = t.lastIndexOf('}');
+    if (a < 0 || b <= a) return [];
+    const obj = JSON.parse(t.slice(a, b + 1));
+    const arr = Array.isArray(obj && obj.interests) ? obj.interests : [];
+    const seen = new Set();
+    const out = [];
+    for (const x of arr) {
+      const w = String(x || '').replace(/\s+/g, ' ').trim().slice(0, 40);
+      if (w.length < 3) continue;
+      if (/\d{4,}/.test(w)) continue; // telefon/tarih parçası etiket değil
+      const k = memFold(w);
+      if (!k || seen.has(k)) continue;
+      seen.add(k);
+      out.push(w);
+      if (out.length >= INTEREST_CAP) break;
     }
-    /* tavana in: en sık + en taze etiketler kalır */
-    const keys = Object.keys(cm.learned);
-    if (keys.length > INTEREST_CAP) {
-      keys.sort((a, b) => (cm.learned[b].c - cm.learned[a].c) || (cm.learned[b].at - cm.learned[a].at));
-      for (const k of keys.slice(INTEREST_CAP)) delete cm.learned[k];
-    }
-    saveChatMem(cm);
-    return true;
+    return out;
   } catch {
-    return false;
+    return [];
   }
+}
+
+/* Çıkarılan etiketlerle öğrenilen listeyi TAMAMEN değiştir (günlük taze profil) */
+function applyInferredInterests(llmText) {
+  const labels = parseInterestJson(llmText);
+  if (!labels.length) return { ok: false, labels: [] };
+  const cm = loadChatMem();
+  const now = Date.now();
+  cm.learned = {};
+  for (const w of labels) cm.learned[w] = { c: 1, at: now };
+  cm.learnedSource = 'llm';
+  cm.learnedAt = new Date(now).toISOString();
+  saveChatMem(cm);
+  return { ok: true, labels: [...labels], count: labels.length };
 }
 
 /* Elle girilen + öğrenilen ilgi alanları birleşik (promptlar bunu kullanır) */
@@ -283,6 +318,7 @@ function normalizeRaw(item) {
     type,
     title,
     detail: String((item && item.detail) || '').slice(0, 300),
+    url: String((item && item.url) || '').slice(0, 600),
     sources: [(item && item.source) || type],
     scores: {},
     priority: 0,
@@ -313,7 +349,11 @@ async function fetchNews(topics) {
         const title = t ? String(t[1]).replace(/\s+/g, ' ').trim() : '';
         if (!title) continue;
         count++;
-        out.push({ type: 'news', title, detail: 'Google News · ' + q, source: 'news:' + q });
+        /* haberin GERÇEK linki: kullanıcı "kaynak neymiş?" diye sorduğunda
+           Beast'in haberi bulabilmesi için bildirimle birlikte taşınır */
+        const l = /<link>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/link>/.exec(m[0]);
+        const url = l ? String(l[1]).trim() : '';
+        out.push({ type: 'news', title, detail: 'Google News · ' + q, source: 'news:' + q, url });
       }
     } catch {}
   }
@@ -399,16 +439,21 @@ function parseFilterJson(text) {
 const COMPOSE_SYSTEM =
   'Beast adlı yerel yardımcı için proaktif bildirim metni yazarsın. Türkçe, samimi "kanka" tonunda, ' +
   'EN FAZLA 2 kısa cümle: ne olduğunu soyutla, neden önemli olabileceğini söyle, istersen tek kısa soru sor. ' +
-  'Alarm spam\'i yok; başlık/emoji/Markdown ekleme, yalnız düz metin yaz.';
+  'Alarm spam\'i yok; başlık/emoji/Markdown ekleme, yalnız düz metin yaz. ' +
+  'LINK URL\'sini KENDİN YAZMA — kaynak linki sistem tarafından mesajın sonuna OTOMATİK eklenir. ' +
+  'Promptta AJAN DAVRANIŞI kuralı varsa ona UY; çelişirse davranış kuralı kazanır.';
 
 function composePrompt(ev, cfg) {
   const ctx = chatContextLine(5);
+  const behavior = String((cfg && cfg.behavior) || '').trim();
   return (
     'OLAY: ' + ev.title + '\n' +
     (ev.detail ? 'DETAY: ' + ev.detail + '\n' : '') +
     'KAYNAK: ' + ev.source + '\n' +
+    (ev.url ? 'LINK: ' + ev.url + '\n' : '') +
     'ÖNCELİK: ' + ev.priority + '/100 · ' + (ev.reason || '') + '\n' +
     'KULLANICI İLGİLERİ: ' + (combinedInterests(cfg) || '(belirtilmemiş)') + '\n' +
+    'AJAN DAVRANIŞI (bu kurallara UY): ' + (behavior || '(özel kural yok — varsayılan samimi kanka tonu)') + '\n' +
     (ctx ? ctx + '\n' : '') +
     '\nBu olay için kullanıcıya gönderilecek proaktif kısa mesajı yaz.'
   );
@@ -580,6 +625,7 @@ function listEvents(limit) {
     type: e.type,
     title: e.title,
     detail: e.detail,
+    url: e.url || '',
     priority: e.priority,
     scores: e.scores || {},
     reason: e.reason,
@@ -602,7 +648,9 @@ module.exports = {
   listEvents,
   lastRunAt,
   rememberConversation,
-  learnInterests,
+  interestPrompt,
+  applyInferredInterests,
+  parseInterestJson,
   combinedInterests,
   chatContextLine,
   memSnapshot,

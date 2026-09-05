@@ -3404,7 +3404,7 @@ function isDevServerUrl(url) {
 /* Tarayıcı state: visible=false → ajanlar GİZLİ kullanır (headless);
    göz ikonuyla görünür mod açılır. open=view aktif, visible=panelde görünürlük */
 const browser = { view: null, open: false, visible: false, width: 0, attached: false, started: false, phone: false, mobile: false, mobileRect: null, deviceKey: 'iphone14', bottomInset: 0, desktopUA: '' };
-browser.mobile = settings.browserMobile === true; // mobil önizleme tercihi kalıcı
+browser.mobile = false; // mobil önizleme (telefon silueti) şimdilik devre dışı
 if (PHONE_DEVICES[settings.browserDevice]) browser.deviceKey = settings.browserDevice;
 
 function browserEmit(payload) {
@@ -4584,19 +4584,37 @@ function resyncBrowserUi() {
   }
 }
 
-win.on('resize', layoutBrowser);
+  win.on('resize', () => {
+    layoutBrowser();
+    /* resize sürerken son boyutu yakala: maximize/restore bitiminde dock KESİN
+       yeni pencere boyutuna otursun (BrowserView bayat bounds bırakmasın) */
+    clearTimeout(win._bzRzT);
+    win._bzRzT = setTimeout(() => { try { layoutBrowser(); } catch {} }, 120);
+  });
   win.on('maximize', () => {
     layoutBrowser();
     resyncBrowserUi();
+    setTimeout(() => { try { layoutBrowser(); resyncBrowserUi(); } catch {} }, 80);
+    setTimeout(() => { try { layoutBrowser(); resyncBrowserUi(); } catch {} }, 300);
     try { if (win && !win.isDestroyed()) win.webContents.send('agent:event', { type: 'win-max', maximized: true }); } catch {}
   });
   win.on('unmaximize', () => {
     layoutBrowser();
     resyncBrowserUi();
+    setTimeout(() => { try { layoutBrowser(); resyncBrowserUi(); } catch {} }, 80);
+    setTimeout(() => { try { layoutBrowser(); resyncBrowserUi(); } catch {} }, 300);
     try { if (win && !win.isDestroyed()) win.webContents.send('agent:event', { type: 'win-max', maximized: false }); } catch {}
   });
-  win.on('enter-full-screen', () => { layoutBrowser(); resyncBrowserUi(); });
-  win.on('leave-full-screen', () => { layoutBrowser(); resyncBrowserUi(); });
+  win.on('enter-full-screen', () => {
+    layoutBrowser(); resyncBrowserUi();
+    setTimeout(() => { try { layoutBrowser(); resyncBrowserUi(); } catch {} }, 80);
+    setTimeout(() => { try { layoutBrowser(); resyncBrowserUi(); } catch {} }, 300);
+  });
+  win.on('leave-full-screen', () => {
+    layoutBrowser(); resyncBrowserUi();
+    setTimeout(() => { try { layoutBrowser(); resyncBrowserUi(); } catch {} }, 80);
+    setTimeout(() => { try { layoutBrowser(); resyncBrowserUi(); } catch {} }, 300);
+  });
   win.on('show', layoutBrowser);
   // X'e basınca gizle — tepside yaşamaya devam, WhatsApp bağlantısı sürer
   win.on('close', (e) => {
@@ -6201,9 +6219,10 @@ function empatiCfg() {
   return empati.mergeCfg(settings.empati || {});
 }
 
-/* EMPATİ HAFIZASI: sohbet akışını kaydet + kullanıcı ilgi alanlarını öğren.
-   - user mesajı → hafızaya yaz + sık kelimelerden ilgi etiketi öğren
-   - assistant cevabı → hafızaya yaz (konuşmanın iki yanı da kalsın)
+/* EMPATİ HAFIZASI: sohbet akışını kaydet (ilgi çıkarımının ham verisi).
+   - user/assistant mesajı → hafızaya yaz (konuşmanın iki yanı da kalsın)
+   İlgi alanları burada MESAJ BAŞINA öğrenilmez — gece yansımasında
+   (günde bir) LLM bu birikimden konu etiketleri çıkarır (nightref adım 3b).
    Beast Code/Studio iş mesajları, /komutlar ve bağlam enjeksiyonları kayda girmez. */
 function empatiRememberFromEvent(ev) {
   if (!ev || ev.type !== 'message' || !ev.message || !ev.message.role) return;
@@ -6212,6 +6231,7 @@ function empatiRememberFromEvent(ev) {
   const txt = typeof m.content === 'string' ? m.content : '';
   if (!txt.trim()) return;
   if (txt.startsWith((engine && engine.OBSERVE_MARK) || '[BAĞLAM')) return; /* sessiz bağlam — sohbet değil */
+  if (txt.startsWith('🫡 *Beast proaktif:') || txt.startsWith('🫡 **Beast proaktif:')) return; /* proaktif not — döngü '[proaktif]' etiketiyle zaten hafızaya yazdı */
   if (m.role === 'user' && txt.startsWith('/')) return; /* slash komut gürültüsü */
   let bc = false;
   try {
@@ -6221,7 +6241,6 @@ function empatiRememberFromEvent(ev) {
   if (bc) return; /* kod işi — ilgi alanını bulanıklaştırır */
   if (m.role === 'user') {
     empati.rememberConversation(txt, 'sohbet');
-    empati.learnInterests(txt);
   } else {
     empati.rememberConversation(txt, 'beast');
   }
@@ -6260,7 +6279,9 @@ async function empatiSignalSelf() {
 }
 
 async function empatiSignalNews() {
-  const topics = String(empatiCfg().newsTopics || '').split(',').map((s) => s.trim()).filter(Boolean);
+  /* haber konuları İlgi Alanları'ndan OTOMATİK türetilir — seçime gerek yok */
+  const topics = String(empati.combinedInterests(empatiCfg()) || '')
+    .split(',').map((s) => s.trim()).filter((s) => s.length > 2);
   if (!topics.length) return [];
   return empati.fetchNews(topics);
 }
@@ -6302,25 +6323,123 @@ function empatiLlmCompose(prompt) {
     .finally(() => clearTimeout(kill));
 }
 
+/* PROAKTİF NOT → OTURUM BAĞLAMI: bildirim hangi kanala gittiyse AYNI metin
+   o kanalın sohbet oturumuna asistan mesajı olarak da işlenir (yeni tur
+   başlamaz). Böylece kullanıcı bildirime cevap verdiğinde model o mesajı
+   KENDİSİNİN attığını bilir — aynı oturum, kesintisiz bağlam. */
+const PROACTIVE_MARK = '🫡 *Beast proaktif:*';
+
+/* bildirimin ALTINA YAZILAN KAYNAK: haberin gerçek linki varsa o, yoksa kaynak adı.
+   Kullanıcı "bu proje neymiş?" diye sorduğunda linkten bulabilsin. */
+function empatiSourceLine(ev) {
+  if (!ev) return '';
+  const url = String(ev.url || '').trim();
+  if (/^https?:\/\//i.test(url)) return '🔗 ' + url;
+  const src = String(ev.source || '').trim();
+  return src ? '🔗 kaynak: ' + src.slice(0, 80) : '';
+}
+
+function empatiInjectToSession(sid, out) {
+  try {
+    if (!sid || engine.isBusy(sid)) return; /* tur ortasında geçmişi karıştırma — bildirim kanala zaten gitti */
+    engine.injectAssistant(sid, out);
+  } catch {}
+}
+
+/* kanala giden metin + Beast'in İÇ bağlamı ayrıdır: kullanıcı linki silse bile
+   model olayın başlığını, detayını ve linkini KENDİSİ görür — "bu neymiş?"
+   sorusuna insansı cevap verebilir */
+function empatiInjectText(ev, out) {
+  if (!ev) return out;
+  return (
+    out + '\n\n[BAĞLAM — kullanıcı bu bildirimi sorarsa bununla cevapla]\n' +
+    'Olay: ' + String(ev.title || '').slice(0, 200) + '\n' +
+    (ev.detail ? 'Detay: ' + String(ev.detail).slice(0, 200) + '\n' : '') +
+    (ev.url ? 'Link: ' + String(ev.url) + '\n' : '') +
+    'Kaynak: ' + String(ev.source || '').slice(0, 80)
+  );
+}
+
+/* Oturum yoksa oluştur (processTgMessage/processDcMessage ile aynı kalıp) */
+function ensureTgSession(chatId) {
+  let sid = tgChats.get(chatId);
+  if (!sid) {
+    const v = engine.createSession();
+    sid = v.id;
+    tgChats.set(chatId, sid);
+    tgRememberSession(chatId, sid);
+    saveTgChats();
+  }
+  return sid;
+}
+function ensureDcSession(channelId) {
+  let sid = dcChats.get(channelId);
+  if (!sid) {
+    const v = engine.createSession();
+    sid = v.id;
+    dcChats.set(channelId, sid);
+    dcRememberSession(channelId, sid);
+    saveDcChats();
+  }
+  return sid;
+}
+
+/* Masaüstü yedeği: en güncel (bg/bot-DM'siz, meşgul olmayan) sohbet — yoksa yeni */
+function empatiDesktopSid() {
+  try {
+    for (const v of engine.listSessions()) {
+      if (!engine.isBusy(v.id)) return String(v.id);
+    }
+  } catch {}
+  return engine.createSession().id;
+}
+
 /* bildirim hedefi: sekmeden seçilen entegrasyon; seçilmemişse bağlı olanlar.
    Hiçbir entegrasyon yazılamazsa masaüstü chat UI (toast) kalır. */
 function empatiNotify(text, ev) {
   const cfg = empatiCfg();
+  const src = empatiSourceLine(ev);
+  const out = PROACTIVE_MARK + '\n' + text + (src ? '\n' + src : '');
+  const inject = empatiInjectText(ev, out);
   const senders = [];
   const tryWa = () => {
     try {
       const own = waOwnerNum();
-      if (own && wa && wa.connected) senders.push(() => sendWaSafe(own + '@s.whatsapp.net', '🫡 *Beast proaktif:*\n' + text));
+      if (own && wa && wa.connected) {
+        const jid = own + '@s.whatsapp.net';
+        senders.push(() =>
+          Promise.resolve(sendWaSafe(jid, out))
+            .then(() => empatiInjectToSession(ensureWaSession(jid), inject))
+            .catch(() => {})
+        );
+      }
     } catch {}
   };
   const tryTg = () => {
     try {
-      if (tg && tg.connected) for (const id of tgOwnerIds()) senders.push(() => sendTgSafe(id, '🫡 *Beast proaktif:*\n' + text));
+      if (tg && tg.connected) {
+        for (const id of tgOwnerIds()) {
+          senders.push(() =>
+            Promise.resolve(sendTgSafe(id, out))
+              .then(() => empatiInjectToSession(ensureTgSession(String(id)), inject))
+              .catch(() => {})
+          );
+        }
+      }
     } catch {}
   };
   const tryDc = () => {
     try {
-      if (dc && dc.connected) for (const id of dcOwnerIds()) senders.push(() => sendDcSafe(id, '🫡 **Beast proaktif:**\n' + text));
+      if (dc && dc.connected) {
+        const outDc = out.replace('🫡 *Beast proaktif:*', '🫡 **Beast proaktif:**');
+        for (const id of dcOwnerIds()) {
+          senders.push(() =>
+            Promise.resolve(sendDcSafe(id, outDc))
+              .then(() => empatiInjectToSession(ensureDcSession(String(id)), inject))
+              .catch(() => {})
+          );
+        }
+      }
     } catch {}
   };
   if (cfg.notifyTarget === 'whatsapp') tryWa();
@@ -6331,10 +6450,12 @@ function empatiNotify(text, ev) {
   for (const fn of senders) {
     try { fn(); sent++; } catch {}
   }
-  /* hiçbir entegrasyona yazılamadıysa yalnız masaüstü chat UI'a düş */
+  /* hiçbir entegrasyona yazılamadıysa yalnız masaüstü chat UI'a düş —
+     metin güncel sohbete de asistan mesajı olarak işlenir */
   try {
     if (!sent && win && !win.isDestroyed()) {
-      win.webContents.send('agent:event', { type: 'proactive', id: ev.id, level: ev.level, title: ev.title, text });
+      empatiInjectToSession(empatiDesktopSid(), inject);
+      win.webContents.send('agent:event', { type: 'proactive', id: ev.id, level: ev.level, title: ev.title, text: out });
     }
   } catch {}
 }
@@ -6722,7 +6843,8 @@ function termShellSpawn() {
 }
 
 ipcMain.handle('terminal:toggle', () => {
-  if (browser.open) setBrowserOpen(false);
+  /* terminal artık tarayıcıyla AYNI alanı paylaşmıyor (Beast Code'da kod
+     bölmesinde) — açılışı/kapanışı tarayıcıya DOKUNMAZ */
   return { ok: true, cwd: termShellCwd || (engine && engine.workspace) || settings.workspace || app.getPath('home') };
 });
 
@@ -6819,9 +6941,21 @@ function bcGetSession(folder) {
       JSON.stringify({ t: 'meta2', bgOf: '', title: 'Beast Code', at: new Date().toISOString() }) + '\n'
     );
   } catch {}
+  bcMarkWs(s, folder);
   engine.cache.set(s.id, s);
   bcSessions.set(folder, s.id);
   return s;
+}
+
+/* Beast Code oturumuna çalışma klasörünü işle: sohbet geçmişi listesinde
+   hangi klasörde çalışıldığı görünür; oturum tekrar açılınca aynı klasöre
+   bağlanır. Kayıt oturum dosyasına bcws satırı olarak YAZILIR. */
+function bcMarkWs(s, folder) {
+  try {
+    if (s.bcWs === folder) return;
+    s.bcWs = folder;
+    fs.appendFileSync(engine._file(s.id), JSON.stringify({ t: 'bcws', ws: folder, at: new Date().toISOString() }) + '\n');
+  } catch {}
 }
 
 /* Beast Code motoru: TAMAMEN BEAST MOTORU — opencode'in döngü mantığı
@@ -6993,6 +7127,85 @@ ipcMain.handle('beastcode:new', async () => {
     bcSessions.delete(ws);
   }
   return { ok: true };
+});
+
+/* ---------------- Beast Code SOHBET GEÇMİŞİ ----------------
+   Soldaki dosya panelinin alt yarısında eski Beast Code oturumları listelenir.
+   Ana sohbet geçmişinden (bgTitle gizli oturumlar) ve Studio'dan TAMAMEN AYRIDIR.
+   Oturuma tıklayınca panele açılır, kaldığı yerden devam edilir. */
+ipcMain.handle('bc:history', async () => {
+  try {
+    return { ok: true, items: engine.listBcSessions(100) };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e), items: [] };
+  }
+});
+
+function bcMsgText(m) {
+  const t = Array.isArray(m && m.content)
+    ? m.content.filter((p) => p && p.type === 'text').map((p) => String(p.text || '')).join('\n')
+    : String((m && m.content) || '');
+  return t.replace(/\s+/g, ' ').trim();
+}
+
+ipcMain.handle('bc:open', async (_e, payload) => {
+  const id = String((payload && payload.id) || '');
+  if (!engine) return { ok: false, error: 'ajan hazır değil' };
+  if (!id) return { ok: false, error: 'oturum belirtilmedi' };
+  let s;
+  try { s = engine._load(id); } catch { return { ok: false, error: 'oturum açılamadı' }; }
+  if (s.bgTitle && s.bgTitle !== 'Beast Code') return { ok: false, error: 'bu oturum Beast Code oturumu değil' };
+  /* mevcut klasöre bağlan: sonraki mesajlar BU oturumda sürer */
+  const ws = ideRoot();
+  s.workspace = ws;
+  s.bcCode = true;
+  bcMarkWs(s, ws);
+  engine.cache.set(s.id, s);
+  bcSessions.set(ws, s.id);
+  const msgs = [];
+  for (const m of s.messages || []) {
+    if (m.tool_calls) continue;
+    const txt = bcMsgText(m);
+    if (!txt) continue;
+    msgs.push({ role: m.role === 'assistant' ? 'assistant' : 'user', text: txt.slice(0, 4000) });
+  }
+  return {
+    ok: true,
+    sessionId: s.id,
+    busy: !!engine.isBusy(s.id),
+    mode: s.bcMode || '',
+    messages: msgs.slice(-200),
+  };
+});
+
+/* TEK oturum silme (soldaki geçmiş listesindeki × butonu) */
+ipcMain.handle('bc:delete', async (_e, payload) => {
+  const id = String((payload && payload.id) || '');
+  if (!engine || !id) return { ok: false, error: 'oturum belirtilmedi' };
+  let s;
+  try { s = engine._load(id); } catch { return { ok: false, error: 'oturum açılamadı' }; }
+  if (s.bgTitle && s.bgTitle !== 'Beast Code') return { ok: false, error: 'yalnız Beast Code oturumu silinir' };
+  if (engine.isBusy(id)) return { ok: false, error: 'oturum çalışıyor — önce ■ ile durdur' };
+  for (const [folder, sid] of [...bcSessions.entries()]) {
+    if (String(sid) === id) bcSessions.delete(folder);
+  }
+  try { engine.deleteSession(id); } catch {}
+  return { ok: true };
+});
+
+/* TÜM Beast Code oturumlarını sil — çalışanlar atlanır */
+ipcMain.handle('bc:deleteAll', async () => {
+  if (!engine) return { ok: false, error: 'ajan hazır değil' };
+  let deleted = 0;
+  let skipped = 0;
+  for (const it of engine.listBcSessions(200)) {
+    if (engine.isBusy(it.id)) { skipped++; continue; }
+    for (const [folder, sid] of [...bcSessions.entries()]) {
+      if (String(sid) === it.id) bcSessions.delete(folder);
+    }
+    try { engine.deleteSession(it.id); deleted++; } catch {}
+  }
+  return { ok: true, deleted, skipped };
 });
 
 /* ---------------- Beast Studio paneli (video yapma/düzenleme modu) ----------------
@@ -7825,27 +8038,8 @@ ipcMain.handle('ide:previewFile', async (_e, rel) => {
 ipcMain.handle('ide:preview', async () => {
   try {
     const root = ideRoot();
-    /* MOBİL UYGULAMA PROJESİ (expo/react-native): statik sunucu değil,
-       `npm run web` başlat → telefon silueti içinde canlı önizleme */
-    const mob = ideMobileProject(root);
-    if (mob.mobile) {
-      let url = '';
-      /* ajanın kendi dev sunucusu canlıysa öncelikli */
-      if (bcLastServerUrl && isDevServerUrl(bcLastServerUrl)) {
-        const alive = await probeDevUrl(bcLastServerUrl, 800).catch(() => false);
-        if (alive) url = bcLastServerUrl;
-      }
-      if (!url) {
-        const r = await mobilePreviewStart(root);
-        if (!r.ok) return { ok: false, error: r.error };
-        url = r.url;
-      }
-      setBrowserMobile(true); /* siluet + görünür tarayıcı */
-      try { browser.view.webContents.loadURL(url).catch(() => {}); } catch {}
-      browserEmit({ open: true, width: browserShownWidth(browserW()), url, mobile: true, phoneRect: browser.mobileRect });
-      bcTellMobileServe(url);
-      return { ok: true, url, mobile: true };
-    }
+    /* MOBİL ÖNİZLEME kaldırıldı: mobil projeler de normal tarayıcı dock'unda
+       açılır — ajanın dev sunucusu varsa o adres, yoksa dahili statik sunucu. */
     const pick = (name) => {
       const p = path.join(root, name);
       try { return fs.existsSync(p) ? p : null; } catch { return null; }
@@ -7906,10 +8100,7 @@ ipcMain.handle('ide:previewUrl', async (_e, url) => {
     } else {
       return { ok: false, error: 'yalnız localhost adresleri önizlenebilir' };
     }
-    /* Expo/Metro dev sunucusu → telefon modu OTOMATİK (mobil uygulama canlı önizleme) */
-    if (/^https?:\/\/(?:localhost|127\.0\.0\.1):(8081|19000|19001|19002|3000|5173)\//i.test(target)) {
-      if (!browser.phone) setBrowserPhone(true);
-    }
+    /* mobil önizleme otomatik telefon modu kaldırıldı — önizleme normal dockta açılır */
     /* forceVisible: otomatik ve GÖRÜNÜR açılır */
     setBrowserOpen(true, true);
     browser.view.webContents.loadURL(target).catch(() => {});

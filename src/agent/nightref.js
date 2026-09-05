@@ -354,6 +354,38 @@ async function run(deps) {
     report.notes.push('kayıt sayısı az (' + entriesNow.length + ') — sıkılaştırma atlandı');
   }
 
+  /* 3b) ilgi alanı çıkarımı (Empati Loop, günde bir): kelime-frekans öğrenme
+     YOK — model birikmiş konuşma hafızasını okuyup gerçek konu etiketleri
+     üretir (prompt/apply perception modülünden gelir) */
+  report.interests = { updated: false, count: 0, labels: [] };
+  if (
+    !noLlm &&
+    deps.interests &&
+    typeof deps.interests.prompt === 'function' &&
+    typeof deps.interests.apply === 'function'
+  ) {
+    try {
+      const ip = deps.interests.prompt();
+      if (ip) {
+        const raw = await deps.llm(ip);
+        const ir = deps.interests.apply(raw);
+        if (ir && ir.ok) {
+          report.interests = {
+            updated: true,
+            count: ir.count || (Array.isArray(ir.labels) ? ir.labels.length : 0),
+            labels: Array.isArray(ir.labels) ? ir.labels : [],
+          };
+        } else {
+          report.notes.push('ilgi çıkarımı: model geçerli etiket üretmedi — mevcut liste korundu');
+        }
+      } else {
+        report.notes.push('ilgi çıkarımı: yeterli konuşma kaydı yok — atlandı');
+      }
+    } catch (e) {
+      report.errors.push('ilgi çıkarımı: ' + String((e && e.message) || e).slice(0, 120));
+    }
+  }
+
   /* 4) bağlam raporu + journal dosyası */
   const scopeLabel = deps.sinceIso
     ? dayKey(deps.sinceIso) + ' ' + String(deps.sinceIso).slice(11, 16) + ' → ' + dayKey(now) + ' ' + String(now.toTimeString ? now.toTimeString().slice(0, 5) : '')
@@ -365,6 +397,9 @@ async function run(deps) {
     '## Bugün öğrendiklerim\n' +
     (report.learnings.length ? report.learnings.map((l) => '- ' + l).join('\n') + '\n' : '- (kayıt yok)\n') +
     (report.factsAdded ? '\nHafızaya eklenen kalıcı bilgi: ' + report.factsAdded + ' madde\n' : '') +
+    (report.interests && report.interests.updated
+      ? '\n## İlgi alanları (günlük çıkarım)\n' + report.interests.labels.map((l) => '- ' + l).join('\n') + '\n'
+      : '') +
     '\n## Bellek bakımı\n' +
     '- Kayıt: ' + m.before + ' → ' + m.after + ' (düşülen ' + m.dropped + ', ' + m.merged + ' kayıt birleşti)\n' +
     '- Boyut: ' + m.charsBefore + ' → ' + m.charsAfter + ' char (~' + m.tokensSaved + ' token tasarruf)\n' +

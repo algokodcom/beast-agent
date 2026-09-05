@@ -987,9 +987,11 @@ class Engine {
     if (session.code) this._codeIndex.set(session.code, session.id);
   }
 
-  /* Oturum dosyasındaki son 'msg' satırını (user) güncel içerikle değiştir —
-     yanıtsız kalmış user mesajıyla yeni mesaj birleştirildiğinde kullanılır */
-  _rewriteLastMsg(id, content, attachments) {
+  /* Oturum dosyasındaki son 'msg' satırını güncel içerikle değiştir —
+     yanıtsız kalmış user mesajıyla yeni mesaj birleştirildiğinde (role:'user')
+     ya da proaktif not son asistan mesajına birleştirildiğinde (role:'assistant') */
+  _rewriteLastMsg(id, content, attachments, role) {
+    const wantRole = role === 'assistant' ? 'assistant' : 'user';
     try {
       const file = this._file(String(id));
       const lines = fs.readFileSync(file, 'utf8').split('\n');
@@ -997,8 +999,8 @@ class Engine {
         if (!lines[i].trim()) continue;
         let r;
         try { r = JSON.parse(lines[i]); } catch { continue; }
-        if (r.t === 'msg' && r.role === 'user') {
-          const out = { t: 'msg', role: 'user', content: String(content || '') };
+        if (r.t === 'msg' && r.role === wantRole) {
+          const out = { t: 'msg', role: wantRole, content: String(content || '') };
           if (Array.isArray(attachments) && attachments.length) out.attachments = attachments;
           lines[i] = JSON.stringify(out);
           break;
@@ -1092,6 +1094,9 @@ class Engine {
             session.isBotDm = true;
             session.dmA = String(rec.a || '');
             session.dmB = String(rec.b || '');
+          } else if (rec.t === 'bcws') {
+            /* Beast Code oturumu: hangi çalışma klasörüne bağlı */
+            session.bcWs = String(rec.ws || '');
           } else if (rec.t === 'msg') {
             delete rec.t;
             session.messages.push(rec);
@@ -1249,6 +1254,42 @@ class Engine {
     }
     out.sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
     return out.slice(0, 100);
+  }
+
+  /* Beast Code panel oturumları: bgTitle 'Beast Code' olan gizli oturumlar.
+     Soldaki dosya panelinin sohbet geçmişi listesi bunları gösterir —
+     ana sohbet listesinden (listSessions) TAMAMEN AYRIDIR. */
+  listBcSessions(limit = 100) {
+    let files = [];
+    try {
+      files = fs.readdirSync(this.sessionsDir).filter((f) => f.endsWith('.jsonl'));
+    } catch {}
+    const out = [];
+    for (const f of files) {
+      const id = f.replace(/\.jsonl$/, '');
+      let s;
+      try { s = this._load(id); } catch { continue; }
+      if (s.bgTitle !== 'Beast Code') continue; // yalnız Beast Code oturumları
+      let title = '';
+      for (const m of s.messages) {
+        if (m.role !== 'user') continue;
+        const t = Array.isArray(m.content)
+          ? m.content.filter((p) => p && p.type === 'text').map((p) => String(p.text || '')).join(' ')
+          : String(m.content || '');
+        title = t.replace(/\s+/g, ' ').trim().slice(0, 64);
+        if (title) break;
+      }
+      out.push({
+        id,
+        title: title || 'Beast Code oturumu',
+        updatedAt: s.updatedAt,
+        createdAt: s.createdAt,
+        count: s.messages.length,
+        ws: s.bcWs || '',
+      });
+    }
+    out.sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
+    return out.slice(0, Math.max(1, Math.min(200, Number(limit) || 100)));
   }
 
   createSession() {
@@ -2280,6 +2321,40 @@ class Engine {
       } catch {}
     }
     this.emit({ type: 'observe', sessionId: s.id });
+    this.emit({ type: 'sessions' });
+    return true;
+  }
+
+  /* PROAKTİF MESAJ ENJEKSİYONU (Empati Loop): ajanın az önce KULLANICIYA
+     bildirdiği metni, yeni bir tur BAŞLATMADAN geçmişe kendi asistan
+     mesajı olarak işler. Model bir sonraki turda bu mesajı bağlamında
+     "benim söylediğim söz" olarak görür — kullanıcı cevap verdiğinde
+     sohbet aynı oturumda kopmadan devam eder. Son mesaj araçsız bir
+     asistan mesajıysa metin ona BİRLEŞTİRİLİR — katı sağlayıcılarda
+     art arda asistan mesajı gitmez. */
+  injectAssistant(sessionId, text) {
+    const s = this._load(String(sessionId));
+    if (!s) return false;
+    const body = String(text || '').slice(0, USER_MAX);
+    if (!body.trim()) return false;
+    const lastMsg = s.messages[s.messages.length - 1];
+    if (
+      lastMsg &&
+      lastMsg.role === 'assistant' &&
+      typeof lastMsg.content === 'string' &&
+      !(Array.isArray(lastMsg.tool_calls) && lastMsg.tool_calls.length)
+    ) {
+      lastMsg.content = (lastMsg.content + '\n\n' + body).slice(0, USER_MAX);
+      this._rewriteLastMsg(s.id, lastMsg.content, null, 'assistant');
+      this.emit({ type: 'sessions' });
+      return true;
+    }
+    const msg = { role: 'assistant', content: body };
+    s.messages.push(msg);
+    try {
+      this._append(s, msg);
+    } catch {}
+    this.emit({ type: 'message', sessionId: s.id, message: msg });
     this.emit({ type: 'sessions' });
     return true;
   }
@@ -3668,6 +3743,9 @@ const skills = require('./skills');
           clearTimeout(kill);
         }
       };
+      /* Empati Loop ilgi çıkarımı: günde bir, konuşma hafızasından LLM ile
+         (kelime-frekans öğrenici kaldırıldı — çöp etiket üretiyordu) */
+      const perception = require('./perception');
       return await nightref.run({
         llm,
         memory,
@@ -3676,6 +3754,10 @@ const skills = require('./skills');
         sinceIso,
         manual,
         now: new Date(),
+        interests: {
+          prompt: () => perception.interestPrompt(),
+          apply: (raw) => perception.applyInferredInterests(raw),
+        },
         log: (msg) => log.info('gece-yansima', msg),
       });
     } finally {

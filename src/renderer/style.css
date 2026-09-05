@@ -362,57 +362,6 @@ body.rail-hidden #rail { display: none; }
 /* telefon modu: aktif buton vurgulu + dar dockta mobil çerçeve hissi */
 #bbPhone.on { color: var(--accent); background: var(--panel2); box-shadow: inset 0 -2px 0 var(--accent); }
 body.phone-mode #bbPhone { color: var(--accent); }
-/* mobil önizleme: telefon silueti çerçevesi */
-#bbMobile.on { color: var(--accent); background: var(--panel2); box-shadow: inset 0 -2px 0 var(--accent); }
-body.mobile-preview #bbMobile { color: var(--accent); }
-/* cihaz seçici: telefonun ALTINDA yüzen modern pill picker (konumu renderPhoneFrame) */
-#bbDevice {
-  position: fixed;
-  display: none;
-  z-index: 10000;
-  height: 34px;
-  padding: 0 34px 0 16px;
-  border-radius: 17px;
-  border: 1px solid var(--border);
-  background-color: var(--panel2);
-  color: var(--text);
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: .2px;
-  outline: none;
-  appearance: none;
-  -webkit-appearance: none;
-  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%23888890' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
-  background-repeat: no-repeat;
-  background-position: right 14px center;
-  box-shadow: 0 6px 18px rgba(0, 0, 0, .3);
-}
-#bbDevice:hover { border-color: var(--accent); }
-#bbDevice:focus { border-color: var(--accent); }
-
-/* ---------- MOBİL ÖNİZLEME: telefon silueti çerçevesi ----------
-   WebContentsView ekranın kendisidir (main'deki PHONE_* sabitleriyle birebir);
-   çerçeve/çentik/durum çubuğu/home bar DOM'da çizilir — pointer-events yok,
-   native view'a asla dokunmaz (kenar şeritleri view sınırlarının dışındadır) */
-#phoneFrame {
-  position: fixed;
-  display: none;
-  pointer-events: none;
-  z-index: 9999;
-  box-sizing: border-box; /* border rect sınırlarının İÇİNDE kalır — view ile birebir hizalı */
-  border: 12px solid #0a0a0e;
-  border-radius: 42px;
-  filter: drop-shadow(0 12px 32px rgba(0, 0, 0, .55));
-}
-#phoneFrame .pf-home {
-  /* alt kenar çerçeve bandının İÇİNDE — native view'ın dışında, görünür */
-  position: absolute;
-  bottom: -9px; left: 50%;
-  transform: translateX(-50%);
-  width: 38%; height: 4px;
-  border-radius: 3px;
-  background: rgba(255, 255, 255, .8);
-}
 
 /* sürükle-boyutlandır tutamacı (görünmez) */
 /* Beast Code chat ↔ tarayıcı arası ayırıcı: ideSplit ile BİREBİR aynı çizgi
@@ -2621,6 +2570,83 @@ body.ide-mode #bcPanel { display: flex; }
   text-overflow: ellipsis;
 }
 #fileTree { flex: 1; overflow-y: auto; padding: 6px 4px; }
+
+/* ---------- Beast Code sohbet geçmişi (dosya panelinin ALT YARISI) ----------
+   Yalnız IDE (Beast Code) modunda görünür; ana sohbet listesinden ayrıdır.
+   Üst yarı klasör ağacı, alt yarı eski Beast Code oturumları. */
+#bcHistWrap {
+  display: none;
+  flex-direction: column;
+  height: 50%;
+  min-height: 140px;
+  border-top: 1px solid var(--border);
+  background: var(--panel);
+}
+body.ide-mode #bcHistWrap { display: flex; }
+#bcHistHead {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--border);
+}
+#bcHistTitle { font-size: 10.5px; letter-spacing: 2px; color: var(--muted); font-weight: 800; }
+#bcHistHead button {
+  margin-left: auto;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 11px;
+  padding: 2px 7px;
+  line-height: 1.4;
+}
+/* ikinci buton (çöp) yenile butonunun sağına BİTİŞİK — segmented görünüm */
+#bcHistHead #bcHistClear {
+  margin-left: -6px; /* flex gap'i iptal et — iki buton yan yana yapışık */
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+}
+#bcHistHead #bcHistRefresh { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+#bcHistHead button:hover { color: var(--text); background: var(--panel2); }
+#bcHistList { flex: 1; overflow-y: auto; padding: 4px; }
+.bc-hist-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 7px 8px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.bc-hist-item:hover { background: var(--panel2); }
+.bc-hist-item.active { background: var(--accent-dim); }
+.bh-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--muted); margin-top: 5px; }
+.bc-hist-item.active .bh-dot { background: var(--accent); }
+.bh-main { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 1px; }
+.bh-title { font-size: 12px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bh-meta { font-size: 10.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* satır silme: hover'da belirir */
+.bh-del {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  border: none;
+  background: none;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1;
+  padding: 0;
+  border-radius: 6px;
+  cursor: pointer;
+  opacity: 0;
+  margin-top: 2px;
+}
+.bc-hist-item:hover .bh-del,
+.bc-hist-item.active .bh-del { opacity: 1; }
+.bh-del:hover { color: var(--err); background: var(--panel2); }
+.bc-hist-empty { padding: 10px 8px; font-size: 11.5px; color: var(--muted); }
 /* görev listesi + geri alma paneli (dosya paneli başlığından açılır) */
 #tasksPanel {
   position: absolute;
@@ -2747,6 +2773,27 @@ body.ide-mode #codePane { display: flex; }
 body.ide-mode.editor-hidden #codePane,
 body.ide-mode.editor-hidden #ideSplit { display: none; }
 body.ide-mode.editor-hidden #ideRow #bcPanel { flex: 1 1 auto; min-width: 0; }
+
+/* ---------- paylaşılan kod bölmesi: editör ↔ terminal ----------
+   IDE modunda terminal ALT DOCK'ta değil; #codePane İÇİNDE yaşar.
+   Terminal açılınca editör kapanır (term-pane), editör açılınca terminal kapanır. */
+body.ide-mode #termPanel {
+  flex: 1 1 auto;
+  height: auto;
+  min-height: 0;
+  border-top: none;
+  z-index: auto;
+}
+body.ide-mode #termResize { display: none; }
+body.ide-mode.term-pane #codeTabsBar,
+body.ide-mode.term-pane #codeBody { display: none; }
+/* terminal açıkken bölme editör pref'inden bağımsız GÖRÜNÜR kalır */
+body.ide-mode.term-pane #codePane { display: flex; }
+/* terminal açıkken bölme düzeni geçerli kalır (editör pref'i ne olursa olsun) */
+body.ide-mode.term-pane #ideSplit { display: block; }
+body.ide-mode.term-pane #ideRow #bcPanel { flex: 0 0 var(--ideSplit, 420px); min-width: 280px; }
+/* IDE'de terminal altta değil — tarayıcı tutamacı tam boy kalır */
+body.ide-mode.term-open #bbResize { height: calc(100vh - 46px); }
 #codeHide {
   flex: none;
   width: 24px;

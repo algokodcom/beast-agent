@@ -35,6 +35,14 @@
         <div id="filePanelPath" title="">—</div>
         <div id="tasksPanel" hidden></div>
         <div id="fileTree"></div>
+        <div id="bcHistWrap">
+          <div id="bcHistHead">
+            <span id="bcHistTitle" data-i18n="bc_hist">SOHBET GEÇMİŞİ</span>
+            <button id="bcHistRefresh" title="Yenile">&#x27F3;</button>
+            <button id="bcHistClear" title="Tüm geçmişi sil" data-i18n-title="bc_hist_clear"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/></svg></button>
+          </div>
+          <div id="bcHistList"></div>
+        </div>
       </aside>
       <div id="sideFoot">
         <button id="gearBtn" title="Ayarlar" data-i18n-title="tipGear">&#x2699;&#xFE0E;</button>
@@ -419,7 +427,6 @@
     <button id="bbReload" title="Yenile" data-i18n-title="tip_bb_reload">&#x21BB;</button>
     <input id="bbUrl" placeholder="adres yaz veya ara…" autocomplete="off" spellcheck="false" data-i18n-ph="bb_ph" />
     <button id="bbPhone" title="Telefon modu — mobil versiyon / web versiyonu" data-i18n-title="tip_bb_phone"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="7" y="2" width="10" height="20" rx="2.5"/><line x1="11" y1="18" x2="13" y2="18"/></svg></button>
-    <button id="bbMobile" title="Mobil önizleme — telefon silueti (Expo/Metro dev server)" data-i18n-title="tip_bb_mobile"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="1.5" width="14" height="21" rx="3.5"/><line x1="9.5" y1="4.5" x2="14.5" y2="4.5"/><line x1="10.5" y1="19.5" x2="13.5" y2="19.5"/></svg></button>
     <button id="bbOpenExt" title="Tarayıcıda aç" data-i18n-title="tip_bb_open">&#x2197;</button>
     <button id="bbClose" title="Kapat" data-i18n-title="btn_close">&#x00D7;</button>
   </div>
@@ -447,17 +454,6 @@
 
   <input type="file" id="fileInput" multiple hidden
          accept="image/*,.txt,.md,.json,.csv,.log,.js,.ts,.py,.ps1,.bat,.cmd,.html,.css,.yaml,.yml,.xml,.ini" />
-
-  <!-- mobil önizleme cihaz seçici: telefonun ALTINDA yüzen modern picker -->
-  <select id="bbDevice" title="Cihaz ölçüleri" hidden>
-    <option value="iphone15promax">iPhone 15 Pro Max · 430×932</option>
-    <option value="iphone15pro">iPhone 15 Pro · 393×852</option>
-    <option value="iphone14">iPhone 14 · 390×844</option>
-    <option value="iphonese">iPhone SE · 375×667</option>
-    <option value="pixel8">Pixel 8 · 412×915</option>
-    <option value="galaxys23">Galaxy S23 · 360×780</option>
-    <option value="android">Android · 360×800</option>
-  </select>
 
   <script src="i18n.js"></script>
   <script src="handsfree.js"></script>

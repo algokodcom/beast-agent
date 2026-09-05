@@ -59,8 +59,6 @@ const els = {
   bbClose: $('#bbClose'),
   bbResize: $('#bbResize'),
   bbPhone: $('#bbPhone'),
-  bbMobile: $('#bbMobile'),
-  bbDevice: $('#bbDevice'),
   termCBtn: $('#termCBtn'),
   termPanel: $('#termPanel'),
   termCwd: $('#termCwd'),
@@ -77,6 +75,9 @@ const els = {
   bcStop: $('#bcStop'),
   bcClear: $('#bcClear'),
   bcNew: $('#bcNew'),
+  bcHistList: $('#bcHistList'),
+  bcHistRefresh: $('#bcHistRefresh'),
+  bcHistClear: $('#bcHistClear'),
   bcTodoWrap: $('#bcTodoWrap'),
   bcStatus: $('#bcStatus'),
   bcAttach: $('#bcAttach'),
@@ -3076,6 +3077,7 @@ async function renderEmpatiPane() {
       '<div style="font-size:12px">' + escapeHtml(e.title || '') + '</div>' +
       '<div class="ur-meta">' + escapeHtml(e.source || '') + ' · ' + when(e.ts) + ' · %' + (e.priority || 0) +
       (e.reason ? ' · ' + escapeHtml(e.reason) : '') + '</div>' +
+      (e.url ? '<div class="ur-meta"><span class="em-evlink" style="color:var(--accent);cursor:pointer;text-decoration:underline" data-u="' + escapeHtml(e.url) + '">🔗 kaynağı aç</span></div>' : '') +
       (e.text ? '<div class="sub" style="font-size:11px">' + escapeHtml(e.text) + '</div>' : '') +
       '</div>' +
       '<span style="flex:none;font-size:11px;color:var(--muted)">' + (statusT[e.status] || e.status) + lvBadge(e) + '</span>' +
@@ -3109,51 +3111,42 @@ async function renderEmpatiPane() {
         <label class="sub">${_t('em_interests')}</label>
         <textarea id="emInterests" class="inp" rows="2" placeholder="${_t('em_interests_ph')}">${escapeHtml(cfg.interests || '')}</textarea>
         <div class="sub">${_t('em_interests_auto')}</div>
+        ${(() => {
+          const learned = (mem && Array.isArray(mem.learned)) ? mem.learned : [];
+          if (!learned.length) return '<div class="sub" style="margin-top:4px;opacity:.8">' + _t('em_mem_no_learned') + '</div>';
+          return '<div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:6px">' +
+            learned.map((x) =>
+              '<span style="font-size:11px;padding:2px 8px;border:1px solid var(--border);border-radius:10px">' +
+              escapeHtml(x.w) + '</span>'
+            ).join('') + '</div>';
+        })()}
       </div>
-      <label class="lock-row" style="margin-top:8px"><input type="checkbox" id="emNews" ${cfg.newsTopics ? 'checked' : ''}/><span>${_t('em_news')}</span></label>
-      <input id="emTopics" class="inp" style="${cfg.newsTopics ? '' : 'opacity:.5'}" placeholder="${_t('em_news_topics_ph')}" value="${escapeHtml(cfg.newsTopics || '')}" spellcheck="false"/>
-      <div style="display:flex;gap:8px;margin-top:10px;align-items:center">
+      <div style="margin-top:8px">
+        <label class="sub">${_t('em_behavior')}</label>
+        <textarea id="emBehavior" class="inp" rows="2" placeholder="${_t('em_behavior_ph')}">${escapeHtml(cfg.behavior || '')}</textarea>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:12px;align-items:center;justify-content:center">
         <button id="emSave" class="btn">${_t('mcp_save')}</button>
         <button id="emScan" class="btn ghost">${_t('em_scan')}</button>
         <span id="emMsg" class="sub" style="margin:0"></span>
       </div>
-      <div class="sub" style="margin-top:6px">${_t('em_note')}</div>
-    </div>
-    <h3 style="margin-top:16px;color:var(--muted)">${_t('em_mem_h2')}</h3>
-    <div class="sub">${_t('em_mem_sub')}</div>
-    <div style="margin-top:6px"><label class="sub">${_t('em_mem_learned')}</label>${(() => {
-      const learned = (mem && Array.isArray(mem.learned)) ? mem.learned : [];
-      if (!learned.length) return '<div class="sub" style="margin-top:2px">' + _t('em_mem_no_learned') + '</div>';
-      return '<div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:4px">' +
-        learned.map((x) =>
-          '<span style="font-size:11px;padding:2px 8px;border:1px solid var(--border);border-radius:10px">' +
-          escapeHtml(x.w) + ' <span style="color:var(--muted)">×' + (x.c || 0) + '</span></span>'
-        ).join('') + '</div>';
-    })()}</div>
-    <div style="margin-top:8px"><label class="sub">${_t('em_mem_recent')}</label>${(() => {
-      const chats = (mem && Array.isArray(mem.chats)) ? mem.chats : [];
-      if (!chats.length) return '<div class="sub" style="margin-top:2px">' + _t('em_mem_no_recent') + '</div>';
-      return '<div style="margin-top:4px">' + chats.map((c) =>
-        '<div class="usage-row" style="align-items:flex-start">' +
-        '<div style="min-width:0;flex:1">' +
-        '<div style="font-size:12px">' + escapeHtml(c.t || '') + '</div>' +
-        '<div class="ur-meta">' + escapeHtml(c.ch || '') + ' · ' + when(c.ts) + '</div>' +
-        '</div></div>').join('') + '</div>';
-    })()}
-      <button id="emMemClear" class="btn ghost" style="margin-top:8px;font-size:12px">${_t('em_mem_clear')}</button>
     </div>
     <h3 style="margin-top:16px;color:var(--muted)">${_t('em_events')}</h3>`;
   const wrap = document.createElement('div');
   if (!rows) wrap.innerHTML = '<p class="sub">' + _t('em_no_events') + '</p>';
   else wrap.innerHTML = rows;
   pane.appendChild(wrap);
+  /* olay linkleri: tıklayınca harici tarayıcıda açılır */
+  wrap.querySelectorAll('.em-evlink').forEach((el) => {
+    el.addEventListener('click', () => {
+      const u = el.dataset.u;
+      if (u && /^https?:\/\//i.test(u)) beast.openExternal(u);
+    });
+  });
 
   const emOn = q('#emOn');
   const emDetail = q('#emDetail');
-  const emNews = q('#emNews');
-  const emTopics = q('#emTopics');
   if (emOn && emDetail) emOn.addEventListener('change', () => { emDetail.style.opacity = emOn.checked ? '' : '.5'; });
-  if (emNews && emTopics) emNews.addEventListener('change', () => { emTopics.style.opacity = emNews.checked ? '' : '.5'; });
   const emSaveBtn = q('#emSave');
   if (emSaveBtn) emSaveBtn.addEventListener('click', async () => {
     const patch = {
@@ -3163,8 +3156,8 @@ async function renderEmpatiPane() {
       cooldownMin: Number(q('#emCd').value),
       notifyTarget: q('#emTarget') ? q('#emTarget').value : '',
       filterModel: q('#emModel') ? q('#emModel').value : '',
+      behavior: q('#emBehavior') ? q('#emBehavior').value.trim() : '',
       interests: q('#emInterests').value.trim(),
-      newsTopics: emNews.checked ? emTopics.value.trim() : '',
     };
     const r = await beast.empatiSet(patch).catch(() => null);
     toast(r ? _t('em_saved') : 'Hata');
@@ -3192,12 +3185,6 @@ async function renderEmpatiPane() {
     }
     const b2 = q('#emScan');
     if (b2) b2.disabled = false;
-  });
-  const emMemClearBtn = q('#emMemClear');
-  if (emMemClearBtn) emMemClearBtn.addEventListener('click', async () => {
-    const r = await beast.empatiMemClear().catch(() => null);
-    toast(r && r.ok ? _t('em_mem_cleared') : 'Hata');
-    if (r && r.ok) renderEmpatiPane();
   });
 }
 
@@ -5006,14 +4993,6 @@ function onEvent(ev) {
       if (shown && ev.width) document.body.style.setProperty('--bw', ev.width + 'px');
       document.body.classList.toggle('phone-mode', !!ev.phone);
       if (els.bbPhone) els.bbPhone.classList.toggle('on', !!ev.phone);
-      /* MOBİL ÖNİZLEME: telefon silueti çerçevesi + düğme durumu + cihaz seçimi */
-      document.body.classList.toggle('mobile-preview', !!ev.mobile);
-      if (els.bbMobile) els.bbMobile.classList.toggle('on', !!ev.mobile);
-      if (ev.device) {
-        document.body.dataset.pfDevice = ev.device;
-        if (els.bbDevice) els.bbDevice.value = ev.device;
-      }
-      renderPhoneFrame(ev.phoneRect || null);
       els.browserBar.hidden = !shown;
       els.bbResize.hidden = !shown;
       /* terminal artık ALT dock — tarayıcıyla birlikte yaşar, kapatılmaz */
@@ -5167,22 +5146,28 @@ function termSetHeight(h) {
   const v = Math.max(120, Math.min(Math.round(h), Math.round(window.innerHeight * 0.7)));
   document.body.style.setProperty('--th', v + 'px');
   try { localStorage.setItem('beast.termH', String(v)); } catch {}
-  /* native tarayıcı view'ına alt payı bildir — view yüksekliğini kısar */
-  beast.browserSetBottomInset(termOpen ? v : 0).catch(() => {});
+  /* native tarayıcı view'ına alt payı bildir — IDE modunda terminal bölme içindedir,
+     tarayıcıya dokunmaz; yalnız ajan modundaki alt dock paylaşımı bildirilir */
+  if (!ideModeOn()) beast.browserSetBottomInset(termOpen ? v : 0).catch(() => {});
 }
 
 function termSetOpen(v) {
-  /* BEAST CODE modunda terminal HEP AÇIK: kapatma denemeleri IDE modunda yok sayılır */
-  if (!v && ideModeOn()) {
-    toast('Beast Code modunda terminal açık kalır');
-    return;
-  }
   termOpen = !!v;
   els.termPanel.hidden = !v;
-  els.termResize.hidden = !v;
+  els.termResize.hidden = !v || ideModeOn(); /* IDE'de terminal bölme içi — boyutlandırma yok */
   document.body.classList.toggle('term-open', v);
   termSetShell(termShell);
-  /* alt dock: tarayıcı view'ı terminal payını boşaltır */
+  if (ideModeOn()) {
+    /* IDE modunda terminal soldaki KOD BÖLMÜNDE yaşar: açılınca editörü kapatır,
+       kapanınca editör geri gelir — tarayıcıyla HİÇbir ilişkisi yok */
+    document.body.classList.toggle('term-pane', v);
+    if (v) {
+      els.termInput.focus();
+      termScroll(true);
+    }
+    return;
+  }
+  /* alt dock (ajan modu): tarayıcı view'ı terminal payını boşaltır */
   const th = parseInt(getComputedStyle(document.body).getPropertyValue('--th')) || 180;
   beast.browserSetBottomInset(v ? th : 0).catch(() => {});
   if (v) {
@@ -5226,55 +5211,9 @@ function termShortTool(name, args) {
   } catch { return ''; }
 }
 
-/* ---------------- MOBİL ÖNİZLEME: telefon silueti ----------------
-   main, WebContentsView'ı cihaz EKRANI boyutuna küçültür (phoneRect olayıyla
-   gelir); çerçeve TEK YUVARLAK HALKA (border 12px, radius 42 — üst/alt köşeler
-   birebir aynı) DOM'da çizilir; home çubuğu alt kenar içindedir. */
-const PF_BEZEL = 12;
-
-function renderPhoneFrame(rect) {
-  const pk = document.getElementById('bbDevice');
-  let f = document.getElementById('phoneFrame');
-  if (!rect) {
-    if (f) f.style.display = 'none';
-    if (pk) pk.style.display = 'none';
-    return;
-  }
-  if (!f) {
-    f = document.createElement('div');
-    f.id = 'phoneFrame';
-    f.innerHTML = '<div class="pf-home"></div>';
-    document.body.appendChild(f);
-  }
-  f.style.display = 'block';
-  f.style.left = (rect.x - PF_BEZEL) + 'px';
-  f.style.top = (rect.y - PF_BEZEL) + 'px';
-  f.style.width = (rect.width + PF_BEZEL * 2) + 'px';
-  f.style.height = (rect.height + PF_BEZEL * 2) + 'px';
-  /* cihaz seçici: çerçevenin altında ortalanmış */
-  if (pk) {
-    const frameBottom = rect.y + rect.height + PF_BEZEL;
-    pk.hidden = false;
-    pk.style.display = 'block';
-    pk.style.top = (frameBottom + 12) + 'px';
-    pk.style.left = Math.max(8, rect.x + rect.width / 2 - pk.offsetWidth / 2) + 'px';
-  }
-}
-
-/* ajan dev sunucu başlattı mı? (expo/metro/vite/next) — mobil önizleme
-   açıksa oraya otomatik gidilir, kapatılsa da son URL hatırlanır */
-let devSeenUrl = '';
-const DEV_URL_RE_R = /https?:\/\/(?:localhost|127\.0\.0\.1|\[::1\]|(?:192\.168|10\.\d+|172\.(?:1[6-9]|2\d|3[01]))\.\d+\.\d+):(\d{2,5})/;
-function devServerSeen(text) {
-  const m = DEV_URL_RE_R.exec(String(text || ''));
-  if (!m) return;
-  const port = Number(m[1]);
-  if (port === 19000 || port === 19001 || port === 19002) return; // expo native/log portları
-  const url = m[0].replace(/\/+$/, '') + '/';
-  if (devSeenUrl === url) return;
-  devSeenUrl = url;
-  if (document.body.classList.contains('mobile-preview')) beast.browserNavigate(url).catch(() => {});
-}
+/* ---------------- MOBİL ÖNİZLEME kaldırıldı ----------------
+   Telefon silueti (Expo/Metro canlı önizleme) şimdilik devre dışı —
+   önizleme her projede normal tarayıcı dock'unda açılır. */
 
 /* ajan araç etkinliğini terminale akıt (tüm oturumlar: ana sohbet + paralel ajanlar + cron) */
 function termAgentEvent(ev) {
@@ -5283,8 +5222,6 @@ function termAgentEvent(ev) {
     const args = termShortTool(ev.name, ev.args);
     termLine('t-agent', sid + '▸ ' + ev.name + (args ? ': ' + args : ''));
   } else if (ev.type === 'tool-end') {
-    /* mobil önizleme: dev sunucu çıktısı yakala ("Local: http://localhost:8081" vb.) */
-    devServerSeen(ev.result);
     const shellish = /bash|shell|powershell|cmd|command|script|terminal/i.test(String(ev.name || ''));
     const out = String(ev.result || '').replace(/\s+$/, '');
     const cap = shellish ? 1600 : 240;
@@ -6091,25 +6028,8 @@ async function init() {
       beast.browserPhone(on).catch(() => {});
     });
   }
-  if (els.bbMobile) {
-    els.bbMobile.addEventListener('click', () => {
-      /* MOBİL ÖNİZLEME: telefon silueti içinde canlı dev-server önizlemesi */
-      const on = !document.body.classList.contains('mobile-preview');
-      beast.browserMobileSet(on).catch(() => {});
-    });
-  }
-  if (els.bbDevice) {
-    els.bbDevice.addEventListener('change', () => {
-      beast.browserDeviceSet(els.bbDevice.value).catch(() => {});
-    });
-  }
   els.bbClose.addEventListener('click', () => {
     document.body.classList.remove('browser-open');
-    /* mobil önizleme KESİN kapansın: main tarafı zaten kapatıyor, DOM tarafı da
-       beklemeden temizlenir (siluet + cihaz seçici + mod düğmesi) */
-    document.body.classList.remove('mobile-preview');
-    if (els.bbMobile) els.bbMobile.classList.remove('on');
-    renderPhoneFrame(null);
     els.browserBar.hidden = true;
     els.bbResize.hidden = true;
     els.browserBtn.classList.remove('on');
@@ -6967,21 +6887,42 @@ async function setIdeMode(on) {
   if (!on && document.body.classList.contains('browser-open')) {
     try { beast.toggleBrowser(); } catch {}
   }
-  /* ALT TERMINAL: yalnız Beast Code'a özgü — Agent/Studio moduna dönüşte kapanır */
-  if (!on && termOpen) termSetOpen(false);
   if (on) {
+    /* terminal ALT DOCK'tan KOD BÖLMÜNE taşınır: soldaki yer editör + terminal ortak alanı */
+    ideTermPlace(true);
     ideSplitRestore();
     setEditorHidden(localStorage.getItem('beast.editorHidden') === '1');
-    /* BEAST CODE modunda terminal HEP AÇIK — mod girilirken otomatik açılır */
-    if (!termOpen) termSetOpen(true);
+    /* mod geçişinde bir kez: ajan modundan kalabilecek alt dock payını sıfırla */
+    beast.browserSetBottomInset(0).catch(() => {});
+    /* terminal açıksa bölmeyi o alır; kapalıysa editör pref'ine göre başlar —
+       editör görünürse terminal ⌘ butonuyla (veya editör kapatılınca) açılır */
+    termSetOpen(termOpen ? true : editorHiddenOn());
     await loadIdeTree();
     bcBanner();
+    renderBcHistory(); /* soldaki geçmiş listesi: IDE'ye girişte tazelenir */
     codeGutterRender(); /* dosya açık olmasa bile rakamlar görünür */
   } else {
+    /* terminal bölmeye alınmadan önce kapatılır, sonra ALT DOCK'a geri taşınır */
+    if (termOpen) termSetOpen(false);
+    document.body.classList.remove('term-pane');
+    ideTermPlace(false);
     /* agent moduna dönüş: koşan paralel ajan varsa rail otomatik açılır
        (autoOpened sıfırlanır — Code modundayken başlayan iş için de tetiklensin) */
     agentState.autoOpened = false;
     try { await refreshAgentsPane(); } catch {}
+  }
+}
+
+/* terminal panelini mode'a göre yerleştir: IDE'de #codePane içine, ajan modunda body altına */
+function ideTermPlace(inside) {
+  const pane = document.getElementById('codePane');
+  if (!pane || !els.termPanel) return;
+  if (inside && els.termPanel.parentElement !== pane) {
+    pane.appendChild(els.termPanel);
+    if (els.termResize) pane.appendChild(els.termResize);
+  } else if (!inside && els.termPanel.parentElement === pane) {
+    document.body.appendChild(els.termResize);
+    document.body.appendChild(els.termPanel);
   }
 }
 
@@ -7155,6 +7096,8 @@ function editorHiddenOn() {
 }
 
 function setEditorHidden(h) {
+  /* paylaşılan bölme: editör açılınca terminal kapanır (IDE modu) */
+  if (!h && ideModeOn() && termOpen) termSetOpen(false);
   document.body.classList.toggle('editor-hidden', !!h);
   if (els.codeShow) els.codeShow.hidden = !h;
   try { localStorage.setItem('beast.editorHidden', h ? '1' : '0'); } catch {}
@@ -7611,6 +7554,8 @@ function codeActivate(i) {
 }
 
 async function codeOpen(rel) {
+  /* dosya açılımı = editör açılır → terminal bölmeyi bırakır (paylaşılan bölme) */
+  if (ideModeOn() && termOpen) termSetOpen(false);
   if (editorHiddenOn()) setEditorHidden(false); /* dosya açılınca editör geri gelir */
   const idx = codeTabs.findIndex((t) => t.rel === rel);
   if (idx >= 0) {
@@ -7806,8 +7751,6 @@ $('#filePreview').addEventListener('click', async () => {
   const r = await beast.idePreview().catch(() => null);
   if (r && r.ok) {
     if (ideModeOn() === false) setIdeMode(true);
-    /* mobil proje: npm run web + telefon silueti — kullanıcıya net geri bildirim */
-    if (r.mobile) toast('Mobil önizleme: dev sunucu başlatıldı — telefon siluetine bak');
   } else {
     toast((r && r.error) || 'preview açılamadı');
   }
@@ -8137,8 +8080,129 @@ function bcOnFolderChanged(p) {
   bcStreamEl = null;
   bcStreamRaw = '';
   bcBannerDone = false;
+
   bcBanner();
+  renderBcHistory();
 }
+
+/* ---------- Beast Code SOHBET GEÇMİŞİ (dosya panelinin alt yarısı) ----------
+   Eski Beast Code oturumları listelenir; tıklanınca panelde açılır ve
+   kaldığı yerden devam edilir. Ana sohbet listesiyle ilgisi yoktur. */
+let bcHistBusy = false;
+
+function histWhen(iso) {
+  try {
+    return new Date(iso).toLocaleString('tr-TR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+  } catch { return ''; }
+}
+
+async function renderBcHistory() {
+  const list = els.bcHistList;
+  if (!list || !ideModeOn() || bcHistBusy) return;
+  bcHistBusy = true;
+  try {
+    const r = await beast.bcHistory().catch(() => null);
+    if (!r || !r.ok) return;
+    const items = r.items || [];
+    list.innerHTML = '';
+    if (!items.length) {
+      list.innerHTML = '<div class="bc-hist-empty">Henüz Beast Code oturumu yok — mesaj yazınca burada birikir.</div>';
+      return;
+    }
+    for (const it of items) {
+      const row = document.createElement('div');
+      row.className = 'bc-hist-item' + (it.id === bcSessionId ? ' active' : '');
+      const wsShort = it.ws ? String(it.ws).split(/[\\/]/).filter(Boolean).pop() : '';
+      row.innerHTML =
+        '<span class="bh-dot"></span>' +
+        '<div class="bh-main">' +
+        '<span class="bh-title">' + escapeHtml(it.title || 'Beast Code oturumu') + '</span>' +
+        '<span class="bh-meta">' + escapeHtml((wsShort ? wsShort + ' · ' : '') + histWhen(it.updatedAt) + ' · ' + (it.count || 0) + ' msj') + '</span>' +
+        '</div>' +
+        '<button class="bh-del" title="Bu oturumu sil">&#x00D7;</button>';
+      row.title = (it.ws ? it.ws + '\n' : '') + (it.title || '');
+      row.addEventListener('click', () => { bcOpenHistory(it.id); });
+      const del = row.querySelector('.bh-del');
+      if (del) del.addEventListener('click', (e) => {
+        e.stopPropagation();
+        bcDeleteHistory(it.id, it.title);
+      });
+      list.appendChild(row);
+    }
+  } finally {
+    bcHistBusy = false;
+  }
+}
+
+async function bcOpenHistory(id) {
+  if (!id) return;
+  if (bcRunning) { toast('Mesaj sürüyor — önce ■ ile durdur'); return; }
+  const r = await beast.bcOpen(id).catch(() => null);
+  if (!r || !r.ok) { toast((r && r.error) || 'oturum açılamadı'); return; }
+  bcSessionId = r.sessionId;
+  if (els.bcOut) els.bcOut.innerHTML = '';
+  bcTools.clear();
+  bcCloseToolGroup();
+  bcHideTodos();
+  bcFlushStream();
+  bcLine('t-sys', '[eski oturum açıldı · ' + (r.messages ? r.messages.length : 0) + ' mesaj — kaldığın yerden devam edebilirsin]');
+  for (const m of r.messages || []) {
+    if (m.role === 'user') bcLine('t-cmd', 'code> ' + m.text);
+    else bcLine('t-out', m.text);
+  }
+  bcSetBusy(!!r.busy);
+  if (r.busy) bcStatusShow('çalışıyor…');
+  else bcStatusHide();
+  renderBcHistory();
+}
+
+/* aktif Beast Code panelini taze başlangıca döndür (oturum silinince) */
+function bcResetPanel() {
+  bcSessionId = null;
+  bcPending = [];
+  renderBcChips();
+  bcTools.clear();
+  bcCloseToolGroup();
+  bcHideTodos();
+  bcFlushStream();
+  if (els.bcOut) els.bcOut.innerHTML = '';
+  bcSetBusy(false);
+  bcStatusHide();
+}
+
+/* TEK oturum silme — onay sorulur */
+async function bcDeleteHistory(id, title) {
+  if (!id) return;
+  if (!confirm('"' + (title || 'Beast Code oturumu') + '" silinsin mi?\n\nBu işlem geri alınamaz.')) return;
+  const r = await beast.bcDelete(id).catch(() => null);
+  if (!r || !r.ok) { toast((r && r.error) || 'silinemedi'); return; }
+  if (bcSessionId === id) {
+    bcResetPanel();
+    bcLine('t-sys', '[oturum silindi — sonraki mesaj taze oturumda başlar]');
+  }
+  toast('Oturum silindi');
+  renderBcHistory();
+}
+
+/* TÜM oturumları sil — onay sorulur; çalışan oturumlar atlanır */
+if (els.bcHistClear) els.bcHistClear.addEventListener('click', async () => {
+  if (bcHistBusy) return;
+  const r0 = await beast.bcHistory().catch(() => null);
+  const n = r0 && r0.ok ? (r0.items || []).length : 0;
+  if (!n) { toast('Silinecek oturum yok'); return; }
+  if (!confirm(n + ' Beast Code oturumunun TÜMÜ silinsin mi?\n\nBu işlem geri alınamaz.')) return;
+  const r = await beast.bcDeleteAll().catch(() => null);
+  if (!r || !r.ok) { toast((r && r.error) || 'silinemedi'); return; }
+  /* aktif oturum da silindiyse panel tazelensin */
+  const r2 = await beast.bcHistory().catch(() => null);
+  const still = r2 && r2.ok ? (r2.items || []).some((x) => x.id === bcSessionId) : true;
+  if (!still) {
+    bcResetPanel();
+    bcLine('t-sys', '[tüm geçmiş silindi — sonraki mesaj taze oturumda başlar]');
+  }
+  toast(r.deleted + ' oturum silindi' + (r.skipped ? ' · ' + r.skipped + ' çalışıyor (atlandı)' : ''));
+  renderBcHistory();
+});
 
 function bcSetBusy(v) {
   bcRunning = !!v;
@@ -8493,6 +8557,7 @@ function bcRunCurrent() {
   bcLine('t-cmd', 'code> ' + (msg || (atts.length ? '[' + atts.length + ' ek]' : '')));
   bcHideTodos(); /* yeni sorgu = eski todo list temizlenir; agent yeniden basacak */
   bcSetBusy(true);
+  const prevSid = bcSessionId;
   /* sürüyor/serbest kararını main'deki gerçek engine.isBusy verir —
      panel bayat kilitli kaldıysa ilk mesajla kendini düzeltir */
   beast.beastcodeSend(msg || '[dosya ekleri]', atts).then((r) => {
@@ -8517,6 +8582,8 @@ function bcRunCurrent() {
       bcSetBusy(false);
       bcLine('t-err', (r && r.error) || 'gönderilemedi');
     }
+    /* yeni oturum açıldıysa soldaki geçmiş listesi tazelensin */
+    if (bcSessionId && bcSessionId !== prevSid) renderBcHistory();
   }).catch((e) => {
     bcSetBusy(false);
     bcLine('t-err', String((e && e.message) || e));
@@ -8561,8 +8628,10 @@ if (els.bcNew) els.bcNew.addEventListener('click', async () => {
     bcFlushStream();
     if (els.bcTitle) els.bcTitle.textContent = 'BEAST CODE';
     bcLine('t-sys', 'yeni oturum — sonraki mesaj taze başlar');
+    renderBcHistory(); /* silinen oturum listeden düşsün */
   }
 });
+if (els.bcHistRefresh) els.bcHistRefresh.addEventListener('click', () => renderBcHistory());
 
 /* ---------- BEAST STUDIO paneli ----------
    Beast Code panelinin birebir karşılığı — AMA ayrı oturum, ayrı kuyruk,

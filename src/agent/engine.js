@@ -126,6 +126,7 @@ const PERM_TOOL_SETS = {
     'web_search', 'http_fetch', 'webfetch', 'deep_search',
     'browser_open', 'browser_read', 'browser_snapshot',
     'list_dir', 'read_file', 'grep', 'glob',
+    'git_diff_review', 'repo_map', 'repo_symbols', 'xlsx_read',
   ]),
   chat: new Set([]), // sadece sohbet
 };
@@ -138,6 +139,7 @@ const PLAN_ALLOW_TOOLS = new Set([
   'web_search', 'http_fetch', 'webfetch', 'deep_search',
   'browser_open', 'browser_read', 'browser_snapshot',
   'todo_write', 'memory_search', 'kb_search', 'ocr_read',
+  'git_diff_review', 'repo_map', 'repo_symbols', 'xlsx_read',
 ]);
 
 /* İzin değerini normalize eder: 'all' → ['all'], 'web' → ['web'],
@@ -4021,6 +4023,9 @@ const skills = require('./skills');
       /* opencode general-agent portu: alt-ajan da edit/grep/glob kullanır */
       if (!(name === 'run_command' || name === 'read_file' || name === 'write_file' || name === 'edit_file' ||
             name === 'list_dir' || name === 'grep' || name === 'glob' ||
+            name === 'git_commit' || name === 'git_diff_review' || name === 'git_pr_create' ||
+            name === 'repo_map' || name === 'repo_symbols' ||
+            name === 'xlsx_read' || name === 'xlsx_write' || name === 'xlsx_edit' ||
             name === 'web_search' || name === 'http_fetch' || name === 'webfetch' || name === 'python_run')) {
         return JSON.stringify({ ok: false, error: `unknown tool ${name}` });
       }
@@ -4034,7 +4039,7 @@ const skills = require('./skills');
 
   /* Onay gerektiren araçlar — tepkiyle onay kapısına takılır.
      opencode'da edit+write aynı "edit" iznine takılır — burada da ikisi birlikte */
-  static RISKY_TOOLS = new Set(['run_command', 'write_file', 'edit_file', 'python_run', 'email_send', 'watcher_add']);
+  static RISKY_TOOLS = new Set(['run_command', 'write_file', 'edit_file', 'python_run', 'email_send', 'watcher_add', 'git_commit', 'git_pr_create', 'xlsx_write', 'xlsx_edit']);
 
   /* ANA KOD KİLİDİ: yıkıcı işlem desenleri (korumalı yol + bu desen = engel) */
   static DESTRUCTIVE_RE =

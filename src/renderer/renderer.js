@@ -667,6 +667,12 @@ function argSummary(name, args) {
     if (name === 'glob') return String(args.pattern || '');
     if (name === 'list_dir') return String(args.path || '.');
     if (name === 'memory_write' || name === 'user_write') return String(args.text || '').slice(0, 80);
+    if (name === 'git_commit') return String(args.message || '').slice(0, 100);
+    if (name === 'git_diff_review') return args.staged ? '--staged' : String(args.ref || 'working tree');
+    if (name === 'git_pr_create') return String(args.title || '').slice(0, 100);
+    if (name === 'repo_map') return String(args.path || '.');
+    if (name === 'repo_symbols') return String(args.query || '').slice(0, 60) || '.';
+    if (name === 'xlsx_read' || name === 'xlsx_write' || name === 'xlsx_edit') return String(args.path || '');
     return JSON.stringify(args).slice(0, 100);
   } catch {
     return '';
@@ -4893,9 +4899,10 @@ function onEvent(ev) {
     return;
   }
   if (ev.type === 'install-progress') { updateInstallPct(ev); return; }
-  /* EMPATİ LOOP: proaktif bildirim (masaüstü) + sekme canlı yenileme */
+  /* EMPATİ LOOP: proaktif bildirim (masaüstü) + sekme canlı yenileme.
+     Toast'ta yalnız haber başlığı — link/markdown kalabalığı chat mesajında. */
   if (ev.type === 'proactive') {
-    toast('🫡 ' + (ev.text || ev.title || ''));
+    toast('🫡 ' + (ev.title || ev.text || ''));
     return;
   }
   if (ev.type === 'empati') {

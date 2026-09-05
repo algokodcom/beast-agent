@@ -584,6 +584,10 @@ async function runCycle({ cfg, signals, llmFilter, now = new Date(), log = () =>
   }
   counts.queued = kept.length;
 
+  /* 'yok sayıldı' olaylar depoda TUTULMAZ — son olaylar listesi temiz kalır
+     (eski depoda kalan ignored'lar da bu filtreyle bir temizlikte silinir) */
+  st.events = st.events.filter((e) => e.status !== 'ignored');
+
   /* depo tavanı */
   if (st.events.length > EVENT_CAP) st.events = st.events.slice(st.events.length - EVENT_CAP);
 

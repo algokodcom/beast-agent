@@ -2053,7 +2053,8 @@ function botToolSet(cfg) {
   }
   if (s.email) { set.add('email_list'); set.add('email_read'); set.add('email_send'); }
   if (s.run_command) {
-    for (const t of ['run_command', 'python_run', 'read_file', 'write_file', 'list_dir', 'computer_look', 'computer_act']) set.add(t);
+    for (const t of ['run_command', 'python_run', 'read_file', 'write_file', 'list_dir', 'computer_look', 'computer_act',
+      'git_commit', 'git_diff_review', 'git_pr_create', 'repo_map', 'repo_symbols', 'xlsx_read', 'xlsx_write', 'xlsx_edit']) set.add(t);
   }
   if (s.memory) { set.add('memory_write'); set.add('user_write'); set.add('memory_search'); set.add('memory_hygiene'); }
   if (s.kb) { set.add('kb_search'); set.add('kb_add'); }
@@ -6381,9 +6382,9 @@ function empatiLlmCompose(prompt) {
    KENDİSİNİN attığını bilir — aynı oturum, kesintisiz bağlam. */
 const PROACTIVE_MARK = '🫡 *Beast proaktif:*';
 
-/* bildirimin ALTINA YAZILAN KAYNAK: haberin gerçek linki varsa o, yoksa kaynak adı.
-   Kullanıcı "bu proje neymiş?" diye sorduğunda linkten bulabilsin.
-   TEK SATIR kuralı: satır sonu/boşluklar temizlenir, uzunsa sona "..." gelir. */
+/* bildirimin ALTINA YAZILAN KAYNAK — desktop chat + Discord için MARKDOWN
+   başlık-linki: kullanıcı ham URL görmez, haber başlığına tıklayınca açılır.
+   URL yoksa kaynak adı düz yazılır. TEK SATIR kuralı korunur. */
 function empatiSourceLine(ev) {
   if (!ev) return '';
   const oneLine = (s) =>
@@ -6392,7 +6393,29 @@ function empatiSourceLine(ev) {
   const cap = (s, max) =>
     oneLine(s).length > max ? oneLine(s).slice(0, max - ELLIPSIS.length) + ELLIPSIS : oneLine(s);
   const url = oneLine(ev.url);
-  if (/^https?:\/\//i.test(url)) return '🔗 ' + cap(url, 100);
+  if (/^https?:\/\//i.test(url)) {
+    /* markdown linki bozmasın: başlıktaki köşeli parantezler silinir, URL'deki
+       ')' kaçırılır (mdInline linki ilk ')'da keser) */
+    const title =
+      oneLine(ev.title || ev.source || '').replace(/[[\]]/g, ' ').replace(/\s{2,}/g, ' ').trim() || 'kaynak';
+    return '🔗 [' + cap(title, 80) + '](' + url.replace(/\)/g, '%29') + ')';
+  }
+  const src = oneLine(ev.source);
+  return src ? '🔗 kaynak: ' + cap(src, 80) : '';
+}
+
+/* WhatsApp/Telegram düz metin sürümü: bu kanallar [başlık](url) render etmez —
+   link TIKLANABİLMEK İÇİN ham URL olmalı. Kısaltılan URL kırık link olur;
+   o yüzden burada link tam uzunlukta tek satır gider. */
+function empatiSourceLinePlain(ev) {
+  if (!ev) return '';
+  const oneLine = (s) =>
+    String(s || '').replace(/\s*\n+\s*/g, ' ').replace(/\s{2,}/g, ' ').trim();
+  const url = oneLine(ev.url);
+  if (/^https?:\/\//i.test(url)) return '🔗 ' + url;
+  const ELLIPSIS = '...';
+  const cap = (s, max) =>
+    oneLine(s).length > max ? oneLine(s).slice(0, max - ELLIPSIS.length) + ELLIPSIS : oneLine(s);
   const src = oneLine(ev.source);
   return src ? '🔗 kaynak: ' + cap(src, 80) : '';
 }
@@ -6502,8 +6525,12 @@ function empatiDesktopSid() {
    Hiçbir entegrasyon yazılamazsa masaüstü chat UI (toast) kalır. */
 function empatiNotify(text, ev) {
   const cfg = empatiCfg();
+  /* desktop + Discord: başlık-linki (markdown); WA/TG: ham URL (tıklanabilir
+     olması için şart) — kanallar kendi biçimini alır */
   const src = empatiSourceLine(ev);
+  const srcPlain = empatiSourceLinePlain(ev);
   const out = PROACTIVE_MARK + '\n' + text + (src ? '\n' + src : '');
+  const outPlain = PROACTIVE_MARK + '\n' + text + (srcPlain ? '\n' + srcPlain : '');
   const inject = empatiInjectText(ev, out);
   const senders = [];
   const tryWa = () => {
@@ -6512,7 +6539,7 @@ function empatiNotify(text, ev) {
       if (own && wa && wa.connected) {
         const jid = own + '@s.whatsapp.net';
         senders.push(() =>
-          Promise.resolve(sendWaSafe(jid, out))
+          Promise.resolve(sendWaSafe(jid, outPlain))
             .then(() => empatiInjectToSession(ensureWaSession(jid), inject))
             .catch(() => {})
         );
@@ -6524,7 +6551,7 @@ function empatiNotify(text, ev) {
       if (tg && tg.connected) {
         for (const id of tgOwnerIds()) {
           senders.push(() =>
-            Promise.resolve(sendTgSafe(id, out))
+            Promise.resolve(sendTgSafe(id, outPlain))
               .then(() => empatiInjectToSession(ensureTgSession(String(id)), inject))
               .catch(() => {})
           );

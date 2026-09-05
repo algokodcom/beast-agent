@@ -8,6 +8,9 @@ const { execFile } = require('child_process');
 const { spawn } = require('child_process');
 const research = require('./research');
 const searxng = require('./searxng');
+const gittools = require('./gittools');
+const repomap = require('./repomap');
+const xlsxtools = require('./xlsxtools');
 
 const MAX_CMD_OUTPUT = 16000;
 const MAX_FILE_CHARS = 200000;
@@ -1465,6 +1468,10 @@ function readCacheDrop(abs) {
 }
 
 const definitions = [
+  /* yerleşik modül araçları: git, repo haritası, excel */
+  ...gittools.definitions,
+  ...repomap.definitions,
+  ...xlsxtools.definitions,
   {
     type: 'function',
     function: {
@@ -1714,6 +1721,15 @@ const definitions = [
 
 async function exec(name, args, ctx) {
   const cwd = ctx.cwd;
+  /* modül araçları: gittools / repomap / xlsxtools — kendi handler'larında */
+  const modHandler = gittools.handlers[name] || repomap.handlers[name] || xlsxtools.handlers[name];
+  if (modHandler) {
+    try {
+      return JSON.stringify(await modHandler(args, ctx));
+    } catch (e) {
+      return JSON.stringify({ ok: false, error: String((e && e.message) || e) });
+    }
+  }
   try {
     switch (name) {
       case 'run_command': {

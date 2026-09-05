@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8">
+<title>Hesap Makinesi</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; }
+  body {
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    background: #14151a; color: #e8e8ec;
+    display: flex; flex-direction: column; align-items: center;
+    padding: 18px 14px; gap: 14px; height: 100vh;
+  }
+  h1 { font-size: 15px; font-weight: 600; color: #9aa0b0; letter-spacing: .4px; }
+  #screen {
+    width: 100%; max-width: 320px; background: #0d0e12; border: 1px solid #26282f;
+    border-radius: 12px; padding: 14px; text-align: right; min-height: 74px;
+    display: flex; flex-direction: column; justify-content: center;
+  }
+  #expr { font-size: 14px; color: #8b90a0; min-height: 18px; word-break: break-all; }
+  #result { font-size: 28px; font-weight: 600; margin-top: 4px; word-break: break-all; }
+  #pad {
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; width: 100%; max-width: 320px;
+  }
+  button {
+    height: 46px; border: 1px solid #26282f; border-radius: 10px; font-size: 17px;
+    background: #1c1e25; color: #e8e8ec; cursor: pointer; transition: background .12s;
+  }
+  button:hover { background: #262933; }
+  button:active { background: #2f3340; }
+  .op { color: #ffb454; }
+  .eq { background: #4f7cff; border-color: #4f7cff; color: #fff; grid-column: span 2; }
+  .clr { color: #ff6b6b; }
+  #hist { width: 100%; max-width: 320px; overflow-y: auto; flex: 1; display: flex; flex-direction: column; gap: 6px; }
+  .h-row {
+    background: #17181e; border: 1px solid #23252d; border-radius: 8px;
+    padding: 8px 10px; font-size: 13px; display: flex; justify-content: space-between; gap: 8px; cursor: pointer;
+  }
+  .h-row:hover { background: #1e2028; }
+  .h-e { color: #8b90a0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .h-r { color: #9ecbff; font-weight: 600; }
+  #histHead { width: 100%; max-width: 320px; display: flex; justify-content: space-between; align-items: center; font-size: 12px; color: #7d8292; }
+  #histClear { background: none; border: none; color: #ff6b6b; font-size: 12px; cursor: pointer; height: auto; }
+</style>
+</head>
+<body>
+  <h1>🧮 HESAP MAKİNESİ</h1>
+  <div id="screen">
+    <div id="expr">&nbsp;</div>
+    <div id="result">0</div>
+  </div>
+  <div id="pad"></div>
+  <div id="histHead"><span>GEÇMİŞ</span><button id="histClear">temizle</button></div>
+  <div id="hist"></div>
+<script>
+(function () {
+  const exprEl = document.getElementById('expr');
+  const resEl = document.getElementById('result');
+  const pad = document.getElementById('pad');
+  const hist = document.getElementById('hist');
+  let expr = '';
+  let history = [];
+
+  const store = window.beastApp;
+  function fmt(n) {
+    if (typeof n !== 'number' || !isFinite(n)) return '—';
+    return Math.abs(n) > 1e15 ? n.toExponential(6) : String(+n.toFixed(10));
+  }
+  function evalLocal(e) {
+    const cleaned = String(e || '').replace(/,/g, '.').trim();
+    if (!cleaned || !/^[\s+\-*/().,%0-9e]*$/i.test(cleaned.replace(/e[+-]?\d+/gi, 'N'))) return null;
+    try {
+      const v = Function('"use strict"; return (' + cleaned + ')')();
+      return typeof v === 'number' && isFinite(v) ? v : null;
+    } catch { return null; }
+  }
+  function render() {
+    exprEl.textContent = expr || '\u00A0';
+    const v = evalLocal(expr);
+    resEl.textContent = expr ? (v === null ? '…' : fmt(v)) : '0';
+  }
+  function save() {
+    try { store && store.storageSet('history', history.slice(0, 30)); } catch {}
+  }
+  function pushHistory(e, r) {
+    history.unshift({ e, r });
+    history = history.slice(0, 30);
+    save();
+    renderHist();
+  }
+  function renderHist() {
+    hist.innerHTML = '';
+    for (const h of history) {
+      const row = document.createElement('div');
+      row.className = 'h-row';
+      row.innerHTML = '<span class="h-e"></span><span class="h-r"></span>';
+      row.querySelector('.h-e').textContent = h.e;
+      row.querySelector('.h-r').textContent = fmt(h.r);
+      row.addEventListener('click', () => { expr = h.e; render(); });
+      hist.appendChild(row);
+    }
+  }
+  function equals() {
+    if (!expr) return;
+    const v = evalLocal(expr);
+    if (v === null) { resEl.textContent = 'HATA'; return; }
+    pushHistory(expr, v);
+    if (store) store.notify('Hesap: ' + expr + ' = ' + fmt(v));
+    resEl.textContent = fmt(v);
+    expr = String(v);
+    render();
+  }
+  const keys = [
+    ['C', 'clr'], ['(', 'op'], [')', 'op'], ['⌫', 'clr'],
+    ['7'], ['8'], ['9'], ['/', 'op'],
+    ['4'], ['5'], ['6'], ['*', 'op'],
+    ['1'], ['2'], ['3'], ['-', 'op'],
+    ['0'], ['.', '%'], ['=', 'eq'],
+  ];
+  for (const [label, cls] of keys) {
+    const b = document.createElement('button');
+    b.textContent = label;
+    if (cls) b.className = cls;
+    b.addEventListener('click', () => {
+      if (label === 'C') { expr = ''; }
+      else if (label === '⌫') { expr = expr.slice(0, -1); }
+      else if (label === '=') { equals(); return; }
+      else { expr += label; }
+      render();
+    });
+    pad.appendChild(b);
+  }
+  document.getElementById('histClear').addEventListener('click', () => { history = []; save(); renderHist(); });
+  document.addEventListener('keydown', (e) => {
+    if (/^[0-9+\-*/().%]$/.test(e.key)) { expr += e.key; render(); }
+    else if (e.key === 'Enter') { e.preventDefault(); equals(); }
+    else if (e.key === 'Backspace') { expr = expr.slice(0, -1); render(); }
+    else if (e.key === 'Escape') { expr = ''; render(); }
+  });
+  (async () => {
+    try {
+      if (store) history = (await store.storageGet('history', [])) || [];
+    } catch {}
+    renderHist();
+    render();
+  })();
+})();
+</script>
+</body>
+</html>

@@ -1640,6 +1640,7 @@ class Engine {
           'Kullanıcı bir tarihte/saatte hatırlatılmasını isterse set_reminder kullan; when değerini ORTAMdaki bugüne göre hesapla (yerel saat). "Her sabah/gün/hafta" gibi tekrarlı isteklerde repeat alanını da ver (daily/weekly/monthly/weekdays veya cron).',
                     'Kullanıcı kalıcı bir arka plan takibi isterse (fiyat eşiği, pil seviyesi, sayfa değişikliği) watcher_add ile izleyici kur; kurduktan sonra watcher_list ile doğrula ve kullanıcıya koşulu + kontrol sıklığını kısaca bildir.',
           'Anlık olay takipleri için (yeni mail, fiyat eşiği, dosya değişimi, webhook) event_subscribe kullan — cron/polling gerekmez; listeyi event_list ile göster, vazgeçirirse event_unsubscribe.',
+          'LOG ZEKASI: "hata var mı / ne oldu / neden çalışmadı" sorularında ya da bir iş beklenmedik bittiğinde/hata verdiğini fark ettiğinde log_analyze ile logları tara — top desenleri okuyup en olası KÖK NEDENİ tek cümlede söyle, somut çözüm öner; aynı desen 3+ tekrarlıysa bunu vurgula. Sürekli log gözetimi istenirse watcher_add ile kind:"logs" kur (örn "hata artarsa bağır" → level:"error", windowMin:10, op:"gt", value:2) ve koşulu kısaca bildir.',
         'Kullanıcı "artık hep böyle yap / bunu unutma" tarzı kalıcı talimat verirse kural olarak kaydet: sohbette /rule <metin> kullanmasını söyle VEYA kullanıcı isterse event_subscribe ile olaya bağlan (mail/fiyat/dosya/webhook).',
           'Kullanıcının mesajında 2+ ayrı iş/hedef varsa (örn "X yap ve sonra Y\u2019i kontrol et") KODLAMAYA/İŞE BAŞLAMADAN önce todo_write ile plan çıkar ve sırayla yürüt; her adımı tamamlarken güncelle. LİSTE DİSİPLİNİ: her adım bittiği AN status:"done" yap; son cevabını vermeden önce tüm maddeler done olmalı — yapılmayacaksa listeden düş. Listeyi yarım bırakma.',
           'HIZ KURALI: Bağımsız işleri AYNI turda birden çok tool_calls ile PARALEL ver. Küçük işleri tek tek çağırma — her ayrı araç turu 5-15 sn LLM gecikmesidir: 3+ küçük komutu TEK run_command\u2019te `;` ile zincirle (örn `git status; node -v; dir`), döngülü/çoklu işleri TEK python_run betiğinde topla, çok dosyalık değişikliği TEK script ile DEĞİL AYNI turda PARALEL edit_file çağrılarıyla yap (dosya düzenlemeyi komut/scripte yedirme). Her küçük işlem için ayrı araç çağrısı açmak yavaşlığın 1 numaralı sebebidir.',
@@ -4264,6 +4265,8 @@ const skills = require('./skills');
             url: w.url || undefined,
             op: w.op,
             value: w.value,
+            level: w.level,
+            windowMin: w.windowMin,
             everyMin: w.everyMin,
             enabled: w.enabled,
             lastValue: w.lastValue,
@@ -4275,6 +4278,16 @@ const skills = require('./skills');
           return JSON.stringify(this.watchers.add({ ...(args || {}), sessionId }));
         }
         return JSON.stringify(this.watchers.remove(String((args && args.id) || '')));
+      }
+      if (name === 'log_analyze') {
+        /* LOG ZEKASI: log dosyasını tara → seviye sayıları + desen grupları + son kayıtlar */
+        return JSON.stringify(
+          log.analyze({
+            last: args ? args.last : undefined,
+            level: args ? args.level : undefined,
+            query: args ? args.query : undefined,
+          })
+        );
       }
       if (name === 'kb_add' || name === 'kb_search') {
         const kb = require('./kb');
@@ -4657,25 +4670,31 @@ const TOOLS = [
     function: {
       name: 'watcher_add',
       description:
-        'Create a background watcher that periodically checks something and notifies THIS chat when a condition becomes true (edge-triggered: fires once per crossing; cooldown limits repeats). Use for price alarms ("X altına düşerse haber ver"), battery levels, page change detection.',
+        'Create a background watcher that periodically checks something and notifies THIS chat when a condition becomes true (edge-triggered: fires once per crossing; cooldown limits repeats). Use for price alarms ("X altına düşerse haber ver"), battery levels, page change detection, or Beast log surveillance (kind=logs: "son 10 dakikada 3+ hata olursa bağır" → level:error, windowMin:10, op:gt, value:2).',
       parameters: {
         type: 'object',
         properties: {
           name: { type: 'string', description: 'Short label, e.g. "GOLD 2300 alarmı"' },
-          kind: { type: 'string', enum: ['web', 'battery'], description: 'web: fetch URL and extract value; battery: local battery percent' },
+          kind: {
+            type: 'string',
+            enum: ['web', 'battery', 'logs'],
+            description: 'web: fetch URL and extract value; battery: local battery percent; logs: count Beast error/warn entries in a sliding time window',
+          },
           url: { type: 'string', description: 'http(s) URL to poll (kind=web, required)' },
           path: {
             type: 'string',
             description:
               "If response is JSON: dot-path to watched value, e.g. 'price.usd' or 'data.0.close' (recommended over re)",
           },
-          re: { type: 'string', description: 'If response is HTML/text: regex; first capture group becomes the value' },
+          re: { type: 'string', description: 'If response is HTML/text: regex; first capture group becomes the value. kind=logs: optional regex to count only matching entries' },
           op: {
             type: 'string',
             enum: ['lt', 'lte', 'gt', 'gte', 'eq', 'neq', 'changed'],
-            description: "Comparison vs value. Use 'changed' with no value for page-change alerts.",
+            description: "Comparison vs value. Use 'changed' with no value for page-change alerts. kind=logs default: gt",
           },
           value: { type: 'number', description: 'Threshold for numeric ops (not needed for changed)' },
+          level: { type: 'string', enum: ['error', 'warn', 'info'], description: 'kind=logs: which log level to count (default error)' },
+          windowMin: { type: 'number', description: 'kind=logs: sliding window in minutes (default 10, max 720)' },
           everyMin: { type: 'number', description: 'Check interval in minutes (default 15, min 1, max 1440)' },
           everySec: { type: 'number', description: 'Check interval in SECONDS (10-8640) — overrides everyMin for fast watchers (e.g. 30 = every 30s)' },
           cooldownMin: { type: 'number', description: 'Min minutes between notifications (default 60)' },
@@ -4698,6 +4717,22 @@ const TOOLS = [
       name: 'watcher_remove',
       description: 'Delete a background watcher by its id (from watcher_list).',
       parameters: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'log_analyze',
+      description:
+        'LOG ZEKASI — analyze Beast application logs: level counts, error patterns grouped by normalized shape (variable parts masked → same failure collapses into one pattern with a count), and the raw recent tail. Use when the user asks "hata var mı / ne oldu / neden çalışmadı", when a task fails unexpectedly, or for self-diagnosis. Read the top patterns, name the single most likely root cause in one sentence and offer a concrete fix; offer watcher_add kind=logs for permanent surveillance.',
+      parameters: {
+        type: 'object',
+        properties: {
+          last: { type: 'number', description: 'How many recent log lines to scan (default 1500, max 5000)' },
+          level: { type: 'string', enum: ['error', 'warn', 'info'], description: 'Only this level (omit = all levels)' },
+          query: { type: 'string', description: 'Optional regex filter applied to message and tag' },
+        },
+      },
     },
   },
   {

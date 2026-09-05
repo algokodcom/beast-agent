@@ -61,6 +61,7 @@ const TOOL_LABELS = {
   watcher_add: (a) => `İzleyici kur: ${a.name || ''}`,
   watcher_list: () => 'İzleyiciler',
   watcher_remove: (a) => `İzleyici sil: ${a.id || ''}`,
+  log_analyze: (a) => `Log analizi${a.level ? ' [' + a.level + ']' : ''}`,
   event_subscribe: (a) => `Olay aboneliği: ${a.type || ''}`,
   event_list: () => 'Olay abonelikleri',
   event_unsubscribe: (a) => `Abonelik sil: ${a.id || ''}`,

@@ -1262,11 +1262,20 @@ async function refreshFalloutPane() {
   renderFalloutPane();
 }
 
-/* Web Arama sekmesi: TinyFish anahtarı + arama sırası (Obscura kaldırıldı — SearXNG yerel motor) */
+/* Web Arama sekmesi: TinyFish anahtarı + arama sırası + tarayıcı gizleme (Obscura kaldırıldı — SearXNG yerel motor) */
+/* göz ikonu görünürlüğü: gizleme özelliği açıkken üst çubukta çıkar, kapalıyken yok */
+async function syncEyeBtn() {
+  if (!els.eyeBtn) return;
+  const r = await beast.browserShownGet().catch(() => null);
+  const enabled = !!(r && r.enabled);
+  els.eyeBtn.hidden = !enabled;
+  els.eyeBtn.classList.toggle('on', !!(r && r.shown));
+}
 async function renderWebSearchPane() {
   const pane = $('#tab-websearch');
   if (!pane) return;
   const tf = await beast.tinyfishGet().catch(() => ({ set: false, masked: '' }));
+  const bh = await beast.browserShownGet().catch(() => ({ enabled: false, shown: false }));
   pane.innerHTML =
     '<h2>' + _t('ws_h2') + '</h2>' +
     '<div class="sub">' + _t('ws_sub') + '</div>' +
@@ -1275,6 +1284,11 @@ async function renderWebSearchPane() {
     '<h2>' + _t('so_h2') + '</h2>' +
     '<div class="sub">' + _t('so_sub') + '</div>' +
     '<div id="soList" style="margin-top:10px"></div>' +
+    /* --- Tarayıcı gizleme --- */
+    '<div class="divider"></div>' +
+    '<h2>' + _t('bh_h2') + '</h2>' +
+    '<div class="sub">' + _t('bh_sub') + '</div>' +
+    '<label class="lock-row" style="margin-top:8px"><input type="checkbox" id="bhOn" ' + (bh.enabled ? 'checked' : '') + '/><span>' + _t('bh_label') + '</span></label>' +
     /* --- TinyFish --- */
     '<div class="divider"></div>' +
     '<h2>' + _t('tf_h2') + '</h2>' +
@@ -1331,6 +1345,18 @@ async function renderWebSearchPane() {
     else toast(_t('ws_fail_toast'));
   }
   if (rows.length) renderRows();
+
+  /* --- Tarayıcı gizleme --- */
+  const bhOn = $('#bhOn');
+  if (bhOn) bhOn.addEventListener('change', async () => {
+    const r = await beast.browserHideSet(bhOn.checked).catch(() => null);
+    if (r && r.enabled !== undefined) {
+      syncEyeBtn();
+      toast(r.enabled ? _t('bh_on_toast') : _t('bh_off_toast'));
+    } else {
+      toast(_t('ws_fail_toast'));
+    }
+  });
 
   /* --- TinyFish --- */
   const tfSt = $('#tfStatus');
@@ -2976,7 +3002,6 @@ async function renderEventsPane() {
         <button id="ebSave" class="btn ghost">${_t('ev_save')}</button>
       </div>
       <div class="sub">${_t('ev_price_sub')}</div>
-      <div class="sub" style="margin-top:8px">Webhook: <code>POST http://127.0.0.1:${ec.port || 8787}/beast-event</code><br>Header: <code>x-beast-token: …</code> <button id="ebTokenCopy" class="btn ghost" style="padding:2px 8px;margin-left:4px">${_t('ev_token_copy')}</button></div>
     </div>` +
     '<h3 style="margin-top:16px;color:var(--muted)">' + _t('ev_subs_h3') + '</h3>';
   const wrap = document.createElement('div');
@@ -3021,10 +3046,6 @@ async function renderEventsPane() {
   $('#ebMail').addEventListener('change', saveEb);
   $('#ebFs').addEventListener('change', saveEb);
   $('#ebSave').addEventListener('click', saveEb);
-  $('#ebTokenCopy').addEventListener('click', async () => {
-    await navigator.clipboard.writeText(ec.token || '').catch(() => {});
-    toast('Webhook token kopyalandı');
-  });
 }
 
 /* ---------------- EMPATİ LOOP (proaktif algı sekmesi) ---------------- */
@@ -5306,7 +5327,10 @@ async function renderWatchersModal() {
   for (const w of rows) {
     const row = document.createElement('div');
     row.className = 'mini-row' + (w.enabled ? '' : ' off');
-    const target = w.kind === 'battery' ? 'pil yüzdesi' : (w.path ? w.path : (w.re ? '/' + w.re + '/' : w.url));
+    const target =
+      w.kind === 'battery' ? 'pil yüzdesi'
+      : w.kind === 'logs' ? `log ${w.level || 'error'} · son ${w.windowMin || 10}dk${w.re ? ' · /' + w.re + '/' : ''}`
+      : (w.path ? w.path : (w.re ? '/' + w.re + '/' : w.url));
     row.innerHTML =
       `<span class="mr-dot"></span>` +
       `<div class="mr-main">` +
@@ -5397,17 +5421,29 @@ function effectiveModelSel() {
   return b && !b.admin && b.model ? b.model : (state.activeModel && state.activeModel.sel) || '';
 }
 
+/* Picker etiketi en fazla 7 karakter: "Sağlayıcı · Model" → modelin ilk anlamlı parçası.
+   Örn "OpenRouter · anthropic/claude-3.5-sonnet" → "claude" */
+function shortPickerLabel(full) {
+  const model = String(full).split('·').pop().trim();
+  const bare = model.includes('/') ? model.split('/').pop() : model;
+  const short = bare.slice(0, 7).replace(/[-_.\s]+$/, '');
+  return short || String(full).slice(0, 7);
+}
+
 function applyState() {
   if (!state) return;
   const botSel = activeBotId && botsCache.length ? effectiveModelSel() : (state.activeModel && state.activeModel.sel);
   const bm = botSel ? (state.models || []).find((x) => x.sel === botSel) : null;
-  els.modelBtnLabel.textContent = bm
+  /* picker etiketi kısa: tam ad "Sağlayıcı · Model" tooltip'te */
+  const fullSel = bm
     ? `${bm.providerName} · ${bm.model}`
     : state.activeModel
       ? `${state.activeModel.providerName} · ${state.activeModel.model}`
-      : 'Model seçilmedi';
+      : '';
+  els.modelBtnLabel.textContent = fullSel ? shortPickerLabel(fullSel) : 'Model seçilmedi';
+  els.modelBtn.title = fullSel ? `Model: ${fullSel}` : 'Model seç';
   els.thinkBtnLabel.innerHTML =
-    '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 2A2.5 2.5 0 0 0 7 4.5v.55A3.5 3.5 0 0 0 4.5 8.5c0 .74.23 1.43.62 2A3.5 3.5 0 0 0 4 13.5 3.5 3.5 0 0 0 7 16.95v.55A2.5 2.5 0 0 0 9.5 20a2.5 2.5 0 0 0 2.5-2.5v-13A2.5 2.5 0 0 0 9.5 2z"/><path d="M14.5 2A2.5 2.5 0 0 1 17 4.5v.55a3.5 3.5 0 0 1 2.5 3.45c0 .74-.23 1.43-.62 2a3.5 3.5 0 0 1-1.12 3 3.5 3.5 0 0 1-3 3.45v.55A2.5 2.5 0 0 1 14.5 20 2.5 2.5 0 0 1 12 17.5v-13A2.5 2.5 0 0 1 14.5 2z"/></svg>';
+    '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 2A2.5 2.5 0 0 0 7 4.5v.55A3.5 3.5 0 0 0 4.5 8.5c0 .74.23 1.43.62 2A3.5 3.5 0 0 0 4 13.5 3.5 3.5 0 0 0 7 16.95v.55A2.5 2.5 0 0 0 9.5 20a2.5 2.5 0 0 0 2.5-2.5v-13A2.5 2.5 0 0 0 9.5 2z"/><path d="M14.5 2A2.5 2.5 0 0 1 17 4.5v.55a3.5 3.5 0 0 1 2.5 3.45c0 .74-.23 1.43-.62 2a3.5 3.5 0 0 1 1.12 3 3.5 3.5 0 0 1-3 3.45v.55A2.5 2.5 0 0 1 14.5 20 2.5 2.5 0 0 1 12 17.5v-13A2.5 2.5 0 0 1 14.5 2z"/></svg>';
   renderModelMenu();
 }
 
@@ -5983,7 +6019,6 @@ async function init() {
   /* dahili tarayıcı çubuğu */
   els.browserBtn.addEventListener('click', () => beast.toggleBrowser());
   if (els.eyeBtn) {
-    beast.browserShownGet().then((r) => els.eyeBtn.classList.toggle('on', !!(r && r.shown))).catch(() => {});
     els.eyeBtn.addEventListener('click', async () => {
       const next = !els.eyeBtn.classList.contains('on');
       try {
@@ -5992,6 +6027,8 @@ async function init() {
         toast(r && r.shown ? 'Tarayıcı GÖRÜNÜR — ajan aramaları panelde izlenir' : 'Tarayıcı GİZLİ — ajan arka planda çalışır');
       } catch {}
     });
+    /* göz ikonu yalnızca gizleme özelliği (Web Arama sekmesi) açıkken görünür */
+    syncEyeBtn();
   }
   if (els.railBtn) els.railBtn.addEventListener('click', () => {
     const willOpen = document.body.classList.contains('rail-hidden');

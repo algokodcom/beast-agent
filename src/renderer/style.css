@@ -303,6 +303,8 @@ body.browser-open #topbar { width: auto; }
 #eyeBtn .eye-slash { display: none; }
 #eyeBtn:not(.on) .eye-slash { display: block; }
 #eyeBtn.on { background: var(--accent-dim); color: var(--accent); }
+/* tarayıcı gizleme özelliği kapalıyken buton tamamen yok — [hidden] flex'i ezmesin */
+#eyeBtn[hidden] { display: none; }
 
 /* internet göstergesi (sol alt sideFoot satırında, ortalanmış): bağlı = YEŞİL wifi, kopuk = KIRMIZI */
 #netDot {
@@ -572,6 +574,7 @@ body.term-dragging * { cursor: row-resize !important; }
 .dd-btn {
   display: flex;
   align-items: center;
+  height: 32px;
   gap: 7px;
   background: var(--panel2);
   color: var(--text);
@@ -647,7 +650,7 @@ body.term-dragging * { cursor: row-resize !important; }
 .dd-empty { color: var(--muted); font-size: 12.5px; padding: 10px; }
 
 /* picker yapılandırma popover */
-.dd-icon-btn { width: 34px; justify-content: center; padding: 6px 0; font-size: 15px; }
+.dd-icon-btn { width: 34px; height: 32px; justify-content: center; padding: 6px 0; font-size: 15px; }
 .cfg-menu { width: 360px; max-width: 85vw; }
 .cfg-head {
   display: flex;
@@ -1948,6 +1951,10 @@ body.browser-open #settingsDialog { width: min(70vw, calc(100vw - var(--bw, 480p
 /* üst bardaki aktif bot rozeti */
 #botChip {
   flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
   font-size: 12px;
   font-weight: 800;
   letter-spacing: 0.3px;

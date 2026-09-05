@@ -1,0 +1,11 @@
+{
+  "id": "hesap-makinesi",
+  "name": "Hesap Makinesi",
+  "version": "1.0.0",
+  "description": "Güvenli matematik hesaplayıcı — hem ajan aracı (hesapla) hem tıklanabilir arayüz. Geçmiş app storage'da saklanır.",
+  "author": "beast",
+  "icon": "🧮",
+  "permissions": ["tools", "storage", "notify"],
+  "ui": "ui/index.html",
+  "builtin": true
+}

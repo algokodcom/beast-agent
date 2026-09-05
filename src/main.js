@@ -3476,6 +3476,11 @@ function browserW() {
   try { return win.getContentSize()[0]; } catch { return 0; }
 }
 
+/* Tarayıcı gizleme ÖZELLİĞİ: Ayarlar → Web Arama'dan açılır, VARSAYILAN KAPALI.
+   Kapalıyken tarayıcı her zaman görünür; açıkken göz ikonu gizle/göster yapar. */
+function browserHideEnabled() { return settings.browserHide === true; }
+function browserHeadlessPref() { return browserHideEnabled() && settings.browserHeadless === true; }
+
 function browserShownWidth(w) {
   const avail = Math.max(320, w - 320);
   /* MOBİL ÖNİZLEME: siluet + çerçeve payı — siluet tam otursun (phone-mode'dan önce) */
@@ -3754,12 +3759,13 @@ function setBrowserOpen(v, forceVisible) {
   }
 
   // AÇMA — görünürlük: forceVisible true/false ise onu uygula;
-  // belirtilmemişse kullanıcı tercihi (settings.browserHeadless) belirler.
+  // belirtilmemişse kullanıcı tercihi belirler. Tarayıcı gizleme ÖZELLİĞİ
+  // (settings.browserHide) kapalıysa tercih ne olursa olsun tarayıcı GÖRÜNÜR açılır.
   // PARALEL AJANLAR (bg oturum) her zaman forceVisible=false ile çağırır →
   // tarayıcı gizli modda çalışır, kullanıcı ekranı ve ajan konsolu rahatsız edilmez.
   browser.open = true;
   browser.visible =
-    forceVisible === true ? true : forceVisible === false ? false : settings.browserHeadless !== true;
+    forceVisible === true ? true : forceVisible === false ? false : !browserHeadlessPref();
   ensureBrowser();
   if (!browser.started) {
     browser.started = true;
@@ -6699,9 +6705,11 @@ ipcMain.handle('browser:toggle', () => {
   setBrowserOpen(!browser.open, true);
   return { open: browser.open, visible: browser.visible };
 });
-/* göz ikonu: ajan tarayıcısını görünür/gizli yap */
-ipcMain.handle('browser:shown:get', () => ({ shown: settings.browserHeadless === false }));
+/* göz ikonu: ajan tarayıcısını görünür/gizli yap — yalnızca gizleme özelliği
+   (Ayarlar → Web Arama) açıkken etkilidir; özellik kapalıysa hep görünür */
+ipcMain.handle('browser:shown:get', () => ({ shown: !browserHeadlessPref(), enabled: browserHideEnabled() }));
 ipcMain.handle('browser:shown:set', (_e, v) => {
+  if (!browserHideEnabled()) return { shown: true, enabled: false };
   settings.browserHeadless = !v;
   saveSettings();
   if (browser.open) {
@@ -6709,7 +6717,22 @@ ipcMain.handle('browser:shown:set', (_e, v) => {
     layoutBrowser();
     browserEmit({ open: true, width: browserShownWidth(browserW()) });
   }
-  return { shown: !!v };
+  return { shown: !!v, enabled: true };
+});
+/* gizleme özelliği anahtarı: kapalıyken göz ikonu yok + tarayıcı zorla görünür */
+ipcMain.handle('browser:hide:set', (_e, v) => {
+  settings.browserHide = !!v;
+  if (settings.browserHide) {
+    /* özellik yeni açıldı → görünür başla, kullanıcı gözle istediğinde gizler */
+    settings.browserHeadless = false;
+  }
+  saveSettings();
+  if (!browserHideEnabled() && browser.open) {
+    browser.visible = true;
+    layoutBrowser();
+    browserEmit({ open: true, width: browserShownWidth(browserW()) });
+  }
+  return { enabled: browserHideEnabled(), shown: !browserHeadlessPref() };
 });
 ipcMain.handle('browser:navigate', (_e, url) => browserNavigate(url));
 ipcMain.handle('browser:ctrl', (_e, action) => {

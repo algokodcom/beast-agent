@@ -3,6 +3,8 @@
 /* Beast izleyiciler (watchers): arka planda periyodik kontrol.
    kind=web   → URL periyodik çekilir, değer çıkarılır (json path / regex), koşul karşılaştırılır
    kind=battery → yerel pil yüzdesi izlenir
+   kind=logs  → Beast log dosyası taranır; son windowMin dakikadaki error/warn sayısı
+                değer olur ("10 dk içinde 3+ hata olursa bağır")
    Koşul sağlanınca ilgili oturuma mesaj düşer (WA köprüsüne de otomatik akar).
    Depo: %APPDATA%\beast\watchers.json */
 
@@ -10,6 +12,7 @@ const fs = require('fs');
 const path = require('path');
 const { execFile } = require('child_process');
 const { beastRoot } = require('./memory');
+const logger = require('./logger');
 
 function file() {
   return path.join(beastRoot(), 'watchers.json');
@@ -43,18 +46,28 @@ const OPS = ['lt', 'lte', 'gt', 'gte', 'eq', 'neq', 'changed'];
 function normalize(input) {
   const i = input || {};
   const name = String(i.name || '').trim().slice(0, 80);
-  const kind = String(i.kind || '').trim().toLowerCase();
   if (!name) return { error: 'isim gerekli' };
-  if (kind !== 'web' && kind !== 'battery') return { error: "kind 'web' ya da 'battery' olmalı" };
+  const kind = String(i.kind || '').trim().toLowerCase();
+  if (kind !== 'web' && kind !== 'battery' && kind !== 'logs') {
+    return { error: "kind 'web', 'battery' ya da 'logs' olmalı" };
+  }
   let url = '';
   if (kind === 'web') {
     url = String(i.url || '').trim();
     if (!/^https?:\/\//i.test(url)) return { error: 'web izleyicisi için geçerli http(s) url gerekli' };
     if (url.length > 2000) return { error: 'url çok uzun' };
   }
-  const op = OPS.includes(String(i.op || '').toLowerCase()) ? String(i.op).toLowerCase() : 'lte';
-  const value = i.value === undefined || i.value === null || i.value === '' ? null : i.value;
+  const opRaw = String(i.op || '').toLowerCase();
+  const op = OPS.includes(opRaw) ? opRaw : kind === 'logs' ? 'gt' : 'lte';
+  let value = i.value === undefined || i.value === null || i.value === '' ? null : i.value;
+  if (kind === 'logs' && value === null) value = 0; // varsayılan: 0'dan çoksa (yani 1+ kayıt)
   if (op !== 'changed' && value === null) return { error: 'bu op için value (eşik) gerekli' };
+  /* logs türü: seviye + kayan pencere (dakika) */
+  const level = ['error', 'warn', 'info'].includes(String(i.level || '').toLowerCase())
+    ? String(i.level).toLowerCase()
+    : 'error';
+  const rawWin = Number(i.windowMin ?? i.window_min);
+  const windowMin = Math.min(Math.max(Number.isFinite(rawWin) ? Math.round(rawWin) : 10, 1), 720);
   let re = '';
   if (i.re !== undefined && i.re !== null && String(i.re).trim() !== '') {
     try {
@@ -89,6 +102,8 @@ function normalize(input) {
       re,
       op,
       value,
+      level: kind === 'logs' ? level : undefined,
+      windowMin: kind === 'logs' ? windowMin : undefined,
       everyMin: Math.max(1, Math.round(everySec / 60)), // geriye dönük uyum
       everySec,
       cooldownMin,
@@ -242,10 +257,16 @@ function batteryLevel() {
   });
 }
 
+/* LOG ZEKASI: son windowMin dakikada eşleşen log kaydı sayısı (değer = sayı) */
+function logCount(w) {
+  return logger.countSince({ windowMin: w.windowMin, level: w.level, re: w.re });
+}
+
 async function defaultCheck(w, deps = {}) {
   /* tek noktadan taklit (testler / özel köprüler) */
   if (typeof deps.check === 'function') return deps.check({ ...w });
   if (w.kind === 'battery') return deps.battery ? deps.battery() : batteryLevel();
+  if (w.kind === 'logs') return deps.logs ? deps.logs({ ...w }) : logCount(w);
   return deps.web ? deps.web({ ...w }) : webValue(w, deps.fetch);
 }
 

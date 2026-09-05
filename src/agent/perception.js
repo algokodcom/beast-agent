@@ -27,6 +27,7 @@ const DEFAULTS = {
 };
 
 const EVENT_CAP = 250;    // depo tavanı — eskiler düşer
+const EVENT_TTL = 24 * 3600 * 1000; // son 24 saat penceresi — dışındakiler silinir
 const SEEN_CAP = 800;     // dedup parmakizi havuzu
 const SEEN_TTL = 6 * 3600 * 1000; // aynı olay 6 saat içinde tekrar gelirse yut
 const FILTER_MAX = 12;    // tek filtre çağrısında en fazla olay
@@ -585,8 +586,16 @@ async function runCycle({ cfg, signals, llmFilter, now = new Date(), log = () =>
   counts.queued = kept.length;
 
   /* 'yok sayıldı' olaylar depoda TUTULMAZ — son olaylar listesi temiz kalır
-     (eski depoda kalan ignored'lar da bu filtreyle bir temizlikte silinir) */
+      (eski depoda kalan ignored'lar da bu filtreyle bir temizlikte silinir) */
   st.events = st.events.filter((e) => e.status !== 'ignored');
+
+  /* SON 24 SAAT penceresi: daha eski olaylar depodan TAMAMEN silinir —
+     "son olaylar" listesi taze kalır (dedup/cooldown ayrı yapılarda, etkilenmez) */
+  const minTs = now.getTime() - EVENT_TTL;
+  st.events = st.events.filter((e) => {
+    const t = Date.parse(e.ts);
+    return !Number.isFinite(t) || t >= minTs;
+  });
 
   /* depo tavanı */
   if (st.events.length > EVENT_CAP) st.events = st.events.slice(st.events.length - EVENT_CAP);
@@ -622,7 +631,13 @@ function markNotified(id, level, text, cooldownMin) {
 function listEvents(limit) {
   const st = loadState();
   const n = Math.max(1, Math.min(200, Number(limit) || 60));
-  return st.events.slice(-n).reverse().map((e) => ({
+  /* yalnız son 24 saat — depo temizliği döngüye kadar da liste taze dönsün */
+  const minTs = Date.now() - EVENT_TTL;
+  const fresh = st.events.filter((e) => {
+    const t = Date.parse(e.ts);
+    return !Number.isFinite(t) || t >= minTs;
+  });
+  return fresh.slice(-n).reverse().map((e) => ({
     id: e.id,
     ts: e.ts,
     source: e.source,

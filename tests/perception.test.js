@@ -63,3 +63,30 @@ test('empati: eski depodaki ignored kalıntıları sonraki döngüde temizlenir'
   await perception.runCycle({ cfg: perception.mergeCfg({}), signals: {}, now: new Date() });
   assert.ok(!perception.listEvents(200).some((e) => e.id === 'eski-kalinti-1'), 'kalıntı temizlenmeli');
 });
+
+test('empati: 24 saatten eski olaylar silinir, taze olanlar kalır', async () => {
+  const stFile = path.join(beastRoot(), 'perception', 'events.json');
+  const st = JSON.parse(fs.readFileSync(stFile, 'utf8'));
+  const eski = new Date(Date.now() - 25 * 3600 * 1000).toISOString(); /* 25 saat önce */
+  const taze = new Date(Date.now() - 2 * 3600 * 1000).toISOString(); /* 2 saat önce */
+  st.events.push(
+    {
+      id: 'eski-24-disi', ts: eski, source: 'test', type: 'self',
+      title: 'dunku haber', detail: '', url: '', sources: ['test'],
+      scores: {}, priority: 70, reason: '', status: 'notified', level: 'medium', text: '', notifiedAt: eski,
+    },
+    {
+      id: 'taze-24-ici', ts: taze, source: 'test', type: 'self',
+      title: 'bugunku haber', detail: '', url: '', sources: ['test'],
+      scores: {}, priority: 70, reason: '', status: 'notified', level: 'medium', text: '', notifiedAt: taze,
+    }
+  );
+  fs.writeFileSync(stFile, JSON.stringify(st));
+  await perception.runCycle({ cfg: perception.mergeCfg({}), signals: {}, now: new Date() });
+  const listed = perception.listEvents(200).map((e) => e.id);
+  assert.ok(!listed.includes('eski-24-disi'), '25 saatlik olay silinmeli');
+  assert.ok(listed.includes('taze-24-ici'), '2 saatlik olay kalmalı');
+  const raw = JSON.parse(fs.readFileSync(stFile, 'utf8'));
+  assert.ok(!raw.events.some((e) => e.id === 'eski-24-disi'), 'dosyadan da silinmeli');
+  assert.ok(raw.events.some((e) => e.id === 'taze-24-ici'), 'taze dosyada kalmalı');
+});

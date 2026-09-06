@@ -2192,6 +2192,7 @@ async function renderInstallPane() {
       loading: ['İNİYOR…', '#d9a441'],
       partial: ['İNİYOR… (devam)', '#d9a441'],
       missing: ['İNDİRİLİYOR…', '#d9a441'],
+      failed: ['HATA', '#c0554d'],
       cloud: ['BULUT', 'var(--muted)'],
       optional: ['OPSİYONEL', 'var(--muted)'],
     };
@@ -2210,6 +2211,10 @@ async function renderInstallPane() {
       if (r.id === 'emb' && ['missing', 'partial'].includes(r.state)) {
         autoStarted.add('emb');
         beast.embedPrefetch().catch(() => {});
+      }
+      if (r.id === 'cua-driver' && r.state === 'missing') {
+        autoStarted.add('cua-driver');
+        beast.cuaInstall().catch(() => {});
       }
     }
   };

@@ -69,7 +69,7 @@ const TOOL_LABELS = {
   kb_search: (a) => `Bilgi ara: ${String(a.query || '').slice(0, 60)}`,
   memory_hygiene: () => 'Hafıza temizliği',
   computer_look: () => 'Ekranı görüntülüyor',
-  computer_act: (a) => `Bilgisayar kullanıyor: ${a.op || ''}${a.combo ? ' ' + a.combo : ''}`,
+  computer_act: (a) => `Bilgisayar kullanıyor: ${a.op || ''}${a.app ? ' → ' + a.app : ''}${a.element != null ? ' #' + a.element : ''}${(a.keys || a.combo) ? ' [' + (a.keys || a.combo) + ']' : ''}${a.direction ? ' ' + a.direction : ''}`,
 };
 
 function waToolLine(name, args) {

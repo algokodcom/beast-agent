@@ -6068,11 +6068,32 @@ ipcMain.handle('install:status', async () => {
     rows.push({ id: 'python', name: 'Python — betikler / web arama', state: pyVer ? 'ok' : 'optional', detail: pyVer ? 'v' + pyVer : 'sistemde bulunamadı — opsiyonel' });
   }
 
-  /* 7) Edge TTS (bulut) */
+  /* 7) cua-driver — Computer Use (arka plan GUI otomasyonu) */
+  {
+    const st = await require('./agent/computeruse').probe().catch(() => ({ installed: false }));
+    rows.push({
+      id: 'cua-driver',
+      name: 'cua-driver — Computer Use (masaüstü otomasyonu)',
+      state: st.installed ? 'ok' : (st.installing ? 'loading' : (st.failed ? 'failed' : 'missing')),
+      detail: st.installed
+        ? (st.version ? 'kurulu — ' + st.version : 'kurulu')
+        : st.installing
+          ? 'cua.ai sürücüsü arka planda kuruluyor'
+          : (st.failed
+            ? 'kurulum başarısız — elle: irm https://cua.ai/driver/install.ps1 | iex'
+            : 'ilk Computer Use kullanımında arka planda kurulur'),
+      ...(st.installing ? pctFields('cua-driver') : {}),
+    });
+  }
+
+  /* 8) Edge TTS (bulut) */
   rows.push({ id: 'edge', name: 'Edge TTS — seslendirme', state: 'cloud', detail: 'bulut — kurulum gerekmez' });
 
   return rows;
 });
+
+/* cua-driver kurulumunu şimdi başlat (Kurulum sekmesi otomatiği + elle tetikleme) */
+ipcMain.handle('cua:install', () => require('./agent/computeruse').autoInstall());
 
 /* embedding modelini şimdi indir (mem0 arama yolu ısıtılır) */
 ipcMain.handle('embed:prefetch', () => {

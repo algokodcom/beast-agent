@@ -56,6 +56,7 @@ contextBridge.exposeInMainWorld('beast', {
   sttStatus: () => ipcRenderer.invoke('stt:status'),
   sttPrefetchNow: () => ipcRenderer.invoke('stt:prefetch'),
   installStatus: () => ipcRenderer.invoke('install:status'),
+  cuaInstall: () => ipcRenderer.invoke('cua:install'),
   embedPrefetch: () => ipcRenderer.invoke('embed:prefetch'),
   sttLangSet: (lang) => ipcRenderer.invoke('stt:lang:set', lang),
   updateStatus: () => ipcRenderer.invoke('update:status'),

@@ -3000,6 +3000,7 @@ function reloadBackend() {
     emit: (ev) => {
       if (win && !win.isDestroyed()) win.webContents.send('agent:event', ev);
       try { empatiRememberFromEvent(ev); } catch {} /* empati hafızası: sohbet → kayıt + ilgi öğrenme */
+      empatiFlushInjectsOnDone(ev); /* tur ortasında kuyruğa düşen proaktif bildirimleri iş bitince geçmişe bas */
       flushDesktopOnDone(ev); /* biriken desktop mesajlarını sıraya bas */
       bcFlushOnDone(ev); /* Beast Code kuyruğunu iş bitiminde boşalt */
       stFlushOnDone(ev); /* Beast Studio kuyruğunu iş bitiminde boşalt */
@@ -6472,11 +6473,51 @@ function empatiSourceLineWa(ev) {
   return title ? '🔗 ' + cap(title, 80) : '';
 }
 
+/* Enjeksiyon kuyruğu: oturum TUR ORTASINDAYKEN (ajan bir işle uğraşırken)
+   gelen proaktif bildirimi sessizce DÜŞÜRME — eskisi tam olarak buydu:
+   "bazen ajan konudan haber olmuyor". Metin kuyrukta bekler, oturumun
+   işi bitince ('done'/'error') geçmişe asistan mesajı olarak yazılır;
+   model bir sonraki turda "ben bu bildirimi attım" der, kullanıcı sorusuna
+   hazırdır. */
+const empatiInjectQueue = new Map(); // sid -> [text]
+const EMPATI_INJECT_QUEUE_CAP = 20;
+
 function empatiInjectToSession(sid, out) {
-  try {
-    if (!sid || engine.isBusy(sid)) return; /* tur ortasında geçmişi karıştırma — bildirim kanala zaten gitti */
-    engine.injectAssistant(sid, out);
-  } catch {}
+  const target = String(sid || '');
+  const body = String(out || '');
+  if (!target || !body.trim()) return;
+  let busy = false;
+  try { busy = engine.isBusy(target); } catch {}
+  if (busy) {
+    let q = empatiInjectQueue.get(target);
+    if (!q) {
+      q = [];
+      empatiInjectQueue.set(target, q);
+    }
+    if (q.length < EMPATI_INJECT_QUEUE_CAP) {
+      q.push(body);
+      empatiLog(`bildirim enjeksiyonu kuyrukta (ajan tur sürüyor) sid=${target} bekleyen=${q.length}`);
+    }
+    return;
+  }
+  try { engine.injectAssistant(target, body); } catch {}
+}
+
+/* iş bitince (done/error) biriken proaktif enjeksiyonları geçmişe bas.
+   'done' eventi isBusy temizlenmeden ÖNCE gelir (engine.js: ctrl delete
+   finally bloğunda) — flushDesktopOnDone gibi macrotask'a ertele. */
+function empatiFlushInjectsOnDone(ev) {
+  if (!ev || !ev.sessionId || (ev.type !== 'done' && ev.type !== 'error')) return;
+  const q = empatiInjectQueue.get(String(ev.sessionId));
+  if (!q || !q.length) return;
+  empatiInjectQueue.delete(String(ev.sessionId));
+  setTimeout(() => {
+    /* empatiInjectToSession üzerinden: arada yeni tur başladıysa yeniden kuyruğa düşer */
+    for (const text of q) {
+      try { empatiInjectToSession(String(ev.sessionId), text); } catch {}
+    }
+    empatiLog(`kuyrukta bekleyen ${q.length} proaktif bildirim geçmişe işlendi sid=${ev.sessionId}`);
+  }, 250);
 }
 
 /* kanala giden metin + Beast'in İÇ bağlamı ayrıdır: kullanıcı linki silse bile
@@ -6635,12 +6676,16 @@ function empatiNotify(text, ev) {
   for (const fn of senders) {
     try { fn(); sent++; } catch {}
   }
-  /* hiçbir entegrasyona yazılamadıysa yalnız masaüstü chat UI'a düş —
-     metin güncel sohbete de asistan mesajı olarak işlenir */
+  /* MASAÜSTÜ CHAT UI: entegrasyon kullanılsa da kullanılmasa da proaktif mesaj
+     sohbette MESAJ olarak görünür (asistan balonu) + toast çıkar. Ajan da
+     desktop oturumu geçmişinde attığı bildirimi GÖRÜR — hangi kanala gittiğine
+     bakmaksızın konudan haberdar olur. Kanal oturumlarına ise BAĞLAM'lı `inject`
+     gider (kanal kullanıcısı ham BAĞLAM bloğunu görmez, ajan görür). */
   try {
-    if (!sent && win && !win.isDestroyed()) {
-      empatiInjectToSession(empatiDesktopSid(), inject);
-      win.webContents.send('agent:event', { type: 'proactive', id: ev.id, level: ev.level, title: ev.title, text: out });
+    if (win && !win.isDestroyed()) {
+      const dsid = empatiDesktopSid();
+      empatiInjectToSession(dsid, out);
+      win.webContents.send('agent:event', { type: 'proactive', sessionId: dsid, id: ev.id, level: ev.level, title: ev.title, text: out });
     }
   } catch {}
 }

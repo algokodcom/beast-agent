@@ -5019,6 +5019,19 @@ function onEvent(ev) {
         if (!hasTools) closeChatToolGroup();
       }
       break;
+    case 'message-merge':
+      /* proaktif not son asistan mesajına BİRLEŞTİRİLDİ (injectAssistant) —
+         yeni bubble basma; son asistan balonunun içeriğini güncelle */
+      {
+        const bubbles = els.msgs.querySelectorAll('.msg-assistant .md');
+        const el = bubbles[bubbles.length - 1];
+        const txt = String((ev.message && ev.message.content) || '');
+        if (el && txt) {
+          el.innerHTML = md(txt);
+          scrollDown();
+        }
+      }
+      break;
     case 'token':
       ensureStreamBubble();
       streamRaw += ev.delta;

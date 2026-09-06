@@ -2350,6 +2350,9 @@ class Engine {
     ) {
       lastMsg.content = (lastMsg.content + '\n\n' + body).slice(0, USER_MAX);
       this._rewriteLastMsg(s.id, lastMsg.content, null, 'assistant');
+      /* UI'ya bildir: birleştirme yeni bubble basmaz — son asistan balonu
+         güncellenir (yoksa proaktif not ekranda hiç görünmezdi) */
+      this.emit({ type: 'message-merge', sessionId: s.id, message: lastMsg });
       this.emit({ type: 'sessions' });
       return true;
     }

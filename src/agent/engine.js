@@ -17,6 +17,7 @@ const mem0 = require('./mem0');
 const nightref = require('./nightref');
 const skills = require('./skills');
 const mcp = require('./mcp');
+const apps = require('./apps');
 const { estTokens, estMsgTokens } = require('./tokens');
 const log = require('./logger');
 
@@ -3010,6 +3011,8 @@ class Engine {
        (bağlı değilse lazy bağlanır; kapalıysa liste değişmez; Beast Code paneli hızlı
        ilk-token sözü için MCP'siz kalır) */
     if (!session || !session.bcCode) toolsList = await mcp.mergeTools(toolsList);
+    /* Beast Apps: kurulu app'lerin araçları (app__<id>__<tool>) modele açılır */
+    toolsList = apps.mergeTools(toolsList);
     /* opencode agent.ts port: özel ajan tanımı — prompt/model/araç/steps */
     const adef = this._agentDefFor(session, !!session.bgJob);
     /* Beast Code: todo_write açıklaması "3+ adım" kısıtı içerir ve model küçük
@@ -4433,6 +4436,10 @@ const skills = require('./skills');
         }
         const r = await this.browser.act(name.slice(8), args, signal, { sessionId });
         return JSON.stringify(r);
+      }
+      /* Beast Apps: app__<id>__<tool> → apps host'a dispatch */
+      if (String(name).startsWith('app__')) {
+        return JSON.stringify(await apps.call(name, args || {}, signal));
       }
       /* opencode tool registry portu: edit_file/grep/glob ana ajanın da araçları —
          bunlar olmadan model write_file + tam dosya okuma döngüsüne düşer */

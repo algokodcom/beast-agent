@@ -299,25 +299,38 @@ Zorunlu kurallar:
     force: true,
     body: `---
 name: pdf
-description: PDF işleme rehberi — metin çıkarma (pdf-parse), Türkçe karakterli PDF oluşturma/değiştirme (pdf-lib/pdfkit), sayfa→görsel (pdf-to-img) ve taranmış PDF için OCR (tesseract.js). Kullanıcı bir .pdf dosyasından bahsederse ÖNCE bu skill'i oku.
-version: 1.1.0
+description: PDF işleme rehberi — RAPOR/BELGE ÜRETİMİ pdf_write aracıyla TEK ÇAĞRIDA (Türkçe garantili); metin çıkarma (pdf-parse), PDF değiştirme/birleştirme (pdf-lib), sayfa→görsel (pdf-to-img), taranmış PDF için OCR (tesseract.js). Kullanıcı bir .pdf dosyasından bahsederse YA DA PDF çıktısı istenirse ÖNCE bu skill'i oku.
+version: 1.2.0
 ---
 
 # PDF İşleme Rehberi
 
-## EN KRİTİK KURALLAR (önce bunlar)
+## EN HIZLI YOL — pdf_write aracı (RAPOR/ÖZET/NOT/BELGE İSTEĞİNDE ÖNCE BU)
+
+Elle script YAZMA. Ajanın pdf_write aracı tek çağrıda markdown-lite içeriği düzenli, Türkçe-güvenli PDF'e çevirir (Windows fontu otomatik gömülür — ğ ş ı İ Ğ Ş Ö Ü bozulmaz; başlık, madde işareti, tablo, sayfa numarası otomatik):
+
+\`\`\`
+pdf_write {"path": "rapor.pdf", "title": "2026 Özet Raporu", "subtitle": "07.09.2026", "content": "# Başlık\\n## Alt Başlık\\n- madde 1\\n- **önemli** madde\\n1. sıralı adım\\n| Kolon | Değer |\\n|---|---|\\n| Gelir | 12.500 TL |\\n> alıntı satırı"}
+\`\`\`
+
+Desteklenen markdown-lite: "# ## ###" başlıklar · düz paragraf · "- " bullet · "1. " numaralı · **kalın** · kod (geri tırnak içi) · "> " alıntı · kod bloğu (üç ters tırnakla açılıp kapanır) · "| kolon |" tablo satırları.
+
+Sonra çıktıyı kullanıcıya ulaştırmak için send_file çağır. Script yazma, pip kurma — GEREK YOK.
+
+## EN KRİTİK KURALLAR (elle script gerektiğinde bile geçerli)
 
 1. Türkçe karakterli PDF için pip\u2019ten paket KURMA/KULLANMA (fpdf, fpdf2, markdown-pdf, weasyprint, reportlab vb.) — bunlar ğ ş ı İ karakterlerini bozar. Doğru kit Node\u2019ta ZATEN kurulu: \`pdf-lib\` + \`@pdf-lib/fontkit\` ve \`pdfkit\`. Script\u2019i write_file ile .js yaz, run_command ile \`node script.js\` çalıştır (python_run İLE DEĞİL).
-2. md→pdf çevirici YOKTUR ve kurulmaz — kullanıcıya rapor/özet/belge çıktısı vereceksen .md gönderme; aynı içeriği doğrudan PDF olarak ÜRET ve o dosyayı send_file ile gönder.
+2. md→pdf çevirici YOKTUR ve kurulmaz — kullanıcıya rapor/özet/belge çıktısı vereceksen .md gönderme; pdf_write (ya da elle pdf-lib script) ile DOĞRUDAN PDF üret ve send_file ile gönder.
 3. \`pdf-parse\` ile \`pdf-to-img\` aynı process\u2019e yüklenmez (aşağıdaki çakışma kuralı).
 
 Kurulu paketler ve rolleri:
 
 | İstek | Paket |
 |---|---|
+| Rapor/özet/belge üretimi | **pdf_write aracı (tek çağrı)** |
 | Metin çıkar / oku | \`pdf-parse\` |
 | Yeni PDF üret / mevcut PDF'i değiştir | \`pdf-lib\` (+ \`@pdf-lib/fontkit\`) |
-| Düzenli belge üretimi (rapor, özet) | \`pdfkit\` |
+| Düzenli belge üretimi (elle) | \`pdfkit\` |
 | Sayfa→PNG/JPG (taranmış/görsel PDF) | \`pdf-to-img\` |
 | Taranmış PDF'den metin (OCR) | \`pdf-to-img\` + \`tesseract.js\` |
 

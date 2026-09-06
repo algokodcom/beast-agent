@@ -2054,8 +2054,8 @@ function fmtPerm(p) {
 function botToolSet(cfg) {
   const s = cfg && cfg.skills ? cfg.skills : {};
   const set = new Set([
-    /* çekirdek: her botta konuşma + plan + hatırlatıcı */
-    'todo_write', 'set_reminder', 'send_file',
+    /* çekirdek: her botta konuşma + plan + hatırlatıcı + PDF üretimi */
+    'todo_write', 'set_reminder', 'send_file', 'pdf_write',
     'tasks_list', 'task_status', 'task_cancel',
     'run_background', 'run_background_many', 'delegate_task',
     'event_list', 'event_subscribe', 'event_unsubscribe',

@@ -18,6 +18,7 @@ const nightref = require('./nightref');
 const skills = require('./skills');
 const mcp = require('./mcp');
 const apps = require('./apps');
+const pdfwrite = require('./pdfwrite');
 const { estTokens, estMsgTokens } = require('./tokens');
 const log = require('./logger');
 
@@ -1661,7 +1662,7 @@ class Engine {
           'CONUŞMA ODAĞI SENDE KALSIN: kullanıcı seninle konuşurken iş çıkmışsa — uzun da olsa UFACIK da (tek komutluk dizin listesi, tek dosya okuma, tek arama…) — run_background ile PARALEL ajana devret; ana sohbet hiçbir işi beklemez; bittiğinde özet otomatik düşer.',
           'Python işleri için python_run kullan: küçük betikler inline code ile; tekrarlayan işler %APPDATA%\\beast\\scripts klasöründeki dosyalarla (ör. news.py = RSS haber toplayıcı: args ["--limit","8","--json"]). Python kurulu olmasa bile ilk çağrıda taşınabilir gömülü runtime otomatik iner.',
             'PYTHON DURUMU: makinede sistem Python\'u görünmese bile ŞAŞIRMA ve "python yok" DEME — python_run aracı kendi taşınabilir runtime\'ını (%APPDATA%\\beast\\py\\python.exe) otomatik indirir/kullanır ve bu klasör run_command PATH\'inde önceliklidir; yani run_command içinde de `python` çalışır. Ham Google/Bing scrape yerine önce web_search aracını kullan (SearXNG + stealth TLS + TinyFish + Python çoklu-motor destekli), script gerektiğinde python_run yaz.',
-          'PDF ÇIKTI KURALI: PDF üretirken pip\u2019ten pdf paketi (fpdf, fpdf2, markdown-pdf, weasyprint, reportlab vb.) KURMA/KULLANMA — bunlar Türkçe karakterleri bozar. Doğru kit Node tarafında ZATEN kurulu: `pdf-lib` + `@pdf-lib/fontkit` (Türkçe font gömme) ve `pdfkit`. python_run ile DEĞİL; write_file ile .js script yazıp run_command ile `node script.js` çalıştır. md→pdf çevirici YOKTUR ve kurulmaz: kullanıcıya rapor/özet/belge çıktısı vereceksen .md dosyası gönderme — aynı içeriği DOĞRUDAN pdf-lib/pdfkit ile PDF olarak üret ve send_file ile o PDF\u2019i gönder. Ayrıntılı örnekler: pdf skill\u2019i (SKILL.md).',
+          'PDF ÇIKTI KURALI: PDF üretirken pip\u2019ten pdf paketi (fpdf, fpdf2, markdown-pdf, weasyprint, reportlab vb.) KURMA/KULLANMA — bunlar Türkçe karakterleri bozar. İLK TERCİH pdf_write aracı: tek çağrıda başlık+markdown-lite içeriği düzenli, Türkçe-güvenli PDF\u2019e çevirir (Windows fontu otomatik gömülür; ğ ş ı İ bozulmaz) — script YAZMA, pip KULLANMA. Sıradışı ihtiyaç (form doldurma, PDF birleştirme, sayfa işleme) için doğru kit Node\u2019ta ZATEN kurulu: `pdf-lib` + `@pdf-lib/fontkit` ve `pdfkit` — o zaman write_file ile .js script yazıp run_command ile `node script.js` çalıştır (python_run İLE DEĞİL). md→pdf çevirici YOKTUR ve kurulmaz: kullanıcıya rapor/özet/belge çıktısı vereceksen .md dosyası gönderme — pdf_write ile DOĞRUDAN PDF üret ve send_file ile gönder. Ayrıntılı örnekler: pdf skill\u2019i (SKILL.md).',
           'Eski bir hafıza kaydına ihtiyacın olursa memory_search ile ara; kalıcı bilgi/birikim için kb_search kullan, yeni bilgi öğrenirsen kb_add ile kaynak belirt.',
           'Bir oturumda 3+ kez memory_write yaptıysan iş bitince memory_hygiene çağır (duplike/eskime temizliği).',
           'BEAST KAYNAK KORUMASI: Beast\u2019in kendi kurulum/kaynak kod klasörü KİLİTLİDİR — oraya dosya yazamaz, silamaz, komut/betikle değiştiremezsin; okumak serbest. Kullanıcı kodu ancak kendi eliyle dışarıdan değiştirir; böyle bir istek gelirse yapamayacağını söyle ve kullanıcının elle yapması için yol göster.',
@@ -4209,6 +4210,16 @@ const skills = require('./skills');
         const r = await this.fileSend(sessionId, p, String((args && args.caption) || ''));
         return JSON.stringify(r);
       }
+      if (name === 'pdf_write') {
+        const r = await pdfwrite.write({
+          outPath: String((args && args.path) || ''),
+          title: String((args && args.title) || ''),
+          subtitle: String((args && args.subtitle) || ''),
+          content: String((args && args.content) || ''),
+          workspace: this.workspace,
+        });
+        return JSON.stringify(r);
+      }
       if (name === 'run_background') {
         if (args.agent && !agentdefs.get(String(args.agent))) {
           return JSON.stringify({
@@ -4902,6 +4913,24 @@ const TOOLS = [
           id: { type: 'string', description: 'job id or session code from tasks_list' },
         },
         required: ['id'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'pdf_write',
+      description:
+        'Create a polished, Turkish-safe PDF document in ONE call — NO script writing, NO pip packages (Turkish characters ğ ş ı İ Ğ Ş İ Ö Ü render perfectly; a Windows font is embedded automatically). content = markdown-lite: "# ## ###" headings, plain paragraphs, "- " bullets, "1. " numbered items, **bold**, `mono`, "> " quote, "```" code blocks, "| col | col |" table rows. Then call send_file with the returned path to deliver it. Use this for reports/summaries/notes/documents instead of writing a script file.',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'Output file path (absolute or workspace-relative; .pdf is added if missing)' },
+          title: { type: 'string', description: 'Document title shown at the top (optional but recommended)' },
+          subtitle: { type: 'string', description: 'Small line under the title (date, author, subject…)' },
+          content: { type: 'string', description: 'Markdown-lite body: headings, paragraphs, lists, **bold**, tables, code blocks' },
+        },
+        required: ['path', 'content'],
       },
     },
   },

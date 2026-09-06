@@ -234,6 +234,7 @@ let waSingleSid = null; // KANAL TEK OTURUMU: WhatsApp için BİR oturum — sil
 let waHistory = new Map(); // jid -> [sid,...] bu sohbete ait tüm oturumlar
 let waBcMode = new Set(); // jid -> BeastCode modu AKTİF (WhatsApp'tan uzaktan kodlama)
 let waJidPn = new Map(); // jid -> gerçek telefon numarası (LID fallback için)
+let waLastActiveJid = ''; // en son mesaj gelen WA sohbeti — kanal tek oturumunda cevap/dosya hedefi
 const WA_HISTORY_CAP = 20;
 let tg = null;
 let tgChats = new Map(); // telegram chatId -> aktif session id (hepsi KANAL TEK OTURUMUNA bağlı)
@@ -1759,6 +1760,19 @@ function ensureWaSession(jid) {
   return waSingleSid;
 }
 
+/* Kanal tek oturumunda cevap/dosya hedefi: bu oturuma bağlı sohbetler arasında
+   EN SON mesaj gelen önceliklidir (kullanıcı o pencerede bekliyor); o bilgi
+   yoksa (restart vb.) ilk bağlı sohbet kullanılır. null = bağlı sohbet yok. */
+function waReplyJid(sid) {
+  try {
+    if (waLastActiveJid && waChats.get(waLastActiveJid) === sid) return waLastActiveJid;
+  } catch {}
+  for (const [j, s] of waChats) {
+    if (s === sid) return j;
+  }
+  return null;
+}
+
 /* ---------- GRUP BAĞLAM AKIŞI (mentionOnly + seeAll) ----------
    Bot grubun tüm konuşmasını okur ama CEVAP ÜRETMEZ; mesajlar sessizce
    oturum geçmişine bağlam olarak düşer. @mention gelince bot tüm bu
@@ -2311,6 +2325,7 @@ async function processWaMessage(jid, payload, senderNum, requeues = 0) {
   }
   /* KANAL TEK OTURUMU: eskisi silinmedikçe hep aynı oturumdan devam */
   sid = ensureWaSession(jid);
+  waLastActiveJid = String(jid); // cevap/dosya hedefi: en son yazan sohbet
   // Cevap verilecek — karşı telefonda "yazıyor…" göstergesi (medya işlenene dek sürer)
   wa.setComposing(jid, true);
   // Kişi bazlı granül izin: all/web/read/chat
@@ -2998,13 +3013,13 @@ function reloadBackend() {
          Spam olmasın: sohbet başına en az 7 sn'de bir tek satır. */
       if (ev.type === 'tool-start' && wa && wa.connected) {
         try {
-          const hit = [...waChats.entries()].find(([, s]) => s === ev.sessionId);
-          if (hit) {
+          const pingJid = waReplyJid(ev.sessionId);
+          if (pingJid) {
             const now = Date.now();
             const last = lastWaToolPing.get(ev.sessionId) || 0;
             if (now - last >= 7000) {
               lastWaToolPing.set(ev.sessionId, now);
-              sendWaSafe(hit[0], '\u203A ' + String(waToolLine(ev.name, ev.args || {})).replace(/^\u203A /, '')).catch(() => {});
+              sendWaSafe(pingJid, '\u203A ' + String(waToolLine(ev.name, ev.args || {})).replace(/^\u203A /, '')).catch(() => {});
             }
           }
         } catch {}
@@ -3017,8 +3032,8 @@ function reloadBackend() {
         const isInterim = Array.isArray(ev.message.tool_calls) && ev.message.tool_calls.length > 0;
         if (mtxt && isInterim) {
           try {
-            const hit = [...waChats.entries()].find(([, s]) => s === ev.sessionId);
-            if (hit) sendWaSafe(hit[0], mtxt).catch(() => {});
+            const interJid = waReplyJid(ev.sessionId);
+            if (interJid) sendWaSafe(interJid, mtxt).catch(() => {});
           } catch {}
         }
       }
@@ -3042,9 +3057,8 @@ function reloadBackend() {
       }
       // WhatsApp oturumlarının son cevabını geri gönder (metin + opsiyonel ses)
       if ((ev.type === 'done' || ev.type === 'error') && wa && wa.connected) {
-        const hit = [...waChats.entries()].find(([, s]) => s === ev.sessionId);
-        if (hit) {
-          const wajid = hit[0];
+        const wajid = waReplyJid(ev.sessionId);
+        if (wajid) {
           (async () => {
             try {
               if (ev.type === 'error') {
@@ -3762,8 +3776,9 @@ function setBrowserOpen(v, forceVisible) {
   // AÇMA — görünürlük: forceVisible true/false ise onu uygula;
   // belirtilmemişse kullanıcı tercihi belirler. Tarayıcı gizleme ÖZELLİĞİ
   // (settings.browserHide) kapalıysa tercih ne olursa olsun tarayıcı GÖRÜNÜR açılır.
-  // PARALEL AJANLAR (bg oturum) her zaman forceVisible=false ile çağırır →
-  // tarayıcı gizli modda çalışır, kullanıcı ekranı ve ajan konsolu rahatsız edilmez.
+  // AJAN gezinmeleri setBrowserOpenForAgent üzerinden gelir: gizleme özelliği
+  // kapalıysa görünür, özellik + göz kapalıyken gizli çalışır (kullanıcı ekranı
+  // rahatsız edilmez; tarayıcı düğmesi gizli paneli görünür kılar).
   browser.open = true;
   browser.visible =
     forceVisible === true ? true : forceVisible === false ? false : !browserHeadlessPref();
@@ -3796,13 +3811,15 @@ function browserGate(job) {
   return p;
 }
 /* AJAN TARAYICI STRATEJİSİ — TÜM oturumlar (ana sohbet + WhatsApp botları + paralel ajanlar):
-   ajan tarayıcıyı KENDİ açıyorsa hep GİZLİ açılır — panel ekrana fırlamaz,
-   Paralel Ajan Konsolu kapanmaz. Kullanıcı izlemek isterse tarayıcı düğmesine
-   basar (browser:toggle gizli paneli görünür kılar). Zaten açıksa (kullanıcı
-   paneli açık tutuyorsa) görünürlüğe dokunulmaz. */
+   GİZLEME ÖZELLİĞİ (Ayarlar → Web Arama) KAPALIYSA ajan tarayıcıyı GİZLİ açamaz —
+   dahili panel GÖRÜNÜR açılır, kullanıcı aramayı canlı izler. Özellik açıksa göz
+   durumuna bakılır: göz açık (headless tercihi kapalı) → görünür, göz kapalı →
+   gizli. Mobil önizleme varsa siluet canlı kalsın diye her koşulda görünür.
+   Zaten açıksa (kullanıcı paneli açık tutuyorsa) görünürlüğe dokunulmaz. */
 function setBrowserOpenForAgent() {
-  /* mobil önizleme açıkken ajan gezinmeleri GÖRÜNÜR açılır — siluet canlı kalsın */
-  if (!browser.open) setBrowserOpen(true, browser.mobile ? true : false);
+  if (!browser.open) {
+    setBrowserOpen(true, !browserHideEnabled() || !browserHeadlessPref() || browser.mobile);
+  }
 }
 
 async function browserNavigate(raw, signal, ctx) {
@@ -6761,7 +6778,8 @@ ipcMain.handle('cron:runNow', (_e, id) => {
 /* ---------------- tarayıcı IPC ---------------- */
 ipcMain.handle('browser:toggle', () => {
   /* gizli çalışan ajan paneli varsa düğme ONU GÖRÜNÜR yapar; değilse aç/kapa.
-     (ajanlar tarayıcıyı hep gizli açar — kullanıcı izlemek isterse buradan gösterir) */
+     (ajan gizleme özelliği + göz kapalıyken gizli çalışır — kullanıcı izlemek
+     isterse buradan gösterir) */
   if (browser.open && !browser.visible) {
     setBrowserOpen(true, true);
     return { open: browser.open, visible: browser.visible };
@@ -8876,8 +8894,42 @@ ipcMain.handle('screen:capture', async () => {
 });
 
 /* #26 ajanın send_file aracı: dosyayı doğru kanala (WA veya chat) ulaştırır.
-   Paralel ajan işiyse parent sohbete, masaüstünde dosya kartı olarak düşer. */
+   Paralel ajan işiyse parent sohbete, masaüstünde dosya kartı olarak düşer.
+   WhatsApp hedefinde resim/video/ses → medya mesajı, PDF/belge → doğru
+   mimetype ile belge mesajı olarak gider; LID adresi patlarsa gerçek numaraya
+   (@s.whatsapp.net) tek kez düşülür, yine başarısızsa ajan'a HATA döner. */
 const FILE_IMAGE_EXT = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif']);
+const FILE_MIME = {
+  '.pdf': 'application/pdf',
+  '.doc': 'application/msword',
+  '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  '.xls': 'application/vnd.ms-excel',
+  '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  '.ppt': 'application/vnd.ms-powerpoint',
+  '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  '.txt': 'text/plain',
+  '.csv': 'text/csv',
+  '.md': 'text/markdown',
+  '.json': 'application/json',
+  '.html': 'text/html',
+  '.zip': 'application/zip',
+  '.rar': 'application/vnd.rar',
+  '.7z': 'application/x-7z-compressed',
+  '.mp3': 'audio/mpeg',
+  '.m4a': 'audio/mp4',
+  '.wav': 'audio/wav',
+  '.ogg': 'audio/ogg',
+  '.opus': 'audio/ogg; codecs=opus',
+  '.mp4': 'video/mp4',
+  '.mkv': 'video/x-matroska',
+  '.webm': 'video/webm',
+  '.svg': 'image/svg+xml',
+  '.apk': 'application/vnd.android.package-archive',
+};
+function mimeForFile(ext) {
+  return FILE_MIME[String(ext || '').toLowerCase()] || 'application/octet-stream';
+}
+
 async function deliverFile(sessionId, filePath, caption) {
   try {
     const abs = path.isAbsolute(filePath) ? filePath : path.join(engine.workspace || process.cwd(), filePath);
@@ -8889,17 +8941,34 @@ async function deliverFile(sessionId, filePath, caption) {
       const job = engine.listBgJobs().find((j) => j.id === sid);
       if (job && job.parentId) sid = job.parentId; // paralel ajan → parent sohbet
     } catch {}
-    /* WhatsApp hedefi: bu oturum bir WA sohbetine bağlıysa oraya gönder */
-    let jid = null;
-    for (const [j, s] of waChats) {
-      if (s === sid) { jid = j; break; }
-    }
+    /* WhatsApp hedefi: bu oturum bir WA sohbetine bağlıysa oraya gönder.
+       Birden çok sohbet aynı oturuma bağlıysa EN SON yazan kazanır. */
+    const jid = waReplyJid(sid);
     if (jid && wa) {
       const buf = fs.readFileSync(abs);
-      const ok = FILE_IMAGE_EXT.has(ext)
-        ? await wa.sendImage(jid, buf, caption || name)
-        : await wa.sendFile(jid, buf, name, caption);
+      const sendMedia = async (target) =>
+        FILE_IMAGE_EXT.has(ext)
+          ? await wa.sendImage(target, buf, caption || name)
+          : await wa.sendFile(target, buf, name, caption, mimeForFile(ext));
+      let ok = false;
+      try { ok = !!(await sendMedia(jid)); } catch {}
+      if (!ok) {
+        /* LID/adres fallback: bilinen gerçek numaraya (@s.whatsapp.net) dene */
+        const pn = waJidPn.get(jid);
+        const pnJid = pn ? `${pn}@s.whatsapp.net` : '';
+        if (pnJid && pnJid !== jid) {
+          try { ok = !!(await sendMedia(pnJid)); } catch {}
+          if (ok) waLog(`dosya fallback → ${waPrettyJid(pnJid)} (lid/pn denemelerinden sonra)`);
+        }
+      }
       if (ok) return { ok: true, channel: 'whatsapp', name };
+      /* WA hedefi var ama gönderim başarısız — sessizce "masaüstüne düştü"
+         SANMA: ajan durumu bilsin, kullanıcıya söyleyip tekrar deneyebilsin */
+      waLog(`dosya gönderim HATA → ${waPrettyJid(jid)} "${name}"`);
+      return {
+        ok: false,
+        error: `whatsapp gönderimi başarısız: ${name} — bağlantı/medya hatası; biraz sonra tekrar dene ya da kullanıcıya söyle`,
+      };
     }
     /* masaüstü: sohbete dosya kartı bas */
     if (win && !win.isDestroyed()) {

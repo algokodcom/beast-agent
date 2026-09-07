@@ -6,6 +6,10 @@ const fs = require('fs');
 const http = require('http');
 const dns = require('dns');
 const crypto = require('crypto');
+/* x-opencode-session: opencode (Zen/Go) isteklerinde beklenen oturum kimliği —
+   kurulum/probe/model-liste istekleri için süreç-başına sabit değer; sohbet
+   isteklerindeki konuşma-başına kimlik agent/llm.js'te üretilir */
+const OPENCODE_SESSION = 'beast-' + crypto.randomUUID();
 const { spawn } = require('child_process');
 const { Engine, OBSERVE_MARK } = require('./agent/engine');
 const { loadBeastConfig, parseEnvFile, beastDir } = require('./agent/config');
@@ -8387,7 +8391,7 @@ async function refreshModelsAll() {
     try {
       const b = String(p.baseUrl).trim().replace(/\/+$/, '');
       const url = /\/v\d+$/.test(b) ? b + '/models' : b + '/v1/models';
-      const h = { Authorization: 'Bearer ' + p.key };
+      const h = { Authorization: 'Bearer ' + p.key, 'x-opencode-session': OPENCODE_SESSION };
       try {
         if (new URL(url).hostname === 'api.anthropic.com') {
           h['x-api-key'] = p.key;
@@ -8484,7 +8488,10 @@ function findZenToken() {
 
 async function fetchZenFreeModels() {
   try {
-    const res = await fetch(ZEN_BASE + '/models', { signal: AbortSignal.timeout(15000) });
+    const res = await fetch(ZEN_BASE + '/models', {
+      headers: { 'x-opencode-session': OPENCODE_SESSION },
+      signal: AbortSignal.timeout(15000),
+    });
     if (res.ok) {
       const j = await res.json();
       const ids = (j.data || []).map((m) => (typeof m === 'string' ? m : m.id)).filter(Boolean);
@@ -8584,7 +8591,11 @@ async function testZenModel(key, model) {
   try {
     const res = await fetch(ZEN_BASE + '/chat/completions', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + key },
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: 'Bearer ' + key,
+        'x-opencode-session': OPENCODE_SESSION,
+      },
       body: JSON.stringify({
         model,
         messages: [{ role: 'user', content: 'ping' }],
@@ -8623,7 +8634,11 @@ async function testZenReasoning(key, model) {
   try {
     const res = await fetch(ZEN_BASE + '/chat/completions', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + key },
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: 'Bearer ' + key,
+        'x-opencode-session': OPENCODE_SESSION,
+      },
       body: JSON.stringify({
         model,
         messages: [{ role: 'user', content: 'ping' }],
@@ -8731,7 +8746,7 @@ ipcMain.handle('custom:fetchModels', async (_e, { baseUrl, key }) => {
     let b = String(baseUrl || '').trim().replace(/\/+$/, '');
     if (!/^https?:\/\//i.test(b)) return { ok: false, error: 'URL http(s) ile başlamalı' };
     const url = /\/v\d+$/.test(b) ? b + '/models' : b + '/v1/models';
-    const headers = key ? { Authorization: 'Bearer ' + key } : {};
+    const headers = { 'x-opencode-session': OPENCODE_SESSION, ...(key ? { Authorization: 'Bearer ' + key } : {}) };
     /* Anthropic: /v1/models yerel API — x-api-key + versiyon başlığı ister */
     try {
       if (new URL(url).hostname === 'api.anthropic.com') {

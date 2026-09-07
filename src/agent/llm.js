@@ -10,6 +10,7 @@
    prompt_cache_key) 400'den otomatik öğrenir → model-caps.json'a kalıcı. */
 
 const fs = require('fs');
+const crypto = require('crypto');
 
 const RETRYABLE_STATUS = new Set([408, 409, 425, 429, 500, 502, 503, 504]);
 const MAX_RETRIES = 3; /* sağlayıcı geçici HTTP hataları */
@@ -328,6 +329,24 @@ async function withRetries(fn, { signal, onRetry } = {}) {
   }
 }
 
+/* x-opencode-session: konuşma-başına sabit oturum kimliği — TÜM sağlayıcılara
+   standart gönderilir (opencode bununla isteği optimize eder; 09/06'dan
+   itibaren headersız istek hata dönebilir). Gerçek sohbetlerde cacheKey =
+   session.id; cacheKey'siz yardımcı isteklerde süreç-başına sabit yedek. */
+let _sessionFallback = null;
+function sessionHeaderId(body) {
+  const ck = String((body && body.cacheKey) || '').trim();
+  if (ck) return ck;
+  if (!_sessionFallback) {
+    try {
+      _sessionFallback = crypto.randomUUID();
+    } catch {
+      _sessionFallback = 'beast-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
+    }
+  }
+  return _sessionFallback;
+}
+
 async function openChat(sel, body, { stream, signal, drops } = {}) {
   const d = drops || {};
   const payload = {
@@ -357,6 +376,7 @@ async function openChat(sel, body, { stream, signal, drops } = {}) {
       Authorization: `Bearer ${sel.key}`,
       'HTTP-Referer': 'https://localhost/beast',
       'X-Title': 'Beast Agent',
+      'x-opencode-session': sessionHeaderId(body),
     },
     body: JSON.stringify(payload),
   });

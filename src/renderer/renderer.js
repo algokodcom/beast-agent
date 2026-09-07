@@ -317,9 +317,13 @@ function onNetEvent(ev) {
 }
 
 const TODO_GLYPH = { done: '✓', active: '▸', pending: '○' };
+const TODO_DONE_HIDE_MS = 2500; /* tüm görevler bitince liste bu kadar sonra otomatik kapanır */
+let todoHideTimer = null;
 
 function renderTodos(items) {
   const list = Array.isArray(items) ? items : [];
+  clearTimeout(todoHideTimer);
+  todoHideTimer = null;
   if (!list.length) { els.todoPanel.hidden = true; els.todoPanel.innerHTML = ''; return; }
   const done = list.filter((t) => t.status === 'done').length;
   const rows = list
@@ -333,10 +337,23 @@ function renderTodos(items) {
     `<span class="td-right"><span class="td-count">${done}/${list.length}</span>` +
     `<button class="td-x" title="${_t('td_hide')}">×</button></span></div>` + rows;
   els.todoPanel.hidden = false;
+  /* tüm görevler bitti → kullanıcı tamamlanan listeyi görsün diye kısa beklet,
+     sonra panel otomatik kapanır; yeni görev gelirse zamanlayıcı iptal olur */
+  if (done === list.length) {
+    todoHideTimer = setTimeout(() => {
+      todoHideTimer = null;
+      els.todoPanel.hidden = true;
+      els.todoPanel.innerHTML = '';
+    }, TODO_DONE_HIDE_MS);
+  }
   /* X yalnız BU listeyi gizler — kalıcı kapanma yok: bir sonraki görev
      güncellemesi (yeni görev eklendi / görev yapıldı) paneli yeniden gösterir */
   const x = els.todoPanel.querySelector('.td-x');
-  if (x) x.addEventListener('click', () => { els.todoPanel.hidden = true; });
+  if (x) x.addEventListener('click', () => {
+    clearTimeout(todoHideTimer);
+    todoHideTimer = null;
+    els.todoPanel.hidden = true;
+  });
 }
 function setBusy(b) {
   busy = b;
@@ -8504,9 +8521,12 @@ function bcToolBoxEnd(callId, ok, result, diff) {
 /* ---------- Beast Code todo kartı ----------
    Inputun (chat) hemen üstünde ortalı kompakt kutu; #bcTodoWrap içinde yaşar,
    scroll'lu çıktı akışını kirletmez. */
+let bcTodoHideTimer = null;
 function bcRenderTodos(todos) {
   const list = Array.isArray(todos) ? todos : [];
   if (!els.bcTodoWrap) return;
+  clearTimeout(bcTodoHideTimer);
+  bcTodoHideTimer = null;
   bcFlushStream();
   if (!list.length) {
     bcHideTodos();
@@ -8531,9 +8551,18 @@ function bcRenderTodos(todos) {
     row.querySelector('.bc-todotext').textContent = String(t.title || '');
     wrap.appendChild(row);
   }
+  /* tüm görevler bitti → kısa görün, sonra kart otomatik kapanır */
+  if (done === list.length) {
+    bcTodoHideTimer = setTimeout(() => {
+      bcTodoHideTimer = null;
+      bcHideTodos();
+    }, TODO_DONE_HIDE_MS);
+  }
 }
 
 function bcHideTodos() {
+  clearTimeout(bcTodoHideTimer);
+  bcTodoHideTimer = null;
   if (els.bcTodoWrap) {
     els.bcTodoWrap.hidden = true;
     els.bcTodoWrap.innerHTML = '';
@@ -8961,9 +8990,12 @@ function stNoteStream(delta) {
   return true;
 }
 
+let stTodoHideTimer = null;
 function stRenderTodos(todos) {
   const list = Array.isArray(todos) ? todos : [];
   if (!els.stTodoWrap) return;
+  clearTimeout(stTodoHideTimer);
+  stTodoHideTimer = null;
   stFlushStream();
   if (!list.length) {
     stHideTodos();
@@ -8988,9 +9020,18 @@ function stRenderTodos(todos) {
     row.querySelector('.bc-todotext').textContent = String(t.title || '');
     wrap.appendChild(row);
   }
+  /* tüm görevler bitti → kısa görün, sonra kart otomatik kapanır */
+  if (done === list.length) {
+    stTodoHideTimer = setTimeout(() => {
+      stTodoHideTimer = null;
+      stHideTodos();
+    }, TODO_DONE_HIDE_MS);
+  }
 }
 
 function stHideTodos() {
+  clearTimeout(stTodoHideTimer);
+  stTodoHideTimer = null;
   if (els.stTodoWrap) {
     els.stTodoWrap.hidden = true;
     els.stTodoWrap.innerHTML = '';

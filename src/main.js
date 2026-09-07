@@ -75,6 +75,73 @@ function emitUpdateEvent() {
   } catch {}
 }
 
+/* /version ORTAK METNİ — tüm kanallar (desktop/WA/TG/DC): güncel sürüm +
+   npm'deki en son sürüm (yeni varsa vurgulu; 10dk cache'li getNpmLatest). */
+async function versionText(waStyle) {
+  const cur = beastVersion();
+  const latest = await getNpmLatest();
+  const b = waStyle ? '*' : '**';
+  if (latest && isNewerVersion(latest, cur)) {
+    return (
+      `${b}Beast Agent v${cur}${b} — ${b}yeni sürüm var: v${latest}${b}\n` +
+      `Güncelleme: ${b}/update${b} (kontrol) · ${b}/update now${b} (hemen kur)`
+    );
+  }
+  if (latest) {
+    return `${b}Beast Agent v${cur}${b} — güncel ✓\nGüncelleme kontrolü: ${b}/update${b} · hemen kur: ${b}/update now${b}`;
+  }
+  return `${b}Beast Agent v${cur}${b}\nGüncelleme: ${b}/update${b} (yeni sürüm kontrolü) · ${b}/update now${b} (hemen kur)`;
+}
+
+/* SÜRÜM GÜNCELLEMESİ BİLGİSİ: sürüm değiştiyse İLK AÇILIŞTA kullanıcı'nın
+   olduğu yere kısa bilgi düşer — en güncel oturum (desktop) + o oturuma
+   BĞLI kanal (WA/TG/DC; hangisindeyse oraya). settings.lastRunVersion
+   yazıldığı için sürüm başına YALNIZ BİR KEZ çalışır. */
+function notifyVersionUpdate() {
+  const cur = beastVersion();
+  const prev = String(settings.lastRunVersion || '');
+  settings.lastRunVersion = cur;
+  saveSettings();
+  if (!prev || prev === cur) return; /* ilk kurulum ya da sürüm değişmedi */
+  const waStyleTxt =
+    `🔄 *Beast Agent güncellendi:* v${prev} → *v${cur}*\n` +
+    `Yenilikler: GitHub Releases · Sürüm: /version · Güncelleme: /update`;
+  let sid = '';
+  try { sid = reuseOrLatestSession(''); } catch {}
+  /* desktop: en güncel oturuma bilgi balonu */
+  try {
+    if (win && !win.isDestroyed() && sid) {
+      const mdTxt = waStyleTxt.replace(/\*/g, '**');
+      win.webContents.send('agent:event', { sessionId: sid, type: 'message', message: { role: 'assistant', content: mdTxt } });
+      win.webContents.send('agent:event', { sessionId: sid, type: 'done', usage: null });
+    }
+  } catch {}
+  /* kanallar: SADECE bu oturuma bağlı kanal (kullanıcı oradaydı) */
+  (async () => {
+    try {
+      if (wa && wa.connected) {
+        const own = waOwnerNum();
+        const jid = own ? own + '@s.whatsapp.net' : '';
+        if (jid && [...waChats.entries()].some(([j, s]) => j === jid && String(s) === String(sid))) {
+          await sendWaSafe(jid, waStyleTxt);
+        }
+      }
+    } catch {}
+    try {
+      if (tg && tg.connected) {
+        const hit = [...tgChats.entries()].find(([, s]) => String(s) === String(sid));
+        if (hit) await sendTgSafe(hit[0], waStyleTxt);
+      }
+    } catch {}
+    try {
+      if (dc && dc.connected) {
+        const hit = [...dcChats.entries()].find(([, s]) => String(s) === String(sid));
+        if (hit) await sendDcSafe(hit[0], waStyleTxt);
+      }
+    } catch {}
+  })();
+}
+
 function replyUpdate(text) {
   try {
     for (const sid of updateReplies.sids) desktopEcho(sid, '/update', text);
@@ -1623,7 +1690,8 @@ async function tryWaSlash(jid, rawText, senderNum, payload0) {
         out = 'Bu komut yalnız BeastCode modunda çalışır — önce /beastcode yaz.';
       }
     } else if (cmd === 'version') {
-      out = `*Beast Agent v${beastVersion()}*\nGüncelleme için: /update (kurulum hazır olunca /update now)`;
+      /* npm'deki en son sürümü de göster */
+      out = await versionText(true);
     } else {
       out = `Bilinmeyen komut: /${cmd}\nListe için /help yaz.`;
     }
@@ -2643,6 +2711,14 @@ async function processTgMessage(chatId, payload, requeues = 0) {
     tgLog(`skip flush: izinli eşleşme yok (sender=${payload.senderId || '?'})`);
     return;
   }
+  /* /version HER KANALDA: sürüm + npm'deki en son sürüm (izin kontrolü üstte) */
+  const tgRaw = String((payload && payload.text) || '').trim();
+  if (tgRaw === '/version' || tgRaw.startsWith('/version ')) {
+    versionText(true)
+      .then((txt) => sendTgSafe(chatId, txt))
+      .catch(() => {});
+    return;
+  }
   /* OPENCODE STEER: meşgulse bekleme — engine.send tampona ekler, koşan tur
      sonraki istekte görür (WA ile aynı mantık) */
   let sid = tgChats.get(chatId) || tgSingleSid;
@@ -2852,6 +2928,14 @@ async function processDcMessage(channelId, payload) {
   const hit = dcFind(payload.senderId, payload.username);
   if (!hit) {
     dcLog(`skip flush: izinli eşleşme yok (sender=${payload.senderId || '?'})`);
+    return;
+  }
+  /* /version HER KANALDA: sürüm + npm'deki en son sürüm (izin kontrolü üstte) */
+  const dcRaw = String((payload && payload.text) || '').trim();
+  if (dcRaw === '/version' || dcRaw.startsWith('/version ')) {
+    versionText(true)
+      .then((txt) => sendDcSafe(channelId, txt))
+      .catch(() => {});
     return;
   }
   /* OPENCODE STEER: meşgulse bekleme — engine.send tampona ekler, koşan tur
@@ -3412,6 +3496,12 @@ app.whenReady().then(() => {
     if (settings.dcToken) {
       ensureDc().start().catch((e) => dcLog('autostart failed: ' + String((e && e.message) || e)));
     }
+
+    /* SÜRÜM GÜNCELLENDİYSE ilk açılışta bilgi: kanalların bağlanmasına 5 sn tanı,
+       sonra kullanıcının olduğu yere (en güncel oturum + bağlı kanal) düşer */
+    setTimeout(() => {
+      try { notifyVersionUpdate(); } catch {}
+    }, 5000);
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow();
@@ -4808,7 +4898,10 @@ ipcMain.handle('agent:send', (_e, { sessionId, text }) => {
     return true;
   }
   if (t === '/version') {
-    desktopEcho(sessionId, t, `**Beast Agent v${beastVersion()}**\nGüncelleme: **/update** (yeni sürüm kontrolü) · **/update now** (hemen kur)`);
+    /* npm registry'den en son sürümü de göster (10dk cache'li) */
+    versionText(false)
+      .then((txt) => desktopEcho(sessionId, t, txt))
+      .catch(() => desktopEcho(sessionId, t, `**Beast Agent v${beastVersion()}**`));
     return true;
   }
   if (t === '/help') {

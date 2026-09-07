@@ -27,6 +27,8 @@ const usageMod = require('./agent/usage');
 const bus = require('./agent/bus');
 const computeruse = require('./agent/computeruse');
 const log = require('./agent/logger');
+const headroom = require('./agent/headroom');
+const QRCode = require('qrcode'); /* Expo Go QR (bc-expurl) — whatsapp ile aynı paket */
 
 /* #3 otomatik updater: sessiz — indirir, kapanışta kurar, kullanıcıya soru sormaz.
    Paketlenmemiş (npm start) modda devre dışı; Update sekmesi ve /update komutu kontrol eder. */
@@ -3109,6 +3111,10 @@ function reloadBackend() {
       if (ev.type === 'bc-preview' && /^https?:\/\/(?:localhost|127\.0\.0\.1)(?::\d{2,5})?/i.test(String(ev.url || ''))) {
         bcLastServerUrl = String(ev.url);
       }
+      /* Expo Go QR: ajanın dev sunucusu exp:// adresi yazdıysa QR üretip panele bas */
+      if (ev.type === 'bc-expurl') {
+        bcExpQrMake(String(ev.url || '')).catch(() => {});
+      }
       /* WA canlı iş takibi: oturum bir WhatsApp sohbetine bağlıysa araç
          hareketlerini (terminal, web, dosya…) kısa satırla bildir.
          Spam olmasın: sohbet başına en az 7 sn'de bir tek satır. */
@@ -3288,6 +3294,30 @@ function reloadBackend() {
   /* PANEL RUN köprüsü: ajanın panel_run aracı → ÇALIŞTIR panelindeki yönetilen
      süreç koşucusu (sandbox:run IPC ile aynı makine). */
   engine.sbRunHook = sbRunStartManaged;
+
+  /* HEADROOM (opsiyonel token sıkıştırma proxy'si): engine zincirinden provider
+     listesi alınır; durum değişince renderer'a 'headroom-status' düşer */
+  headroom.setProviderGetter(() => {
+    const seen = new Map();
+    for (const c of (engine && engine.cfg && engine.cfg.chain) || []) {
+      if (!c || !c.providerId || !c.url || seen.has(c.providerId)) continue;
+      seen.set(c.providerId, {
+        id: String(c.providerId),
+        name: String(c.providerName || c.providerId),
+        baseUrl: String(c.url).replace(/\/chat\/completions$/, ''),
+      });
+    }
+    return [...seen.values()];
+  });
+  headroom.setStatusSink((st) => {
+    try {
+      if (win && !win.isDestroyed()) win.webContents.send('agent:event', { type: 'headroom-status', status: st });
+    } catch {}
+  });
+  /* ayarlardan açık kaldıysa: uygulama açılışında arka planda başlat */
+  if (settings.headroom && settings.headroom.enabled) {
+    setTimeout(() => { headroom.setEnabled(true).catch(() => {}); }, 4000);
+  }
   return engine.publicState();
 }
 
@@ -3516,6 +3546,7 @@ app.whenReady().then(() => {
       flushBrowserStorage(); // x.com/google oturumları (cookies) diske yazılsın
       try { toolsMod.disposeShellSessions(); } catch {} // kalıcı shell oturumlarını kapat
       try { require('./agent/mcp').stopAll(); } catch {} // MCP server süreçlerini kapat
+      try { headroom.stopAll(); } catch {} // headroom proxy süreçlerini kapat
     });
 
     if (process.argv.includes('--smoke')) {
@@ -6248,11 +6279,44 @@ ipcMain.handle('install:status', async () => {
   /* 8) Edge TTS (bulut) */
   rows.push({ id: 'edge', name: 'Edge TTS — seslendirme', state: 'cloud', detail: 'bulut — kurulum gerekmez' });
 
+  /* 9) Headroom CLI — arka plan paket kurulumu burada görünür;
+     aç/kapat Token Sıkıştırma sekmesinde */
+  {
+    const st = headroom.probe();
+    let state = 'optional';
+    if (st.installed) state = 'ok';
+    else if (st.installing) state = 'loading';
+    if (st.failed) state = 'failed';
+    rows.push({
+      id: 'headroom',
+      name: 'Headroom CLI — token sıkıştırma motoru',
+      state,
+      detail: st.installing
+        ? 'arka planda kuruluyor — uv tool install headroom-ai[proxy]'
+        : st.failed
+          ? (st.error || 'kurulum başarısız')
+          : st.installed
+            ? 'kurulu — aç/kapat: Token Sıkıştırma sekmesi'
+            : 'kurulu değil — Token Sıkıştırma sekmesinden açınca otomatik kurulur',
+      ...(st.installing ? pctFields('headroom') : {}),
+    });
+  }
+
   return rows;
 });
 
 /* cua-driver kurulumunu şimdi başlat (Kurulum sekmesi otomatiği + elle tetikleme) */
 ipcMain.handle('cua:install', () => require('./agent/computeruse').autoInstall());
+
+/* HEADROOM (opsiyonel token sıkıştırma): aç/kapa + durum */
+ipcMain.handle('headroom:toggle', async (_e, on) => {
+  settings.headroom = { ...(settings.headroom || {}), enabled: !!on };
+  saveSettings();
+  const r = await headroom.setEnabled(!!on).catch((e) => ({ ok: false, error: String((e && e.message) || e) }));
+  return r;
+});
+ipcMain.handle('headroom:status', () => headroom.probe());
+ipcMain.handle('headroom:stats', () => headroom.stats());
 
 /* embedding modelini şimdi indir (mem0 arama yolu ısıtılır) */
 ipcMain.handle('embed:prefetch', () => {
@@ -8690,6 +8754,23 @@ const bcStatic = { server: null, root: '', base: '' };
 /* MOBİL PROJE önizleme: npm run web (expo start --web) süreci + canlı adres */
 const bcMobile = { proc: null, url: '', root: '' };
 
+/* ---------- EXPO GO QR (yalnız Beast Code) ----------
+   Ajan expo start çıktısında exp://<LAN-IP>:<port> yazınca QR'e çevrilir ve
+   renderer'a { type:'bc-exp-qr', qr, url } düşer — telefonda Expo Go okutulur. */
+let bcLastExpUrl = '';
+let bcLastExpQr = '';
+
+function bcExpQrMake(url) {
+  if (!url || url === bcLastExpUrl) return Promise.resolve();
+  bcLastExpUrl = url;
+  return QRCode.toDataURL(url, { width: 240, margin: 1, errorCorrectionLevel: 'M' }).then((qr) => {
+    bcLastExpQr = qr;
+    if (win && !win.isDestroyed()) win.webContents.send('agent:event', { type: 'bc-exp-qr', qr, url });
+  });
+}
+
+ipcMain.handle('ide:expqr', () => ({ ok: true, qr: bcLastExpQr, url: bcLastExpUrl }));
+
 /* workspace bir MOBİL UYGULAMA projesi mi? (expo / react-native / app.json) */
 function ideMobileProject(root) {
   try {
@@ -8713,6 +8794,49 @@ function ideMobileProject(root) {
     return { mobile: false, cmd: '' };
   }
 }
+
+/* Beast Code PROJE TİPİ algılama: preview butonu ajana hangi talimatı vereceğini
+   bununla seçer. kind: expo | react-native | web | static | unknown */
+function ideProjectInfo(root) {
+  const out = { kind: 'unknown', name: '', cmd: '' };
+  try {
+    const pkgPath = path.join(root, 'package.json');
+    let pkg = null;
+    try { if (fs.existsSync(pkgPath)) pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8')); } catch {}
+    if (!pkg) {
+      out.kind = fs.existsSync(path.join(root, 'index.html')) ? 'static' : 'unknown';
+      return out;
+    }
+    out.name = String(pkg.name || '');
+    const deps = { ...(pkg.dependencies || {}), ...(pkg.devDependencies || {}) };
+    const scripts = pkg.scripts || {};
+    const hasAppJson = fs.existsSync(path.join(root, 'app.json')) || fs.existsSync(path.join(root, 'app.config.js'));
+    if (deps.expo || (hasAppJson && (deps['react-native'] || deps['react-dom']))) {
+      out.kind = 'expo';
+      out.cmd = scripts.web ? 'npm run web' : deps.expo ? 'npx expo start --web' : String(scripts.start || '');
+    } else if (deps['react-native']) {
+      out.kind = 'react-native';
+      out.cmd = String(scripts.start || scripts.ios || '') || 'npx react-native start';
+    } else if (deps.next) {
+      out.kind = 'web';
+      out.cmd = String(scripts.dev || scripts.start || '') || 'npx next dev';
+    } else if (deps.vite || deps['react-scripts'] || deps['@angular/core'] || deps['vue']) {
+      out.kind = 'web';
+      out.cmd = String(scripts.dev || scripts.start || scripts.serve || '');
+    } else if (scripts.dev) {
+      out.kind = 'web';
+      out.cmd = 'npm run dev';
+    } else if (scripts.start) {
+      out.kind = 'web';
+      out.cmd = 'npm start';
+    } else {
+      out.kind = fs.existsSync(path.join(root, 'index.html')) ? 'static' : 'unknown';
+    }
+  } catch {}
+  return out;
+}
+
+ipcMain.handle('ide:projinfo', () => ({ ok: true, ...ideProjectInfo(ideRoot()) }));
 
 function killMobilePreview() {
   const p = bcMobile.proc;
@@ -8964,6 +9088,7 @@ ipcMain.handle('custom:set', (_e, list) => {
   settings.customProviders = Array.isArray(list) ? list : [];
   saveSettings();
   engine.setCustomProviders(settings.customProviders);
+  headroom.syncProviders(); /* headroom açıksa proxy setini yeni listeye uydur */
   return engine.publicState();
 });
 

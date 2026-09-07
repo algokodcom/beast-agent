@@ -347,6 +347,18 @@ function sessionHeaderId(body) {
   return _sessionFallback;
 }
 
+/* Headroom proxy yönlendirme: providerId -> yerel proxy portu haritası.
+   main (agent/headroom.js) ayarlardan açıldığında kurar; null = düz bağlan. */
+let _headroomRoutes = null;
+function setHeadroomRoutes(map) {
+  _headroomRoutes = map && Object.keys(map).length ? map : null;
+}
+function headroomUrlFor(sel) {
+  if (!_headroomRoutes || !sel) return '';
+  const port = Number(_headroomRoutes[String(sel.providerId || '')] || 0);
+  return port ? 'http://127.0.0.1:' + port + '/v1/chat/completions' : '';
+}
+
 async function openChat(sel, body, { stream, signal, drops } = {}) {
   const d = drops || {};
   const payload = {
@@ -368,7 +380,10 @@ async function openChat(sel, body, { stream, signal, drops } = {}) {
   if (body.cacheKey && wantsCacheKey(sel) && !d.noCacheKey) {
     payload.prompt_cache_key = String(body.cacheKey);
   }
-  return fetch(sel.url, {
+  /* Headroom açıkken istek yerel sıkıştırma proxy'sinden geçer (aynı gövde+başlıklar);
+     yoksa sağlayıcıya düz bağlan */
+  const target = headroomUrlFor(sel) || sel.url;
+  return fetch(target, {
     method: 'POST',
     signal,
     headers: {
@@ -624,6 +639,7 @@ module.exports = {
   capsFor,
   resetCaps,
   learnCaps,
+  setHeadroomRoutes,
   PARAM_LABELS,
   isNetworkError,
   wantsCacheKey,

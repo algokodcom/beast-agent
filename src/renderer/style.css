@@ -2315,8 +2315,61 @@ body.ide-mode #composerWrap { display: none; }
   flex-direction: column;
   overflow: hidden;
   background: var(--bg);
+  position: relative;
 }
 body.ide-mode #bcPanel { display: flex; }
+
+/* ---------- Expo Go QR kartı (Beast Code) ---------- */
+#bcQrCard {
+  position: absolute;
+  right: 14px;
+  bottom: 74px;
+  z-index: 40;
+  width: 232px;
+  padding: 10px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 10px 34px rgba(0, 0, 0, 0.45);
+}
+.bq-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 10px;
+  letter-spacing: 2px;
+  font-weight: 800;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+#bcQrClose {
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 14px;
+  cursor: pointer;
+  line-height: 1;
+  padding: 0 2px;
+}
+#bcQrClose:hover { color: var(--text); }
+#bcQrImg {
+  width: 100%;
+  display: block;
+  border-radius: 8px;
+  background: #fff;
+  padding: 6px;
+  image-rendering: pixelated;
+}
+#bcQrUrl {
+  font-family: Consolas, monospace;
+  font-size: 10px;
+  color: var(--accent);
+  margin-top: 6px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.bq-hint { font-size: 10.5px; color: var(--muted); margin-top: 4px; text-align: center; }
 #bcHead {
   flex: none;
   display: flex;

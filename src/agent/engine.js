@@ -3529,6 +3529,16 @@ class Engine {
                     else if (/\b(npm (run )?(dev|start)|npx serve|live-server)\b/i.test(cmdStr)) port = 3000;
                     if (port) bcArtifacts.serverUrl = 'http://localhost:' + port;
                   }
+                  /* Expo dev server: exp://<LAN-IP>:<port> çıktıdan yakalanır —
+                     telefon/Expo Go için QR renderer'a canlı iletilir */
+                  const xm = /exp:\/\/[^\s'"<>]+/i.exec(hay);
+                  if (xm) {
+                    const eurl = xm[0].replace(/[)\].,;:'"]+$/, '');
+                    if (bcArtifacts.expUrl !== eurl) {
+                      bcArtifacts.expUrl = eurl;
+                      emit({ type: 'bc-expurl', url: eurl });
+                    }
+                  }
                 }
               } catch {}
             }

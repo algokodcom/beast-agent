@@ -164,11 +164,21 @@
             <button id="codeShow" title="Editörü göster" data-i18n-title="tipCodeShow" hidden>&#x25A3;&#xFE0E;</button>
             <button id="bcNew" title="Yeni oturum" data-i18n-title="bc_new">＊</button>
             <button id="bcClear" title="Çıktıyı temizle" data-i18n-title="bc_clear">Temizle</button>
+            <button id="bcQrBtn" title="Expo Go QR" hidden>&#x25A3;&#xFE0E;</button>
           </div>
           <div id="bcOut"></div>
           <div id="bcTodoWrap" hidden></div>
           <div id="bcStatus" hidden></div>
           <div id="bcChips" hidden></div>
+          <div id="bcQrCard" hidden>
+            <div class="bq-head">
+              <span>EXPO GO QR</span>
+              <button id="bcQrClose" title="Kapat">&#x00D7;</button>
+            </div>
+            <img id="bcQrImg" alt="Expo QR" draggable="false" />
+            <div id="bcQrUrl" title=""></div>
+            <div class="bq-hint">Telefonda <b>Expo Go</b> uygulamasıyla okut</div>
+          </div>
           <div id="bcInputRow">
             <button id="bcAttach" title="Dosya / resim ekle" data-i18n-title="tipAttach">+</button>
             <button id="bcMic" title="Sesli komut — konuş, bırakınca yazıya çevirsin" data-i18n-title="tipMic"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><path d="M12 19v3"/></svg></button>
@@ -297,6 +307,7 @@
         <button class="tab" data-tab="empati" data-i18n="tab_empati">Empati Loop</button>
         <button class="tab" data-tab="cron" data-i18n="tab_cron">Cron</button>
         <button class="tab" data-tab="usage" data-i18n="tab_usage">Maliyet · Limit</button>
+        <button class="tab" data-tab="headroom" data-i18n="tab_headroom">Token Sıkıştırma</button>
         <button class="tab" data-tab="logs" data-i18n="tab_logs">Log</button>
         <button class="tab" data-tab="dash" data-i18n="tab_dash">Dashboard</button>
         <button class="tab" data-tab="sec" data-i18n="tab_security">Güvenlik</button>
@@ -322,6 +333,7 @@
         <div id="tab-events" class="pane" hidden></div>
         <div id="tab-empati" class="pane" hidden></div>
         <div id="tab-usage" class="pane" hidden></div>
+        <div id="tab-headroom" class="pane" hidden></div>
         <div id="tab-logs" class="pane" hidden></div>
         <div id="tab-dash" class="pane" hidden></div>
         <div id="tab-sec" class="pane" hidden></div>

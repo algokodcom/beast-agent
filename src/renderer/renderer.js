@@ -83,6 +83,10 @@ const els = {
   bcAttach: $('#bcAttach'),
   bcMic: $('#bcMic'),
   bcChips: $('#bcChips'),
+  bcQrBtn: $('#bcQrBtn'),
+  bcQrCard: $('#bcQrCard'),
+  bcQrImg: $('#bcQrImg'),
+  bcQrUrl: $('#bcQrUrl'),
   studioBtn: $('#studioBtn'),
   sbBtn: $('#sbBtn'),
   sandboxRow: $('#sandboxRow'),
@@ -1089,6 +1093,7 @@ function addFiles(files, mode) {
 /* ---------------- settings ---------------- */
 
 let setTab = 'lang'; /* ayarlar artık DİL sekmesiyle açılır */
+let hrPaneTimer = null; /* headroom-status → Kurulum sekmesi debounce tazeleme */
 
 /* DİL sekmesi: arayüz dili seçimi (eski sağ-alt dil ikonunun yerine) */
 function renderLangPane() {
@@ -1154,6 +1159,7 @@ async function renderActiveSettingsTab() {
     case 'empati': await renderEmpatiPane(); break;
     case 'cron': await openCron(); break;
     case 'usage': await renderUsagePane(); break;
+    case 'headroom': await renderHeadroomPane(); break;
     case 'agents': await refreshAgentsPane(); break;
     case 'logs': await renderLogPane(); break;
     case 'dash': await renderDashboardPane(); break;
@@ -1237,7 +1243,7 @@ function switchTab(name) {
   document.querySelectorAll('#setTabs .tab').forEach((b) =>
     b.classList.toggle('active', b.dataset.tab === name)
   );
-    for (const p of ['lang', 'provider', 'fallout', 'skills', 'agents', 'tts', 'install', 'email', 'integrations', 'websearch', 'mcp', 'events', 'empati', 'cron', 'usage', 'logs', 'dash', 'sec', 'update']) {
+    for (const p of ['lang', 'provider', 'fallout', 'skills', 'agents', 'tts', 'install', 'email', 'integrations', 'websearch', 'mcp', 'events', 'empati', 'cron', 'usage', 'headroom', 'logs', 'dash', 'sec', 'update']) {
     const el = $('#tab-' + p);
     if (el) el.hidden = p !== name; // guard: eksik pane tüm sekmeleri kilitlemesin
   }
@@ -1245,6 +1251,7 @@ function switchTab(name) {
   if (name === 'cron') openCron();
   if (name === 'usage') renderUsagePane();
   if (name === 'install') renderInstallPane();
+  if (name === 'headroom') renderHeadroomPane();
   if (name === 'events') renderEventsPane();
   if (name === 'empati') renderEmpatiPane();
   if (name === 'logs') renderLogPane();
@@ -1272,7 +1279,6 @@ async function renderUsagePane() {
   } catch {
     rep = { today: { total: {}, models: [] }, month: { total: {}, models: [] } };
   }
-  const wwi = await beast.whereWasIGet().catch(() => ({ enabled: false }));
   const t = rep.today.total || {};
   const mo = rep.month.total || {};
   const card = (label, v) =>
@@ -1307,10 +1313,7 @@ async function renderUsagePane() {
     '<div class="form-grid" style="grid-template-columns:auto auto;gap:8px;margin-top:8px">' +
     '<button id="bkNow" class="btn ghost">' + _t('us_backup_now') + '</button>' +
     '<button id="bkRestore" class="btn ghost">' + _t('us_backup_restore') + '</button>' +
-    '</div>' +
-    '<div class="divider"></div><h2>' + _t('us_where_h2') + '</h2>' +
-    '<div class="sub">' + _t('us_where_sub') + '</div>' +
-    `<label class="lock-row" style="margin-top:6px"><input type="checkbox" id="wwiOn" ${wwi.enabled ? 'checked' : ''}/><span>${_t('us_where_on')}</span></label>`;
+    '</div>';
   $('#usReset').addEventListener('click', async () => {
     await beast.resetUsage();
     renderUsagePane();
@@ -1330,15 +1333,6 @@ async function renderUsagePane() {
       toast(_t('us_backup_err') + (r.error || '?'));
     }
   });
-  $('#wwiOn').addEventListener('change', async (e) => {
-    await beast.whereWasISet({ enabled: e.target.checked });
-    toast(e.target.checked ? _t('us_where_on_toast') : _t('us_where_off_toast'));
-  });
-  /* LİMİT ayarları aynı sekmenin alt bölümünde (Maliyet · Limit birleşik) */
-  const limBox = document.createElement('div');
-  limBox.id = 'limBox';
-  pane.appendChild(limBox);
-  await renderLimitsPane();
 }
 
 async function refreshFalloutPane() {
@@ -2215,6 +2209,93 @@ function ttsFlushTail() {
 /* ---------------- KURULUM SEKMESİ: bileşenler OTOMATİK kurulur ----------------
    Eksik/kısmen inmiş bileşen sekme açılınca kendiliğinden indirilir; kullanıcı
    hiçbir düğmeye basmaz. Durum canlı güncellenir (4 sn'de bir). */
+/* ---------- TOKEN SIKIŞTIRMA (Headroom) sekmesi ----------
+   Opsiyonel yerel sıkıştırma proxy'si: açıkken LLM girdisi %30-70 küçülür.
+   Aç/Kapat buradan; CLI kurulumu Kurulum sekmesinde görülür. */
+let hrStatsTimer = null;
+
+async function renderHeadroomPane() {
+  const pane = $('#tab-headroom');
+  if (!pane) return;
+  const st = await beast.headroomStatus().catch(() => null);
+
+  const fmtN = (n) => new Intl.NumberFormat('tr-TR').format(Math.round(Number(n) || 0));
+  let stHtml = '';
+  if (st) {
+    const readyN = (st.proxies || []).filter((p) => p.ready).length;
+    let stateTxt;
+    if (st.installing) stateTxt = '⏳ arka planda kuruluyor — uv tool install headroom-ai[proxy] (birkaç dakika)';
+    else if (st.enabled && readyN) stateTxt = '🟢 açık — proxy: ' + (st.proxies || []).filter((p) => p.ready).map((p) => '127.0.0.1:' + p.port).join(', ');
+    else if (st.enabled) stateTxt = '⏳ proxy başlatılıyor… (ilk açılış ~30 sn)';
+    else if (st.failed) stateTxt = '⛔ ' + (st.error || 'kurulum başarısız');
+    else if (st.installed) stateTxt = '⚪ kapalı — kurulu, aşağıdaki düğmeyle etkinleştir';
+    else stateTxt = '⚪ kapalı — açınca uv ile otomatik kurulur (birkaç dakika)';
+    stHtml = '<div class="sub" style="margin-top:10px;font-size:12px;text-align:center">' + escapeHtml(stateTxt) + '</div>';
+  }
+
+  const stats = await beast.headroomStats().catch(() => null);
+  let statsHtml = '';
+  if (stats && stats.ok && (stats.input || stats.saved)) {
+    statsHtml =
+      '<div class="divider"></div>' +
+      '<h2 style="text-align:center">Tasarruf (proxy açıkken)</h2>' +
+      '<div style="display:flex;gap:24px;flex-wrap:wrap;margin-top:8px;justify-content:center">' +
+      '<div><div style="font-size:20px;font-weight:800;color:var(--ok)">%' + Math.round(stats.savingsPercent || 0) + '</div><div class="sub">sıkıştırma oranı</div></div>' +
+      '<div><div style="font-size:20px;font-weight:800">' + new Intl.NumberFormat('tr-TR').format(stats.proxyCompressionSaved || 0) + '</div><div class="sub">kaydedilen token</div></div>' +
+      '<div><div style="font-size:20px;font-weight:800">' + new Intl.NumberFormat('tr-TR').format(stats.input || 0) + '</div><div class="sub">toplam girdi token</div></div>' +
+      '</div>';
+  }
+
+  /* AÇ/KAPAT düğmesi: ortalanmış + SVG ikonlu (play/pause — uygulama ikon stili) */
+  const svgPlay =
+    '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="6 3 20 12 6 21 6 3"/></svg>';
+  const svgPause =
+    '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>';
+  pane.innerHTML =
+    '<h2 style="text-align:center">' + _t('tab_headroom') + '</h2>' +
+    '<div class="sub" style="text-align:center;max-width:620px;margin:0 auto">Headroom yerel proxy\u2019si — araç çıktıları, loglar ve JSON yükleri modele gitmeden sıkıştırılır; orijinali yerelde saklanır. Token faturasını %30-70 düşürür. Yalnız OpenAI-uyumlu sağlayıcı trafiğini etkiler; kapalıyken hiçbir şey değişmez.</div>' +
+    '<div style="display:flex;flex-direction:column;align-items:center;gap:10px;margin-top:18px">' +
+    '<button id="hrToggle" class="btn" style="width:auto;padding:11px 16px;display:inline-flex;align-items:center;gap:8px;justify-content:center" title=""></button>' +
+    '<span id="hrToggleMsg" class="sub" style="margin:0;text-align:center;max-width:560px"></span>' +
+    '</div>' +
+    stHtml + statsHtml;
+
+  const btn = $('#hrToggle');
+  if (btn) {
+    const on = !!(st && st.enabled);
+    /* yalnız SVG ikon — anlamı durum satırı + tooltip taşır */
+    btn.innerHTML = on ? svgPause : svgPlay;
+    btn.title = on ? 'Token sıkıştırmayı kapat' : 'Token sıkıştırmayı aç';
+    btn.setAttribute('aria-label', btn.title);
+    btn.addEventListener('click', async () => {
+      const msg = $('#hrToggleMsg');
+      btn.disabled = true;
+      btn.innerHTML = '<span>…</span>';
+      const r = await beast.headroomToggle(!on).catch(() => null);
+      if (msg) {
+        if (r && r.installing) {
+          msg.textContent = 'Headroom arka planda kuruluyor — birkaç dakika sonra hazır olur, bu sekme açık kalabilir.';
+        } else if (r && r.error) {
+          msg.textContent = r.error;
+        } else {
+          msg.textContent = !on ? 'Açıldı — proxy hazır olunca trafiği yönlendirir' : 'Kapatıldı — trafik sağlayıcıya düz gidiyor';
+        }
+      }
+      setTimeout(() => renderHeadroomPane(), 2500);
+    });
+  }
+
+  /* açıkken istatistikler canlı aksın */
+  if (hrStatsTimer) clearInterval(hrStatsTimer);
+  hrStatsTimer = setInterval(async () => {
+    if (pane.hidden) { clearInterval(hrStatsTimer); return; }
+    const s2 = await beast.headroomStatus().catch(() => null);
+    const cur = $('#hrToggle');
+    if (s2 && cur && cur.disabled) return; /* toggle işlemi sürüyor */
+    await renderHeadroomPane();
+  }, 6000);
+}
+
 async function renderInstallPane() {
   const pane = $('#tab-install');
   if (!pane) return;
@@ -2282,10 +2363,24 @@ async function renderInstallPane() {
       '<div class="sub" style="font-size:11px">' + escapeHtml(r.detail || '') + (r.mb ? ' · ' + r.mb + ' MB' : '') + '</div>' +
       bar(r) +
       '</div>' +
+      (r.canToggle
+        ? '<button class="btn hr-tgl" data-on="' + (r.toggleOn ? '1' : '0') + '" style="width:auto;padding:2px 12px;flex:none">' + (r.toggleOn ? 'KAPAT' : 'AÇ') + '</button>'
+        : '') +
       badge(r.state) +
       pctLabel(r) +
       '</div>'
     )).join('');
+    /* Headroom aç/kapa: toggle kurulum + proxy başlatmayı arka planda tetikler */
+    el.querySelectorAll('.hr-tgl').forEach((b) => {
+      b.addEventListener('click', async () => {
+        const on = b.dataset.on !== '1';
+        b.disabled = true;
+        b.textContent = '…';
+        const r = await beast.headroomToggle(on).catch(() => null);
+        toast(r && r.error ? r.error : (r && r.installing ? 'Headroom kuruluyor — birkaç dakika sürer' : (on ? 'Headroom açıldı' : 'Headroom kapatıldı')));
+        refresh();
+      });
+    });
   };
 
   const refresh = async () => {
@@ -2850,67 +2945,6 @@ async function renderDashboardPane() {
     list.appendChild(row);
   }
   pane.appendChild(list);
-}
-
-/* ---------------- Limit: provider bazlı girdi limiti ---------------- */
-
-async function renderLimitsPane() {
-  /* Maliyet sekmesine GÖMÜLÜ çalışır (ayrı sekme kaldırıldı) */
-  const pane = $('#tab-limits') || $('#limBox');
-  if (!pane) return;
-  const cur = await beast.getLimits().catch(() => ({ enabled: false, compress: true, default: 0, perProvider: {} }));
-  const provs = [...new Set((state.models || []).map((m) => m.providerName))].sort((a, b) => a.localeCompare(b));
-
-  const provRows = provs.length
-    ? provs
-        .map((p) => {
-          const v = cur.perProvider[p] || 0;
-          return `<div class="usage-row" style="align-items:center">
-            <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(p)}</span>
-            <input class="inp lim-prov" data-prov="${escapeHtml(p)}" type="number" min="0" step="1000"
-              value="${v || ''}" placeholder="0 (${_t('lim_unlimited')})" style="width:130px;flex:none;margin:0" />
-          </div>`;
-        })
-        .join('')
-    : '<p class="sub">' + _t('p_no_model') + '</p>';
-
-  pane.innerHTML =
-    '<h2>' + _t('lim_h2') + '</h2>' +
-    '<div class="sub">' + _t('lim_sub') + '</div>' +
-    `<div class="fo-toggles" style="margin-top:10px">
-      <label class="lock-row"><input type="checkbox" id="limOn" ${cur.enabled ? 'checked' : ''}/><span>${_t('lim_enabled')}</span></label>
-    </div>
-    <div id="limDetail" style="${cur.enabled ? '' : 'opacity:.45'}">
-      <label class="lock-row"><input type="checkbox" id="limCompress" ${cur.compress ? 'checked' : ''}/><span>${_t('lim_compress')}</span></label>
-      <div class="form-grid" style="grid-template-columns:1fr auto;align-items:center;margin-top:8px">
-        <label class="mem-label" style="margin:0">${_t('lim_default')}</label>
-        <input id="limDefault" class="inp" type="number" min="0" step="1000" value="${cur.default || ''}" placeholder="0" style="width:130px;flex:none;margin:0" />
-      </div>
-      <h2 style="margin-top:16px">${_t('lim_prov_h2')}</h2>
-      <div class="sub">${_t('lim_prov_sub')}</div>
-      <div style="margin-top:6px">${provRows}</div>
-      <button id="limSave" class="btn ghost" style="margin-top:12px">${_t('lim_save')}</button>
-    </div>`;
-
-  const det = pane.querySelector('#limDetail');
-  pane.querySelector('#limOn').addEventListener('change', (e) => {
-    det.style.opacity = e.target.checked ? '' : '.45';
-  });
-
-  pane.querySelector('#limSave').addEventListener('click', async () => {
-    const perProvider = {};
-    for (const inp of pane.querySelectorAll('.lim-prov')) {
-      const n = Math.round(Number(inp.value) || 0);
-      if (n > 0) perProvider[inp.dataset.prov] = n;
-    }
-    await beast.setLimits({
-      enabled: pane.querySelector('#limOn').checked,
-      compress: pane.querySelector('#limCompress').checked,
-      default: Math.round(Number(pane.querySelector('#limDefault').value) || 0),
-      perProvider,
-    });
-    toast(_t('lim_saved_toast'));
-  });
 }
 
 /* ---------------- Güvenlik: ajan onay davranışı ---------------- */
@@ -4982,6 +5016,19 @@ function onEvent(ev) {
     return;
   }
   if (ev.type === 'install-progress') { updateInstallPct(ev); return; }
+  /* Headroom durum değişimi → açık olan sekmeyi tazele (Token Sıkıştırma / Kurulum) */
+  if (ev.type === 'headroom-status') {
+    try {
+      const iPane = document.getElementById('tab-install');
+      const hPane = document.getElementById('tab-headroom');
+      const open = (!iPane || iPane.hidden) && (!hPane || hPane.hidden) ? '' : (!hPane || hPane.hidden ? 'install' : 'headroom');
+      if (open) {
+        clearTimeout(hrPaneTimer);
+        hrPaneTimer = setTimeout(() => { (open === 'headroom' ? renderHeadroomPane() : renderInstallPane()).catch(() => {}); }, 1500);
+      }
+    } catch {}
+    return;
+  }
   /* EMPATİ LOOP: proaktif bildirim (masaüstü) + sekme canlı yenileme.
      Toast'ta yalnız haber başlığı — link/markdown kalabalığı chat mesajında. */
   if (ev.type === 'proactive') {
@@ -7139,6 +7186,10 @@ async function setIdeMode(on) {
     bcBanner();
     renderBcHistory(); /* soldaki geçmiş listesi: IDE'ye girişte tazelenir */
     codeGutterRender(); /* dosya açık olmasa bile rakamlar görünür */
+    /* Expo QR daha önce üretildiyse kart geri gelsin */
+    beast.ideExpQr().then((r) => {
+      if (r && r.ok && r.qr) bcQrShow(r.qr, r.url);
+    }).catch(() => {});
   } else {
     /* terminal bölmeye alınmadan önce kapatılır, sonra ALT DOCK'a geri taşınır */
     if (termOpen) termSetOpen(false);
@@ -8008,11 +8059,32 @@ async function undoTask(id) {
 if (els.fileTasks) els.fileTasks.addEventListener('click', () => toggleTasksPanel());
 
 $('#filePreview').addEventListener('click', async () => {
-  const r = await beast.idePreview().catch(() => null);
-  if (r && r.ok) {
-    if (ideModeOn() === false) setIdeMode(true);
-  } else {
+  if (!ideModeOn()) await setIdeMode(true);
+  /* proje tipi algıla: statik site ajan gerektirmez, dev-server projelerinde
+     HER PROJE FARKLI KOMUTLA çalışır — komutu ajan package.json'a bakıp seçer */
+  const info = await beast.ideProjInfo().catch(() => null);
+  const kind = (info && info.kind) || 'unknown';
+  if (kind === 'static') {
+    const r = await beast.idePreview().catch(() => null);
+    if (r && r.ok) return;
     toast((r && r.error) || 'preview açılamadı');
+    return;
+  }
+  const ask =
+    kind === 'expo'
+      ? 'Preview aç — bu klasör bir Expo/React Native projesi (app.json var). Web önizlemeyi arka planda başlat: package.json scripts.web varsa `npm run web`, yoksa `npx expo start --web`. Sunucu kalkınca çalışan http://localhost:PORT adresini raporda yaz.'
+      : kind === 'react-native'
+        ? 'Preview aç — bu klasör bir React Native projesi. Metro sunucusunu arka planda başlat: package.json scripts.start varsa `npm start`, yoksa `npx react-native start`. Sunucu kalkınca çalışan http://localhost:PORT adresini raporda yaz.'
+        : kind === 'web'
+          ? 'Preview aç — bu proje dev-server ister. Doğru komutu package.json scripts\'ından seç (dev/start/serve — `npm run dev` vb.) ve arka planda başlat. Sunucu kalkınca çalışan http://localhost:PORT adresini raporda yaz.'
+          : 'Preview aç — bu projenin nasıl çalıştığını package.json / konfigürasyon dosyalarından anla, doğru dev komutunu arka planda başlat ve çalışan http://localhost:PORT adresini raporda yaz.';
+  if (els.bcInput) {
+    els.bcInput.value = ask;
+    bcInputResize();
+    bcRunCurrent();
+    toast('Ajan preview görevini aldı');
+  } else {
+    toast('Beast Code paneli yok');
   }
 });
 if (els.codeSave) els.codeSave.addEventListener('click', codeSave);
@@ -8777,6 +8849,10 @@ function bcIngest(ev) {
       /* iş bitince üretilen site/app dahili tarayıcıda CANLI açılır */
       bcAutoPreview(ev.url);
       break;
+    case 'bc-exp-qr':
+      /* Expo dev server exp:// adresi → telefonda Expo Go için QR kart */
+      bcQrShow(ev.qr, ev.url);
+      break;
     case 'bc-mode':
       /* OpenCode disiplini çalışma modu: başlıkta rozet + panelde bilgi satırı */
       if (els.bcTitle) {
@@ -8904,6 +8980,33 @@ if (els.bcClear) els.bcClear.addEventListener('click', () => {
   bcHideTodos();
   bcFlushStream();
 });
+
+/* ---------- Expo Go QR kartı (yalnız Beast Code) ---------- */
+function bcQrShow(qr, url) {
+  if (!els.bcQrCard || !ideModeOn() || !qr) return;
+  if (els.bcQrImg) els.bcQrImg.src = qr;
+  if (els.bcQrUrl) {
+    els.bcQrUrl.textContent = url || '';
+    els.bcQrUrl.title = url || '';
+  }
+  if (els.bcQrBtn) els.bcQrBtn.hidden = false;
+  els.bcQrCard.hidden = false;
+}
+if (els.bcQrBtn) els.bcQrBtn.addEventListener('click', () => {
+  if (!els.bcQrCard) return;
+  if (els.bcQrCard.hidden) {
+    beast.ideExpQr().then((r) => {
+      if (r && r.ok && r.qr) bcQrShow(r.qr, r.url);
+      else toast('QR henüz yok — ajan expo start çalıştırınca çıkar');
+    }).catch(() => {});
+  } else {
+    els.bcQrCard.hidden = true;
+  }
+});
+if (els.bcQrCard) {
+  const qclose = els.bcQrCard.querySelector('#bcQrClose');
+  if (qclose) qclose.addEventListener('click', () => { els.bcQrCard.hidden = true; });
+}
 if (els.bcNew) els.bcNew.addEventListener('click', async () => {
   if (bcRunning) { toast('Mesaj sürüyor — önce ■ ile durdur'); return; }
   const r = await beast.beastcodeNew().catch(() => null);

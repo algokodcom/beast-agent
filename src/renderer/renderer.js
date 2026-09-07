@@ -84,6 +84,29 @@ const els = {
   bcMic: $('#bcMic'),
   bcChips: $('#bcChips'),
   studioBtn: $('#studioBtn'),
+  sbBtn: $('#sbBtn'),
+  sandboxRow: $('#sandboxRow'),
+  sbRepo: $('#sbRepo'),
+  sbReveal: $('#sbReveal'),
+  sbRemove: $('#sbRemove'),
+  sbNew: $('#sbNew'),
+  sbCloneInput: $('#sbCloneInput'),
+  sbCloneBtn: $('#sbCloneBtn'),
+  sbGhBtn: $('#sbGhBtn'),
+  sbOut: $('#sbOut'),
+  sbStatus: $('#sbStatus'),
+  sbInput: $('#sbInput'),
+  sbStop: $('#sbStop'),
+  sbRunCwd: $('#sbRunCwd'),
+  sbRunInstall: $('#sbRunInstall'),
+  sbRunStart: $('#sbRunStart'),
+  sbRunDev: $('#sbRunDev'),
+  sbRunStop: $('#sbRunStop'),
+  sbRunCmd: $('#sbRunCmd'),
+  sbRunGo: $('#sbRunGo'),
+  sbRunOut: $('#sbRunOut'),
+  sbRunOpen: $('#sbRunOpen'),
+  sbRunUrl: $('#sbRunUrl'),
   stPanel: $('#stPanel'),
   stTitle: $('#stTitle'),
   stCwd: $('#stCwd'),
@@ -4984,6 +5007,19 @@ function onEvent(ev) {
   }
   /* OFFLINE MESAJ KUYRUĞU: bağlantı + kuyruk olayları (sessionId filtresinden önce) */
   if (ev.type === 'net' || ev.type === 'netQueue') { onNetEvent(ev); return; }
+  /* Sandbox klonlama progress'i (sessionId'siz global olay) */
+  if (ev.type === 'sb-clone') { sbCloneProgress(ev.pct, ev.text, !!ev.done); return; }
+  /* Sandbox ÇALIŞTIRICI süreç akışı: sessionId'siz global olaylar */
+  if (ev.type === 'sb-run' || ev.type === 'sb-run-url' || ev.type === 'sb-run-end') {
+    sbRunIngest(ev);
+    return;
+  }
+  /* Beast Sandbox oturumu: olaylar SADECE Sandbox paneline akar — ana sohbeti
+     ve Code/Studio panellerini kirletmez (dünyalar ayrı) */
+  if (sbSessionId && ev.sessionId === sbSessionId) {
+    sbIngest(ev);
+    return;
+  }
   /* Beast Studio oturumu: olaylar SADECE Studio paneline akar — ana sohbeti
      ve Beast Code panelini kirletmez (dünyalar ayrı) */
   if (stSessionId && ev.sessionId === stSessionId) {
@@ -6896,6 +6932,7 @@ function ghCard(repo, isFav) {
       <div class="gh-actions">
         <button class="gh-fav ${isFav ? 'on' : ''}" data-act="fav">${isFav ? '★ Favori' : '☆ Favorile'}</button>
         <button data-act="chat"><svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-1px;margin-right:4px"><path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4z"/></svg>Chate at</button>
+        <button data-act="dl" title="Sandbox'a indir (git clone)">⬇ İndir</button>
         <button data-act="copy">⧉ Kopyala</button>
       </div>
     </div>`;
@@ -6910,6 +6947,12 @@ function wireGhCards(container, list, isFavPane) {
       ghSendToChat(repo.html_url, repo.full_name);
       /* mesaj chate gitti — cevap chatten geleceği için modal kapanır */
       closeGit();
+    });
+    /* Sandbox'a indir: klonlama Sandbox panelinde görünür, panel açılır */
+    card.querySelector('[data-act="dl"]').addEventListener('click', async () => {
+      closeGit();
+      setSandboxMode(true);
+      sbClone(repo.full_name);
     });
     card.querySelector('[data-act="copy"]').addEventListener('click', async () => {
       try { await navigator.clipboard.writeText(repo.html_url); toast('Link kopyalandı'); } catch {}
@@ -7068,6 +7111,7 @@ function ideModeOn() {
 
 async function setIdeMode(on) {
   if (on && studioModeOn()) await setStudioMode(false); /* Studio açıkken IDE'ye geçiş — Studio kapanır */
+  if (on && sbModeOn()) setSandboxMode(false); /* Sandbox açıkken IDE'ye geçiş — Sandbox kapanır */
   document.body.classList.toggle('ide-mode', !!on);
   if (els.ideBtn) els.ideBtn.classList.toggle('on', !!on);
   /* soldaki marka: chat modunda BEAST Agent, IDE modunda BEAST Code, Studio modunda BEAST Studio */
@@ -7137,6 +7181,7 @@ function studioModeOn() {
 
 async function setStudioMode(on) {
   if (on && ideModeOn()) await setIdeMode(false); /* IDE açıkken Studio'ya geçiş — IDE kapanır */
+  if (on && sbModeOn()) setSandboxMode(false); /* Sandbox açıkken Studio'ya geçiş — Sandbox kapanır */
   document.body.classList.toggle('studio-mode', !!on);
   if (els.studioBtn) els.studioBtn.classList.toggle('on', !!on);
   /* ALT TERMINAL: yalnız Beast Code'a özgü — Studio'ya geçişte kapanır */
@@ -7359,7 +7404,8 @@ if (els.ideSplit) {
 }
 
 async function loadIdeTree() {
-  ideState.cache.clear();
+  /* hangi moddaysak o ağacın önbelleği tazelenir (Sandbox → repo ağacı) */
+  (sbModeOn() ? sbTreeState : studioModeOn() ? studioState : ideState).cache.clear();
   await renderFileTree();
 }
 
@@ -7375,17 +7421,26 @@ async function renderFileTree() {
   if (!tree) return;
   tree.innerHTML = '';
   const wsLabel = $('#filePanelPath');
-  /* Studio modunda ağaç studioRoot'tan, IDE modunda ideRoot'tan okunur —
-     aynı panel, aynı çizim; yalnız kaynak ve davranış moduna göre değişir */
+  /* Studio modunda ağaç studioRoot'tan, Sandbox modunda seçili reponun
+     klasöründen, IDE modunda ideRoot'tan okunur — aynı panel, aynı çizim */
+  const sbx = sbModeOn();
   const studio = studioModeOn();
-  const st = studio ? studioState : ideState;
-  const treeApi = studio ? beast.studioTree : beast.ideTree;
+  const st = sbx ? sbTreeState : studio ? studioState : ideState;
+  const treeApi = sbx
+    ? (rel) => beast.sandboxTree({ folder: sbFolder, rel })
+    : studio
+      ? beast.studioTree
+      : beast.ideTree;
   const build = async (rel, depth, container) => {
     let entries = st.cache.get(rel);
     if (!entries) {
       const r = await treeApi(rel).catch(() => null);
       if (!r || !r.ok) {
-        if (!rel) container.innerHTML = `<div class="file-empty">${escapeHtml((r && r.error) || 'okunamadı')}</div>`;
+        if (!rel) {
+          container.innerHTML = sbx
+            ? '<div class="file-empty">Repo seçili değil — yukarıdan indir ya da seç</div>'
+            : `<div class="file-empty">${escapeHtml((r && r.error) || 'okunamadı')}</div>`;
+        }
         return;
       }
       entries = r.entries;
@@ -7393,7 +7448,9 @@ async function renderFileTree() {
       if (r.workspace) {
         st.path = r.workspace;
         if (wsLabel) { wsLabel.textContent = r.workspace; wsLabel.title = r.workspace; }
-        if (studio) {
+        if (sbx) {
+          if (els.sbRunCwd) { els.sbRunCwd.textContent = r.workspace; els.sbRunCwd.title = r.workspace; }
+        } else if (studio) {
           if (els.stCwd) { els.stCwd.textContent = r.workspace; els.stCwd.title = r.workspace; }
           stOnFolderChanged(r.workspace);
         } else {
@@ -7418,6 +7475,13 @@ async function renderFileTree() {
           if (st.open.has(child)) st.open.delete(child);
           else st.open.add(child);
           renderFileTree();
+        } else if (sbx) {
+          /* Sandbox: dosyayı chat'e bağlam olarak bırak — ajan incelesin */
+          if (els.sbInput) {
+            els.sbInput.value = 'Şu dosyayı incele: ' + child;
+            els.sbInput.focus();
+            sbInputResize();
+          }
         } else if (studio && MEDIA_FILE_RE.test(e.name)) {
           stVideoPlay(child); /* video/ses → sağdaki video bölümünde oynat */
         } else if (studio) {
@@ -7449,7 +7513,8 @@ function ideRefreshTree() {
     ideTreeTimer = null;
     try {
       /* hangi moddaysak o ağacın önbelleği tazelenir */
-      if (studioModeOn()) studioState.cache.clear();
+      if (sbModeOn()) sbTreeState.cache.clear();
+      else if (studioModeOn()) studioState.cache.clear();
       else ideState.cache.clear();
       renderFileTree().catch(() => {});
     } catch {}
@@ -8028,8 +8093,9 @@ function fileCtxShow(e, rel, isDir) {
   const menu = els.fileCtxMenu;
   if (!menu || !rel) return;
   e.preventDefault();
+  const sbx = sbModeOn();
   const studio = studioModeOn();
-  const st = studio ? studioState : ideState;
+  const st = sbx ? sbTreeState : studio ? studioState : ideState;
   const isMedia = MEDIA_FILE_RE.test(rel.split('/').pop() || '');
   const items = [];
   if (isDir) {
@@ -8040,6 +8106,22 @@ function fileCtxShow(e, rel, isDir) {
         else st.open.add(rel);
         renderFileTree();
       },
+    });
+  } else if (sbx) {
+    /* Sandbox: dosya düzenleme Code moduna aittir — chate bağlam bırak/aç */
+    items.push({
+      label: 'Chate ekle (şu dosyaya bak)',
+      fn: () => {
+        if (els.sbInput) {
+          els.sbInput.value = 'Şu dosyayı incele: ' + rel;
+          els.sbInput.focus();
+          sbInputResize();
+        }
+      },
+    });
+    items.push({
+      label: 'Dış uygulamada aç',
+      fn: () => beast.openPath((sbTreeState.path || '') + '\\' + rel.replace(/\//g, '\\')).catch(() => {}),
     });
   } else if (studio && isMedia) {
     items.push({ label: 'Oynat', fn: () => stVideoPlay(rel) });
@@ -9247,3 +9329,463 @@ if (els.stNew) els.stNew.addEventListener('click', async () => {
 });
 /* Uygulama her açılışta agent (chat) modunda başlar — IDE modu yalnız
    kullanıcı butona basınca girilir (oturumluk). */
+
+/* ================= BEAST SANDBOX =================
+   GitHub reposu indir (git clone) + repo klasöründe ajanla çalış.
+   Sağ dock — ana chat solda yerinde kalır; Code/Studio'dan tamamen ayrı. */
+
+let sbSessionId = '';
+let sbFolder = '';
+let sbBusy = false;
+let sbItems = [];
+let sbStreamEl = null;
+let sbStreamRaw = '';
+let sbCloning = false;
+/* sol dosya konsolu (repo ağacı) + sağ çalıştırıcı durumu */
+const sbTreeState = { cache: new Map(), open: new Set(['']), path: '' };
+let sbRunUrl = '';
+let sbRunRunning = false;
+
+function sbModeOn() {
+  return document.body.classList.contains('sandbox-mode');
+}
+
+function sbLine(cls, text) {
+  if (!els.sbOut) return null;
+  const div = document.createElement('div');
+  div.className = cls || 't-out';
+  div.textContent = String(text || '');
+  els.sbOut.appendChild(div);
+  els.sbOut.scrollTop = els.sbOut.scrollHeight;
+  return div;
+}
+
+function sbStreamDelta(delta) {
+  if (!els.sbOut) return;
+  if (!sbStreamEl) {
+    sbStreamEl = sbLine('t-out', '');
+  }
+  sbStreamRaw += String(delta || '');
+  sbStreamEl.textContent = sbStreamRaw;
+  els.sbOut.scrollTop = els.sbOut.scrollHeight;
+}
+
+function sbFlushStream() {
+  sbStreamEl = null;
+  sbStreamRaw = '';
+}
+
+function sbMsgText(content) {
+  const t = Array.isArray(content)
+    ? content.filter((p) => p && p.type === 'text').map((p) => String(p.text || '')).join('\n')
+    : String(content || '');
+  return t.replace(/\s+/g, ' ').trim();
+}
+
+function sbArgsSummary(args) {
+  try {
+    const j = typeof args === 'string' ? JSON.parse(args) : args || {};
+    return String(j.command || j.path || j.url || j.query || j.pattern || '').replace(/\s+/g, ' ').slice(0, 90);
+  } catch {
+    return '';
+  }
+}
+
+function sbSetBusy(b) {
+  sbBusy = !!b;
+  if (els.sbStop) els.sbStop.hidden = !sbBusy;
+}
+
+function sbStatusShow(text) {
+  if (els.sbStatus) {
+    els.sbStatus.hidden = false;
+    els.sbStatus.textContent = text;
+  }
+}
+function sbStatusHide() {
+  if (els.sbStatus) els.sbStatus.hidden = true;
+}
+
+/* Sandbox oturumunun engine olayları → panel (bcIngest'in minimal karşılığı) */
+function sbIngest(ev) {
+  if (!sbSessionId || ev.sessionId !== sbSessionId) return;
+  switch (ev.type) {
+    case 'token':
+      sbStreamDelta(ev.delta);
+      break;
+    case 'message': {
+      const m = ev.message;
+      if (!m) break;
+      /* KULLANICI ECHO BASILMAZ — gönderirken zaten 'sen>' satırı düştü
+         (Beast Code paneliyle aynı disiplin; yoksa mesaj ÇİFT görünür) */
+      if (m.role === 'assistant') {
+        sbFlushStream();
+        const hasTools = Array.isArray(m.tool_calls) && m.tool_calls.length > 0;
+        const txt = typeof m.content === 'string' ? m.content.trim() : '';
+        if (txt && !hasTools) sbLine('t-out', txt);
+      }
+      break;
+    }
+    case 'tool-start':
+      sbSetBusy(true);
+      sbLine('t-dim', '\u2692 ' + (ev.name || '?') + (sbArgsSummary(ev.args) ? ' \u00B7 ' + sbArgsSummary(ev.args) : ''));
+      break;
+    case 'tool-end': {
+      const ok = ev.ok !== false;
+      sbLine(ok ? 't-dim' : 't-err', (ok ? '  \u2713 ' : '  \u2717 ') + String(ev.result || '').replace(/\s+/g, ' ').slice(0, 160));
+      /* ajan dosya yazarsa/editlerse soldaki repo ağacı canlı tazelenir */
+      if (ev.name === 'write_file' || ev.name === 'edit_file' || ev.name === 'run_command') ideRefreshTree();
+      break;
+    }
+    case 'status':
+      if (ev.status === 'idle') {
+        sbSetBusy(false);
+        sbStatusHide();
+      } else {
+        sbSetBusy(true);
+        sbStatusShow(ev.status === 'thinking' ? 'düşünüyor…' : String(ev.status || ''));
+      }
+      break;
+    case 'done':
+      sbFlushStream();
+      sbSetBusy(false);
+      sbStatusHide();
+      sbLine('t-dim', ev.aborted ? '[durduruldu' + (ev.reason ? ' — ' + ev.reason : '') + ']' : '(tamamlandı)');
+      break;
+    case 'error':
+      sbFlushStream();
+      sbSetBusy(false);
+      sbStatusHide();
+      sbLine('t-err', '[hata] ' + (ev.error || ''));
+      break;
+  }
+}
+
+async function loadSandboxList() {
+  const r = await beast.sandboxList().catch(() => ({ ok: false }));
+  sbItems = (r && r.items) || [];
+  const sel = els.sbRepo;
+  if (!sel) return;
+  sel.innerHTML = '';
+  if (!sbItems.length) {
+    const o = document.createElement('option');
+    o.value = '';
+    o.textContent = 'Repo yok, indir';
+    sel.appendChild(o);
+  }
+  for (const it of sbItems) {
+    const o = document.createElement('option');
+    o.value = it.folder;
+    o.textContent = it.name + (it.busy ? ' ●' : '');
+    sel.appendChild(o);
+  }
+  if (sbFolder && sbItems.some((x) => x.folder === sbFolder)) sel.value = sbFolder;
+  else if (sbItems.length) {
+    sel.value = sbItems[0].folder;
+    sbFolder = sel.value;
+  } else {
+    sbFolder = '';
+  }
+  await sbSelectCurrent();
+}
+
+async function sbSelectCurrent() {
+  sbFolder = els.sbRepo ? String(els.sbRepo.value || '') : '';
+  if (els.sbOut) els.sbOut.innerHTML = '';
+  sbSessionId = '';
+  sbStreamEl = null;
+  sbStreamRaw = '';
+  sbSetBusy(false);
+  sbStatusHide();
+  /* çalıştırıcı + ağaç yeni repoya döner */
+  sbRunUrl = '';
+  sbRunRunning = false;
+  if (els.sbRunOpen) els.sbRunOpen.disabled = true;
+  if (els.sbRunUrl) els.sbRunUrl.textContent = '';
+  if (els.sbRunOut) els.sbRunOut.innerHTML = '';
+  sbTreeState.cache.clear();
+  sbTreeState.open = new Set(['']);
+  if (sbModeOn()) renderFileTree().catch(() => {});
+  if (!sbFolder) {
+    sbLine('t-dim', 'Repo indir: kutuya github.com/owner/repo yaz → İndir. Ya da 🔍 ile GitHub\u2019da ara.');
+    return;
+  }
+  const r = await beast.sandboxOpen({ folder: sbFolder }).catch(() => null);
+  if (r && r.ok) {
+    sbSessionId = r.sessionId;
+    for (const m of r.messages || []) {
+      sbLine(m.role === 'assistant' ? 't-out' : 't-cmd', (m.role === 'assistant' ? '' : 'sen> ') + m.text);
+    }
+    sbLine('t-dim', 'Oturum yüklendi');
+  } else {
+    sbLine('t-err', (r && r.error) || 'oturum açılamadı');
+  }
+  sbSetBusy(!!(r && r.busy));
+  /* sol konsol: seçilen reponun klasörü — oturum açıldıktan sonra da garanti tazele */
+  sbTreeState.cache.clear();
+  if (sbModeOn()) renderFileTree().catch(() => {});
+}
+
+function sbInputResize() {
+  const ta = els.sbInput;
+  if (!ta) return;
+  ta.style.height = 'auto';
+  ta.style.height = Math.min(ta.scrollHeight, 140) + 'px';
+  ta.classList.toggle('expand', ta.scrollHeight > 140);
+}
+
+function sbRunCurrent() {
+  const msg = els.sbInput.value.trim();
+  if (!msg || !sbFolder || sbCloning) return;
+  els.sbInput.value = '';
+  sbInputResize();
+  sbLine('t-cmd', 'sen> ' + msg);
+  sbSetBusy(true);
+  beast.sandboxSend({ folder: sbFolder, msg }).then((r) => {
+    if (r && r.ok) {
+      if (r.sessionId) sbSessionId = r.sessionId;
+      if (r.queued) sbLine('t-dim', '⏳ kuyrukta (' + r.count + ') — iş bitince gönderilir');
+    } else {
+      sbSetBusy(false);
+      sbLine('t-err', (r && r.error) || 'gönderilemedi');
+    }
+  }).catch((e) => {
+    sbSetBusy(false);
+    sbLine('t-err', String((e && e.message) || e));
+  });
+}
+
+let sbCloneLine = null;
+function sbCloneProgress(pct, text, done) {
+  /* buton etiketi: %34 · İndir */
+  const label = document.getElementById('sbCloneLabel');
+  if (label) label.textContent = pct != null ? '%' + pct : 'İndir';
+  if (!els.sbOut) return;
+  if (done) {
+    if (sbCloneLine && sbCloneLine.isConnected) sbCloneLine.remove();
+    sbCloneLine = null;
+    return;
+  }
+  if (!sbCloneLine || !sbCloneLine.isConnected) {
+    sbCloneLine = sbLine('t-dim', '');
+  }
+  if (sbCloneLine) {
+    sbCloneLine.textContent = (pct != null ? '⬇ %' + pct : '⬇ klonlanıyor') + (text ? ' · ' + text : '');
+    els.sbOut.scrollTop = els.sbOut.scrollHeight;
+  }
+}
+
+async function sbClone(input) {
+  if (sbCloning) return;
+  const src = String(input || '').trim();
+  if (!src) {
+    toast('Repo adresi gir: github.com/owner/repo');
+    return;
+  }
+  sbCloning = true;
+  if (els.sbCloneBtn) els.sbCloneBtn.disabled = true;
+  sbCloneLine = null;
+  sbLine('t-dim', '⬇ klonlanıyor: ' + src + ' — (büyük repolar sürebilir…)');
+  const r = await beast.sandboxClone(src).catch((e) => ({ ok: false, error: String((e && e.message) || e) }));
+  sbCloning = false;
+  if (els.sbCloneBtn) els.sbCloneBtn.disabled = false;
+  sbCloneProgress(null, '', true); /* progress satırını temizle + etiketi geri koy */
+  if (r && r.ok) {
+    sbLine('t-dim', '✓ indirildi: ' + r.name);
+    if (els.sbCloneInput) els.sbCloneInput.value = '';
+    sbFolder = r.folder;
+    await loadSandboxList();
+    if (els.sbInput) els.sbInput.focus();
+  } else {
+    sbLine('t-err', '[klonlama] ' + ((r && r.error) || 'başarısız'));
+  }
+}
+
+function setSandboxMode(on) {
+  if (on && ideModeOn()) { setIdeMode(false); }
+  if (on && studioModeOn()) { setStudioMode(false); }
+  document.body.classList.toggle('sandbox-mode', !!on);
+  if (els.sbBtn) els.sbBtn.classList.toggle('on', !!on);
+  /* marka + sol konsol başlığı: moduna göre BEAST Agent/Code/Studio/Sandbox */
+  const brandSub = document.querySelector('#brand .brand-sub');
+  if (brandSub) brandSub.textContent = on ? 'Sandbox' : 'Agent';
+  const ftp = document.getElementById('filePanelTitle');
+  if (ftp && on) ftp.textContent = 'REPO DOSYALARI';
+  if (on) {
+    loadSandboxList();
+    sbTreeState.cache.clear();
+    renderFileTree().catch(() => {});
+  } else if (!ideModeOn() && !studioModeOn()) {
+    /* agent moduna dönüş: ağaç eski köküne döner */
+    ideState.cache.clear();
+    renderFileTree().catch(() => {});
+  }
+}
+
+/* ---------- ÇALIŞTIRICI: butonlar KOMUT DEĞİL AJANA TALİMATTIR ----------
+   Her proje farklı çalışır; komutu kullanıcı bilemez, AJAN bilir:
+   paket bildirim dosyasına + README'ye bakıp doğru komutu bulur, uzun süreli
+   süreci panel_run aracıyla ÇALIŞTIR panelinde (turu kilitlemeden) başlatır. */
+function sbInstruct(text) {
+  if (!sbFolder) { toast('Önce repo indir ya da seç'); return; }
+  sbLine('t-cmd', 'sen> ' + text);
+  sbSetBusy(true);
+  beast.sandboxSend({ folder: sbFolder, msg: text }).then((r) => {
+    if (r && r.ok) {
+      if (r.sessionId) sbSessionId = r.sessionId;
+      if (r.queued) sbLine('t-dim', '⏳ kuyrukta (' + r.count + ') — iş bitince gönderilir');
+    } else {
+      sbSetBusy(false);
+      sbLine('t-err', (r && r.error) || 'gönderilemedi');
+    }
+  }).catch((e) => {
+    sbSetBusy(false);
+    sbLine('t-err', String((e && e.message) || e));
+  });
+}
+
+function sbRunLine(text, cls) {
+  if (!els.sbRunOut) return null;
+  const div = document.createElement('div');
+  div.className = cls || 't-out';
+  div.textContent = String(text || '');
+  els.sbRunOut.appendChild(div);
+  els.sbRunOut.scrollTop = els.sbRunOut.scrollHeight;
+  return div;
+}
+
+/* süreç çıktısı akışı: sessionId'siz global olaylar — en üstte yönlendirilir */
+function sbRunIngest(ev) {
+  if (ev.type === 'sb-run') {
+    sbRunLine(ev.data);
+    return;
+  }
+  if (ev.type === 'sb-run-url') {
+    sbRunUrl = String(ev.url || '');
+    sbRunLine('🌐 dev server: ' + sbRunUrl, 't-dim');
+    if (els.sbRunOpen) els.sbRunOpen.disabled = !sbRunUrl;
+    if (els.sbRunUrl) els.sbRunUrl.textContent = sbRunUrl;
+    return;
+  }
+  if (ev.type === 'sb-run-end') {
+    sbRunRunning = false;
+    if (els.sbRunStop) els.sbRunStop.hidden = true;
+  }
+}
+
+function sbRunExec(cmd) {
+  if (!sbFolder) { toast('Önce repo indir ya da seç'); return; }
+  if (sbRunRunning) { toast('Zaten çalışıyor — önce ■ ile durdur'); return; }
+  sbRunRunning = true;
+  if (els.sbRunStop) els.sbRunStop.hidden = false;
+  beast.sandboxRun({ folder: sbFolder, cmd }).then((r) => {
+    if (!r || !r.ok) {
+      sbRunRunning = false;
+      if (els.sbRunStop) els.sbRunStop.hidden = true;
+      sbRunLine('[hata] ' + ((r && r.error) || 'çalıştırılamadı'), 't-err');
+    }
+  }).catch((e) => {
+    sbRunRunning = false;
+    if (els.sbRunStop) els.sbRunStop.hidden = true;
+    sbRunLine('[hata] ' + String((e && e.message) || e), 't-err');
+  });
+}
+
+/* topbar + dock olay bağlama */
+if (els.sbBtn) els.sbBtn.addEventListener('click', () => setSandboxMode(!sbModeOn()));
+if (els.sbRepo) els.sbRepo.addEventListener('change', sbSelectCurrent);
+if (els.sbCloneBtn) els.sbCloneBtn.addEventListener('click', () => sbClone(els.sbCloneInput.value));
+if (els.sbCloneInput) {
+  els.sbCloneInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      sbClone(els.sbCloneInput.value);
+    }
+  });
+}
+if (els.sbGhBtn) els.sbGhBtn.addEventListener('click', () => openGit());
+if (els.sbNew) els.sbNew.addEventListener('click', async () => {
+  if (sbBusy) { toast('Mesaj sürüyor — önce ■ ile durdur'); return; }
+  if (!sbFolder) return;
+  const r = await beast.sandboxNew({ folder: sbFolder }).catch(() => null);
+  if (r && r.ok) {
+    sbSessionId = '';
+    await sbSelectCurrent();
+    sbLine('t-sys', 'yeni oturum — taze başlar');
+  }
+});
+if (els.sbRemove) els.sbRemove.addEventListener('click', async () => {
+  if (!sbFolder) { toast('Önce repo seç'); return; }
+  const name = (sbItems.find((x) => x.folder === sbFolder) || {}).name || 'repo';
+  const ok = await uiConfirm('"' + name + '" reposunu diskten silmek istiyor musun? (klasör + sohbet)', 'Sil');
+  if (!ok) return;
+  const r = await beast.sandboxRemove({ folder: sbFolder }).catch(() => null);
+  if (r && r.ok) {
+    sbFolder = '';
+    sbSessionId = '';
+    await loadSandboxList();
+  } else {
+    toast((r && r.error) || 'silinemedi');
+  }
+});
+if (els.sbReveal) els.sbReveal.addEventListener('click', () => {
+  if (sbFolder) beast.sandboxReveal({ folder: sbFolder }).catch(() => {});
+});
+if (els.sbInput) {
+  els.sbInput.addEventListener('input', sbInputResize);
+  els.sbInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      sbRunCurrent();
+    }
+  });
+}
+if (els.sbStop) {
+  els.sbStop.addEventListener('click', () => {
+    beast.sandboxStop({ folder: sbFolder }).then((r) => {
+      if (r && r.ok && r.wasBusy === false) {
+        sbSetBusy(false);
+        sbStatusHide();
+      }
+    }).catch(() => {});
+  });
+}
+/* ÇALIŞTIRICI butonları — KOMUT DEĞİL AJANA TALİMAT (komutu ajan bulur):
+   uzun süreli süreci panel_run ile ÇALIŞTIR paneline bırakır, tur kilitlenmez */
+if (els.sbRunInstall) els.sbRunInstall.addEventListener('click', () =>
+  sbInstruct('Bu projeyi KUR — paket bildirim dosyasına (package.json, requirements.txt, Cargo.toml, go.mod, pom.xml vb.) göre doğru kurulum komutunu bul ve çalıştır (run_command); sonucu 1-2 satırla raporla.')
+);
+if (els.sbRunStart) els.sbRunStart.addEventListener('click', () =>
+  sbInstruct('Bu projeyi ÇALIŞTIR — README/package.json scripts\u2019e göre doğru başlatma komutunu bul; uzun süreli sunucu/süreçse panel_run ile ÇALIŞTIR panelinde başlat (tur kilitleme), adresini/çalıştığını kullanıcıya bildir.')
+);
+if (els.sbRunDev) els.sbRunDev.addEventListener('click', () =>
+  sbInstruct('Bu projeyi GELİŞTİRME modunda başlat — package.json scripts\u2019e bak (npm run dev, vite, expo start, ng serve vb. hangisi varsa) ve panel_run ile ÇALIŞTIR panelinde başlat; adresini kullanıcıya bildir.')
+);
+if (els.sbRunGo) els.sbRunGo.addEventListener('click', () => {
+  const c = els.sbRunCmd.value.trim();
+  if (!c) { toast('Komut yaz'); return; }
+  sbRunExec(c);
+});
+if (els.sbRunCmd) {
+  els.sbRunCmd.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const c = els.sbRunCmd.value.trim();
+      if (c) sbRunExec(c);
+    }
+  });
+}
+if (els.sbRunStop) {
+  els.sbRunStop.addEventListener('click', () => {
+    beast.sandboxRunStop().then((r) => {
+      if (r && r.ok) sbRunLine('⏹ durduruldu', 't-dim');
+    }).catch(() => {});
+  });
+}
+if (els.sbRunOpen) {
+  els.sbRunOpen.addEventListener('click', () => {
+    /* Tarayıcıda aç da AJANA TALİMAT: ajan çalışma adresini bulup kendi
+       browser_open aracıyla dahili tarayıcıda açar */
+    sbInstruct('Bu projenin web arayüzü çalışıyorsa adresini tespit et (çıktılar/README/port taraması) ve browser_open aracıyla DAHİLİ TARAYICIDA aç.')
+  });
+}

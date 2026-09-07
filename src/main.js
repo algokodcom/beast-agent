@@ -3103,6 +3103,7 @@ function reloadBackend() {
       flushDesktopOnDone(ev); /* biriken desktop mesajlarını sıraya bas */
       bcFlushOnDone(ev); /* Beast Code kuyruğunu iş bitiminde boşalt */
       stFlushOnDone(ev); /* Beast Studio kuyruğunu iş bitiminde boşalt */
+      sbFlushOnDone(ev); /* Sandbox kuyruğunu iş bitiminde boşalt */
       /* BC canlı önizleme: ajan bir dev server başlattıysa adresi yakala —
          preview butonu ve otomatik açılış DAİMA bu sunucuyu öncelikli kullanır */
       if (ev.type === 'bc-preview' && /^https?:\/\/(?:localhost|127\.0\.0\.1)(?::\d{2,5})?/i.test(String(ev.url || ''))) {
@@ -3284,6 +3285,9 @@ function reloadBackend() {
       }
     },
   });
+  /* PANEL RUN köprüsü: ajanın panel_run aracı → ÇALIŞTIR panelindeki yönetilen
+     süreç koşucusu (sandbox:run IPC ile aynı makine). */
+  engine.sbRunHook = sbRunStartManaged;
   return engine.publicState();
 }
 
@@ -7459,9 +7463,10 @@ ipcMain.handle('beastcode:send', async (_e, payload) => {
     return { ok: true, sessionId: s.id, mode: s.bcMode };
   }
   if (busy) {
-    /* ajan çalışıyor → kuyruğa al; iş bitince (done/error) toplu gider */
-    const q = bcQueuePush(ws, text, attachments);
-    return { ok: true, queued: true, count: q.msgs.length, sessionId: s.id };
+    /* OPENCODE STEER: koşan tur varken mesaj kuyrukta BEKLEMEZ — engine.send
+       konuşmaya ekler, koşan tur sonraki istekte görür (ana chat ile aynı) */
+    engine.send(s.id, attachments.length ? { text, attachments } : text, { userAction: true });
+    return { ok: true, sessionId: s.id, steered: true };
   }
   /* boşta: kısa pencere — hızlı ard arda mesajlar tek işte birleşir */
   const q = bcQueuePush(ws, text, attachments);
@@ -7745,8 +7750,9 @@ ipcMain.handle('studio:send', async (_e, payload) => {
     return { ok: true, sessionId: s.id, mode: s.bcMode };
   }
   if (busy) {
-    const q = stQueuePush(ws, text, attachments);
-    return { ok: true, queued: true, count: q.msgs.length, sessionId: s.id };
+    /* OPENCODE STEER: koşan tur varken mesaj kuyrukta beklemez — konuşmaya eklenir */
+    engine.send(s.id, attachments.length ? { text, attachments } : text, { userAction: true });
+    return { ok: true, sessionId: s.id, steered: true };
   }
   const q = stQueuePush(ws, text, attachments);
   clearTimeout(q.timer);
@@ -8227,6 +8233,454 @@ ipcMain.handle('studio:delete', async (_e, rel) => {
 });
 
 /* Sağ tık menüsü: HTML dosyasını dahili tarayıcıda GÖRÜNÜR aç */
+/* ---------- BEAST SANDBOX: GitHub repolarını indir & içinde çalış ----------
+   Her repo KENDİ klasöründe (~/Beast-Sandbox/<ad>) ve KENDİ gizli oturumunda
+   koşar (klasör bazlı, bcCode disiplinli — Beast Code motorunun aynısı; ajanın
+   run_command/read/write araçları repo klasöründe çalışır). Ana sohbet VE
+   Code/Studio panellerinden tamamen ayrıdır; ana chat solda yerinde kalır. */
+const sbSessions = new Map(); /* klasör → sessionId */
+const SB_DEBOUNCE_MS = 900;
+const sbQueue = new Map(); /* klasör → { timer, msgs[] } */
+
+function sandboxRoot() {
+  const dir = path.join(app.getPath('home'), 'Beast-Sandbox');
+  try { fs.mkdirSync(dir, { recursive: true }); } catch {}
+  return dir;
+}
+
+function sbSessionFile() {
+  return path.join(beastDir(), 'sandbox-sessions.json');
+}
+
+let sbMapLoaded = false;
+function sbLoadMap() {
+  if (sbMapLoaded) return;
+  sbMapLoaded = true;
+  try {
+    const raw = JSON.parse(fs.readFileSync(sbSessionFile(), 'utf8'));
+    for (const [k, v] of Object.entries(raw || {})) {
+      if (k && typeof v === 'string') sbSessions.set(k, v);
+    }
+  } catch {}
+}
+
+function sbSaveMap() {
+  try {
+    fs.writeFileSync(sbSessionFile(), JSON.stringify(Object.fromEntries(sbSessions), null, 2));
+  } catch {}
+}
+
+function sandboxGetSession(folder) {
+  sbLoadMap();
+  let sid = sbSessions.get(folder);
+  if (sid) {
+    try {
+      const s = engine.cache.get(sid) || engine._load(sid);
+      if (s) return s;
+    } catch {}
+    sbSessions.delete(folder);
+  }
+  const s = engine._load(engine.createSession().id);
+  s.messages = s.messages || [];
+  s.bgTitle = 'Beast Sandbox'; /* _view.isBg → sohbet geçmişinde gizli */
+  s.bcCode = true; /* todo disiplini + hızlı iş kapanışı (engine) */
+  s.sbSandbox = true; /* engine: SANDBOX sistem bloğu — ajan açık kaynak repoda olduğunu bilir */
+  try {
+    fs.appendFileSync(
+      engine._file(s.id),
+      JSON.stringify({ t: 'meta2', bgOf: '', title: 'Beast Sandbox', at: new Date().toISOString() }) + '\n'
+    );
+  } catch {}
+  bcMarkWs(s, folder); /* klasör bağı oturum dosyasına yazılır */
+  engine.cache.set(s.id, s);
+  sbSessions.set(folder, s.id);
+  sbSaveMap();
+  return s;
+}
+
+function sbQueuePush(ws, text, attachments) {
+  let q = sbQueue.get(ws);
+  if (!q) {
+    q = { timer: null, msgs: [] };
+    sbQueue.set(ws, q);
+  }
+  q.msgs.push({
+    text,
+    attachments: Array.isArray(attachments) && attachments.length ? attachments : undefined,
+  });
+  return q;
+}
+
+function sbFlush(folder) {
+  const q = sbQueue.get(folder);
+  if (!q || !q.msgs.length) return;
+  const s = sandboxGetSession(folder);
+  if (engine.isBusy(s.id)) return; /* steer sistemine rağmen kuyruğu koru */
+  let merged = '';
+  let mergedAtts = null;
+  for (const m of q.msgs) {
+    if (m.text) merged += (merged ? '\n' : '') + m.text;
+    if (!mergedAtts && Array.isArray(m.attachments) && m.attachments.length) mergedAtts = m.attachments;
+  }
+  if (!merged.trim() && !mergedAtts) {
+    sbQueue.delete(folder);
+    clearTimeout(q.timer);
+    return;
+  }
+  s.workspace = folder;
+  s.bcCode = true;
+  s.sbSandbox = true;
+  engine.cache.set(s.id, s);
+  const payload = mergedAtts ? { text: merged, attachments: mergedAtts } : merged;
+  engine.send(s.id, payload, { userAction: true });
+  sbQueue.delete(folder);
+  clearTimeout(q.timer);
+}
+
+function sbFlushOnDone(ev) {
+  if (!ev || (ev.type !== 'done' && ev.type !== 'error') || !ev.sessionId) return;
+  for (const [folder, sid] of sbSessions) {
+    if (String(sid) === String(ev.sessionId) && sbQueue.has(folder)) {
+      setTimeout(() => { try { sbFlush(folder); } catch {} }, 150);
+    }
+  }
+}
+
+/* repo adresten (url | owner/repo) normalize et */
+function sbRepoFromInput(input) {
+  let s = String(input || '').trim().replace(/\.git$/, '');
+  if (!s) return null;
+  const m = /^(?:https?:\/\/)?(?:www\.)?github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)/i.exec(s);
+  if (m) return { url: 'https://github.com/' + m[1] + '/' + m[2] + '.git', name: m[2] };
+  if (/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(s)) {
+    const parts = s.split('/');
+    return { url: 'https://github.com/' + parts[0] + '/' + parts[1] + '.git', name: parts[1] };
+  }
+  return null;
+}
+
+ipcMain.handle('sandbox:list', async () => {
+  const root = sandboxRoot();
+  const items = [];
+  try {
+    sbLoadMap();
+    for (const e of fs.readdirSync(root, { withFileTypes: true })) {
+      if (!e.isDirectory() || e.name.startsWith('.')) continue;
+      const folder = path.join(root, e.name);
+      let sid = '';
+      let busy = false;
+      const known = sbSessions.get(folder);
+      if (known) {
+        sid = String(known);
+        try { busy = engine.isBusy(known); } catch {}
+      }
+      items.push({ name: e.name, folder, sid, busy });
+    }
+  } catch {}
+  return { ok: true, root, items };
+});
+
+ipcMain.handle('sandbox:clone', async (_e, input) => {
+  const repo = sbRepoFromInput(input);
+  if (!repo) return { ok: false, error: 'github.com/owner/repo, owner/repo ya da tam .git adresi gir' };
+  const root = sandboxRoot();
+  const base = String(repo.name || 'repo').replace(/[\\/:*?"<>|]/g, '_').slice(0, 60) || 'repo';
+  let dest = path.join(root, base);
+  let n = 2;
+  while (fs.existsSync(dest)) dest = path.join(root, base + '-' + n++);
+  const finalName = path.basename(dest);
+  return new Promise((resolve) => {
+    const { spawn } = require('child_process');
+    let settled = false;
+    let lastPct = -1;
+    let lastEmit = 0;
+    let errText = '';
+    /* git ilerlemeyi stderr'a \r ile AYNI satıra yazar (Receiving objects: %34 …)
+       — her karede yüzde yakalanır, panele canlı akar */
+    const onChunk = (buf) => {
+      const txt = String(buf);
+      errText += txt;
+      const frames = txt.split(/\r/);
+      const cur = (frames[frames.length - 1] || '').trim();
+      const m = /(\d{1,3})%/.exec(cur);
+      const pct = m ? Math.min(99, Number(m[1])) : null;
+      const now = Date.now();
+      if (cur && (pct !== null ? pct !== lastPct : now - lastEmit > 400)) {
+        lastPct = pct != null ? pct : lastPct;
+        lastEmit = now;
+        try {
+          if (win && !win.isDestroyed()) {
+            win.webContents.send('agent:event', { type: 'sb-clone', pct, text: cur.slice(0, 90) });
+          }
+        } catch {}
+      }
+    };
+    let proc;
+    try {
+      proc = spawn('git', ['clone', '--progress', repo.url, dest], { windowsHide: true });
+    } catch (e) {
+      return resolve({ ok: false, error: 'git başlatılamadı: ' + String((e && e.message) || e) });
+    }
+    proc.stdout.on('data', onChunk);
+    proc.stderr.on('data', onChunk);
+    const done = (err) => {
+      if (settled) return;
+      settled = true;
+      try {
+        if (win && !win.isDestroyed()) win.webContents.send('agent:event', { type: 'sb-clone', pct: null, done: !err });
+      } catch {}
+      if (err) {
+        try { fs.rmSync(dest, { recursive: true, force: true }); } catch {}
+        const estr = errText || String((err && err.message) || err);
+        const msg = err && err.code === 'ENOENT'
+          ? 'git kurulu değil — https://git-scm.com adresinden kur'
+          : /not found|does not exist|Could not/i.test(estr)
+            ? 'repo bulunamadı ya da erişilemedi (gizli repo mu?)'
+            : /Authentication|403|Permission/i.test(estr)
+              ? 'erişim reddedildi (gizli repo ya da ağ sorunu)'
+              : (estr.split('\n').filter((l) => l.trim()).pop() || 'klonlama başarısız').slice(0, 200);
+        resolve({ ok: false, error: msg });
+        return;
+      }
+      log.info('main', 'sandbox: klonlandı ' + repo.url + ' → ' + finalName);
+      resolve({ ok: true, name: finalName, folder: dest });
+    };
+    proc.on('error', done);
+    proc.on('close', (code) => done(code === 0 ? null : { code }));
+    /* güvenlik tavanı: 10 dk */
+    setTimeout(() => {
+      if (!settled) {
+        try { proc.kill(); } catch {}
+        done(new Error('zaman aşımı'));
+      }
+    }, 600000);
+  });
+});
+
+ipcMain.handle('sandbox:send', async (_e, payload) => {
+  const text = String((payload && payload.msg) || '').trim();
+  const attachments = Array.isArray(payload && payload.attachments) ? payload.attachments : [];
+  const folder = String((payload && payload.folder) || '');
+  if (!folder) return { ok: false, error: 'repo seçilmedi' };
+  if (!folder.startsWith(sandboxRoot() + path.sep)) return { ok: false, error: 'geçersiz klasör' };
+  if (!text && !attachments.length) return { ok: false, error: 'boş mesaj' };
+  if (!engine) return { ok: false, error: 'ajan hazır değil' };
+  if (!engine.publicState().hasModel) return { ok: false, error: 'model yok — Ayarlar → Provider sekmesinden ekle' };
+  const s = sandboxGetSession(folder);
+  s.workspace = folder;
+  s.bcCode = true;
+  s.sbSandbox = true;
+  engine.cache.set(s.id, s);
+  const busy = engine.isBusy(s.id);
+  const q = sbQueuePush(folder, text, attachments);
+  if (busy) return { ok: true, queued: true, count: q.msgs.length, sessionId: s.id };
+  clearTimeout(q.timer);
+  q.timer = setTimeout(() => { try { sbFlush(folder); } catch {} }, SB_DEBOUNCE_MS);
+  return { ok: true, sessionId: s.id, pending: true };
+});
+
+ipcMain.handle('sandbox:stop', async (_e, payload) => {
+  const folder = String((payload && payload.folder) || '');
+  sbLoadMap();
+  const sid = sbSessions.get(folder);
+  const q = sbQueue.get(folder);
+  if (q) {
+    clearTimeout(q.timer);
+    sbQueue.delete(folder);
+  }
+  const wasBusy = sid ? engine.isBusy(sid) : false;
+  let r = false;
+  if (wasBusy) {
+    try { r = engine.interrupt(sid, 'kullanıcı Sandbox panelinden ■ ile durdurdu'); } catch {}
+  }
+  return { ok: true, wasBusy, interrupted: r };
+});
+
+ipcMain.handle('sandbox:new', async (_e, payload) => {
+  const folder = String((payload && payload.folder) || '');
+  sbLoadMap();
+  const sid = sbSessions.get(folder);
+  if (sid && engine.isBusy(sid)) return { ok: false, error: 'mesaj sürüyor — önce ■ ile durdur' };
+  const q = sbQueue.get(folder);
+  if (q) {
+    clearTimeout(q.timer);
+    sbQueue.delete(folder);
+  }
+  if (sid) {
+    try { engine.deleteSession(sid); } catch {}
+    sbSessions.delete(folder);
+    sbSaveMap();
+  }
+  return { ok: true };
+});
+
+/* repo klasörünü diskten sil (oturum kaydıyla birlikte temizlenir) */
+ipcMain.handle('sandbox:remove', async (_e, payload) => {
+  const folder = String((payload && payload.folder) || '');
+  if (!folder.startsWith(sandboxRoot() + path.sep)) return { ok: false, error: 'geçersiz klasör' };
+  sbLoadMap();
+  const sid = sbSessions.get(folder);
+  if (sid && engine.isBusy(sid)) return { ok: false, error: 'repo çalışıyor — önce ■ ile durdur' };
+  try { fs.rmSync(folder, { recursive: true, force: true }); } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+  if (sid) {
+    try { engine.deleteSession(sid); } catch {}
+    sbSessions.delete(folder);
+    sbSaveMap();
+  }
+  return { ok: true };
+});
+
+ipcMain.handle('sandbox:reveal', async (_e, payload) => {
+  const folder = String((payload && payload.folder) || '');
+  if (!folder.startsWith(sandboxRoot() + path.sep)) return { ok: false, error: 'geçersiz klasör' };
+  try { require('electron').shell.openPath(folder); return { ok: true }; } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+});
+
+/* seçili reponun oturum geçmişini panele döndürür (yeni oturum yoksa oluşturur) */
+ipcMain.handle('sandbox:open', async (_e, payload) => {
+  const folder = String((payload && payload.folder) || '');
+  if (!folder.startsWith(sandboxRoot() + path.sep)) return { ok: false, error: 'geçersiz klasör' };
+  if (!engine) return { ok: false, error: 'ajan hazır değil' };
+  const s = sandboxGetSession(folder);
+  s.workspace = folder;
+  engine.cache.set(s.id, s);
+  const msgs = [];
+  for (const m of s.messages || []) {
+    if (m.tool_calls) continue;
+    const txt = bcMsgText(m);
+    if (!txt) continue;
+    msgs.push({ role: m.role === 'assistant' ? 'assistant' : 'user', text: txt.slice(0, 4000) });
+  }
+  return {
+    ok: true,
+    sessionId: s.id,
+    busy: !!engine.isBusy(s.id),
+    messages: msgs.slice(-200),
+  };
+});
+
+/* Sandbox dosya konsolu: seçili repo klasörünün ağacı (filePanel yeniden kullanılır) */
+ipcMain.handle('sandbox:tree', (_e, payload) => {
+  const folder = String((payload && payload.folder) || '');
+  if (!folder.startsWith(sandboxRoot() + path.sep)) return { ok: false, error: 'geçersiz klasör' };
+  const p = path.resolve(folder, String((payload && payload.rel) || ''));
+  if (p !== folder && !p.startsWith(folder + path.sep)) return { ok: false, error: 'geçersiz yol' };
+  try {
+    const entries = fs.readdirSync(p, { withFileTypes: true })
+      .filter((e) => e.name !== 'node_modules' && e.name !== '.git')
+      .map((e) => {
+        let size = 0;
+        if (!e.isDirectory()) {
+          try { size = fs.statSync(path.join(p, e.name)).size; } catch {}
+        }
+        return { name: e.name, dir: e.isDirectory(), size };
+      })
+      .sort((a, b) => (a.dir === b.dir ? a.name.localeCompare(b.name) : a.dir ? -1 : 1));
+    return { ok: true, workspace: folder, entries };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+});
+
+/* Sandbox ÇALIŞTIRICI: repo klasöründe uzun süreli komut (npm start/dev vb.)
+   YÖNETİLEN SÜREÇ — çıktı satır satır panele akar; ■ ile ağaç-kullanı durdurulur.
+   Dev server adresi çıktıdan yakalanır → 'Tarayıcıda aç' aktifleşir.
+   Aynı fonksiyon engine.sbRunHook olarak da bağlanır — ajanın panel_run
+   aracı turu KİLİTLEMEDEN süreç başlatır (Kur/Başlat butonları bunu kullanır). */
+const sbRunProc = { proc: null, folder: '', url: '' };
+
+function sbRunEmit(data) {
+  try {
+    if (win && !win.isDestroyed()) win.webContents.send('agent:event', { type: 'sb-run', data: String(data || '') });
+  } catch {}
+}
+
+function sbRunStartManaged(folder, cmd) {
+  folder = String(folder || '');
+  cmd = String(cmd || '').trim();
+  if (!folder.startsWith(sandboxRoot() + path.sep)) return { ok: false, error: 'geçersiz klasör' };
+  if (!cmd) return { ok: false, error: 'komut boş' };
+  if (sbRunProc.proc) return { ok: false, error: 'ÇALIŞTIR panelinde zaten bir süreç çalışıyor — önce ■ ile durdur' };
+  const { spawn } = require('child_process');
+  try {
+    const proc = spawn('cmd.exe', ['/d', '/s', '/c', cmd], {
+      cwd: folder,
+      windowsHide: true,
+      env: { ...process.env, FORCE_COLOR: '0', NO_COLOR: '1' },
+    });
+    sbRunProc.proc = proc;
+    sbRunProc.folder = folder;
+    sbRunProc.url = '';
+    const onLine = (buf) => {
+      for (const piece of String(buf).split(/\r?\n/)) {
+        if (!piece.trim()) continue;
+        sbRunEmit(piece);
+        /* dev server adresi yakala (sadece localhost) */
+        const m = /https?:\/\/(?:localhost|127\.0\.0\.1)(?::\d{2,5})?[^\s'"<>]*/i.exec(piece);
+        if (m && !sbRunProc.url) {
+          sbRunProc.url = m[0].replace(/[)\].,;:'"]+$/, '');
+          try {
+            if (win && !win.isDestroyed()) win.webContents.send('agent:event', { type: 'sb-run-url', url: sbRunProc.url });
+          } catch {}
+        }
+      }
+    };
+    proc.stdout.on('data', onLine);
+    proc.stderr.on('data', onLine);
+    proc.on('close', (code) => {
+      sbRunEmit('[süreç bitti' + (code != null ? ' — kod ' + code : '') + ']');
+      sbRunProc.proc = null;
+      try {
+        if (win && !win.isDestroyed()) win.webContents.send('agent:event', { type: 'sb-run-end' });
+      } catch {}
+    });
+    sbRunEmit('▶ ' + cmd + '  (klasör: ' + path.basename(folder) + ')');
+    return {
+      ok: true,
+      note: 'süreç ÇALIŞTIR panelinde başlatıldı — çıktı orada canlı akar; durdurmak için paneldeki ■. Kullanıcıya adres varsa bildir.',
+    };
+  } catch (e) {
+    sbRunProc.proc = null;
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+}
+
+ipcMain.handle('sandbox:run', async (_e, payload) => {
+  const folder = String((payload && payload.folder) || '');
+  const cmd = String((payload && payload.cmd) || '').trim();
+  return sbRunStartManaged(folder, cmd);
+});
+
+ipcMain.handle('sandbox:runstop', async () => {
+  const p = sbRunProc.proc;
+  if (!p) return { ok: true, wasRunning: false };
+  sbRunProc.proc = null;
+  try {
+    /* cmd.exe /c zinciriyle çocuklar (node/vite) geride kalmasın — ağaç kesimi */
+    const { exec } = require('child_process');
+    if (process.platform === 'win32') exec('taskkill /pid ' + p.pid + ' /T /F', { windowsHide: true });
+    else p.kill('SIGTERM');
+  } catch {}
+  return { ok: true, wasRunning: true };
+});
+
+ipcMain.handle('sandbox:openurl', async (_e, url) => {
+  const u = String(url || '').trim();
+  if (!/^https?:\/\/(?:localhost|127\.0\.0\.1)(?::\d{2,5})?(?:\/|$)/i.test(u)) return { ok: false, error: 'yalnız localhost adresleri açılabilir' };
+  try {
+    setBrowserOpen(true, true);
+    browser.view.webContents.loadURL(u).catch(() => {});
+    return { ok: true, url: u };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+});
+
+/* Sağ tık menüsü: HTML dosyasını dahili tarayıcıda GÖRÜNÜR aç */
 /* ---------- BC DAHİLİ STATİK SUNUCU ----------
    Beast Code çıktısı ASLA file:// ile açılmaz: ES modülleri, fetch, ServiceWorker
    ve "clean URL" yolları file://'da çalışmaz. Her preview http://127.0.0.1 üzerinden
@@ -8641,8 +9095,8 @@ async function fetchZenFreeModels() {
       if (free.length) return free;
     }
   } catch {}
-  /* API cevap vermezse bilinen free liste */
-  return ['big-pickle', 'deepseek-v4-flash-free', 'mimo-v2.5-free', 'hy3-free', 'nemotron-3-ultra-free', 'nemotron-3.5-lightning-free', 'laguna-s-2.1-free'];
+  /* API cevap vermezse bilinen free liste (09/2026 güncel — eski adlar düşürüldü) */
+  return ['big-pickle', 'deepseek-v4-flash-free', 'mimo-v2.5-free', 'muse-spark-1.3-contributor-free', 'muse-spark-1.2-contributor-free', 'ling-3.0-flash-fin-free', 'nemotron-3-ultra-free', 'nemotron-3.5-lightning-free'];
 }
 
 function upsertZenEnv(token) {

@@ -3581,6 +3581,275 @@ body.studio-mode #ideRow { display: none; }
 #studioRow { display: none; flex: 1; min-height: 0; }
 body.studio-mode #studioRow { display: flex; flex-direction: row; }
 
+/* ================= BEAST SANDBOX MODU =================
+   Studio düzeniyle birebir: sol → repo dosya konsolu (filePanel yeniden
+   kullanılır), ortada CHAT, sağda ÇALIŞTIR (yönetilen süreç). Sohbet
+   oturumları Sandbox'a özeldir; chat geçmişi ve Code/Studio ile paylaşılmaz. */
+body.sandbox-mode #newChat,
+body.sandbox-mode #sessList,
+body.sandbox-mode #botBar { display: none; }
+body.sandbox-mode #filePanel {
+  display: flex;
+  flex: 1;
+  width: auto;
+  min-width: 0;
+  border-right: none;
+}
+body.sandbox-mode #filePanelTitle { display: inline; }
+body.sandbox-mode #filePreview { display: none; }
+body.sandbox-mode #bcHistWrap { display: none; }
+/* SANDBOX modunda orta: sohbet + composer + diğer mod satırları gizli */
+body.sandbox-mode #chatScroll,
+body.sandbox-mode #composerWrap,
+body.sandbox-mode #ideRow,
+body.sandbox-mode #studioRow { display: none; }
+
+#sandboxRow { display: none; flex: 1; min-height: 0; }
+body.sandbox-mode #sandboxRow { display: flex; flex-direction: row; }
+
+#sbPanel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 300px;
+  flex: 0 0 var(--sbSplit, 480px);
+  background: var(--bg);
+  overflow: hidden;
+}
+#sbRun {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 240px;
+  flex: 1;
+  background: var(--bg);
+  overflow: hidden;
+  border-left: 1px solid var(--border);
+}
+
+#sbHead {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+}
+#sbTitle { font-size: 11px; font-weight: 800; letter-spacing: 1px; color: var(--accent); flex: none; }
+#sbRepo {
+  flex: 1;
+  min-width: 0;
+  background: var(--panel2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-size: 12px;
+  padding: 4px 6px;
+  border-radius: 6px;
+}
+#sbHead button {
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 13px;
+  cursor: pointer;
+  padding: 3px 7px;
+  border-radius: 6px;
+}
+#sbHead button:hover { background: var(--panel2); color: var(--text); }
+#sbRemove:hover { color: var(--err); }
+
+#sbCloneRow {
+  flex: none;
+  display: flex;
+  gap: 6px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+}
+#sbCloneInput {
+  flex: 1;
+  min-width: 0;
+  background: var(--panel2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-size: 12px;
+  padding: 5px 8px;
+  border-radius: 6px;
+}
+#sbCloneInput:focus { border-color: var(--accent); outline: none; }
+#sbCloneRow button {
+  flex: none;
+  background: var(--panel2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-size: 12px;
+  padding: 4px 9px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+#sbCloneRow button:hover { border-color: var(--accent); }
+
+#sbOut {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 10px 12px;
+  font-family: Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+#sbStatus {
+  flex: none;
+  align-self: center;
+  margin: 0 12px 6px;
+  padding: 3px 10px;
+  font-size: 11px;
+  color: var(--accent);
+  background: var(--accent-dim);
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  max-width: calc(100% - 24px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#sbInputRow {
+  flex: none;
+  display: flex;
+  gap: 6px;
+  align-items: flex-end;
+  padding: 8px 12px;
+  border-top: 1px solid var(--border);
+  background: var(--panel);
+}
+#sbInput {
+  flex: 1;
+  min-width: 0;
+  resize: none;
+  background: var(--panel2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-size: 12.5px;
+  padding: 7px 9px;
+  border-radius: 8px;
+  font-family: inherit;
+}
+#sbInput:focus { border-color: var(--accent); outline: none; }
+#sbInput.expand { overflow-y: auto; }
+
+/* ---------- ÇALIŞTIR bölmesi ---------- */
+#sbRunHead {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+}
+#sbRunTitle { font-size: 11px; font-weight: 800; letter-spacing: 1px; color: var(--accent); flex: none; }
+#sbRunCwd {
+  color: var(--muted);
+  font-family: Consolas, monospace;
+  font-size: 11px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#sbRunBtns {
+  flex: none;
+  display: flex;
+  gap: 6px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+#sbRunBtns button {
+  background: var(--panel2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-size: 12px;
+  padding: 5px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+#sbRunBtns button:hover { border-color: var(--accent); }
+#sbRunStop { background: var(--err) !important; color: #fff !important; border-color: var(--err) !important; }
+#sbRunCustom {
+  flex: none;
+  display: flex;
+  gap: 6px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+}
+#sbRunCmd {
+  flex: 1;
+  min-width: 0;
+  background: var(--panel2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-family: Consolas, monospace;
+  font-size: 12px;
+  padding: 5px 8px;
+  border-radius: 6px;
+}
+#sbRunCmd:focus { border-color: var(--accent); outline: none; }
+#sbRunCustom button {
+  flex: none;
+  background: var(--panel2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+#sbRunCustom button:hover { border-color: var(--accent); }
+#sbRunOut {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 10px 12px;
+  font-family: Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: var(--panel);
+}
+#sbRunFoot {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--border);
+  background: var(--panel);
+}
+#sbRunOpen {
+  background: var(--panel2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+#sbRunOpen:hover:not([disabled]) { border-color: var(--accent); }
+#sbRunOpen[disabled] { opacity: 0.4; cursor: default; }
+#sbRunUrl {
+  color: var(--muted);
+  font-family: Consolas, monospace;
+  font-size: 11px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 #stPanel {
   display: flex;
   flex-direction: column;

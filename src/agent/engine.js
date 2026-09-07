@@ -1480,6 +1480,9 @@ class Engine {
       'Sen BEAST CODE\u2019sun — IDE panelinde çalışan, OpenCode disiplinli hızlı bir kodlama ajanı. VS Code gibi çevik ol.\n' +
       'GENEL AMAÇLI KODLAMA AJANISIN — tek bir proje türüne sınırlı değilsin: web, backend/API, mobil, masaüstü, CLI, kütüphane, script, oyun, veri, DevOps, gömülü… İstenen neyse o. İstenmeyen şeyi (ör. site değilken site) kendiliğinden ÜRETME.\n' +
       `Çalışma klasörü: ${(session && session.workspace) || this.workspace}\n` +
+      ((session && session.sbSandbox)
+        ? 'BEAST SANDBOX MODUNDASIN: GitHub\u2019dan indirilmiş AÇIK KAYNAK bir repo klasöründesin (Beast-Sandbox). Bu kodun sahibi değilsin — hazır bir dış proje; repo sahibinin konvansiyonlarına uy, gereksiz yeniden biçimlendirme yapma. İşe README + paket bildirim dosyasıyla başla (list_dir/glob); bağımlılıklar kurulu değilse önce kurulum komutunu çalıştır (npm install vb.). UZUN SÜRELİ sunucu/süreç (npm start, npm run dev, python app.py vb.) run_command ile ASLA başlatma — tur kilitlenir; kullanıcı çalıştırmak isterse panel_run aracıyla ÇALIŞTIR paneline bırakın (çıktı orada canlı akar, ■ ile durur) ve adresi kullanıcıya bildir. panel_run yalnız BİR süreç çalıştırır.\n'
+        : '') +
       `Yerel zaman: ${localDate} ${localTime}\n` +
       `${modeBlock}\n` +
       'STACK TESPİTİ: işe başlarken workspace\u2019i tanı — package.json, go.mod, Cargo.toml, requirements.txt/pyproject.toml, pom.xml/build.gradle, *.csproj, pubspec.yaml, Gemfile, composer.json vb. işaret dosyalarına bak (list_dir + glob). Dili, framework\u2019ü, konvansiyonları ve build/test/run komutlarını PROJE belirler; her işte aynı teknolojiye itme, mevcut stack\u2019e uy.\n' +
@@ -3106,6 +3109,11 @@ class Engine {
     if (!session || !session.bcCode) toolsList = await mcp.mergeTools(toolsList);
     /* Beast Apps: kurulu app'lerin araçları (app__<id>__<tool>) modele açılır */
     toolsList = apps.mergeTools(toolsList);
+    /* panel_run yalnız SANDBOX oturumlarında görünsün — diğer panellerde
+       modelin alet çantasında olmasın (hook olmadan çalışmaz) */
+    if (!(session && session.sbSandbox)) {
+      toolsList = toolsList.filter((t) => !(t && t.function && t.function.name === 'panel_run'));
+    }
     /* opencode agent.ts port: özel ajan tanımı — prompt/model/araç/steps */
     const adef = this._agentDefFor(session, !!session.bgJob);
     /* Beast Code: todo_write açıklaması "3+ adım" kısıtı içerir ve model küçük
@@ -4229,6 +4237,22 @@ const skills = require('./skills');
       }
       /* GERİ ALMA GÜNLÜĞÜ: dosya yazımından ÖNCE eski içerik kayda geçer */
       this._journalBefore(sessionId, name, args);
+      /* PANEL RUN: uzun süreli süreç ÇALIŞTIR paneline devredilir — tur
+         BLOKLAMAZ (main'deki yönetilen süreç koşucusuna köprü). */
+      if (name === 'panel_run') {
+        const cmd = String((args && args.command) || '').trim();
+        if (!cmd) return JSON.stringify({ ok: false, error: 'komut boş' });
+        if (typeof this.sbRunHook !== 'function') {
+          return JSON.stringify({ ok: false, error: 'panel koşucusu yok — bu araç yalnız Sandbox panelinde çalışır' });
+        }
+        let r;
+        try {
+          r = this.sbRunHook(this._sessionWorkspace(sessionId), cmd);
+        } catch (e) {
+          r = { ok: false, error: String((e && e.message) || e) };
+        }
+        return JSON.stringify(r);
+      }
       /* MCP: dış server araçları (mcp__<server>__<tool>) — tools/call'a köprülenir */
       if (String(name).startsWith('mcp__')) {
         return JSON.stringify(await mcp.call(name, args, signal));

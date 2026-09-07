@@ -82,6 +82,7 @@
           </div>
         </div>
         <button id="studioBtn" class="dd-btn dd-icon-btn" title="Beast Studio — video yapma/düzenleme" data-i18n-title="tipStudio"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="13" height="12" rx="2"/><path d="M15 10l7-4v12l-7-4"/></svg></button>
+        <button id="sbBtn" class="dd-btn dd-icon-btn" title="Beast Sandbox — GitHub reposu indir &amp; içinde çalış" data-i18n-title="tipSandbox"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg></button>
         <button id="railBtn" class="dd-btn dd-icon-btn" title="Paralel Ajan Konsolu" data-i18n-title="tipRail">&#x25A4;</button>
         <button id="watchBtn" class="dd-btn dd-icon-btn" title="İzleyiciler (Watchers)" data-i18n-title="tipWatch">&#x25CE;</button>
         <button id="cronBtn" class="dd-btn dd-icon-btn" title="Cron Görevler" data-i18n-title="tipCron">&#x23F1;&#xFE0E;</button>
@@ -212,9 +213,55 @@
             <div id="stVideoEmpty">Soldaki klasörden bir video/ses seç<br>veya &ldquo;Aç&rdquo; ile dosya seç — ajanın ürettiği çıktılar da burada oynatılır</div>
             <video id="stVideoEl" controls hidden></video>
           </div>
-        </section>
-      </div>
-    </main>
+          </section>
+        </div>
+
+        <div id="sandboxRow">
+          <section id="sbPanel">
+            <div id="sbHead">
+              <span id="sbTitle">BEAST SANDBOX</span>
+              <select id="sbRepo" title="İndirilen repo seç"></select>
+              <span class="file-spacer"></span>
+              <button id="sbReveal" title="Klasörü aç (Explorer)"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/></svg></button>
+              <button id="sbRemove" title="Reposunu sil" data-i18n-title="cr_del">&#x00D7;</button>
+              <button id="sbNew" title="Bu reponun oturumunu sıfırla" data-i18n-title="bc_new">＊</button>
+            </div>
+            <div id="sbCloneRow">
+              <input id="sbCloneInput" placeholder="github.com/owner/repo veya owner/repo" spellcheck="false" autocomplete="off" />
+              <button id="sbCloneBtn" title="İndir (git clone)"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg><span id="sbCloneLabel">İndir</span></button>
+              <button id="sbGhBtn" title="GitHub'da ara"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg></button>
+            </div>
+            <div id="sbOut"></div>
+            <div id="sbStatus" hidden></div>
+            <div id="sbInputRow">
+              <textarea id="sbInput" rows="1" spellcheck="false" autocomplete="off" placeholder="Sandbox mesajı — ajan bu repo klasöründe çalışır…"></textarea>
+              <button id="sbStop" title="Çalışan mesajı durdur" hidden data-i18n-title="bc_stop"><svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor" stroke="none"><rect x="6" y="6" width="12" height="12" rx="2"/></svg></button>
+            </div>
+          </section>
+
+          <section id="sbRun">
+            <div id="sbRunHead">
+              <span id="sbRunTitle">ÇALIŞTIR</span>
+              <span id="sbRunCwd" title="">—</span>
+            </div>
+            <div id="sbRunBtns">
+              <button id="sbRunInstall" title="Ajana talimat: projeyi kur — doğru komutu ajan bulur"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:3px"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Kur</button>
+              <button id="sbRunStart" title="Ajana talimat: projeyi çalıştır — uzun süreli süreç ÇALIŞTIR panelinde başlar"><svg viewBox="0 0 24 24" width="12" height="12" fill="currentColor" stroke="none" style="vertical-align:-2px;margin-right:3px"><polygon points="6 3 20 12 6 21 6 3"/></svg>Başlat</button>
+              <button id="sbRunDev" title="Ajana talimat: geliştirme modunda başlat (dev)"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:3px"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>Dev</button>
+              <button id="sbRunStop" title="Süreci durdur" hidden><svg viewBox="0 0 24 24" width="12" height="12" fill="currentColor" stroke="none" style="vertical-align:-2px;margin-right:3px"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>Durdur</button>
+            </div>
+            <div id="sbRunCustom">
+              <input id="sbRunCmd" placeholder="özel komut: python main.py, cargo run, node index.js…" spellcheck="false" autocomplete="off" />
+              <button id="sbRunGo" title="Çalıştır"><svg viewBox="0 0 24 24" width="12" height="12" fill="currentColor" stroke="none"><polygon points="6 3 20 12 6 21 6 3"/></svg></button>
+            </div>
+            <div id="sbRunOut"></div>
+            <div id="sbRunFoot">
+              <button id="sbRunOpen" title="Ajana talimat: çalışma adresini bulup tarayıcıda açar" disabled><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:3px"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg><span id="sbRunOpenLabel">Tarayıcıda aç</span></button>
+              <span id="sbRunUrl" title=""></span>
+            </div>
+          </section>
+        </div>
+      </main>
 
     <aside id="rail">
       <div id="railHead">

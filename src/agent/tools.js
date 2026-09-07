@@ -1491,6 +1491,21 @@ const definitions = [
   {
     type: 'function',
     function: {
+      name: 'panel_run',
+      description:
+        'Starts a LONG-RUNNING process (dev server, npm start, npm run dev, python app.py, cargo run…) in the managed RUN PANEL instead of blocking this turn. Returns immediately after spawn; output streams live to the panel, the user can stop it with ■ there. Use this when the user asks to RUN/START the project or a server. NEVER use for short one-shot commands (build/test/lint) — use run_command for those. Only one managed process can run at a time.',
+      parameters: {
+        type: 'object',
+        properties: {
+          command: { type: 'string', description: 'Shell command to start, e.g. "npm start" or "npm run dev"' },
+        },
+        required: ['command'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'read_file',
       /* opencode read.txt BİREBİR port (parametre adı path olarak kaldı) */
       description:

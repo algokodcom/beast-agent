@@ -5402,9 +5402,25 @@ function opText(w) {
   return `${sym} ${w.value ?? '?'}`;
 }
 
-async function renderWatchersModal() {
+/* kısa saat: bugünse "14:32", başka günse "07.09 14:32" */
+function fmtWhen(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return '';
+  const t = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  if (d.toDateString() === new Date().toDateString()) return t;
+  return d.toLocaleDateString([], { day: '2-digit', month: '2-digit' }) + ' ' + t;
+}
+
+let lastWatchKey = '';
+async function renderWatchersModal(force) {
   let rows = [];
   try { rows = (await beast.watchersList()) || []; } catch {}
+  /* canlı yenilemede içerik değişmediyse DOM'a dokunma — buton tıklamaları
+     yeniden kurulurken yutulmasın */
+  const key = JSON.stringify(rows);
+  if (!force && key === lastWatchKey) return;
+  lastWatchKey = key;
   els.watchList.innerHTML = '';
   if (!rows.length) {
     els.watchList.innerHTML = '<div class="mini-empty">' + _t('w_empty') + '</div>';
@@ -5443,9 +5459,13 @@ async function renderWatchersModal() {
   }
 }
 
-async function renderCronModal() {
+let lastCronKey = '';
+async function renderCronModal(force) {
   let jobs = [];
   try { jobs = (await beast.cronList()) || []; } catch {}
+  const key = JSON.stringify(jobs);
+  if (!force && key === lastCronKey) return;
+  lastCronKey = key;
   els.cronModalList.innerHTML = '';
   if (!jobs.length) {
     els.cronModalList.innerHTML = '<div class="mini-empty">' + _t('cr_modal_empty') + '</div>';
@@ -5454,11 +5474,15 @@ async function renderCronModal() {
   for (const j of jobs) {
     const row = document.createElement('div');
     row.className = 'mini-row' + (j.enabled ? '' : ' off');
+    /* ANLIK DURUM: sıradaki tetiklenme + son çalışma (varsa) */
+    const live =
+      (j.enabled && j.nextRunAt ? ` · sonraki <b>${escapeHtml(fmtWhen(j.nextRunAt))}</b>` : '') +
+      (j.lastRunAt ? ` · son ${escapeHtml(fmtWhen(j.lastRunAt))}` : '');
     row.innerHTML =
       `<span class="mr-dot"></span>` +
       `<div class="mr-main">` +
       `<div class="mr-name">${escapeHtml(j.name || j.id)}</div>` +
-      `<div class="mr-meta"><b>${escapeHtml(j.schedule)}</b> · ${escapeHtml(String(j.prompt || '').slice(0, 70))}</div>` +
+      `<div class="mr-meta"><b>${escapeHtml(j.schedule)}</b> · ${escapeHtml(String(j.prompt || '').slice(0, 70))}${live}</div>` +
       `</div>`;
     const btns = document.createElement('div');
     btns.style.cssText = 'display:flex;gap:6px;flex:none';
@@ -5488,14 +5512,41 @@ function toggleMini(overlay, hide) {
   overlay.hidden = !!hide;
 }
 
+/* CANLI YENİLEME: mini modal açık kaldığı sürece periyodik taze çekim yapar;
+   render fonksiyonları içerik değişmemişse DOM'u yeniden kurmaz. Kapalıysa
+   zamanlayıcı kendini durdurur. */
+let miniRefreshTimer = null;
+function startMiniRefresh() {
+  stopMiniRefresh();
+  miniRefreshTimer = setInterval(async () => {
+    if (els.watchOverlay && !els.watchOverlay.hidden) await renderWatchersModal();
+    else if (els.cronOverlay && !els.cronOverlay.hidden) await renderCronModal();
+    else stopMiniRefresh();
+  }, 4000);
+}
+function stopMiniRefresh() {
+  if (miniRefreshTimer) { clearInterval(miniRefreshTimer); miniRefreshTimer = null; }
+}
+
+function closeWatchModal() {
+  toggleMini(els.watchOverlay, true);
+  stopMiniRefresh();
+}
+function closeCronModal() {
+  toggleMini(els.cronOverlay, true);
+  stopMiniRefresh();
+}
+
 async function openWatchModal() {
   toggleMini(els.watchOverlay, false);
-  await renderWatchersModal();
+  await renderWatchersModal(true); /* her basışta TAZE çekim */
+  startMiniRefresh();
 }
 
 async function openCronModal() {
   toggleMini(els.cronOverlay, false);
-  await renderCronModal();
+  await renderCronModal(true); /* her basışta TAZE çekim */
+  startMiniRefresh();
 }
 
 /* ---------------- state / controls ---------------- */
@@ -5671,8 +5722,9 @@ async function sendCurrent() {
   if (!busy) {
     setBusy(true);
   } else {
-    /* agent çalışıyor — mesaj kuyruğa alınır, iş bitince otomatik gönderilir */
-    setStatus('kuyruğa eklendi — iş bitince gider');
+    /* agent çalışıyor — mesaj ANINDA konuşmaya eklenir (opencode steer):
+       koşan tur sonraki istekte görür, eski cevap akışı bozulmaz */
+    setStatus('mesaj ajanın akışına eklendi — sıradaki adımda değerlendirir');
   }
   beast.send(activeId, { text, attachments: atts });
 }
@@ -6203,13 +6255,13 @@ async function init() {
   /* cron modülü — olay bağlama */
   if (els.watchBtn) els.watchBtn.addEventListener('click', openWatchModal);
   if (els.cronBtn) els.cronBtn.addEventListener('click', openCronModal);
-  if (els.watchClose) els.watchClose.addEventListener('click', () => toggleMini(els.watchOverlay, true));
-  if (els.cronClose) els.cronClose.addEventListener('click', () => toggleMini(els.cronOverlay, true));
+  if (els.watchClose) els.watchClose.addEventListener('click', closeWatchModal);
+  if (els.cronClose) els.cronClose.addEventListener('click', closeCronModal);
   if (els.watchOverlay) els.watchOverlay.addEventListener('click', (e) => {
-    if (e.target === els.watchOverlay) toggleMini(els.watchOverlay, true);
+    if (e.target === els.watchOverlay) closeWatchModal();
   });
   if (els.cronOverlay) els.cronOverlay.addEventListener('click', (e) => {
-    if (e.target === els.cronOverlay) toggleMini(els.cronOverlay, true);
+    if (e.target === els.cronOverlay) closeCronModal();
   });
   els.cronPreset.addEventListener('change', () => {
     if (els.cronPreset.value !== '__custom') els.cronSchedule.value = els.cronPreset.value;
@@ -6294,8 +6346,8 @@ async function init() {
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
       if ($('#botOverlay') && !$('#botOverlay').hidden) { botOverlaySetOpen(false); return; }
-      if (els.watchOverlay && !els.watchOverlay.hidden) { toggleMini(els.watchOverlay, true); return; }
-      if (els.cronOverlay && !els.cronOverlay.hidden) { toggleMini(els.cronOverlay, true); return; }
+      if (els.watchOverlay && !els.watchOverlay.hidden) { closeWatchModal(); return; }
+      if (els.cronOverlay && !els.cronOverlay.hidden) { closeCronModal(); return; }
       if (!els.settingsOverlay.hidden) closeSettings();
     }
     // Ctrl+Shift+S: ekran görüntüsü al → vision'a gönderilmek üzere ekle

@@ -334,6 +334,9 @@ class Engine {
     this._bgGroups = new Map(); // groupId -> {parentId,total,results,dead}
     /* silinen oturum işaretleri: rapor/zincir buraya gönderilmez (hayalet oturum yok) */
     this._deletedSessions = new Set();
+    /* OPENCODE STEER: koşan tur sırasında gelen mesajlar — güvenli floş
+       noktasına kadar burada bekler (sid -> msg[]) */
+    this._steerBuf = new Map();
     /* #17 kalıcı ajan geçmişi: restart sonrası işler + sohbetler kaybolmasın */
     this._bgJobsFile = path.join(this.sessionsDir, 'bg-jobs.json');
     this._loadBgJobsPersisted();
@@ -1405,6 +1408,7 @@ class Engine {
     if (cached && cached.code) this._codeIndex.delete(cached.code);
     this.cache.delete(String(id));
     this.todos.delete(String(id));
+    this._steerBuf && this._steerBuf.delete(String(id));
     this.sessionPerm.delete(String(id));
     this.sessionTools.delete(String(id));
     this._errCount && this._errCount.delete(String(id));
@@ -2009,7 +2013,7 @@ class Engine {
       const small = this.modelFor('subagent') || sel || this.sel;
       const res = await chatOnce(
         small,
-        { messages: [{ role: 'user', content: prompt }], temperature: 0.2 },
+        { messages: [{ role: 'user', content: prompt }], temperature: 0.2, cacheKey: String(session.id || '') },
         { signal }
       );
       const text = String(res.content || '').replace(/```(?:markdown)?/gi, '').trim();
@@ -2172,7 +2176,7 @@ class Engine {
         `# SOHBET PARÇASI\n${transcript}`;
       const res = await chatOnce(
         this.sel,
-        { messages: [{ role: 'user', content: prompt }], temperature: 0.2 },
+        { messages: [{ role: 'user', content: prompt }], temperature: 0.2, cacheKey: String(session.id || '') },
         { signal }
       );
       const txt = String(res.content || '').trim();
@@ -2231,7 +2235,7 @@ class Engine {
     if (this._stopped && !userAction) return false;
     if (userAction) this._stopped = false;
     const s = this._load(String(sessionId));
-    if (!s || this.ctrls.has(s.id)) return false;
+    if (!s) return false;
 
     let msg;
     if (typeof payload === 'string') {
@@ -2262,6 +2266,11 @@ class Engine {
           ...imgs.map((im) => ({ type: 'image', name: String(im.name || 'resim') })),
           ...files,
         ];
+        /* MEDYA KAYDI: WA/Chat UI'dan gelen fotoğraflar ve belgeler OTURUMUN
+           media klasörüne yazılır (orijinal dosya güvende). msg.media jsonl'e
+           düşer; prune/compaction görselleri metne indirse bile kayıp yok. */
+        const media = this._saveMedia(s.id, imgs, files);
+        if (media) msg.media = media;
       }
     }
 
@@ -2274,6 +2283,35 @@ class Engine {
     /* Önceki tur yanıtlanmadan kaldıysa (hata/durdurma sonrası artık user mesajı)
        katı sağlayıcılar art arda user mesajını reddeder: "messages illegal" (400).
        Yeni metni o mesajla BİRLEŞTİR — dosyadaki son satır da güncellenir. */
+    /* OPENCODE STEER PORTU (runtime.queue.ts + prompt.ts runLoop): oturum
+       KOŞARKEN gelen mesaj hemen geçmişe yazılmaz — _steerBuf'ta bekler,
+       koşan tur GÜVENLİ floş noktasında (tur başı / çıkış kontrolü) ekler.
+       Böylece araç sonuçlarının arasına sıkışmaz, isteğin yarısındaki mesaj
+       mutasyona uğramaz. UI'ya yine de ANINDA düşer. */
+    if (this.ctrls.has(s.id)) {
+      let buf = this._steerBuf.get(s.id);
+      if (!buf) {
+        buf = [];
+        this._steerBuf.set(s.id, buf);
+      }
+      const lastBuf = buf[buf.length - 1];
+      if (
+        lastBuf && lastBuf.role === 'user' &&
+        !Array.isArray(lastBuf.content) && !Array.isArray(msg.content) &&
+        typeof msg.content === 'string'
+      ) {
+        /* ardışık steer'ler tek mesajda birleşir (art arda user reddi olmasın) */
+        lastBuf.content = lastBuf.content + '\n' + msg.content;
+        if (msg.attachments || lastBuf.attachments) {
+          lastBuf.attachments = [...(lastBuf.attachments || []), ...(msg.attachments || [])];
+        }
+      } else {
+        buf.push(msg);
+      }
+      this.emit({ type: 'message', sessionId: s.id, message: msg });
+      this.emit({ type: 'sessions' });
+      return true;
+    }
     const lastMsg = s.messages[s.messages.length - 1];
     if (
       lastMsg && lastMsg.role === 'user' &&
@@ -2296,6 +2334,57 @@ class Engine {
     this.emit({ type: 'sessions' });
     this._run(s).catch(() => {});
     return true;
+  }
+
+  /* Steer tamponunu güvenli noktada geçmişe akıtır. Dönüş: bir şey akıtıldı mı. */
+  _flushSteer(sid, session, emit) {
+    const buf = this._steerBuf.get(sid);
+    if (!buf || !buf.length) return false;
+    this._steerBuf.delete(sid);
+    for (const m of buf) {
+      session.messages.push(m);
+      try {
+        this._append(session, m);
+      } catch {}
+    }
+    if (emit) emit({ type: 'sessions' });
+    return true;
+  }
+
+  /* MEDYA KAYDI: mesaj eklerindeki fotoğraflar (dataUrl) ve metin belgeleri
+     oturumun media klasörüne yazılır: <sessionsDir>/media/<sid>/zaman-metin.
+     Dönen liste msg.media olarak jsonl'e yazılır — orijinal dosya hiç
+     kaybolmaz (eski görsellerin metne indirilmesinden bağımsız). */
+  _saveMedia(sid, imgs, files) {
+    const out = [];
+    try {
+      const dir = path.join(this.sessionsDir, 'media', String(sid || ''));
+      fs.mkdirSync(dir, { recursive: true });
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+      const safe = (n, fb) => String(n || fb).replace(/[\\/:*?"<>|]/g, '_').slice(0, 80);
+      const stripExt = (n) => String(n || '').replace(/\.[a-z0-9]{1,5}$/i, '');
+      let i = 0;
+      for (const im of imgs) {
+        const m = /^data:([^;,]+)?(;base64)?,(.*)$/.exec(String(im.dataUrl || ''));
+        if (!m) continue;
+        try {
+          const mime = String(m[1] || 'image/png');
+          const ext = (mime.split('/')[1] || 'png').replace(/[^a-z0-9]/gi, '').slice(0, 5) || 'png';
+          const buf = m[2] ? Buffer.from(m[3], 'base64') : Buffer.from(decodeURIComponent(m[3]), 'utf8');
+          const file = stamp + '-' + ++i + '-' + safe(stripExt(im.name), 'resim') + '.' + ext;
+          fs.writeFileSync(path.join(dir, file), buf);
+          out.push({ file, name: String(im.name || 'resim'), kind: 'image' });
+        } catch {}
+      }
+      for (const f of files) {
+        try {
+          const file = stamp + '-' + ++i + '-' + safe(stripExt(f.name), 'dosya') + '.txt';
+          fs.writeFileSync(path.join(dir, file), String(f.content || ''), 'utf8');
+          out.push({ file, name: String(f.name || 'dosya'), kind: 'file' });
+        } catch {}
+      }
+    } catch {}
+    return out.length ? out : null;
   }
 
   /* SESSİZ BAĞLAM ENJEKSİYONU: metin oturum geçmişine düşer ama _run()
@@ -3249,6 +3338,10 @@ class Engine {
           e.name = 'AbortError';
           throw e;
         }
+        /* STEER FLOŞU (tur başı): koşan tur sırasında gelen mesajlar burada
+           geçmişe eklenir — araç sonuçlarının arasına sıkışmaz, sonraki
+           _chatTurn isteğinde model görür */
+        this._flushSteer(sid, session, emit);
         /* SÜRE SINIRI YOK. Ana oturum sınırsız tur koşar (opencode birebir);
            yalnız bg ajan son 3 tura gelirken "raporu yaz ve bitir" uyarısı alır. */
         if (session.bgJob && turn === maxTurns - 3 && !wrapNudged) {
@@ -3278,6 +3371,9 @@ class Engine {
         }
         this._bgTrim(session); // #21 bg geçmişini olabildiğince ince tut
         emit({ type: 'status', status: 'thinking' });
+        /* opencode runLoop portu: istek kurulmadan ÖNCEKİ mesaj sayısı —
+           koşan tur SIRASINDA gelen (steer) user mesajlarını saptar */
+        const preLen = session.messages.length;
         const res = await this._chatTurn(session, ctrl.signal, (delta) =>
           emit({ type: 'token', delta })
         );
@@ -3298,6 +3394,16 @@ class Engine {
         emit({ type: 'message', message: assistant });
 
         if (!res.toolCalls || !res.toolCalls.length) {
+          /* opencode runLoop portu (prompt.ts:1111-1115): koşan tur SIRASINDA
+             yeni user mesajı geldiyse (steer) tur BİTMEZ — tampondaki mesaj
+             geçmişe akıtılır, model sonraki istekte görür ve cevaplar;
+             eski cevap akışı bozulmaz. */
+          if (
+            session.messages.slice(preLen).some((m) => m.role === 'user') ||
+            this._flushSteer(sid, session, emit)
+          ) {
+            continue;
+          }
           /* GÖREV LİSTESİ DİSİPLİNİ: ajan işi bitti sanıyor ama listede hâlâ
              bekleyen/aktif madde varsa BİR KEZ hatırlat ve tura devam et —
              liste ya tamamlanmalı ya kalan maddeler listeden düşürülmeli. */
@@ -3458,6 +3564,10 @@ class Engine {
       this._bgFinish(sid, 'error', 'bg görevi tur limitine ulaştı (maxTurns)');
     } catch (e) {
       const aborted = e && (e.name === 'AbortError' || ctrl.signal.aborted);
+      /* STEER FLOŞU (hata/durdurma): tur sırasında gelen mesajlar yine de
+         geçmişe yazılsın — konuşma bütünlüğü korunur, sonraki tur bağlamı
+         görür (opencode interrupted-part disiplini) */
+      this._flushSteer(sid, session, emit);
       if (aborted) {
         this._clearCrash(); // kullanıcı durdurdu — kurtarma yok
         /* öz-kurtarma/superyorizon kick'i bekliyorsa bu tur BİTİŞ değildir —
@@ -3571,7 +3681,7 @@ class Engine {
       const llm = async (sys, user) => {
         const res = await chatOnce(
           this.sel,
-          { messages: [{ role: 'user', content: sys + '\n\n' + user }], temperature: 0.1 },
+          { messages: [{ role: 'user', content: sys + '\n\n' + user }], temperature: 0.1, cacheKey: String(session.id || '') },
           { signal }
         );
         return String(res.content || '');
@@ -3607,7 +3717,7 @@ class Engine {
 
       const res = await chatOnce(
         this.sel,
-        { messages: [{ role: 'user', content: prompt }], temperature: 0.1 },
+        { messages: [{ role: 'user', content: prompt }], temperature: 0.1, cacheKey: String(session.id || '') },
         { signal }
       );
       let parsed = null;
@@ -3661,7 +3771,7 @@ const skills = require('./skills');
 
     const res = await chatOnce(
       this.sel,
-      { messages: [{ role: 'user', content: prompt }], temperature: 0.2 },
+      { messages: [{ role: 'user', content: prompt }], temperature: 0.2, cacheKey: String(session.id || '') },
       {}
     );
     const draft = parseReflectionJson(res.content || '');
@@ -3745,7 +3855,7 @@ const skills = require('./skills');
         try {
           const res = await chatOnce(
             this.sel,
-            { messages: [{ role: 'user', content: prompt }], temperature: 0.2 },
+            { messages: [{ role: 'user', content: prompt }], temperature: 0.2, cacheKey: 'nightref' },
             { signal: ctrl.signal }
           );
           return String(res.content || '');

@@ -642,7 +642,7 @@ async function transcribeCloud(provider, buf, mimetype, lang) {
   if (lang === 'tr' || lang === 'en') form.append('language', lang);
   const res = await fetch(base + '/audio/transcriptions', {
     method: 'POST',
-    headers: { Authorization: 'Bearer ' + key },
+    headers: { Authorization: 'Bearer ' + key, 'x-opencode-session': OPENCODE_SESSION },
     body: form,
   });
   if (!res.ok) throw new Error(provider + ' ' + res.status + ': ' + String(await res.text()).slice(0, 180));
@@ -954,7 +954,11 @@ async function synthesizeSpeech(text) {
     const url = String(cfg.baseUrl).replace(/\/+$/, '') + '/audio/speech';
     const res = await fetch(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + cfg.key },
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: 'Bearer ' + cfg.key,
+        'x-opencode-session': OPENCODE_SESSION,
+      },
       body: JSON.stringify({
         model: cfg.model || 'tts-1',
         input: String(text).slice(0, 4000),
@@ -1726,6 +1730,23 @@ function sessionFileAlive(sid) {
 
 /* kanalın yaşayan tek oturumunu döndürür; geçersizse eski bağlamdan devralır,
    o da yoksa (ilk kullanım) yeni açar ve tüm jid'leri ona bağlar */
+/* WA'dan gelen belge orijinallerini oturumun media klasörüne yazar;
+   döner: media/<sid>/<dosya> (relatif yol — ajan read_file ile açabilir) */
+function saveSessionMedia(sid, name, buf) {
+  try {
+    if (!buf || !buf.length) return null;
+    const dir = path.join(engine.sessionsDir, 'media', String(sid || ''));
+    fs.mkdirSync(dir, { recursive: true });
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const safe = String(name || 'dosya').replace(/[\\/:*?"<>|]/g, '_').slice(0, 120);
+    const file = stamp + '-' + safe;
+    fs.writeFileSync(path.join(dir, file), buf);
+    return 'media/' + String(sid || '') + '/' + file;
+  } catch {
+    return null;
+  }
+}
+
 function ensureWaSession(jid) {
   if (!waSingleSid || !sessionFileAlive(waSingleSid)) {
     let best = '';
@@ -2429,12 +2450,15 @@ async function processWaMessage(jid, payload, senderNum, requeues = 0) {
         if (inst && inst.error) {
           text += `\n[SKILL.md alındı ama kaydedilemedi]`;
         } else {
+          /* BELGE KAYDI: orijinal dosya oturum media klasörüne yazılır —
+             model yalnız metnini görür, orijinale ajan read_file ile ulaşabilir */
+          const savedDoc = saveSessionMedia(sid, md.name, md.buf);
           const dt = documentToText(md);
           if (dt && dt.trim()) {
             attachments.push({ type: 'file', name: md.name, content: dt.slice(0, 20000) });
-            text += `\n[belge alındı: ${md.name}]`;
+            text += `\n[belge alındı: ${md.name}${savedDoc ? ' · kaydedildi: ' + savedDoc : ''}]`;
           } else {
-            text += `\n[belge alındı ama okunamadı: ${md.name}]`;
+            text += `\n[belge alındı ama okunamadı: ${md.name}${savedDoc ? ' · kaydedildi: ' + savedDoc : ''}]`;
           }
         }
       }
@@ -5149,6 +5173,14 @@ function queueDesktopMessage(sessionId, text) {
     chatQueueOfflineAdd(sid, { text: t, attachments: hasAtts ? text.attachments : undefined });
     return;
   }
+  /* OPENCODE STEER: koşan tur varken mesaj ANINDA konuşmaya eklenir —
+     ajan sonraki istekte görür, eski cevap akışı bozulmaz. Kuyrukta beklemesine
+     gerek yok; boşta debounce penceresi yine birleştirir. */
+  if (engine.isBusy(sid)) {
+    waLog(`desktop: oturum meşgul — mesaj steer olarak konuşmaya eklendi sid=${sid}`);
+    engine.send(sid, hasAtts ? { text: t, attachments: text.attachments } : t, { userAction: true });
+    return;
+  }
   let q = desktopQueue.get(sid);
   if (!q) {
     q = { timer: null, msgs: [] };
@@ -5156,16 +5188,9 @@ function queueDesktopMessage(sessionId, text) {
   }
   q.msgs.push({ text: t, attachments: hasAtts ? text.attachments : undefined });
 
-  const busy = engine.isBusy(sid);
-  if (!busy) {
-    /* agent boşta: kısa pencere — hızlı ikinci mesaj ilkine eklenir */
-    clearTimeout(q.timer);
-    q.timer = setTimeout(() => flushDesktop(sid).catch(() => {}), DESKTOP_DEBOUNCE_MS);
-  } else {
-    /* agent çalışıyor: pencere yok, iş bitince hepsi birlikte gider.
-       Bekleyen paket olduğunda 'done' olayı flushDesktop'u çağırır. */
-    waLog(`desktop: oturum meşgul, mesaj beklemede (${q.msgs.length}) sid=${sid}`);
-  }
+  /* agent boşta: kısa pencere — hızlı ikinci mesaj ilkine eklenir */
+  clearTimeout(q.timer);
+  q.timer = setTimeout(() => flushDesktop(sid).catch(() => {}), DESKTOP_DEBOUNCE_MS);
 }
 
 async function flushDesktop(sessionId) {

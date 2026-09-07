@@ -2334,17 +2334,10 @@ async function processWaMessage(jid, payload, senderNum, requeues = 0) {
     waLog(`skip flush: izinli eşleşme yok (sender=+${senderNum || '?'})`);
     return;
   }
+  /* OPENCODE STEER: oturum meşgulse mesaj bekleMEZ — engine.send tamponuna
+     ekler, koşan tur sonraki istekte görür ve cevaplar (eski cevap bozulmaz).
+     Sıra korunur: floş katmanı debounceli ve sıralı işler. */
   let sid = waChats.get(jid) || waSingleSid;
-  if (sid && engine.isBusy(sid)) {
-    /* oturum hâlâ önceki işle uğraşıyor — KAYBETME: sınırı kaldırdık,
-       iş bitene dek her debounce turunda yeniden deneriz; kullanıcıya
-       "işleyemedim" denmez, mesaj boşa gitmez. */
-    if (requeues === 1) {
-      waLog(`flush: oturum meşgul, mesaj kuyrukta bekliyor sid=${sid}`);
-    }
-    await new Promise((r) => setTimeout(r, WA_DEBOUNCE_MS));
-    return processWaMessage(jid, payload, senderNum, requeues + 1);
-  }
   if (!isGroup && requeues > 0) {
     // retry sonrası izin yeniden kontrol edilir (yukarıda hit zaten alınıyor)
   }
@@ -2650,12 +2643,9 @@ async function processTgMessage(chatId, payload, requeues = 0) {
     tgLog(`skip flush: izinli eşleşme yok (sender=${payload.senderId || '?'})`);
     return;
   }
+  /* OPENCODE STEER: meşgulse bekleme — engine.send tampona ekler, koşan tur
+     sonraki istekte görür (WA ile aynı mantık) */
   let sid = tgChats.get(chatId) || tgSingleSid;
-  if (sid && engine.isBusy(sid)) {
-    /* oturum meşgul — WA ile aynı: kaybetme, iş bitene dek yeniden dene */
-    await new Promise((r) => setTimeout(r, TG_DEBOUNCE_MS));
-    return processTgMessage(chatId, payload, requeues + 1);
-  }
   /* KANAL TEK OTURUMU: eskisi silinmedikçe hep aynı oturumdan devam */
   sid = ensureTgSession(chatId);
   /* Kişi bazlı granül izin: all/web/read/chat */
@@ -2864,12 +2854,9 @@ async function processDcMessage(channelId, payload) {
     dcLog(`skip flush: izinli eşleşme yok (sender=${payload.senderId || '?'})`);
     return;
   }
+  /* OPENCODE STEER: meşgulse bekleme — engine.send tampona ekler, koşan tur
+     sonraki istekte görür (WA/TG ile aynı mantık) */
   let sid = dcChats.get(channelId) || dcSingleSid;
-  if (sid && engine.isBusy(sid)) {
-    /* oturum meşgul — WA/TG ile aynı: kaybetme, iş bitene dek yeniden dene */
-    await new Promise((r) => setTimeout(r, DC_DEBOUNCE_MS));
-    return processDcMessage(channelId, payload, 1);
-  }
   /* KANAL TEK OTURUMU: eskisi silinmedikçe hep aynı oturumdan devam */
   sid = ensureDcSession(channelId);
   /* Kişi bazlı granül izin: all/web/read/chat */
@@ -3112,6 +3099,34 @@ function reloadBackend() {
             finally {
               try { await wa.setComposing(wajid, false); } catch {} // "yazıyor…" kapansın
             }
+          })();
+        }
+      }
+      /* OPENCODE STEER ARA CEVABI: koşan tur sırasında gelen mesajın cevabı.
+         'done' YOK (tur steer'le sürüyor) — bu yüzden done akışı YAZMAZ.
+         Bağlı kanallara (WA/TG/DC) tek tek gider; SON cevap yine done'da. */
+      if (ev.type === 'interim-final' && ev.message) {
+        const txt = typeof ev.message.content === 'string' ? ev.message.content.trim() : '';
+        if (txt) {
+          (async () => {
+            try {
+              if (wa && wa.connected) {
+                const jid = waReplyJid(ev.sessionId);
+                if (jid) await sendWaSafe(jid, txt);
+              }
+            } catch {}
+            try {
+              if (tg && tg.connected) {
+                const hit = [...tgChats.entries()].find(([, s]) => s === ev.sessionId);
+                if (hit) await sendTgSafe(hit[0], txt);
+              }
+            } catch {}
+            try {
+              if (dc && dc.connected) {
+                const hit = [...dcChats.entries()].find(([, s]) => s === ev.sessionId);
+                if (hit) await sendDcSafe(hit[0], txt);
+              }
+            } catch {}
           })();
         }
       }

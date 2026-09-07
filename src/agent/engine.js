@@ -3402,6 +3402,10 @@ class Engine {
             session.messages.slice(preLen).some((m) => m.role === 'user') ||
             this._flushSteer(sid, session, emit)
           ) {
+            /* ARA CEVAP: bu cevap 'done' değil (tur steer'le sürüyor) —
+               bağlı kanallara (WA/TG/DC) tek tek iletilir; SON cevap yine
+               done'da gider (çift yok: bu artık 'son' değil). */
+            emit({ type: 'interim-final', message: assistant });
             continue;
           }
           /* GÖREV LİSTESİ DİSİPLİNİ: ajan işi bitti sanıyor ama listede hâlâ

@@ -93,6 +93,11 @@ test('steer: meşgulken gelen mesaj konuşmaya eklenir ve koşan tur sonraki ist
       s.messages[2].content,
       'ikinci mesaj — bunu da yap'
     );
+    /* ARA CEVAP: ilk cevap 'interim-final' ile olaya düşmeli — kanallar
+       (WA/TG/DC) bu olayla iletir; son cevap done'da gider */
+    const interim = events.find((e) => e.type === 'interim-final');
+    assert.ok(interim, 'interim-final olayı yayılmalı');
+    assert.equal(interim.message.content, s.messages[1].content);
   } finally {
     fetchMock.restore();
   }

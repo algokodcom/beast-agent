@@ -6205,19 +6205,27 @@ function cronEmit() {
 const cronAnswerPending = new Map();
 
 /* OTOMATİK YENİ SOHBET YOK: cron/izleyici/fallout tetiklendiğinde oturum
-   seçimi — kayıtlı id geçerliyse O, değilse EN GÜNCEL oturum kullanılır.
-   Hiç oturum yoksa (ilk kurulum) yeni açılır. Böylece soldaki sohbet
-   geçmişine "+ Yeni Sohbet" olmadan hayalet sohbetler düşmez. */
+   seçimi — kayıtlı id'nin DOSYASI hâlâ duruyorsa O, değilse EN GÜNCEL
+   (meşgul olmayan) oturum kullanılır; hiç oturum yoksa (ilk kurulum) yeni
+   açılır. Böylece soldaki sohbet geçmişine "+ Yeni Sohbet" olmadan hayalet
+   sohbetler düşmez.
+   DİKKAT: _load(id) silinmiş oturum için bile boş bir hayalet nesne
+   üretip truthy döner — canlılık kontrolü MUTLAKA sessionFileAlive ile
+   yapılır (ensureWa/Tg/DcSession ile aynı kural). Ayrıca meşgul oturuma
+   send() mesajı DÜŞÜRÜR (false döner, cron cevabı kaybolur) — o yüzden
+   meşgul oturumlar da atlanır. */
 function reuseOrLatestSession(preferredId) {
   const sid = String(preferredId || '');
-  if (sid) {
+  if (sid && sessionFileAlive(sid)) {
     try {
-      if (engine._load(sid)) return sid;
+      if (engine._load(sid) && !engine.isBusy(sid)) return sid;
     } catch {}
   }
   try {
     const list = engine.listSessions(); // updatedAt'e göre yeni→eski sıralı
-    if (list.length) return String(list[0].id);
+    for (const v of list) {
+      if (!engine.isBusy(v.id)) return String(v.id);
+    }
   } catch {}
   return engine.createSession().id;
 }

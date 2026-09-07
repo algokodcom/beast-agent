@@ -1064,6 +1064,39 @@ class Engine {
     return removed;
   }
 
+  /* Düşünme geri-besleme kurtarması: asistan mesajlarındaki reasoning_content'i
+     bellekten + jsonl'den temizler. "must be passed back" hatasını veren sağlayıcı
+     için tek kurtarma yolu — döndürür: temizlenen mesaj sayısı */
+  _stripAssistantReasoning(session) {
+    let dropped = 0;
+    for (const m of session.messages) {
+      if (m && m.role === 'assistant' && (m.reasoning_content || m.reasoning)) {
+        delete m.reasoning_content;
+        delete m.reasoning;
+        dropped++;
+      }
+    }
+    if (!dropped) return 0;
+    try {
+      const file = this._file(session.id);
+      const lines = fs.readFileSync(file, 'utf8').split('\n');
+      for (let i = 0; i < lines.length; i++) {
+        if (!lines[i].trim()) continue;
+        let r;
+        try { r = JSON.parse(lines[i]); } catch { continue; }
+        if (r.t === 'msg' && r.role === 'assistant' && (r.reasoning_content || r.reasoning)) {
+          delete r.reasoning_content;
+          delete r.reasoning;
+          lines[i] = JSON.stringify(r);
+        }
+      }
+      const tmp = file + '.tmp';
+      fs.writeFileSync(tmp, lines.join('\n'));
+      fs.renameSync(tmp, file);
+    } catch {}
+    return dropped;
+  }
+
   _load(id) {
     if (this.cache.has(id)) return this.cache.get(id);
     const file = this._file(id);
@@ -3240,6 +3273,37 @@ class Engine {
          arındırıp turu BİR KEZ görüntüsüz dener. */
       const msgStr = String((e && e.message) || '');
       const aborted = signal && signal.aborted;
+      /* DÜŞÜNME GERİ-BESLEME KURTARMASI: "reasoning_content ... must be passed
+         back" hatası eski oturumlarda (reasoning saklanmadan önce) olur —
+         geçmişi reasoning'siz arındırıp turu BİR KEZ yeniden dene */
+      if (!aborted && /reasoning_content/i.test(msgStr)) {
+        const dropped = this._stripAssistantReasoning(session);
+        if (dropped) {
+          emitSafe(this, session.id, {
+            type: 'status',
+            status: `🧠 düşük uyumlu sağlayıcı: geçmişteki düşünme içerikleri temizlendi (${dropped} mesaj) — tur yeniden deneniyor`,
+          });
+          payload = this._buildPayload(system, session.messages, session.notes, dynBudget, session.summary);
+          res = await this._streamWithFallbacks(
+            session,
+            payload,
+            activeTools,
+            signal,
+            onDelta,
+            sel,
+            role === 'vision'
+          );
+          const actualR = res.usage && res.usage.prompt_tokens;
+          if (actualR > 0) {
+            const predicted = this._payloadTokens(payload);
+            if (predicted > 50) {
+              const r = clamp(actualR / predicted, 0.75, 3);
+              this.tokRatio = clamp(this.tokRatio * 0.7 + r * 0.3, 0.75, 3);
+            }
+          }
+          return res;
+        }
+      }
       const imgish =
         !aborted &&
         /image|vision|multimodal|no endpoints/i.test(msgStr);
@@ -3395,6 +3459,10 @@ class Engine {
 
         const assistant = { role: 'assistant', content: res.content || '' };
         if (res.toolCalls && res.toolCalls.length) assistant.tool_calls = res.toolCalls;
+        /* DÜŞÜNME MODU GERİ-BESLEMESİ: Console Go gibi sağlayıcılar thinking
+           modunda reasoning_content'in GEÇMİŞTE geri gönderilmesini şart koşar
+           ("must be passed back to the API") — saklamazsak sonraki tur 400'le ölür */
+        if (res.reasoning) assistant.reasoning_content = res.reasoning;
         session.messages.push(assistant);
         try {
           this._append(session, assistant);
@@ -4078,6 +4146,7 @@ const skills = require('./skills');
         );
         const assistant = { role: 'assistant', content: res.content || '' };
         if (res.toolCalls && res.toolCalls.length) assistant.tool_calls = res.toolCalls;
+        if (res.reasoning) assistant.reasoning_content = res.reasoning; /* thinking geri-besleme */
         msgs.push(assistant);
         if (!res.toolCalls || !res.toolCalls.length) return res.content || '(alt-agent boş döndü)';
         for (const tc of res.toolCalls) {

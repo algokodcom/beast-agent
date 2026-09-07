@@ -13,6 +13,14 @@
       <div id="brand"><span class="brand-beast">BEAST</span><span class="brand-sub">Agent</span></div>
       <button id="newChat" title="Yeni sohbet" data-i18n="newChat">+ Yeni Sohbet</button>
       <div id="sessList"></div>
+      <div id="watchPane">
+        <div id="watchPaneHead">
+          <span id="watchPaneTitle" data-i18n="w_pane">İZLEYİCİLER</span>
+          <span class="file-spacer"></span>
+          <button id="watchPaneOpen" title="İzleyicileri yönet">+</button>
+        </div>
+        <div id="watchPaneList"></div>
+      </div>
       <div id="botBar">
         <div id="botBarHead">
           <span id="botBarTitle" data-i18n="bot_head">BOTLAR</span>
@@ -177,7 +185,7 @@
             </div>
             <img id="bcQrImg" alt="Expo QR" draggable="false" />
             <div id="bcQrUrl" title=""></div>
-            <div class="bq-hint">Telefonda <b>Expo Go</b> uygulamasıyla okut</div>
+            <div class="bq-hint">Telefonda <b>Expo Go</b> ile okut — tünel modunda her ağdan çalışır</div>
           </div>
           <div id="bcInputRow">
             <button id="bcAttach" title="Dosya / resim ekle" data-i18n-title="tipAttach">+</button>

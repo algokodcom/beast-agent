@@ -573,7 +573,9 @@ async function chatStreamAuto(sel, body, opts = {}) {
   let last = first;
   for (let i = 0; i < 2; i++) {
     const msgs2 = body.messages.slice();
-    msgs2.push({ role: 'assistant', content: full });
+    const asst = { role: 'assistant', content: full };
+    if (first.reasoning) asst.reasoning_content = first.reasoning; /* thinking geri-besleme */
+    msgs2.push(asst);
     msgs2.push({ role: 'user', content: CONTINUE_PROMPT });
     let cont;
     try {

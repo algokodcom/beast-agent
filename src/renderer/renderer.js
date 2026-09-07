@@ -43,6 +43,8 @@ const els = {
   railBtn: $('#railBtn'),
   railClear: $('#railClear'),
   watchBtn: $('#watchBtn'),
+  watchPaneList: $('#watchPaneList'),
+  watchPaneOpen: $('#watchPaneOpen'),
   cronBtn: $('#cronBtn'),
   watchOverlay: $('#watchOverlay'),
   cronOverlay: $('#cronOverlay'),
@@ -955,7 +957,18 @@ let dragSid = null;
 async function refreshSessions() {
   await renderSessions(await beast.listSessions());
   renderBotCards(); // bot kartlarındaki numara/sayı etiketleri de tazelensin
+  renderWatchersPane().catch(() => {}); // kenar izleyici listesi de tazelensin
 }
+
+/* İzleyici kenar pane canlı tazeleme: agent modunda 8 sn'de bir sessiz çekim;
+   başka moddaysa zamanlayıcı pas geçer (IPC maliyeti yok) */
+setInterval(() => {
+  try {
+    if (document.body.classList.contains('ide-mode') || document.body.classList.contains('studio-mode') || document.body.classList.contains('sandbox-mode')) return;
+    if (document.hidden) return;
+    renderWatchersPane().catch(() => {});
+  } catch {}
+}, 8000);
 
 async function openSession(id) {
   activeId = id;
@@ -2366,6 +2379,9 @@ async function renderInstallPane() {
       (r.canToggle
         ? '<button class="btn hr-tgl" data-on="' + (r.toggleOn ? '1' : '0') + '" style="width:auto;padding:2px 12px;flex:none">' + (r.toggleOn ? 'KAPAT' : 'AÇ') + '</button>'
         : '') +
+      (r.canInstall
+        ? '<button class="btn inst-kur" style="width:auto;padding:2px 12px;flex:none">KUR</button>'
+        : '') +
       badge(r.state) +
       pctLabel(r) +
       '</div>'
@@ -2378,6 +2394,16 @@ async function renderInstallPane() {
         b.textContent = '…';
         const r = await beast.headroomToggle(on).catch(() => null);
         toast(r && r.error ? r.error : (r && r.installing ? 'Headroom kuruluyor — birkaç dakika sürer' : (on ? 'Headroom açıldı' : 'Headroom kapatıldı')));
+        refresh();
+      });
+    });
+    /* Android emülatörü: KUR → arka plan SDK kurulumu (JDK + cmdline-tools + imaj) */
+    el.querySelectorAll('.inst-kur').forEach((b) => {
+      b.addEventListener('click', async () => {
+        b.disabled = true;
+        b.textContent = '…';
+        await beast.androidInstall().catch(() => {});
+        toast('Android SDK arka planda kuruluyor — ~1.5GB, internete göre 5-20 dk sürer');
         refresh();
       });
     });
@@ -5495,10 +5521,68 @@ function fmtWhen(iso) {
   return d.toLocaleDateString([], { day: '2-digit', month: '2-digit' }) + ' ' + t;
 }
 
-let lastWatchKey = '';
-async function renderWatchersModal(force) {
+/* ---------- İZLEYİCİLER kenar pane (sohbet geçmişinin alt yarısı) ----------
+   Kompakt liste: durum noktası + ad + bir sonraki tetik; satır → izleyici
+   modalı; ▶/× mini kontroller. Yalnız agent modunda görünür (CSS). */
+let lastWatchPaneKey = '';
+async function renderWatchersPane(force) {
+  const list = els.watchPaneList;
+  if (!list) return;
+  if (document.body.classList.contains('ide-mode') || document.body.classList.contains('studio-mode') || document.body.classList.contains('sandbox-mode')) return;
   let rows = [];
   try { rows = (await beast.watchersList()) || []; } catch {}
+  const key = JSON.stringify(rows);
+  if (!force && key === lastWatchPaneKey) return;
+  lastWatchPaneKey = key;
+  list.innerHTML = '';
+  if (!rows.length) {
+    list.innerHTML = '<div class="wp-empty">' + _t('w_empty') + '</div>';
+    return;
+  }
+  for (const w of rows) {
+    const row = document.createElement('div');
+    row.className = 'wp-row' + (w.enabled ? '' : ' off');
+    row.title = (w.kind === 'battery' ? 'pil yüzdesi' : w.kind === 'logs' ? 'log izleyici' : (w.path || w.re || w.url)) + ' · ' + opText(w) + ' · her ' + fmtEvery(w);
+    row.innerHTML =
+      `<span class="wp-dot"></span>` +
+      `<div class="wp-main">` +
+      `<div class="wp-name">${escapeHtml(w.name)}</div>` +
+      `<div class="wp-meta">${opText(w)} · her ${escapeHtml(String(fmtEvery(w)))} · ${escapeHtml(fmtWhen(w.lastCheckAt))}` +
+      (w.lastValue !== null && w.lastValue !== undefined ? ` · <b>${escapeHtml(String(w.lastValue).slice(0, 14))}</b>` : '') +
+      `</div></div>`;
+    const btns = document.createElement('div');
+    btns.className = 'wp-btns';
+    const t = document.createElement('button');
+    t.className = 'wp-btn';
+    t.textContent = w.enabled ? '❚❚' : '▶';
+    t.title = w.enabled ? _t('cr_toggle_pause') : _t('cr_start');
+    t.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      await beast.watchersToggle(w.id);
+      renderWatchersPane(true);
+      renderWatchersModal(true);
+    });
+    const d = document.createElement('button');
+    d.className = 'wp-btn del';
+    d.textContent = '×';
+    d.title = _t('cr_del');
+    d.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      await beast.watchersRemove(w.id);
+      lastWatchPaneKey = '';
+      renderWatchersPane(true);
+      renderWatchersModal(true);
+    });
+    btns.append(t, d);
+    row.appendChild(btns);
+    row.addEventListener('click', () => openWatchModal());
+    list.appendChild(row);
+  }
+}
+
+let lastWatchKey = '';
+async function renderWatchersModal(force) {
+  let rows = [];  try { rows = (await beast.watchersList()) || []; } catch {}
   /* canlı yenilemede içerik değişmediyse DOM'a dokunma — buton tıklamaları
      yeniden kurulurken yutulmasın */
   const key = JSON.stringify(rows);
@@ -5623,6 +5707,7 @@ function closeCronModal() {
 async function openWatchModal() {
   toggleMini(els.watchOverlay, false);
   await renderWatchersModal(true); /* her basışta TAZE çekim */
+  lastWatchPaneKey = ''; /* pane de bir sonraki tazelemede yeniden kurulur */
   startMiniRefresh();
 }
 
@@ -6337,6 +6422,7 @@ async function init() {
 
   /* cron modülü — olay bağlama */
   if (els.watchBtn) els.watchBtn.addEventListener('click', openWatchModal);
+  if (els.watchPaneOpen) els.watchPaneOpen.addEventListener('click', openWatchModal);
   if (els.cronBtn) els.cronBtn.addEventListener('click', openCronModal);
   if (els.watchClose) els.watchClose.addEventListener('click', closeWatchModal);
   if (els.cronClose) els.cronClose.addEventListener('click', closeCronModal);
@@ -8070,14 +8156,31 @@ $('#filePreview').addEventListener('click', async () => {
     toast((r && r.error) || 'preview açılamadı');
     return;
   }
-  const ask =
-    kind === 'expo'
-      ? 'Preview aç — bu klasör bir Expo/React Native projesi (app.json var). Web önizlemeyi arka planda başlat: package.json scripts.web varsa `npm run web`, yoksa `npx expo start --web`. Sunucu kalkınca çalışan http://localhost:PORT adresini raporda yaz.'
-      : kind === 'react-native'
-        ? 'Preview aç — bu klasör bir React Native projesi. Metro sunucusunu arka planda başlat: package.json scripts.start varsa `npm start`, yoksa `npx react-native start`. Sunucu kalkınca çalışan http://localhost:PORT adresini raporda yaz.'
-        : kind === 'web'
-          ? 'Preview aç — bu proje dev-server ister. Doğru komutu package.json scripts\'ından seç (dev/start/serve — `npm run dev` vb.) ve arka planda başlat. Sunucu kalkınca çalışan http://localhost:PORT adresini raporda yaz.'
-          : 'Preview aç — bu projenin nasıl çalıştığını package.json / konfigürasyon dosyalarından anla, doğru dev komutunu arka planda başlat ve çalışan http://localhost:PORT adresini raporda yaz.';
+  /* ANDROID EMÜLATÖR: kuruluysa Expo uygulamaları emülatörde açılır —
+     AVD arka planda başlatılır (kendi penceresi açılır), ajan expo'yu kaldırır */
+  let ask = '';
+  if (kind === 'expo' || kind === 'react-native') {
+    const dev = await beast.androidStatus().catch(() => null);
+    const hasEmu = dev && dev.ok && dev.sdk && Array.isArray(dev.avds) && dev.avds.length;
+    if (hasEmu) {
+      beast.androidStartAvd(dev.avds[0]).catch(() => {});
+      toast('Android emülatörü başlatılıyor — ilk açılış 30-90 sn');
+      ask =
+        kind === 'expo'
+          ? 'Preview aç — bu klasör bir Expo/React Native projesi (app.json var). Android emülatörü başlatıldı; arka planda `npx expo start --android` çalıştır — uygulama emülatörde açılır (expo adb ile cihazı kendisi bulur). Çalışan http://localhost:PORT adresini raporda yaz.'
+          : 'Preview aç — bu klasör bir React Native projesi. Android emülatörü hazır. Metro\u2019yu arka planda başlat (scripts.start varsa `npm start`) ve uygulamayı emülatöre kur: `npx react-native run-android`. Sunucu adresini raporda yaz.';
+    }
+  }
+  if (!ask) {
+    ask =
+      kind === 'expo'
+        ? 'Preview aç — bu klasör bir Expo/React Native projesi (app.json var). Arka planda `npx expo start --tunnel` çalıştır (tunnel: telefon her ağdan bağlanabilir; web önizleme için `--web` de ekle). Sunucu kalkınca çalışan http://localhost:PORT adresini raporda yaz.'
+        : kind === 'react-native'
+          ? 'Preview aç — bu klasör bir React Native projesi. Metro sunucusunu arka planda başlat: package.json scripts.start varsa `npm start`, yoksa `npx react-native start`. Sunucu kalkınca çalışan http://localhost:PORT adresini raporda yaz.'
+          : kind === 'web'
+            ? 'Preview aç — bu proje dev-server ister. Doğru komutu package.json scripts\'ından seç (dev/start/serve — `npm run dev` vb.) ve arka planda başlat. Sunucu kalkınca çalışan http://localhost:PORT adresini raporda yaz.'
+            : 'Preview aç — bu projenin nasıl çalıştığını package.json / konfigürasyon dosyalarından anla, doğru dev komutunu arka planda başlat ve çalışan http://localhost:PORT adresini raporda yaz.';
+  }
   if (els.bcInput) {
     els.bcInput.value = ask;
     bcInputResize();

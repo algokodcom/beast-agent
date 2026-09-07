@@ -112,6 +112,71 @@ body {
 
 #sessList { flex: 1; overflow-y: auto; padding: 4px 8px; }
 
+/* ---------- İZLEYİCİLER paneli (sol kenar çubuğu — sohbet geçmişinin alt yarısı) ----------
+   Yalnız agent (chat) modunda görünür; IDE/Studio/Sandbox'ta sessList ile birlikte gizli. */
+#watchPane {
+  display: none;
+  flex-direction: column;
+  height: 36%;
+  min-height: 120px;
+  border-top: 1px solid var(--border);
+  background: var(--panel);
+}
+body:not(.ide-mode):not(.studio-mode):not(.sandbox-mode) #watchPane { display: flex; }
+#watchPaneHead {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--border);
+}
+#watchPaneTitle { font-size: 10.5px; letter-spacing: 2px; color: var(--muted); font-weight: 800; }
+#watchPaneHead button {
+  margin-left: auto;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1.2;
+  padding: 1px 7px;
+}
+#watchPaneHead button:hover { color: var(--text); background: var(--panel2); }
+#watchPaneList { flex: 1; overflow-y: auto; padding: 4px; }
+.wp-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.wp-row:hover { background: var(--panel2); }
+.wp-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--ok); }
+.wp-row.off .wp-dot { background: var(--muted); opacity: 0.5; }
+.wp-main { flex: 1; min-width: 0; overflow: hidden; }
+.wp-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; font-size: 12px; }
+.wp-meta { color: var(--muted); font-size: 10px; overflow: hidden; text-overflow: ellipsis; }
+.wp-btns { display: flex; gap: 4px; flex: none; }
+.wp-btn {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 10px;
+  padding: 1px 5px;
+  line-height: 1.3;
+}
+.wp-btn:hover { color: var(--text); background: var(--panel2); }
+.wp-btn.del:hover { color: var(--err); border-color: var(--err); }
+.wp-empty { color: var(--muted); font-size: 11.5px; padding: 10px; }
+
 .sess {
   display: flex;
   align-items: center;

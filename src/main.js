@@ -26,6 +26,7 @@ const watchers = require('./agent/watchers');
 const usageMod = require('./agent/usage');
 const bus = require('./agent/bus');
 const computeruse = require('./agent/computeruse');
+const android = require('./agent/android');
 const log = require('./agent/logger');
 const headroom = require('./agent/headroom');
 const QRCode = require('qrcode'); /* Expo Go QR (bc-expurl) — whatsapp ile aynı paket */
@@ -3109,7 +3110,14 @@ function reloadBackend() {
       /* BC canlı önizleme: ajan bir dev server başlattıysa adresi yakala —
          preview butonu ve otomatik açılış DAİMA bu sunucuyu öncelikli kullanır */
       if (ev.type === 'bc-preview' && /^https?:\/\/(?:localhost|127\.0\.0\.1)(?::\d{2,5})?/i.test(String(ev.url || ''))) {
+        /* klasör değiştiyse eski sunucu bayat: KAPAT, en yeniye geç */
+        try {
+          if (bcLastServerUrl && bcLastServerRoot && path.relative(bcLastServerRoot, ideRoot()) !== '') {
+            bcKillServer(bcLastServerUrl);
+          }
+        } catch {}
         bcLastServerUrl = String(ev.url);
+        try { bcLastServerRoot = ideRoot(); } catch { bcLastServerRoot = ''; }
       }
       /* Expo Go QR: ajanın dev sunucusu exp:// adresi yazdıysa QR üretip panele bas */
       if (ev.type === 'bc-expurl') {
@@ -6302,6 +6310,29 @@ ipcMain.handle('install:status', async () => {
     });
   }
 
+  /* 10) Android Emülatörü — opsiyonel; varsa Beast Code mobil uygulamaları emülatörde açar */
+  {
+    const st = android.probe();
+    let state = 'optional';
+    if (st.sdk) state = 'ok';
+    else if (st.installing) state = 'loading';
+    if (st.failed) state = 'failed';
+    rows.push({
+      id: 'android',
+      name: 'Android Emülatörü — mobil uygulamalar emülatörde çalışır',
+      state,
+      canInstall: true,
+      detail: st.installing
+        ? (st.stage || 'arka planda kuruluyor — JDK + SDK + sistem imajı (~1.5GB, internete göre 5-20 dk)')
+        : st.failed
+          ? (st.error || 'kurulum başarısız')
+          : st.sdk
+            ? 'hazır — SDK: ' + st.sdkPath
+            : 'kurulu değil — KUR ile arka planda kurulur (istekge bağlı)',
+      ...(st.installing ? pctFields('android') : {}),
+    });
+  }
+
   return rows;
 });
 
@@ -6317,6 +6348,11 @@ ipcMain.handle('headroom:toggle', async (_e, on) => {
 });
 ipcMain.handle('headroom:status', () => headroom.probe());
 ipcMain.handle('headroom:stats', () => headroom.stats());
+
+/* ANDROID EMÜLATÖR (opsiyonel): durum + arka plan kurulum + AVD başlatma */
+ipcMain.handle('android:status', async () => ({ ok: true, ...(await android.probe()), avds: await android.listAvds() }));
+ipcMain.handle('android:install', () => android.autoInstall());
+ipcMain.handle('android:startAvd', async (_e, name) => android.startAvd(name));
 
 /* embedding modelini şimdi indir (mem0 arama yolu ısıtılır) */
 ipcMain.handle('embed:prefetch', () => {
@@ -8127,6 +8163,14 @@ ipcMain.handle('ide:setroot', async () => {
       properties: ['openDirectory'],
     });
     if (r.canceled || !r.filePaths || !r.filePaths[0]) return { ok: false, canceled: true };
+    /* klasör değişti: eski klasörün dev server'ı bayat — kill + unut */
+    try {
+      if (bcLastServerUrl) {
+        bcKillServer(bcLastServerUrl);
+        bcLastServerUrl = '';
+        bcLastServerRoot = '';
+      }
+    } catch {}
     settings.ideRoot = r.filePaths[0];
     saveSettings();
     ideWatchStart(); // yeni kökte izleme yeniden kurulur
@@ -8750,6 +8794,39 @@ ipcMain.handle('sandbox:openurl', async (_e, url) => {
    ve "clean URL" yolları file://'da çalışmaz. Her preview http://127.0.0.1 üzerinden
    servis edilir; ajan kendi dev sunucusunu başlattıysa o adres önceliklidir. */
 let bcLastServerUrl = ''; /* ajanın başlattığı dev server adresi (bc-preview'dan yakalanır) */
+let bcLastServerRoot = ''; /* adresin yakalandığı workspace kökü — klasör değişince bayat sayılır */
+
+/* dev server'ı port'tan bulup süreç AĞACINI kapat (best-effort).
+   Ajan arka planda başlattığı sunucular izlenmez — port üzerinden bulunur. */
+function bcKillServer(url) {
+  try {
+    const m = /:(\d{2,5})(?:\/|$)/.exec(String(url || ''));
+    if (!m) return false;
+    const port = m[1];
+    const { execSync } = require('child_process');
+    const out = String(execSync(
+      'netstat -ano | findstr ":' + port + '" | findstr LISTENING',
+      { timeout: 6000, stdio: 'pipe', encoding: 'utf8', windowsHide: true }
+    ));
+    const pids = new Set();
+    for (const line of out.split(/\r?\n/)) {
+      const p = /\s(\d+)\s*$/.exec(String(line).trim());
+      if (p) pids.add(p[1]);
+    }
+    let killed = 0;
+    for (const pid of pids) {
+      if (Number(pid) === process.pid) continue; /* kendimize dokunma */
+      try {
+        spawn('taskkill', ['/pid', String(pid), '/T', '/F'], { windowsHide: true });
+        killed++;
+      } catch {}
+    }
+    try { log.info('bc', 'bayat dev server kapatıldı (port ' + port + ', ' + killed + ' süreç)'); } catch {}
+    return killed > 0;
+  } catch {
+    return false; /* port boş / netstat hata — yok say */
+  }
+}
 const bcStatic = { server: null, root: '', base: '' };
 /* MOBİL PROJE önizleme: npm run web (expo start --web) süreci + canlı adres */
 const bcMobile = { proc: null, url: '', root: '' };
@@ -9026,6 +9103,13 @@ ipcMain.handle('ide:preview', async () => {
     if (!entry) return { ok: false, error: 'workspace kökünde index.html yok — önce agent\'a siteyi yazdır' };
     /* forceVisible: preview'a basınca tarayıcı ikonuna basmaya gerek kalmasın */
     setBrowserOpen(true, true);
+    /* KLASÖR UYUŞMAZLIĞI: kayıtlı dev server ESKİ klasörün artıklarıysa
+       kill et ve unut — yeni klasör kendi sunucusuyla başlasın */
+    if (bcLastServerUrl && bcLastServerRoot && path.relative(bcLastServerRoot, root) !== '') {
+      bcKillServer(bcLastServerUrl);
+      bcLastServerUrl = '';
+      bcLastServerRoot = '';
+    }
     let url = '';
     if (bcLastServerUrl) {
       url = bcLastServerUrl; /* ajanın kendi dev sunucusu öncelikli */

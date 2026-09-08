@@ -87,6 +87,8 @@ contextBridge.exposeInMainWorld('beast', {
   bcOpen: (id) => ipcRenderer.invoke('bc:open', { id }),
   bcDelete: (id) => ipcRenderer.invoke('bc:delete', { id }),
   bcDeleteAll: () => ipcRenderer.invoke('bc:deleteAll'),
+  /* opencode permission (BC): UI kartı cevabı — 'once' | 'always' | 'reject' */
+  permissionReply: (requestId, action, message) => ipcRenderer.invoke('permission:reply', { requestId, action, message }),
   studioSend: (msg, attachments) => ipcRenderer.invoke('studio:send', { msg, attachments }),
   studioStop: () => ipcRenderer.invoke('studio:stop'),
   studioNew: () => ipcRenderer.invoke('studio:new'),

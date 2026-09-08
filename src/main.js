@@ -1,4 +1,4 @@
-﻿'use strict';
+'use strict';
 
 const { app, BrowserWindow, WebContentsView, ipcMain, shell, dialog, Tray, Menu, nativeImage, desktopCapturer, session, net: electronNet, clipboard } = require('electron');
 const path = require('path');
@@ -1335,6 +1335,18 @@ function resolveApproval(id, ok, always) {
 }
 
 function resolveFirstApproval(ok, always) {
+  /* opencode permission (BC): önce opencode izin istekleri yanıtlanır —
+     cevap 'once' | 'always' | 'reject' üçlüsüdür (permission/reply portu) */
+  if (engine && typeof engine.replyPermission === 'function') {
+    try {
+      const pend = engine._perm && engine._perm.list ? engine._perm.list() : [];
+      if (pend.length) {
+        const action = ok ? (always ? 'always' : 'once') : 'reject';
+        const r = engine.replyPermission(pend[0].id, action);
+        if (r && r.ok) return { ok: true, tool: pend[0].permission };
+      }
+    } catch {}
+  }
   const first = pendingApprovals.keys().next();
   if (first.done) return { ok: false, error: 'bekleyen onay yok' };
   return resolveApproval(first.value, ok, always);
@@ -1677,17 +1689,17 @@ async function tryWaSlash(jid, rawText, senderNum, payload0) {
           `Tekrar kodlamak için: /beastcode`;
       }
     } else if (waBcMode.has(jid) && (cmd === 'plan' || cmd === 'build' || cmd === 'auto')) {
-      /* BeastCode modunda çalışma modu: /plan · /build · /auto */
+      /* opencode ajan değişimi (WA): /plan → plan ajanı (salt-okur),
+         /build · /auto → build ajanı (varsayılan; auto opencode'da yoktur) */
       const sid = waChats.get(jid);
       const s = sid ? engine.cache.get(sid) : null;
       if (s && s.bcCode) {
-        s.bcMode = cmd;
-        engine.cache.set(sid, s);
-        out = cmd === 'plan'
-          ? '*🔍 PLAN MODU* — dosyaları inceler, kod YAZMAZ; adım adım uygulama planı verir.'
+        const agent = engine.setBcAgent(s.id, cmd === 'plan' ? 'plan' : 'build');
+        out = agent === 'plan'
+          ? '*🔍 PLAN AJANI* (opencode plan) — salt-okur: dosyaları okur/inceler, kod YAZMAZ; adım adım uygulama planı verir. Uygulamak için /build yaz.'
           : cmd === 'build'
-            ? '*🛠 BUILD MODU* — son planı uygular: dosyalar, komutlar, doğrulama.'
-            : '*⚡ AUTO MOD* — kısa plan + uygulama + doğrulama.';
+            ? '*🛠 BUILD AJANI* (opencode build) — bağlamı inceler, todowrite ile planlar, uygular, doğrular.'
+            : '*⚡ BUILD AJANI* (opencode build) — kısa plan + hemen uygulama + doğrulama.';
       } else {
         out = 'Bu komut yalnız BeastCode modunda çalışır — önce /beastcode yaz.';
       }
@@ -2441,14 +2453,12 @@ async function processWaMessage(jid, payload, senderNum, requeues = 0) {
   }
   engine.setSessionModel(sid, botCfg && !botCfg.admin ? (botCfg.model || null) : null);
   /* BEASTCODE MODU: sohbet uzaktan kodlama modundaysa oturumu Beast Code
-     olarak tazele — restart sonrası bcCode/workspace bayrakları dosyadan
+     olarak tazele — restart sonrası bcCode/bcAgent/workspace bayrakları dosyadan
      yüklenmediği için masaüstü bcFlush disipliniyle her mesajda bindirilir */
   if (waBcMode.has(jid)) {
     const bs = engine.cache.get(sid);
     if (bs) {
-      bs.bcCode = true;
-      bs.workspace = waBcWorkspace();
-      engine.cache.set(sid, bs);
+      bcBindOc(bs, waBcWorkspace());
     }
   }
   waLog(`perm=${fmtPerm(perm)} bot=${botId} sid=${sid}${waBcMode.has(jid) ? ' beastcode=1' : ''}`);
@@ -3100,6 +3110,21 @@ function reloadBackend() {
     },
     emit: (ev) => {
       if (win && !win.isDestroyed()) win.webContents.send('agent:event', ev);
+      /* opencode permission (BC): ask kanalı UI'a zaten yukarıda düştü — WA
+         sahibine de tek satır bildir gitsin (/approve · /approve always · /deny) */
+      if (ev.type === 'permission.asked' && ev.request && wa && wa.connected) {
+        try {
+          const own = waOwnerNum();
+          if (own) {
+            const pats = Array.isArray(ev.request.patterns) ? ev.request.patterns.join(', ') : '*';
+            sendWaSafe(
+              own + '@s.whatsapp.net',
+              '\u26A0\uFE0F *\u0130zin bekleniyor* \u2014 `' + String(ev.request.permission) + '`\n' +
+                String(pats).slice(0, 160) + '\n\nOnayla: `/approve`\nBu desen i\u00e7in bir daha sorma: `/approve always`\nReddet: `/deny`'
+            ).catch(() => {});
+          }
+        } catch {}
+      }
       try { empatiRememberFromEvent(ev); } catch {} /* empati hafızası: sohbet → kayıt + ilgi öğrenme */
       empatiFlushInjectsOnDone(ev); /* tur ortasında kuyruğa düşen proaktif bildirimleri iş bitince geçmişe bas */
       flushDesktopOnDone(ev); /* biriken desktop mesajlarını sıraya bas */
@@ -6005,7 +6030,21 @@ ipcMain.handle('sec:set', (_e, cfg) => {
   log.info('sec', `güvenlik: onay kapısı ${settings.security.approvals ? 'AÇIK' : 'KAPALI (her şey serbest)'}`);
   return { approvals: settings.security.approvals, alwaysAllow: settings.security.alwaysAllow };
 });
-ipcMain.handle('approval:respond', (_e, { id, ok, always }) => resolveApproval(id, ok, always));
+  ipcMain.handle('approval:respond', (_e, { id, ok, always }) => resolveApproval(id, ok, always));
+  /* opencode permission reply (BC): UI kartı üçlü cevap verir —
+     'once' | 'always' | 'reject' (+ opsiyonel geri bildirim) */
+  ipcMain.handle('permission:reply', (_e, payload) => {
+    try {
+      if (!engine || typeof engine.replyPermission !== 'function') return { ok: false, error: 'ajan hazır değil' };
+      return engine.replyPermission(
+        String((payload && payload.requestId) || ''),
+        String((payload && payload.action) || 'once'),
+        String((payload && payload.message) || '')
+      );
+    } catch (e) {
+      return { ok: false, error: String((e && e.message) || e) };
+    }
+  });
 
 /* ---------------- #Update IPC ---------------- */
 ipcMain.handle('update:status', async () => {
@@ -7419,6 +7458,23 @@ ipcMain.handle('terminal:stop', () => {
    panele orada akıtılır. */
 const bcSessions = new Map(); /* klasör yolu → sessionId */
 
+/* opencode bayrak bindirme (bcCode disiplini): bcCode/bcAgent runtime
+   bayrakları restart sonrası jsonl'den gelmez — her mesajda yeniden bindirilir.
+   Ajan: 'plan' | 'build' | 'sandbox' (bcMode:'plan' oturumları geriye uyumlu
+   plan'a düşer; Sandbox oturumları sandbox ajanına sabitlenir) */
+function bcBindOc(s, folder, agent) {
+  s.workspace = folder;
+  s.bcCode = true;
+  const known = s.bcAgent === 'plan' || s.bcAgent === 'build' || s.bcAgent === 'sandbox';
+  if (agent) {
+    s.bcAgent = agent;
+  } else if (!known) {
+    s.bcAgent = String(s.bcMode || '').toLowerCase() === 'plan' ? 'plan' : 'build';
+  }
+  engine.cache.set(s.id, s);
+  return s;
+}
+
 function bcGetSession(folder) {
   let sid = bcSessions.get(folder);
   if (sid) {
@@ -7431,7 +7487,8 @@ function bcGetSession(folder) {
   const s = engine._load(engine.createSession().id);
   s.messages = s.messages || [];
   s.bgTitle = 'Beast Code'; /* _view.isBg → sohbet geçmişi listesinde gizli */
-  s.bcCode = true; /* engine: her işte todo planı çıkar (BEAST CODE MODU bloğu) */
+  s.bcCode = true; /* opencode ajan sistemi: build/plan ajanları engine'de koşar */
+  s.bcAgent = 'build'; /* opencode varsayılan ajanı (agent.ts:141) */
   try {
     fs.appendFileSync(
       engine._file(s.id),
@@ -7500,9 +7557,7 @@ function bcFlush(folder) {
     clearTimeout(q.timer);
     return;
   }
-  s.workspace = folder;
-  s.bcCode = true;
-  engine.cache.set(s.id, s);
+  bcBindOc(s, folder);
   const payload = mergedAtts ? { text: merged, attachments: mergedAtts } : merged;
   if (engine.send(s.id, payload, { userAction: true })) {
     bcQueue.delete(folder);
@@ -7543,24 +7598,20 @@ ipcMain.handle('beastcode:send', async (_e, payload) => {
 
   if (!engine.publicState().hasModel) return { ok: false, error: 'model yok — Ayarlar → Provider sekmesinden ekle' };
   /* oturumu HEMEN aç: cevap daima gerçek sessionId taşır — renderer paneli bu id ile
-     eşler; boşta/kuyrukta olsa bile id yoksa panel olayları eşleyemez ve ölü kalır */
-  const s = bcGetSession(ws);
-  s.workspace = ws; /* soldaki klasörde çalış */
-  s.bcCode = true; /* todo disiplini + iş sonu hızlı kapanış (engine) */
-  engine.cache.set(s.id, s);
+      eşler; boşta/kuyrukta olsa bile id yoksa panel olayları eşleyemez ve ölü kalır */
+  const s = bcBindOc(bcGetSession(ws), ws);
   const busy = engine.isBusy(s.id);
   if (modeM) {
-    /* mod değişimi anında uygulanır — meşgulken de (yalnız bayrak; engine çakışmaz) */
-    s.bcMode = modeM[1].toLowerCase();
+    /* opencode ajan değişimi (agent.ts: plan/build primary ajanlar) — anında
+       uygulanır, meşgulken de (yalnız ajan bayrağı; koşan tur çakışmaz) */
+    const agent = engine.setBcAgent(s.id, modeM[1].toLowerCase() === 'plan' ? 'plan' : 'build');
     if (win && !win.isDestroyed()) {
-      const body = modeM[1].toLowerCase() === 'plan'
-        ? 'PLAN MODU — dosyaları okuyup inceler, KOD YAZMAZ; adım adım uygulama planı verir.'
-        : modeM[1].toLowerCase() === 'build'
-          ? 'BUILD MODU — son planı UYGULAR: dosyaları düzenler, komutları çalıştırır, doğrular.'
-          : 'OTOMATİK MOD — önce kısa plan, sonra uygulama + doğrulama (OpenCode disiplini).';
-      win.webContents.send('agent:event', { sessionId: s.id, type: 'bc-mode', mode: s.bcMode, body });
+      const body = agent === 'plan'
+        ? 'PLAN AJANI (opencode plan) — salt-okur: dosyaları okur/inceler, KOD YAZMAZ; adım adım uygulama planı verir. Uygulamak için /build.'
+        : 'BUILD AJANI (opencode build) — bağlamı inceler, todowrite ile planlar, uygular, doğrular.';
+      win.webContents.send('agent:event', { sessionId: s.id, type: 'bc-agent', agent, body });
     }
-    return { ok: true, sessionId: s.id, mode: s.bcMode };
+    return { ok: true, sessionId: s.id, agent, mode: agent };
   }
   if (busy) {
     /* OPENCODE STEER: koşan tur varken mesaj kuyrukta BEKLEMEZ — engine.send
@@ -7655,8 +7706,7 @@ ipcMain.handle('bc:open', async (_e, payload) => {
   if (s.bgTitle && s.bgTitle !== 'Beast Code') return { ok: false, error: 'bu oturum Beast Code oturumu değil' };
   /* mevcut klasöre bağlan: sonraki mesajlar BU oturumda sürer */
   const ws = ideRoot();
-  s.workspace = ws;
-  s.bcCode = true;
+  bcBindOc(s, ws);
   bcMarkWs(s, ws);
   engine.cache.set(s.id, s);
   bcSessions.set(ws, s.id);
@@ -7671,7 +7721,8 @@ ipcMain.handle('bc:open', async (_e, payload) => {
     ok: true,
     sessionId: s.id,
     busy: !!engine.isBusy(s.id),
-    mode: s.bcMode || '',
+    agent: s.bcAgent || 'build',
+    mode: s.bcAgent || 'build',
     messages: msgs.slice(-200),
   };
 });
@@ -8773,8 +8824,9 @@ function sandboxGetSession(folder) {
   const s = engine._load(engine.createSession().id);
   s.messages = s.messages || [];
   s.bgTitle = 'Beast Sandbox'; /* _view.isBg → sohbet geçmişinde gizli */
-  s.bcCode = true; /* todo disiplini + hızlı iş kapanışı (engine) */
-  s.sbSandbox = true; /* engine: SANDBOX sistem bloğu — ajan açık kaynak repoda olduğunu bilir */
+  s.bcCode = true; /* opencode ajan sistemi: sandbox ajanı engine'de koşar */
+  s.sbSandbox = true; /* engine: 'sandbox' ajanı çözümlemesi */
+  s.bcAgent = 'sandbox'; /* opencode custom-agent: repo disiplini + panel_run */
   try {
     fs.appendFileSync(
       engine._file(s.id),
@@ -8817,10 +8869,10 @@ function sbFlush(folder) {
     clearTimeout(q.timer);
     return;
   }
-  s.workspace = folder;
-  s.bcCode = true;
-  s.sbSandbox = true;
-  engine.cache.set(s.id, s);
+  /* opencode mantığı: Sandbox da ajan sistemiyle koşar — 'sandbox' ajanı
+     (repo disiplini + panel_run izni, opencode/agents.js'te tanımlı) */
+  s.sbSandbox = true; /* engine: sandbox ajanı çözümlemesi + ÇALIŞTIR paneli köprüsü */
+  bcBindOc(s, folder, 'sandbox');
   const payload = mergedAtts ? { text: merged, attachments: mergedAtts } : merged;
   engine.send(s.id, payload, { userAction: true });
   sbQueue.delete(folder);

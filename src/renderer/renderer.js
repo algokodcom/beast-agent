@@ -1,4 +1,4 @@
-﻿'use strict';
+'use strict';
 
 /* Beast renderer — vanilla JS, event-driven via window.beast IPC bridge. */
 
@@ -762,7 +762,7 @@ function closeChatToolGroup() {
 function argSummary(name, args) {
   try {
     if (name === 'run_command') return String(args.command || '');
-    if (name === 'read_file' || name === 'write_file' || name === 'edit_file') return String(args.path || '');
+    if (name === 'read_file' || name === 'write_file' || name === 'edit_file' || name === 'read' || name === 'write' || name === 'edit') return String(args.path || args.filePath || '');
     if (name === 'grep') return String(args.pattern || '');
     if (name === 'glob') return String(args.pattern || '');
     if (name === 'list_dir') return String(args.path || '.');
@@ -3126,8 +3126,39 @@ async function renderUpdatePane(autoCheck) {
   if (autoCheck) beast.updateCheck().catch(() => {});
 }
 
-/* Sohbete onay kartı düşürür — Onayla / Her zaman / Reddet */function showApprovalCard(ev) {
-  streamEl = null;
+/* opencode permission kartı (BC): izin isteği — Bir kez / Her zaman / Reddet.
+   ev: {id, permission, patterns, metadata, always, tool} */
+function showPermissionCard(req, inBc) {
+  const toolName = (req.tool && req.tool.name) || req.permission || 'izin';
+  let preview = '';
+  try {
+    preview = JSON.stringify(req.metadata || {}).slice(0, 200);
+  } catch {}
+  const card = document.createElement('div');
+  card.className = 'tool-card';
+  card.innerHTML =
+    `<div class="tool-head"><span class="tool-icon"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></span>` +
+    `<span class="tool-name">${escapeHtml(String(req.permission || 'izin'))}</span>` +
+    `<span class="tool-arg">${escapeHtml(String(Array.isArray(req.patterns) ? req.patterns.join(', ') : '*').slice(0, 160))}</span></div>` +
+    `<div class="tool-body open" style="display:flex;gap:8px;align-items:center">` +
+    `<button class="btn ap-ok">${_t('sec_ok')}</button>` +
+    `<button class="btn ghost ap-always">${_t('sec_always')}</button>` +
+    `<button class="btn ghost ap-no">${_t('sec_no')}</button>` +
+    `</div>`;
+  const done = (txt) => {
+    card.querySelector('.tool-body').innerHTML = `<span class="sub">${escapeHtml(txt)}</span>`;
+  };
+  card.querySelector('.ap-ok').addEventListener('click', async () => { await beast.permissionReply(req.id, 'once'); done(_t('sec_ok_done')); });
+  card.querySelector('.ap-always').addEventListener('click', async () => { await beast.permissionReply(req.id, 'always'); done(_t('sec_always_done')); });
+  card.querySelector('.ap-no').addEventListener('click', async () => { await beast.permissionReply(req.id, 'reject'); done(_t('sec_no_done')); });
+  if (inBc && typeof bcLine === 'function') {
+    bcLine('t-dim', '⏳ izin bekleniyor: ' + toolName + (preview ? ' — ' + preview : ''));
+  }
+  els.msgs.appendChild(card);
+  scrollDown(true);
+}
+
+/* Sohbete onay kartı düşürür — Onayla / Her zaman / Reddet */function showApprovalCard(ev) {  streamEl = null;
   const card = document.createElement('div');
   card.className = 'tool-card';
   card.innerHTML =
@@ -5061,6 +5092,15 @@ function onEvent(ev) {
     return;
   }
   if (ev.type === 'install-progress') { updateInstallPct(ev); return; }
+  /* opencode permission (BC): izin kartı — Bir kez / Her zaman / Reddet.
+     BC oturumunda kart IDE panel akışına düşer; diğerlerinde sohbete */
+  if (ev.type === 'permission.asked') {
+    const req = ev.request || {};
+    const isBc = bcSessionId && ev.sessionId === bcSessionId;
+    if (!isBc && ev.sessionId && ev.sessionId !== activeId) return;
+    showPermissionCard(req, isBc);
+    return;
+  }
   /* Headroom durum değişimi → açık olan sekmeyi tazele (Token Sıkıştırma / Kurulum) */
   if (ev.type === 'headroom-status') {
     try {
@@ -5187,7 +5227,7 @@ function onEvent(ev) {
       setStatus(ev.name + '…');
       termAgentEvent(ev);
       /* ajan dosya yazarsa/editlerse açık IDE sekmesini izlemeye al */
-      if ((ev.name === 'write_file' || ev.name === 'edit_file') && ev.args && ev.args.path) codeWriteWatch.set(ev.callId, ev.args.path);
+      if ((ev.name === 'write_file' || ev.name === 'edit_file' || ev.name === 'write' || ev.name === 'edit') && ev.args && ev.args.path) codeWriteWatch.set(ev.callId, ev.args.path);
       break;
     case 'tool-end':
       finishToolCard(ev.callId, ev.ok, ev.result, ev.diff);
@@ -9388,7 +9428,7 @@ function bcIngest(ev) {
       bcSetBusy(true); /* kuyruktan tetiklenen işte panel kendini kilitler */
       bcToolBoxStart(ev.callId, ev.name, ev.args);
       /* ajan dosya yazarsa/editlerse açık IDE sekmesini izlemeye al */
-      if ((ev.name === 'write_file' || ev.name === 'edit_file') && ev.args && ev.args.path) codeWriteWatch.set(ev.callId, ev.args.path);
+      if ((ev.name === 'write_file' || ev.name === 'edit_file' || ev.name === 'write' || ev.name === 'edit') && ev.args && ev.args.path) codeWriteWatch.set(ev.callId, ev.args.path);
       break;
     case 'tool-end':
       bcToolBoxEnd(ev.callId, ev.ok, ev.result, ev.diff);
@@ -9398,7 +9438,7 @@ function bcIngest(ev) {
         codeReloadIfOpen(wp);
       }
       /* dosya/klasör üreten araçlardan sonra soldaki ağaç otomatik tazelensin */
-      if (ev.name === 'write_file' || ev.name === 'edit_file' || ev.name === 'run_command' || ev.name === 'python_run') {
+      if (ev.name === 'write_file' || ev.name === 'edit_file' || ev.name === 'write' || ev.name === 'edit' || ev.name === 'run_command' || ev.name === 'python_run') {
         ideRefreshTree();
       }
       break;
@@ -9411,13 +9451,17 @@ function bcIngest(ev) {
       bcQrShow(ev.qr, ev.url);
       break;
     case 'bc-mode':
-      /* OpenCode disiplini çalışma modu: başlıkta rozet + panelde bilgi satırı */
-      if (els.bcTitle) {
-        els.bcTitle.textContent =
-          ev.mode === 'plan' ? 'BEAST CODE · PLAN' :
-          ev.mode === 'build' ? 'BEAST CODE · BUILD' : 'BEAST CODE';
+    case 'bc-agent':
+      /* opencode ajan değişimi: başlıkta rozet + panelde bilgi satırı */
+      {
+        const agentName = ev.agent || ev.mode || '';
+        if (els.bcTitle) {
+          els.bcTitle.textContent =
+            agentName === 'plan' ? 'BEAST CODE · PLAN' :
+            agentName === 'build' ? 'BEAST CODE · BUILD' : 'BEAST CODE';
+        }
+        bcLine('t-dim', '[' + (ev.body || agentName || 'ajan değişti') + ']');
       }
-      bcLine('t-dim', '[' + (ev.body || ev.mode || 'mod değişti') + ']');
       break;
     case 'done':
       bcFlushStream();
@@ -9863,7 +9907,7 @@ function stIngest(ev) {
       break;
     case 'tool-end':
       stToolBoxEnd(ev.callId, ev.ok, ev.result, ev.diff);
-      if (ev.name === 'write_file' || ev.name === 'edit_file' || ev.name === 'run_command' || ev.name === 'python_run') {
+      if (ev.name === 'write_file' || ev.name === 'edit_file' || ev.name === 'write' || ev.name === 'edit' || ev.name === 'run_command' || ev.name === 'python_run') {
         ideRefreshTree(); /* ffmpeg çıktısı anında ağaca düşer */
       }
       break;
@@ -10094,7 +10138,7 @@ function sbIngest(ev) {
       const ok = ev.ok !== false;
       sbLine(ok ? 't-dim' : 't-err', (ok ? '  \u2713 ' : '  \u2717 ') + String(ev.result || '').replace(/\s+/g, ' ').slice(0, 160));
       /* ajan dosya yazarsa/editlerse soldaki repo ağacı canlı tazelenir */
-      if (ev.name === 'write_file' || ev.name === 'edit_file' || ev.name === 'run_command') ideRefreshTree();
+      if (ev.name === 'write_file' || ev.name === 'edit_file' || ev.name === 'write' || ev.name === 'edit' || ev.name === 'run_command') ideRefreshTree();
       break;
     }
     case 'status':

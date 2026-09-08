@@ -1,4 +1,4 @@
-﻿'use strict';
+'use strict';
 
 /* Beast engine: sessions, frugal context, streaming tool loop.
    v2: token-bazlı bağlam bütçesi (kullanım kalibrasyonlu), paralel tool
@@ -24,6 +24,10 @@ const apps = require('./apps');
 const pdfwrite = require('./pdfwrite');
 const { estTokens, estMsgTokens } = require('./tokens');
 const log = require('./logger');
+/* opencode mantığı (birebir port): ajanlar, izinler, tool seti, promptlar —
+   Beast Code (bcCode) oturumları bu çekirdek üzerinden koşar */
+const opencode = require('./opencode');
+const { AskService } = opencode;
 
 const MAX_TURNS = 40;
 const SUB_MAX_TURNS = 8;
@@ -137,15 +141,9 @@ const PERM_TOOL_SETS = {
 };
 const PERM_LEVELS = ['all', 'web', 'read', 'chat'];
 
-/* opencode plan agent portu: PLAN modu PROMPT düzeyinde değil GERÇEKten
-   salt-okurdur — yazma/çalıştırma araçları setten düşer, sadece plan çıkar */
-const PLAN_ALLOW_TOOLS = new Set([
-  'read_file', 'list_dir', 'grep', 'glob',
-  'web_search', 'http_fetch', 'webfetch', 'deep_search',
-  'browser_open', 'browser_read', 'browser_snapshot',
-  'todo_write', 'memory_search', 'kb_search', 'ocr_read',
-  'git_diff_review', 'repo_map', 'repo_symbols', 'xlsx_read',
-]);
+/* opencode plan ajanı salt-okurluğu artık PERMISSION kurallarından türer
+   (opencode/agents.js: edit {"*":"deny"} → Permission.disabled seti düşürür) —
+   elle bakılan araç beyaz listesi kalktı (tamamen opencode mantığı) */
 
 /* İzin değerini normalize eder: 'all' → ['all'], 'web' → ['web'],
    'web,read' / ['web','read'] → ['web','read'] (sıra PERM_LEVELS'e göre dizilir).
@@ -313,6 +311,15 @@ class Engine {
     this.notifyOwnerFail = opts.notifyOwnerFail !== false; // #25 hata mail bildirimi (runtime /notify)
     this.reminders = opts.reminders || null; // hatırlatıcı kancası (main enjekte eder)
     this.watchers = opts.watchers || null; // arka plan izleyici köprüsü (main enjekte eder)
+    /* opencode permission Service (birebir port): ask/reply — once|always|reject.
+       BC oturumlarında riskli araç onayı bu akışla sorulur; UI 'permission.asked'
+       eventi dinler, 'permission:reply' ile yanıtlar. approved listesi oturum
+       boyunca "always" desenlerini kural olarak taşır (opencode birebir). */
+    this._perm = new AskService((ev) => this.emit(ev));
+    this.bcAskApprovals = opts.approvals ? true : false; // onay ayarı → opencode user konfigi gibi "ask" üretir
+    /* opencode reminders.ts: bu oturumda daha önce plan ajanı koştu mu?
+       plan→build geçişinde build-switch.txt synthetic part'ı buna bağlanır */
+    this._bcWasPlan = new Map(); // sessionId -> bool
     /* onay kapısı: riskli araç öncesi dış onay beklenir ({request} async) */
     this.approvals = opts.approvals || null;
     /* "bir daha sorma" onaylanan araçlar — bu setteki riskli araçlar sorulmaz */
@@ -942,11 +949,10 @@ class Engine {
     return lv.effort || null;
   }
 
-  /* Oturum bazlı düşünme çabası: Beast Code hız modunda en fazla 'low' */
+  /* opencode birebir: düşünme çabası ajan tanımına değil kullanıcı ayarına
+     bağlıdır — eski "BC'de low'a sabitle" hız kısıtı kalktı (opencode'da yok) */
   _thinkEffortFor(session) {
-    const e = this._thinkEffort();
-    if (!session || !session.bcCode) return e;
-    return e ? 'low' : null;
+    return this._thinkEffort();
   }
 
   _thinkLabel() {
@@ -1525,54 +1531,149 @@ class Engine {
     return out;
   }
 
-  /* Beast Code (IDE paneli): VS Code hızında çalışsın diye SECMET prompt.
-     OpenCode kodlama disiplini gömülü: bağlam → plan → küçük diff → doğrula.
-     GENEL AMAÇLI kodlama ajanı — web/mobil gibi tek stack'e zorlanmaz; stack'i
-     projenin kendi dosyaları belirler. Hafıza embedding araması, skills
-     taraması, kişilik/kural blokları YOK — prompt kısa kalır → ilk token
-     hızlı, tur maliyeti düşük. */
-  buildBcSystem(session) {
-    const nowD = new Date();
-    const localDate = nowD.toLocaleDateString('tr-TR');
-    /* önek-cache disiplini (opencode Context Epoch): dakika yerine saat —
-       system prompt her dakika değişse sağlayıcı önbelleği sürekli bozulur */
-    const localTime = String(nowD.getHours()).padStart(2, '0') + ':00';
-    const mode = String((session && session.bcMode) || 'auto').toLowerCase();
-    const modeBlock =
-      mode === 'plan'
-        ? 'ÇALIŞMA MODU: PLAN 🔍 — dosyaları oku/incele (read_file, list_dir), KOD YAZMA; mevcut yapıyı özetle ve adım adım UYGULAMA PLANI ver (hangi dosya, ne değişecek, nasıl doğrulanır). Kullanıcı /build deyince plan uygulanır.'
-        : mode === 'build'
-          ? 'ÇALIŞMA MODU: BUILD 🛠 — son planı SOHBETTEKİ bağlamdan al ve UYGULA: dosyaları düzenle, komutları çalıştır, doğrula. Yeni plan açma; en fazla 1 cümlelik yön gösterimi + uygulama.'
-          : 'ÇALIŞMA MODU: OTOMATİK ⚡ — önce 2-4 satırlık mini plan (todo_write), sonra hemen uygula + doğrula.';
+  /* ---------- opencode mantığı: Beast Code ajan sistemi ----------
+     opencode-dev/packages/opencode/src birebir portu — BC oturumları artık
+     "mod" değil AJAN koşar (agent/agent.ts):
+       build  — varsayılan (edit serbest, question/plan_enter allow)
+       plan   — salt-okur: edit * deny (yalnız .opencode/plans/*.md yazılabilir)
+     System birleşimi (llm/request.ts:58-66 + prompt.ts:1257-1269):
+       [ ajanın promptu VARSA o, yoksa model-bazlı ana prompt (beast.txt,
+         gpt.txt, anthropic.txt, gemini.txt, kimi.txt, codex.txt, default.txt),
+         environment bloğu, proje talimatları (AGENTS.md), skills kataloğu ] */
+
+  /* BC ajanını çözer (opencode agents.get):
+       - Sandbox oturumları (sbSandbox) → 'sandbox' ajanı (repo disiplini + panel_run)
+       - session.bcAgent ('plan'|'build') — eski bcMode:'plan' oturumları geriye
+         uyumlu plan ajanına düşer
+     Studio/Finance/bgJob kendi ajan dünyalarında koşar — opencode BC sistemine
+     katılmaz (buildStudioSystem/buildFinanceSystem/buildBgSystem öncelikli). */
+  _bcAgentInfo(session) {
+    if (!session || !session.bcCode) return null;
+    if (session.studio || session.finance || session.bgJob) return null;
+    const name = session.sbSandbox
+      ? 'sandbox'
+      : session.bcAgent === 'plan' || session.bcAgent === 'build' || session.bcAgent === 'sandbox'
+        ? session.bcAgent
+        : String(session.bcMode || '').toLowerCase() === 'plan'
+          ? 'plan'
+          : 'build';
+    const ws = (session && session.workspace) || this.workspace;
+    const user = this.bcAskApprovals ? { bash: 'ask', edit: { '*': 'ask' } } : {};
+    const info = opencode.agents.get(name, { worktree: ws, promptExplore: opencode.PROMPT_EXPLORE, user });
+    if (info) return info;
+    const fallbackName = session.sbSandbox ? 'sandbox' : 'build';
+    return opencode.agents.get(fallbackName, { worktree: ws, promptExplore: opencode.PROMPT_EXPLORE, user });
+  }
+
+  /* opencode opencode ajan değişimi: /plan /build — oturumun ajanı döner,
+     plan→build geçişi reminders (build-switch.txt) için işaretlenir */
+  setBcAgent(sessionId, name) {
+    const s = this.cache.get(String(sessionId || ''));
+    if (!s || !s.bcCode) return null;
+    const prev = s.bcAgent || 'build';
+    const next = name === 'plan' ? 'plan' : 'build';
+    if (prev === 'plan' && next === 'build') this._bcWasPlan.set(String(s.id), true);
+    s.bcAgent = next;
+    this.cache.set(s.id, s);
+    this.emit({ type: 'bc-agent', sessionId: s.id, agent: next, prev });
+    return next;
+  }
+
+  /* opencode Permission.reply (UI/WA köprüsü): 'once' | 'always' | 'reject' */
+  replyPermission(requestId, action, message) {
+    try {
+      return this._perm.reply(requestId, action === 'always' ? 'always' : action === 'reject' ? 'reject' : 'once', message);
+    } catch (e) {
+      return { ok: false, error: String((e && e.message) || e) };
+    }
+  }
+
+  /* opencode request.ts prepare — system birleşimi (birebir sıra) */
+  buildOcSystem(session, agentInfo) {
+    const sid = String(session && session.id);
+    const sel = this.sessionModel.get(sid) || this.modelFor(null) || this.sel || { model: '', providerId: '' };
+    const ws = (session && session.workspace) || this.workspace;
+    const agentPrompt = (agentInfo && agentInfo.prompt) || '';
+    const main = agentPrompt ? [agentPrompt] : opencode.systemprompt.provider(sel.model);
     const proj = this._projectInstructions(session);
-    return (
-      'Sen BEAST CODE\u2019sun — IDE panelinde çalışan, OpenCode disiplinli hızlı bir kodlama ajanı. VS Code gibi çevik ol.\n' +
-      'GENEL AMAÇLI KODLAMA AJANISIN — tek bir proje türüne sınırlı değilsin: web, backend/API, mobil, masaüstü, CLI, kütüphane, script, oyun, veri, DevOps, gömülü… İstenen neyse o. İstenmeyen şeyi (ör. site değilken site) kendiliğinden ÜRETME.\n' +
-      `Çalışma klasörü: ${(session && session.workspace) || this.workspace}\n` +
-      ((session && session.sbSandbox)
-        ? 'BEAST SANDBOX MODUNDASIN: GitHub\u2019dan indirilmiş AÇIK KAYNAK bir repo klasöründesin (Beast-Sandbox). Bu kodun sahibi değilsin — hazır bir dış proje; repo sahibinin konvansiyonlarına uy, gereksiz yeniden biçimlendirme yapma. İşe README + paket bildirim dosyasıyla başla (list_dir/glob); bağımlılıklar kurulu değilse önce kurulum komutunu çalıştır (npm install vb.). UZUN SÜRELİ sunucu/süreç (npm start, npm run dev, python app.py vb.) run_command ile ASLA başlatma — tur kilitlenir; kullanıcı çalıştırmak isterse panel_run aracıyla ÇALIŞTIR paneline bırakın (çıktı orada canlı akar, ■ ile durur) ve adresi kullanıcıya bildir. panel_run yalnız BİR süreç çalıştırır.\n'
-        : '') +
-      `Yerel zaman: ${localDate} ${localTime}\n` +
-      `${modeBlock}\n` +
-      'STACK TESPİTİ: işe başlarken workspace\u2019i tanı — package.json, go.mod, Cargo.toml, requirements.txt/pyproject.toml, pom.xml/build.gradle, *.csproj, pubspec.yaml, Gemfile, composer.json vb. işaret dosyalarına bak (list_dir + glob). Dili, framework\u2019ü, konvansiyonları ve build/test/run komutlarını PROJE belirler; her işte aynı teknolojiye itme, mevcut stack\u2019e uy.\n' +
-      (proj
-        ? '# PROJE TALİMATLARI (workspace AGENTS/CLAUDE/CONTEXT dosyalarından — daima uy)\n' + proj + '\n'
-        : '') +
-      'WORKFLOW (her işte bu sıra):\n' +
-      '1) BAĞLAM: değiştirmeden önce ilgili dosyaları OKU — read_file satır numaralı döner (N: içerik); büyük dosyada devamını offset parametresiyle oku, ASLA baştan okuma; bir dosyayı aynı oturumda BİR KEZ okumak yeter — okuduğun içerik oturum SONUNA KADAR bağlamda KALIR, edit yaptıktan sonra dosyayı yeniden okuma YASAK (güncel durum = son okuma + kendi editlerin). İçerik araması için grep (regex), dosya adı için glob kullan; varsayım yapma, mevcut stili/konvansiyonu takip et.\n' +
-      '2) PLAN: 2+ adımlı işlerde İLK EYLEM todo_write olsun (2-6 madde); her adım bitince status:"done" ile GÜNCELLE — liste bitene kadar iş bitmiş sayılmaz.\n' +
-      '3) EDİT: VAR OLAN dosyada önce edit_file kullan (old_string/new_string ile yalnız ilgili bölümü değiştir; birden çok eşleşme varsa bağlam ekle ya da replace_all); write_file yalnız YENİ dosya ya da tam yeniden yazım için. Dosya işlemleri için ÖZEL ARAÇLARI kullan (edit_file/write_file/read_file/grep/glob); run_command terminal işlerindir (build, git, kurulum, paket) — dosya düzenlemeyi komut/scripte yedirme, edit_file ile yap. İlgisiz yeniden biçimleme/kayıp boşluk değişikliği YAPMA. edit_file/write_file sonucu additions/deletions döner ve değişiklik diske ANINDA uygulanır — doğrulamak için dosyayı TEKRAR OKUMA YASAK; sonraki editi önceki okuduğun içerik + kendi değişikliklerin üzerinden zincirle.\n' +
-      '4) DOĞRULA: edit sonrası projenin KENDİ komutlarıyla derle/test/lint çalıştır (run_command: npm test, go test ./..., cargo test, pytest, mvn test vb. — hangisi geçerliyse); hata varsa DÜZELT ve TEKRAR dene (en fazla 2 doğrulama turu) — kırmızı bırakma. Doğrulama read_file ile DEĞİL run_command ile yapılır.\n' +
-      '5) RAPOR: 1-3 satır — ne değişti + doğrulama sonucu (ör. "npm test ✓ 154/154"). Uzun açıklama yok.\n' +
-      'ÖNİZLEME: panel Preview\u2019da dahili statik sunucuyu KENDİSİ yönetir — statik HTML işinde sunucu başlatma (python -m http.server vs. GEREKMEZ); index.html\u2019i hazır bırak, kullanıcı Preview\u2019a basınca canlı açılır. Yalnız gerçek dev-server gerektiren projelerde (React/Vite/Next/Expo vb.) kendi sunucunu BLOKLAMADAN arka planda başlat ve çalışan adresi (http://localhost:PORT) raporda yaz. file:// protokolü ASLA kullanılmaz.\n' +
-      'HIZ KURALLARI:\n' +
-      '- VAR OLAN dosyayı edit_file ile değiştir, YENİ dosyayı write_file ile yarat; basit dosya oluşturma/düzenleme için Python scripti yazma; python_run yalnız gerçek hesap/veri işleme gerekiyorsa.\n' +
-      '- Bağımsız araç çağrılarını AYNI TURDA paralel ver (birden çok read_file tek turda).\n' +
-      '- Dosyayı kullanıcı söylememişse list_dir ile yapıyı görüp kendin karar ver.\n' +
-      '- Run_command PowerShell ortamında çalışır (Windows): KALICI oturum — cd ve $env değişkenleri çağrılar arasında korunur; büyük çıktıda tam çıktı geçici dosyaya düşer, read_file ile oku. shell:"bash" verirsen git-bash ile bash sözdizimi koşar.\n' +
-      '- Soru sorma, sohbet etme; uygulayıp özetle. Kullanıcı /plan /build /auto ile modu değiştirir.\n' +
-      FORMAT_RULES
-    );
+    const skillsBlock = (() => {
+      try {
+        return opencode.systemprompt.skills((agentInfo && agentInfo.permission) || [], () => skills.scan());
+      } catch {
+        return undefined;
+      }
+    })();
+    /* opencode'da birleşim .filter(x => x).join("\n") — ajan promptu varsa
+       model-bazlı dosya YERİNE geçer */
+    return [
+      ...main,
+      ...opencode.systemprompt.environment({
+        modelId: sel.model,
+        providerId: sel.providerId || '?',
+        directory: ws,
+        worktree: this.workspace,
+      }),
+      ...(proj ? [proj] : []),
+      ...(skillsBlock ? [skillsBlock] : []),
+    ]
+      .filter((x) => x)
+      .join('\n');
+  }
+
+  /* opencode araç izinleri: pattern'ler araç çağrısından türer.
+     bash'ta always: [komut] — opencode tree-sitter deseni basitleştirilmiş. */
+  _bcPermissionFor(name, args, ws) {
+    const a = args || {};
+    const abs = (p) => {
+      try {
+        const raw = String(p || '').trim();
+        if (!raw) return '*';
+        return path.isAbsolute(raw) ? path.resolve(raw) : path.resolve(ws || this.workspace, raw);
+      } catch {
+        return '*';
+      }
+    };
+    switch (name) {
+      case 'edit_file':
+      case 'write_file':
+        return { permission: 'edit', patterns: [abs(a.path)], always: [] };
+      case 'run_command':
+        return { permission: 'bash', patterns: [String(a.command || '*')], always: [String(a.command || '*')] };
+      case 'read_file':
+        return { permission: 'read', patterns: [abs(a.path)], always: [] };
+      case 'glob':
+        return { permission: 'glob', patterns: [String(a.pattern || '*')], always: [] };
+      case 'grep':
+        return { permission: 'grep', patterns: [String(a.pattern || '*')], always: [] };
+      case 'list_dir':
+        return { permission: 'list', patterns: [abs(a.path)], always: [] };
+      case 'webfetch':
+        return { permission: 'webfetch', patterns: [String(a.url || '*')], always: [] };
+      case 'web_search':
+        return { permission: 'websearch', patterns: [String(a.query || '*')], always: [] };
+      case 'todo_write':
+        return { permission: 'todowrite', patterns: ['*'], always: ['*'] };
+      case 'delegate_task':
+        return { permission: 'task', patterns: [String(a.subagent_type || '*')], always: [] };
+      default:
+        return { permission: name, patterns: ['*'], always: [] };
+    }
+  }
+
+  /* opencode external-directory: workspace dışı dosya erişimi ayrı izin ister
+     (tool/external-directory.ts) — read/edit/write kapsar */
+  _bcExternalCheck(name, args, ws) {
+    if (name !== 'read_file' && name !== 'edit_file' && name !== 'write_file') return null;
+    const raw = String((args && args.path) || '').trim();
+    if (!raw) return null;
+    try {
+      const abs = path.isAbsolute(raw) ? path.resolve(raw) : path.resolve(ws || this.workspace, raw);
+      const base = path.resolve(ws || this.workspace);
+      if (path.normalize(abs).toLowerCase().startsWith(path.normalize(base).toLowerCase())) return null;
+      return { permission: 'external_directory', patterns: [abs], always: [] };
+    } catch {
+      return null;
+    }
   }
 
   /* Beast Studio (video paneli): video YAPMA ve DÜZENLEME ajanı. Workspace'teki
@@ -3211,36 +3312,27 @@ class Engine {
     session.messages = keep;
   }
 
-  async _chatTurn(session, signal, onDelta, toolsList = TOOLS) {
-    /* MCP: %APPDATA%\beast\mcp.json'daki etkin serverların araçlarını şema listesine ekle
-       (bağlı değilse lazy bağlanır; kapalıysa liste değişmez; Beast Code paneli hızlı
-       ilk-token sözü için MCP'siz kalır) */
-    if (!session || !session.bcCode) toolsList = await mcp.mergeTools(toolsList);
-    /* Beast Apps: kurulu app'lerin araçları (app__<id>__<tool>) modele açılır */
-    toolsList = apps.mergeTools(toolsList);
-    /* panel_run yalnız SANDBOX oturumlarında görünsün — diğer panellerde
-       modelin alet çantasında olmasın (hook olmadan çalışmaz) */
-    if (!(session && session.sbSandbox)) {
-      toolsList = toolsList.filter((t) => !(t && t.function && t.function.name === 'panel_run'));
+  async _chatTurn(session, signal, onDelta, toolsList = TOOLS, bcOpts = null) {
+    /* opencode mantığı (BC): araç seti opencode builtin registry'si — read/edit/
+       write/bash/glob/grep/list/webfetch/websearch/todowrite/task/skill.
+       MCP/apps/panel_run BC'ye GİRMEZ (opencode disiplini: hızlı ilk token). */
+    const bcAgent = session && session.bcCode ? this._bcAgentInfo(session) : null;
+    if (bcAgent) {
+      toolsList = opencode.toolmap.definitions();
+    } else {
+      /* MCP: %APPDATA%\beast\mcp.json'daki etkin serverların araçlarını şema listesine ekle
+         (bağlı değilse lazy bağlanır; kapalıysa liste değişmez) */
+      toolsList = await mcp.mergeTools(toolsList);
+      /* Beast Apps: kurulu app'lerin araçları (app__<id>__<tool>) modele açılır */
+      toolsList = apps.mergeTools(toolsList);
+      /* panel_run yalnız SANDBOX oturumlarında görünsün — diğer panellerde
+         modelin alet çantasında olmasın (hook olmadan çalışmaz) */
+      if (!(session && session.sbSandbox)) {
+        toolsList = toolsList.filter((t) => !(t && t.function && t.function.name === 'panel_run'));
+      }
     }
     /* opencode agent.ts port: özel ajan tanımı — prompt/model/araç/steps */
     const adef = this._agentDefFor(session, !!session.bgJob);
-    /* Beast Code: todo_write açıklaması "3+ adım" kısıtı içerir ve model küçük
-       işlerde atlar — bcCode oturumunda HER işte İLK araç olacak şekilde değiştir */
-    if (session && session.bcCode) {
-      toolsList = toolsList.map((t) =>
-        t && t.function && t.function.name === 'todo_write'
-          ? {
-              ...t,
-              function: {
-                ...t.function,
-                description:
-                  'Replace the visible task checklist for this chat. Beast Code session: ALWAYS call this tool as your VERY FIRST action for EVERY job (even tiny 1-step jobs) BEFORE any text or other tool, then update statuses (status:"done") as you complete each step. Keep titles short, verb-first.',
-              },
-            }
-          : t
-      );
-    }
     const promptText = this._lastUserText(session);
     let system = session.bgJob
       ? this.buildBgSystem(session)
@@ -3248,18 +3340,21 @@ class Engine {
         ? this.buildStudioSystem(session)
         : session.finance
           ? this.buildFinanceSystem(session)
-          : session.bcCode
-            ? this.buildBcSystem(session)
+          : bcAgent
+            ? this.buildOcSystem(session, bcAgent)
             : await this.buildSystem(promptText, session);
     // Granül izin: oturumun yetki seviyesine göre araç seti daraltılır.
     // Çoklu izin (ör. web+read) seçiliyse kümeler BİRLEŞİR — hepsinin araçları açık olur.
+    // BC'de opencode adları Beast adına çevrilerek denetlenir (read → read_file).
     const perms = this.sessionPermFor(session.id);
     let allowedSet = null;
     if (!perms.includes('all')) {
       allowedSet = new Set();
       for (const p of perms) for (const t of PERM_TOOL_SETS[p] || []) allowedSet.add(t);
     }
-    let activeTools = allowedSet ? toolsList.filter((t) => allowedSet.has(t.function.name)) : toolsList;
+    let activeTools = allowedSet
+      ? toolsList.filter((t) => allowedSet.has(opencode.toolmap.TO_BUILTIN[t.function.name] || t.function.name))
+      : toolsList;
     /* Beast Finance: mt5_* araçları YALNIZ finance oturumlarında görünür */
     if (FINANCE_TOOL_SET.size && !(session && session.finance)) {
       activeTools = activeTools.filter((t) => !FINANCE_TOOL_SET.has(t.function.name));
@@ -3276,9 +3371,16 @@ class Engine {
       /* CEO: uygulayıcı araçlar kapalı — her şey paralel ajana devredilir */
       activeTools = activeTools.filter((t) => !CEO_EXEC_TOOLS.has(t.function.name));
     }
-    if (session.bcCode && session.bcMode === 'plan') {
-      /* opencode plan agent: salt-okur zorlaması — araç seti GERÇEKten daralır */
-      activeTools = activeTools.filter((t) => PLAN_ALLOW_TOOLS.has(t.function.name));
+    if (bcAgent) {
+      /* opencode permission.visibleTools (birebir): ruleset'te pattern:'*'+deny
+         olan araçlar setten düşer — plan ajanında edit/write GERÇEKTEN gizlenir,
+         salt-okurluk prompta kalmaz. opencode'da edit/write/apply_patch aynı
+         "edit" iznine iner. */
+      const hidden = opencode.Permission.disabled(
+        activeTools.map((t) => t.function.name),
+        bcAgent.permission
+      );
+      if (hidden.size) activeTools = activeTools.filter((t) => !hidden.has(t.function.name));
     }
     if (adef && adef.tools) {
       /* özel ajan araç beyaz listesi — tanımda olmayan araç görünmez */
@@ -3316,7 +3418,25 @@ class Engine {
     /* opencode port: model bağlamına göre dinamik bütçe + compaction özeti */
     const selEarly = this.sessionModel.get(String(session.id)) || this.modelFor(null) || this.sel;
     const dynBudget = this._historyBudget(selEarly);
-    let payload = this._buildPayload(system, session.messages, session.notes, dynBudget, session.summary);
+    /* opencode SessionReminders.apply (reminders.ts birebir): plan ajanındaysa
+       plan.txt salt-okur hatırlatması, plan→build geçişinde build-switch.txt
+       son USER mesajına synthetic eklenir. session.messages ASLA değişmez —
+       her tur taze kopyaya uygulanır (opencode her turda DB'den yeniden yükler). */
+    let msgsForPayload = session.messages;
+    if (bcAgent) {
+      msgsForPayload = opencode.systemprompt.applyReminders(
+        session.messages,
+        bcAgent,
+        !!this._bcWasPlan.get(String(session.id))
+      );
+    }
+    let payload = this._buildPayload(system, msgsForPayload, session.notes, dynBudget, session.summary);
+    if (bcAgent && bcOpts && bcOpts.isLastStep) {
+      /* opencode prompt.ts:1178-1181 — isLastStep: MAX_STEPS_PROMPT assistant
+         mesajı olarak akışa eklenir; araçlar kilitlenir (yalnız metin kapanışı) */
+      if (Array.isArray(payload.messages)) payload.messages.push({ role: 'assistant', content: opencode.MAX_STEPS_PROMPT });
+      activeTools = [];
+    }
     // Vision model sadece mesajda görsel varsa devreye girer; terminal ise prompt'un
     // shell/command işi olduğunda. Aksi halde ana model kullanılır.
     let role = this._lastUserHasImage(session) ? 'vision' : null;
@@ -3365,7 +3485,7 @@ class Engine {
             type: 'status',
             status: `🧠 düşük uyumlu sağlayıcı: geçmişteki düşünme içerikleri temizlendi (${dropped} mesaj) — tur yeniden deneniyor`,
           });
-          payload = this._buildPayload(system, session.messages, session.notes, dynBudget, session.summary);
+          payload = this._buildPayload(system, msgsForPayload, session.notes, dynBudget, session.summary);
           res = await this._streamWithFallbacks(
             session,
             payload,
@@ -3399,7 +3519,7 @@ class Engine {
         type: 'status',
         status: `\u{1F5BC} bu model görüntü girişini desteklemiyor — sohbetten ${removed} görsel kaldırıldı, mesaj görüntüsüz yanıtlanıyor (/change ile görsel destekli modele geçebilirsin)`,
       });
-      payload = this._buildPayload(system, session.messages, session.notes, dynBudget, session.summary);
+      payload = this._buildPayload(system, msgsForPayload, session.notes, dynBudget, session.summary);
       res = await this._streamWithFallbacks(
         session,
         payload,
@@ -3477,9 +3597,17 @@ class Engine {
          doom-loop koruması + kullanıcı ■ kırar. bg ajanlarda kapanış
          disiplini için tavan kalır. */
       const runDef = this._agentDefFor(session, !!session.bgJob);
+      /* opencode mantığı (BC): ajan çözümleme — build/plan ajanı ruleset'iyle
+         beraber tur boyunca kullanılır (permission ask + disabled filtreleri) */
+      const bcAgent = session.bcCode ? this._bcAgentInfo(session) : null;
+      /* opencode prompt.ts:1178 (birebir): maxSteps = agent.steps ?? Infinity —
+         build/plan ajanlarında steps tanımsızdır → sınırsız; bağlam dolunca
+         compaction özetler, sonsuz döngüyü doom-loop koruması + ■ kırar. */
       const maxTurns = session.bgJob
         ? Math.max(2, Math.min(60, (runDef && runDef.steps) || MAX_TURNS))
-        : Infinity;
+        : bcAgent
+          ? (bcAgent.steps ?? Infinity)
+          : Infinity;
       const recentSigs = []; // doom-loop dedektörü: son araç imzaları
       /* Beast Code canlı önizleme: run boyunca üretilen eserleri topla —
          iş bitince dahili tarayıcıda CANLI açılır (site/dev server/HTML) */
@@ -3528,9 +3656,12 @@ class Engine {
         /* opencode runLoop portu: istek kurulmadan ÖNCEKİ mesaj sayısı —
            koşan tur SIRASINDA gelen (steer) user mesajlarını saptar */
         const preLen = session.messages.length;
+        /* opencode prompt.ts:1178-1181: isLastStep = step >= maxSteps — son
+           turda MAX_STEPS_PROMPT enjekte edilir ve araçlar kilitlenir */
+        const isLastStep = !!bcAgent && maxTurns !== Infinity && turn >= maxTurns - 1;
         const res = await this._chatTurn(session, ctrl.signal, (delta) =>
           emit({ type: 'token', delta })
-        );
+        , bcAgent ? opencode.toolmap.definitions() : undefined, bcAgent ? { isLastStep } : null);
         /* opencode port (processor.ts:477-482): step-finish usage'ı compaction
            tetiğine besle — gerçek toplam biliniyorsa tahmine gerek kalmaz */
         const uTot =
@@ -3615,14 +3746,16 @@ class Engine {
 
         // Paralel yürütme — bağımsız çağrılar beklemesin
         session.toolsSinceReflect = (session.toolsSinceReflect || 0) + res.toolCalls.length;
-        if (!this._knownToolNames) this._knownToolNames = new Set(TOOLS.map((t) => t.function.name));
+        if (!this._knownToolNames) this._knownToolNames = new Set([...TOOLS.map((t) => t.function.name), ...opencode.toolmap.names()]);
         await Promise.all(
           res.toolCalls.map(async (tc) => {
             let name = tc.function && tc.function.name;
             /* opencode port (llm.ts:296-312 repairToolCall): model aracı adını
-               yanlış yazdıysa büyük/küçük harf normalizasyonuyle onar — tur kaybı yok */
+               yanlış yazdıysa büyük/küçük harf normalizasyonuyle onar — tur kaybı yok.
+               BC'de havuz opencode builtin seti (read/edit/write/bash...) */
             if (name && !this._knownToolNames.has(name)) {
-              const fixed = TOOLS.find((t) => t.function.name.toLowerCase() === String(name).trim().toLowerCase());
+              const pool = bcAgent ? opencode.toolmap.definitions() : TOOLS;
+              const fixed = pool.find((t) => t.function.name.toLowerCase() === String(name).trim().toLowerCase());
               if (fixed) {
                 emitSafe(this, sid, {
                   type: 'status',
@@ -3638,33 +3771,59 @@ class Engine {
             emit({ type: 'tool-start', callId: tc.id, name, args });
             emit({ type: 'status', status: name });
             /* opencode port (processor.ts:29 + 356-380): aynı araç + birebir
-               aynı argüman 3 kez koştuysa 4.'yü çalıştırma — döngüye para/hız
-               akıtma; modele hata bildirimiyle yol göster */
+               aynı argüman 3 kez koştuysa 4.'yi çalıştırma — döngüye para/hız
+               akıtma; BC'de opencode disiplini: doom_loop İZİN ister (defaults:
+               doom_loop ask) — kullanıcı onaylarsa koşmaya devam eder */
             const sig = name + '\u0000' + String((tc.function && tc.function.arguments) || '');
             const dups = recentSigs.reduce((a, s) => a + (s === sig ? 1 : 0), 0);
             recentSigs.push(sig);
             let out;
             if (dups >= DOOM_LOOP_THRESHOLD) {
-              out = JSON.stringify({
-                error:
-                  `doom-loop: ${name} aynı argümanlarla ${DOOM_LOOP_THRESHOLD} kez çalıştı ve hep aynı sonucu verdi. ` +
-                  'Aynı çağrıyı tekrarlamak işe yaramaz — farklı bir yöntem/argüman dene ya da eldeki bilgilerle nihai cevabı ver.',
-              });
-              emitSafe(this, sid, { type: 'status', status: `⛔ doom-loop: ${name} tekrarı engellendi` });
+              if (bcAgent) {
+                try {
+                  await this._perm.ask({
+                    sessionId: sid,
+                    ruleset: bcAgent.permission,
+                    permission: 'doom_loop',
+                    patterns: [name],
+                    always: [name],
+                    metadata: { callCount: DOOM_LOOP_THRESHOLD, arguments: (tc.function && tc.function.arguments) || '' },
+                    tool: { name, args },
+                  });
+                  out = await this._execTool(name, args, ctrl.signal, sid);
+                } catch (permErr) {
+                  out = JSON.stringify({
+                    error:
+                      `doom-loop: ${name} aynı argümanlarla ${DOOM_LOOP_THRESHOLD} kez koştu. ` +
+                      AskService.errorText(permErr) +
+                      ' Aynı çağrıyı tekrarlamak işe yaramaz — farklı bir yöntem/argüman dene ya da eldeki bilgilerle nihai cevabı ver.',
+                  });
+                }
+              } else {
+                out = JSON.stringify({
+                  error:
+                    `doom-loop: ${name} aynı argümanlarla ${DOOM_LOOP_THRESHOLD} kez çalıştı ve hep aynı sonucu verdi. ` +
+                    'Aynı çağrıyı tekrarlamak işe yaramaz — farklı bir yöntem/argüman dene ya da eldeki bilgilerle nihai cevabı ver.',
+                });
+                emitSafe(this, sid, { type: 'status', status: `⛔ doom-loop: ${name} tekrarı engellendi` });
+              }
             } else {
               out = await this._execTool(name, args, ctrl.signal, sid);
             }
-            /* Beast Code eser takibi: yazılan HTML + başlatılan dev server */
+            /* Beast Code eser takibi: yazılan HTML + başlatılan dev server.
+               BC'de araçlar opencode adlarıyla gelir: write/edit (filePath),
+               bash (command) — opencode şemasına göre yakalanır */
             if (bcArtifacts) {
               try {
+                const filePathOc = args && (args.filePath ?? args.path);
                 if (
-                  (name === 'write_file' || name === 'edit_file') &&
-                  args && args.path && /\.html?$/i.test(String(args.path))
+                  (name === 'write' || name === 'edit' || name === 'write_file' || name === 'edit_file') &&
+                  filePathOc && /\.html?$/i.test(String(filePathOc))
                 ) {
-                  bcArtifacts.html.push(String(args.path));
+                  bcArtifacts.html.push(String(filePathOc));
                 }
-                if (name === 'run_command') {
-                  const cmdStr = String((args && args.command) || '');
+                if (name === 'bash' || name === 'run_command') {
+                  const cmdStr = String((args && (args.command ?? args.cmd)) || '');
                   const hay = cmdStr + '\n' + String(out || '').slice(0, 6000);
                   const m = /https?:\/\/(?:localhost|127\.0\.0\.1)(?::\d{2,5})?[^\s'"<>]*/i.exec(hay);
                   if (m) {
@@ -3680,7 +3839,7 @@ class Engine {
                     if (port) bcArtifacts.serverUrl = 'http://localhost:' + port;
                   }
                   /* Expo dev server: exp://<LAN-IP>:<port> çıktıdan yakalanır —
-                     telefon/Expo Go için QR renderer'a canlı iletilir */
+                      telefon/Expo Go için QR renderer'a canlı iletilir */
                   const xm = /exp:\/\/[^\s'"<>]+/i.exec(hay);
                   if (xm) {
                     const eurl = xm[0].replace(/[)\].,;:'"]+$/, '');
@@ -3709,7 +3868,7 @@ class Engine {
               }
               if (injectedImage || diffView) out = JSON.stringify(obj);
             } catch {}
-            const toolMsg = { role: 'tool', tool_call_id: tc.id, name, content: out.slice(0, name === 'read_file' ? READ_OUT_KEEP : TOOL_OUT_KEEP * 6) };
+            const toolMsg = { role: 'tool', tool_call_id: tc.id, name, content: out.slice(0, (name === 'read' || name === 'read_file') ? READ_OUT_KEEP : TOOL_OUT_KEEP * 6) };
             if (diffView) toolMsg.diffView = diffView; /* oturum dosyasına da düşer — geçmiş açılınca diff yeniden çizilir */
             session.messages.push(toolMsg);
             try {
@@ -4172,31 +4331,70 @@ const skills = require('./skills');
 
   /* ---------- alt-agent ---------- */
 
-  async _subagent(task, context, parentSignal, sessionId) {
+  async _subagent(task, context, parentSignal, sessionId, subagentType = '') {
     const ctrl = new AbortController();
     const onAbort = () => ctrl.abort();
     if (parentSignal) {
       if (parentSignal.aborted) throw new Error('iptal edildi');
       parentSignal.addEventListener('abort', onAbort, { once: true });
     }
-    const subTools = TOOLS.filter(
-      (t) =>
-        t.function.name !== 'delegate_task' &&
-        t.function.name !== 'set_reminder' &&
-        !t.function.name.startsWith('email_')
-    ).sort((a, b) => String(a.function.name).localeCompare(String(b.function.name))); // önek-cache: sabit sıra
+    /* opencode task aracı (tool/task.ts) subagent_tipi ZORUNLU kılar: BC'den
+       gelen task çağrılarında 'general' | 'explore' ajanları opencode mantığıyla
+       koşar (agent tanımı + permission + opencode builtin seti). Eski
+       delegate_task (BC dışı) davranışı aynen korunur. */
+    const ocType = subagentType === 'explore' || subagentType === 'general' ? subagentType : '';
     const role = 'subagent';
     const sel = this.modelFor(role) || this.sel;
     if (this.roleModels[role]) {
       emitSafe(this, sessionId, { type: 'status', status: `rol: ${role} → ${sel.providerName} · ${sel.model}` });
     }
-    const system =
-      `Sen odaklı bir alt-agentsın. Ana ajansın verdiği TEK görevi bitir ve sadece nihai sonucu döndür.\n` +
-      `Windows + PowerShell, çalışma klasörü: ${this.workspace}\n` +
-      `HIZ KURALI: döngü gerektiren işleri (çok sayfa okuma, çok URL çekme, tekrarlı hesap/parse) TEK python_run betiğinde topluca yap — her adım için ayrı araç turu harcama; 10 fetch = 1 betik = çok daha hızlı görev.\n` +
-      `ARAŞTIRMA SINIRI: 3-5 kaynak yeter; 2-3 denemede bulamazsan kısmi sonucu getir, takılma.\n` +
-      `Kısa çalış, gereksiz soru sorma, sonucu madde madde raporla.\n` +
-      FORMAT_RULES;
+    let subTools;
+    let system;
+    let ocMode = false;
+    if (ocType) {
+      ocMode = true;
+      const ws = this._sessionWorkspace(sessionId);
+      const agentInfo =
+        opencode.agents.get(ocType, { worktree: ws, promptExplore: opencode.PROMPT_EXPLORE, user: {} }) || null;
+      const ruleset = agentInfo ? agentInfo.permission : [];
+      /* opencode child session: subagent ANA döngüdeki gibi ajan tanımıyla
+         koşar — system = [ajan promptu yoksa model-bazlı prompt, env] */
+      const main = agentInfo && agentInfo.prompt ? [agentInfo.prompt] : opencode.systemprompt.provider(sel.model);
+      system = [
+        ...main,
+        ...opencode.systemprompt.environment({
+          modelId: sel.model,
+          providerId: sel.providerId || '?',
+          directory: ws,
+          worktree: ws,
+        }),
+      ]
+        .filter((x) => x)
+        .join('\n');
+      /* opencode SessionTools.resolve: ajanın permission'ında '*' deny olan
+         araçlar setten düşer — explore: salt-okur (bash dahil okuma amaçlı allow),
+         general: todowrite yok (opencode general tanımı birebir) */
+      const defs = opencode.toolmap.definitions();
+      const hidden = opencode.Permission.disabled(defs.map((t) => t.function.name), ruleset);
+      subTools = defs
+        .filter((t) => !hidden.has(t.function.name))
+        .filter((t) => t.function.name !== 'task')
+        .sort((a, b) => String(a.function.name).localeCompare(String(b.function.name)));
+    } else {
+      subTools = TOOLS.filter(
+        (t) =>
+          t.function.name !== 'delegate_task' &&
+          t.function.name !== 'set_reminder' &&
+          !t.function.name.startsWith('email_')
+      ).sort((a, b) => String(a.function.name).localeCompare(String(b.function.name))); // önek-cache: sabit sıra
+      system =
+        `Sen odaklı bir alt-agentsın. Ana ajansın verdiği TEK görevi bitir ve sadece nihai sonucu döndür.\n` +
+        `Windows + PowerShell, çalışma klasörü: ${this.workspace}\n` +
+        `HIZ KURALI: döngü gerektiren işleri (çok sayfa okuma, çok URL çekme, tekrarlı hesap/parse) TEK python_run betiğinde topluca yap — her adım için ayrı araç turu harcama; 10 fetch = 1 betik = çok daha hızlı görev.\n` +
+        `ARAŞTIRMA SINIRI: 3-5 kaynak yeter; 2-3 denemede bulamazsan kısmi sonucu getir, takılma.\n` +
+        `Kısa çalış, gereksiz soru sorma, sonucu madde madde raporla.\n` +
+        FORMAT_RULES;
+    }
     const user = context ? `${task}\n\n# BAĞLAM\n${context}` : task;
     const msgs = [
       { role: 'system', content: system },
@@ -4236,8 +4434,15 @@ const skills = require('./skills');
           try {
             args = JSON.parse((tc.function && tc.function.arguments) || '{}');
           } catch {}
-          const out = await this._subExecTool(tc.function.name, args, ctrl.signal);
-          msgs.push({ role: 'tool', tool_call_id: tc.id, name: tc.function.name, content: out });
+          let subName = tc.function && tc.function.name;
+          if (ocMode) {
+            /* opencode builtin dilinde çağırır → Beast aracına çevir */
+            const mapped = opencode.toolmap.execMap(subName, args);
+            subName = mapped.name;
+            args = mapped.args;
+          }
+          const out = await this._subExecTool(subName, args, ctrl.signal);
+          msgs.push({ role: 'tool', tool_call_id: tc.id, name: subName, content: out });
         }
       }
       const last = [...msgs].reverse().find((m) => m.role === 'assistant' && m.content);
@@ -4373,27 +4578,85 @@ const skills = require('./skills');
 
   async _execTool(name, args, signal, sessionId) {
     try {
+      /* opencode mantığı (BC): model opencode builtin dilinde çağırır —
+         read/edit/write/bash/todowrite/task... execMap Beast'in yerleşik
+         aracına çevirir (implementasyon değişmez, dil opencode olur).
+         Studio/Finance/bgJob kendi dünyasında koşar — bu akışa girmez. */
+      const bcSess = this.cache.get(String(sessionId || '')) || null;
+      const isBc = !!(bcSess && bcSess.bcCode && !bcSess.studio && !bcSess.finance && !bcSess.bgJob);
+      if (isBc) {
+        const mapped = opencode.toolmap.execMap(name, args);
+        name = mapped.name;
+        args = mapped.args;
+      }
       /* ANA KOD KİLİDİ: korumalı bölgeye yazma/silme girişimi daha kapıdan geçmez */
       const blocked = this._guardTool(name, args);
       if (blocked) return blocked;
-      /* onay kapısı: riskli araçta dış onay bekle; reddedilirse araç çalışmaz.
-         "always" onaylı araçlar doğrudan geçer. */
-      if (
-        (Engine.RISKY_TOOLS.has(name) || String(name).startsWith('mcp__')) &&
-        !this.alwaysAllowTools.has(name) &&
-        this.approvals && typeof this.approvals.request === 'function'
-      ) {
-        emitSafe(this, sessionId, { type: 'status', status: `onay bekleniyor: ${name}` });
-        let ok = false;
+      if (isBc) {
+        /* opencode permission akışı (tool/external-directory.ts + her aracın
+           ctx.ask'ı): önce workspace DIŞI erişim izni, sonra araç izni.
+           deny anında hata döner (asla sorulmaz), allow sessiz geçer,
+           ask UI'ya 'permission.asked' eventi ile sorulur */
+        const ws = this._sessionWorkspace(sessionId);
+        const bcAgent = this._bcAgentInfo(bcSess);
+        const ruleset = bcAgent ? bcAgent.permission : [];
         try {
-          ok = !!(await this.approvals.request({ sessionId, tool: name, args: args || {} }));
-        } catch {}
-        if (!ok) {
-          return JSON.stringify({
-            ok: false,
-            error:
-              'kullanıcı bu işlemi ONAYLAMADI (iptal edildi veya zaman aşımı). İşlemi yeniden deneme; kullanıcıya sormadan alternatif öner.',
+          const ext = this._bcExternalCheck(name, args, ws);
+          if (ext) {
+            await this._perm.ask({ sessionId, ruleset, ...ext, metadata: { tool: name, args: args || {} } });
+          }
+          const perm = this._bcPermissionFor(name, args, ws);
+          await this._perm.ask({
+            sessionId,
+            ruleset,
+            permission: perm.permission,
+            patterns: perm.patterns,
+            always: perm.always,
+            metadata: { args: args || {} },
+            tool: { name, args: args || {} },
           });
+        } catch (permErr) {
+          return JSON.stringify({ ok: false, error: AskService.errorText(permErr) });
+        }
+        /* opencode skill aracı: katalogdaki SKILL.md gövdesini modele açar */
+        if (name === 'skill') {
+          const wanted = String((args && args.name) || '').trim();
+          let list = [];
+          try { list = skills.scan(); } catch {}
+          const hit = list.find((s) => s && s.name === wanted) || null;
+          if (!hit) {
+            return JSON.stringify({
+              ok: false,
+              error:
+                'skill bulunamadı: ' + (wanted || '(boş)') +
+                (list.length ? ' — mevcut: ' + list.map((s) => s.name).join(', ') : ''),
+            });
+          }
+          let body = '';
+          try { body = fs.readFileSync(hit.path, 'utf8'); } catch {}
+          return JSON.stringify({ ok: true, name: hit.name, path: hit.path, content: body.slice(0, 24000) });
+        }
+      } else {
+        /* onay kapısı: riskli araçta dış onay bekle; reddedilirse araç çalışmaz.
+           "always" onaylı araçlar doğrudan geçer. (BC dışı oturumlar — opencode
+           izin sistemi yalnız Beast Code oturumlarında koşar) */
+        if (
+          (Engine.RISKY_TOOLS.has(name) || String(name).startsWith('mcp__')) &&
+          !this.alwaysAllowTools.has(name) &&
+          this.approvals && typeof this.approvals.request === 'function'
+        ) {
+          emitSafe(this, sessionId, { type: 'status', status: `onay bekleniyor: ${name}` });
+          let ok = false;
+          try {
+            ok = !!(await this.approvals.request({ sessionId, tool: name, args: args || {} }));
+          } catch {}
+          if (!ok) {
+            return JSON.stringify({
+              ok: false,
+              error:
+                'kullanıcı bu işlemi ONAYLAMADI (iptal edildi veya zaman aşımı). İşlemi yeniden deneme; kullanıcıya sormadan alternatif öner.',
+            });
+          }
         }
       }
       /* GERİ ALMA GÜNLÜĞÜ: dosya yazımından ÖNCE eski içerik kayda geçer */
@@ -4488,8 +4751,8 @@ const skills = require('./skills');
       if (name === 'delegate_task') {
         const task = String(args.task || '').trim();
         if (!task) return JSON.stringify({ ok: false, error: 'task gerekli' });
-        emitSafe(this, sessionId, { type: 'status', status: 'delegate_task' });
-        const result = await this._subagent(task, String(args.context || ''), signal, sessionId);
+        emitSafe(this, sessionId, { type: 'status', status: args.subagent_type === 'explore' ? 'task(explore)' : args.subagent_type ? 'task(general)' : 'delegate_task' });
+        const result = await this._subagent(task, String(args.context || ''), signal, sessionId, String(args.subagent_type || ''));
         return JSON.stringify({ ok: true, task, result: String(result).slice(0, 12000) });
       }
       if (name === 'bot_dm') {

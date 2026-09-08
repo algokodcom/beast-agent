@@ -17,6 +17,7 @@ const research = require('./research');
 const agentdefs = require('./agentdefs');
 const memory = require('./memory');
 const mem0 = require('./mem0');
+const supermemory = require('./supermemory');
 const nightref = require('./nightref');
 const skills = require('./skills');
 const mcp = require('./mcp');
@@ -275,6 +276,14 @@ class Engine {
     /* mem0-native hafıza katmanı: semantik arama + LLM konsolidasyonu (bot başına izole store).
        Ayarlardan kapatılabilir (mem0:false) — kapalıysa klasik keyword hafızası çalışır. */
     this.mem0Enabled = opts.mem0 !== false;
+    /* Supermemory (lokal) bellek katmanı — DEFAULT AÇIK: sunucu ayaktaysa
+       (npx supermemory local → localhost:6767) hibrit arama + kullanıcı profili
+       öncelikli gelir; ayakta değilse klasik hafıza sorunsuz devralır.
+       Sağlık önbelleği: probe 60 sn'de bir tazelenir (spam probe yok). */
+    this.supermemory = opts.supermemory || null; // { enabled, baseUrl, apiKey, containerTag }
+    this._smUp = null; // null = henüz bilinmiyor
+    this._smCheckedAt = 0;
+    this._smWarned = false; // erişilemez iletisi bir kez basılır
     /* ANA KOD KİLİDİ: agent kendi kaynak koduna dokunamaz (yazma/silme yok, okuma serbest) */
     this.protectedDirs = (opts.protectedDirs || [])
       .map((d) => String(d).replace(/[\\/]+$/, '').toLowerCase().replace(/\//g, '\\'))
@@ -1585,6 +1594,74 @@ class Engine {
       return this._perm.reply(requestId, action === 'always' ? 'always' : action === 'reject' ? 'reject' : 'once', message);
     } catch (e) {
       return { ok: false, error: String((e && e.message) || e) };
+    }
+  }
+
+  /* ---------- Supermemory (lokal) bellek köprüsü ---------- */
+
+  _smConfig() {
+    const sm = this.supermemory;
+    if (!sm || sm.enabled === false || !sm.baseUrl) return null;
+    return sm;
+  }
+
+  /* Ayaktayken true — 60 sn cooldown'lu probe (aynı tura 10 kez probe vurmaz) */
+  async _smReady() {
+    const sm = this._smConfig();
+    if (!sm) return false;
+    const now = Date.now();
+    if (this._smUp === true && now - this._smCheckedAt < supermemory.HEALTH_COOLDOWN_MS) return true;
+    if (this._smUp === false && now - this._smCheckedAt < supermemory.HEALTH_COOLDOWN_MS) return false;
+    this._smUp = await supermemory.probe(sm.baseUrl, sm.apiKey);
+    this._smCheckedAt = now;
+    if (!this._smUp && !this._smWarned) {
+      this._smWarned = true;
+      emitSafe(this, null, {
+        type: 'status',
+        status: '🧠 supermemory erişilemedi — klasik hafıza kullanılıyor (açmak için: npx supermemory local)',
+      });
+    }
+    return this._smUp;
+  }
+
+  /* Container tag: bot oturumları kendi izole havuzuna yazar (mem0 deseni) */
+  _smContainer(sessionId) {
+    const sm = this._smConfig();
+    const bctx = this._sessionBotCtx(sessionId ? this.cache.get(String(sessionId)) : null);
+    return (bctx && bctx.id ? 'bot:' + bctx.id : '') || (sm && sm.containerTag) || 'beast';
+  }
+
+  /* YAZ: yerel hafıza HER ZAMEN yazılır (risksiz yedek); supermemory ASENKRON
+     push edilir — turu bloklamaz, hata yutulur (mem0 deseninin aynısı) */
+  _smPush(sessionId, text) {
+    const sm = this._smConfig();
+    if (!sm) return;
+    supermemory
+      .add(sm.baseUrl, sm.apiKey, { content: text, containerTag: this._smContainer(sessionId), metadata: { type: 'conversation' } })
+      .catch(() => {});
+  }
+
+  /* ARA: supermemory hibrit arama + profil → yerel sonuçlarla BİRLEŞTİR.
+     Sunucu yoksa/hata yerse eski akış aynen çalışır (fallback). */
+  async _smSearch(sessionId, q, limit) {
+    const sm = this._smConfig();
+    if (!sm || !(await this._smReady())) return null;
+    const container = this._smContainer(sessionId);
+    try {
+      const [hits, prof] = await Promise.all([
+        supermemory.search(sm.baseUrl, sm.apiKey, { q, containerTag: container, limit, mode: 'hybrid' }),
+        supermemory.profile(sm.baseUrl, sm.apiKey, { containerTag: container }).catch(() => null),
+      ]);
+      const out = {
+        engine: 'supermemory',
+        results: hits.map((h) => ({ text: h.text, score: h.similarity, source: 'supermemory' })),
+      };
+      if (prof && (prof.static.length || prof.dynamic.length)) out.profile = prof;
+      return out;
+    } catch {
+      this._smUp = false;
+      this._smCheckedAt = Date.now();
+      return null;
     }
   }
 
@@ -4682,6 +4759,9 @@ const skills = require('./skills');
         return JSON.stringify(await mcp.call(name, args, signal));
       }
       if (name === 'memory_write') {
+        /* Supermemory (lokal) DEFAULT: her yazım asenkron push edilir —
+           sunucu ayaktaysa graf motoru özet/çelişki/unutma işlerini yürütür */
+        this._smPush(sessionId, args.text);
         /* bot oturumu → botun KENDİ hafıza store'una yaz (global Beast hafızasına değil).
            mem0 açıkken: hash+semantic dedup'lı store'a gider, MEMORY.md aynası güncellenir. */
         const bctx = this._sessionBotCtx(sessionId ? this.cache.get(String(sessionId)) : null);
@@ -4690,7 +4770,7 @@ const skills = require('./skills');
             const r = await mem0.add('bot:' + bctx.id, [args.text]).catch(() => null);
             if (r && r.ok) {
               mem0.syncMirror('bot:' + bctx.id);
-              return JSON.stringify({ ok: true, duplicate: r.skipped > 0, event: r.events[0] && r.events[0].event });
+              return JSON.stringify({ ok: true, duplicate: r.skipped > 0, event: r.events[0] && r.events[0].event, supermemory: !!this._smConfig() });
             }
           }
           return JSON.stringify(this.botMemory.append(bctx.id, args.text));
@@ -4699,7 +4779,7 @@ const skills = require('./skills');
           const r = await mem0.add('main', [args.text]).catch(() => null);
           if (r && r.ok) {
             mem0.syncMirror('main');
-            return JSON.stringify({ ok: true, duplicate: r.skipped > 0, event: r.events[0] && r.events[0].event });
+            return JSON.stringify({ ok: true, duplicate: r.skipped > 0, event: r.events[0] && r.events[0].event, supermemory: !!this._smConfig() });
           }
         }
         return JSON.stringify(memory.append(args.text));
@@ -4717,6 +4797,12 @@ const skills = require('./skills');
         const bctx = this._sessionBotCtx(sessionId ? this.cache.get(String(sessionId)) : null);
         const q = String(args.query || '');
         const limit = clamp(Number(args.limit) || 5, 1, 15);
+        /* Supermemory DEFAULT öncelik: hibrit arama + kullanıcı profili.
+           Erişilemediyse/hata yerse yerel yollar aynen çalışır (fallback). */
+        const smRes = await this._smSearch(sessionId, q, limit);
+        if (smRes && smRes.results.length) {
+          return JSON.stringify({ ok: true, query: q, ...smRes });
+        }
         if (bctx && this.botMemory) {
           const rows = this.mem0Enabled
             ? await mem0.search('bot:' + bctx.id, q, { limit }).catch(() => [])

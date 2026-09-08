@@ -89,6 +89,9 @@ contextBridge.exposeInMainWorld('beast', {
   bcDeleteAll: () => ipcRenderer.invoke('bc:deleteAll'),
   /* opencode permission (BC): UI kartı cevabı — 'once' | 'always' | 'reject' */
   permissionReply: (requestId, action, message) => ipcRenderer.invoke('permission:reply', { requestId, action, message }),
+  /* Supermemory (lokal) bellek katmanı ayarları */
+  supermemoryGet: () => ipcRenderer.invoke('supermemory:get'),
+  supermemorySet: (cfg) => ipcRenderer.invoke('supermemory:set', cfg),
   studioSend: (msg, attachments) => ipcRenderer.invoke('studio:send', { msg, attachments }),
   studioStop: () => ipcRenderer.invoke('studio:stop'),
   studioNew: () => ipcRenderer.invoke('studio:new'),

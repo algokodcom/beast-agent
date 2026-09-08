@@ -426,6 +426,11 @@ function parseSettingsText(text) {
   const parsed = JSON.parse(text);
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('bozuk yapı');
   if (!parsed.roleModels) parsed.roleModels = {};
+  /* Supermemory (lokal) DEFAULT AÇIK — sunucu ayaktayken daha akıllı bellek;
+     ayakta değilken klasik hafıza sorunsuz çalışır (engine fallback) */
+  if (!parsed.supermemory || typeof parsed.supermemory !== 'object') {
+    parsed.supermemory = { enabled: true, baseUrl: 'http://localhost:6767', apiKey: '', containerTag: 'beast' };
+  }
   return parsed;
 }
 
@@ -3075,6 +3080,10 @@ function reloadBackend() {
     nightReflectAt: settings.nightReflectAt || null,
     approvals: settings.security && settings.security.approvals ? approvalsBridge : null,
     alwaysAllowTools: (settings.security && settings.security.alwaysAllow) || [],
+    /* Supermemory (lokal) bellek katmanı — default açıktır (parseSettingsText);
+       sunucu ayakta değilse engine klasik hafızaya düşer. Kapamak:
+       settings.json → supermemory.enabled = false */
+    supermemory: settings.supermemory || { enabled: true, baseUrl: 'http://localhost:6767', apiKey: '', containerTag: 'beast' },
     crashFile: FALLOUT_CRASH_FILE,
     notifyOwnerFail: settings.notifyOwnerFail !== false,
     fileSend: deliverFile,
@@ -6029,6 +6038,39 @@ ipcMain.handle('sec:set', (_e, cfg) => {
   }
   log.info('sec', `güvenlik: onay kapısı ${settings.security.approvals ? 'AÇIK' : 'KAPALI (her şey serbest)'}`);
   return { approvals: settings.security.approvals, alwaysAllow: settings.security.alwaysAllow };
+});
+
+/* Supermemory (lokal) ayarları: engine'e canlı yansıt + sağlık önbelleğini tazele */
+ipcMain.handle('supermemory:set', (_e, cfg) => {
+  try {
+    const base = String((cfg && cfg.baseUrl) || '').trim() || 'http://localhost:6767';
+    settings.supermemory = {
+      enabled: !!(cfg && cfg.enabled),
+      baseUrl: base.replace(/\/+$/, ''),
+      apiKey: String((cfg && cfg.apiKey) || '').trim(),
+      containerTag: String((cfg && cfg.containerTag) || 'beast').trim() || 'beast',
+    };
+    saveSettings();
+    if (engine) {
+      engine.supermemory = settings.supermemory;
+      engine._smUp = null;
+      engine._smCheckedAt = 0;
+      engine._smWarned = false;
+    }
+    return { ok: true, supermemory: settings.supermemory };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+});
+ipcMain.handle('supermemory:get', () => {
+  const sm = settings.supermemory || {};
+  return {
+    enabled: sm.enabled !== false,
+    baseUrl: sm.baseUrl || 'http://localhost:6767',
+    apiKey: sm.apiKey || '',
+    containerTag: sm.containerTag || 'beast',
+    up: engine ? !!engine._smUp : null,
+  };
 });
   ipcMain.handle('approval:respond', (_e, { id, ok, always }) => resolveApproval(id, ok, always));
   /* opencode permission reply (BC): UI kartı üçlü cevap verir —

@@ -26,7 +26,6 @@ const watchers = require('./agent/watchers');
 const usageMod = require('./agent/usage');
 const bus = require('./agent/bus');
 const computeruse = require('./agent/computeruse');
-const android = require('./agent/android');
 const log = require('./agent/logger');
 const headroom = require('./agent/headroom');
 const QRCode = require('qrcode'); /* Expo Go QR (bc-expurl) — whatsapp ile aynı paket */
@@ -3107,6 +3106,7 @@ function reloadBackend() {
       bcFlushOnDone(ev); /* Beast Code kuyruğunu iş bitiminde boşalt */
       stFlushOnDone(ev); /* Beast Studio kuyruğunu iş bitiminde boşalt */
       sbFlushOnDone(ev); /* Sandbox kuyruğunu iş bitiminde boşalt */
+      finFlushOnDone(ev); /* Finance trader döngüsü: iş bitince sıradaki turu planla */
       /* BC canlı önizleme: ajan bir dev server başlattıysa adresi yakala —
          preview butonu ve otomatik açılış DAİMA bu sunucuyu öncelikli kullanır */
       if (ev.type === 'bc-preview' && /^https?:\/\/(?:localhost|127\.0\.0\.1)(?::\d{2,5})?/i.test(String(ev.url || ''))) {
@@ -4904,6 +4904,13 @@ ipcMain.handle('sessions:create', () => {
     engine.setSessionTools(v.id, null);
   }
   engine.setSessionModel(v.id, b && !b.admin ? (b.model || null) : null);
+  /* Beast Finance modu açıkken açılan sohbet finance izolasyonuna girer */
+  if (financeState.mode) {
+    try {
+      engine.markFinance(v.id, false);
+      v.finance = true;
+    } catch {}
+  }
   return v;
 });
 ipcMain.handle('sessions:open', (_e, id) => engine.openSession(id));
@@ -4929,6 +4936,25 @@ ipcMain.handle('agent:send', (_e, { sessionId, text }) => {
         engine.setSessionPerm(sid, actBot.perm || 'all');
         engine.setSessionTools(sid, botToolSet(actBot));
         engine.setSessionModel(sid, actBot.model || null);
+      }
+    }
+  } catch {}
+  /* BEAST FINANCE: finance modu açıkken bu sohbet finance listesine girer ve
+     mt5_* araçlarını görür (botlar hariç); mod kapalıysa etiket kaldırılır */
+  try {
+    if (sessionId) {
+      const fsid = String(sessionId);
+      let fsess = engine.cache.get(fsid);
+      if (!fsess) { try { fsess = engine._load(fsid); } catch {} }
+      if (fsess && !fsess.botId && !fsess.bgJob) {
+        if (financeState.mode) {
+          if (!fsess.finance) engine.markFinance(fsid, false);
+          finApplyTraderFields(fsess);
+          fsess.financeTrader = false; /* chat copilot'ı — trader değil */
+          engine.cache.set(fsid, fsess);
+        } else if (fsess.finance) {
+          engine.unmarkFinance(fsid); /* normal modda yazınca normal sohbete döner */
+        }
       }
     }
   } catch {}
@@ -6310,29 +6336,6 @@ ipcMain.handle('install:status', async () => {
     });
   }
 
-  /* 10) Android Emülatörü — opsiyonel; varsa Beast Code mobil uygulamaları emülatörde açar */
-  {
-    const st = android.probe();
-    let state = 'optional';
-    if (st.sdk) state = 'ok';
-    else if (st.installing) state = 'loading';
-    if (st.failed) state = 'failed';
-    rows.push({
-      id: 'android',
-      name: 'Android Emülatörü — mobil uygulamalar emülatörde çalışır',
-      state,
-      canInstall: true,
-      detail: st.installing
-        ? (st.stage || 'arka planda kuruluyor — JDK + SDK + sistem imajı (~1.5GB, internete göre 5-20 dk)')
-        : st.failed
-          ? (st.error || 'kurulum başarısız')
-          : st.sdk
-            ? 'hazır — SDK: ' + st.sdkPath
-            : 'kurulu değil — KUR ile arka planda kurulur (istekge bağlı)',
-      ...(st.installing ? pctFields('android') : {}),
-    });
-  }
-
   return rows;
 });
 
@@ -6349,10 +6352,7 @@ ipcMain.handle('headroom:toggle', async (_e, on) => {
 ipcMain.handle('headroom:status', () => headroom.probe());
 ipcMain.handle('headroom:stats', () => headroom.stats());
 
-/* ANDROID EMÜLATÖR (opsiyonel): durum + arka plan kurulum + AVD başlatma */
-ipcMain.handle('android:status', async () => ({ ok: true, ...(await android.probe()), avds: await android.listAvds() }));
-ipcMain.handle('android:install', () => android.autoInstall());
-ipcMain.handle('android:startAvd', async (_e, name) => android.startAvd(name));
+/* ANDROID EMÜLATÖR: kaldırıldı — mobil önizleme tunnel (telefon QR) yoluyla yapılır */
 
 /* embedding modelini şimdi indir (mem0 arama yolu ısıtılır) */
 ipcMain.handle('embed:prefetch', () => {
@@ -7986,6 +7986,388 @@ function studioWatchStop() {
   studioWatchRoot = '';
   if (studioWatchTimer) { clearTimeout(studioWatchTimer); studioWatchTimer = null; }
 }
+
+/* ---------------- Beast Finance (MT5) ----------------
+   Studio/Sandbox ile AYRI dünya: solda sohbet geçmişi + izleyiciler AYNI kalır,
+   ortada chat, sağda MT5 işlem paneli. İki ajan: (1) chat copilot'ı — aktif
+   sohbet finance bayrağıyla mt5_* araçlarını görür; (2) TRADER — gizli engine
+   oturumu, tur tur piyasa tarayıp (farklı API/model seçilebilir) işlem kovalar. */
+const mt5bridge = require('./mt5bridge');
+const financetools = require('./agent/financetools');
+
+const financeState = {
+  mode: false, /* chat oturumları finance bayrağı alıyor mu */
+  traderSid: null,
+  traderOn: false,
+  traderTimer: null,
+  traderRounds: 0,
+  lastRoundAt: 0,
+  installing: false,
+  installTried: false,
+};
+
+function financeDir() {
+  const d = path.join(APP_DIR, 'finance');
+  try { fs.mkdirSync(d, { recursive: true }); } catch {}
+  return d;
+}
+
+function finCfg() {
+  if (!settings.finance || typeof settings.finance !== 'object') settings.finance = {};
+  const f = settings.finance;
+  if (!Array.isArray(f.symbols) || !f.symbols.length) f.symbols = ['EURUSD', 'XAUUSD', 'GBPUSD', 'BTCUSD'];
+  if (!Number(f.intervalSec)) f.intervalSec = 120;
+  if (!Number(f.maxLot)) f.maxLot = 0.1;
+  if (f.maxPositions == null) f.maxPositions = 3;
+  if (typeof f.allowTrading !== 'boolean') f.allowTrading = false;
+  return f;
+}
+
+function financeLog(line) {
+  try {
+    fs.appendFileSync(path.join(financeDir(), 'finance.log'), `[${new Date().toISOString()}] ${line}\n`);
+  } catch {}
+  finPush('log', { line });
+}
+
+function finPush(fn, data) {
+  try {
+    if (win && !win.isDestroyed()) win.webContents.send('agent:event', { type: 'finance', fn, ...data });
+  } catch {}
+}
+
+/* financetools ayar + bildirim kancası */
+try {
+  financetools.setConfig(() => finCfg());
+  financetools.setNotify((entry) => {
+    const k = String((entry && entry.kind) || '');
+    const d = entry && entry.data ? entry.data : {};
+    let line = '';
+    if (k === 'trade') line = `İŞLEM AÇILDI: ${d.side} ${d.volume} ${d.symbol}`;
+    else if (k === 'close') line = `POZİSYON KAPANDI: ticket ${d.ticket}${d.volume ? ' (' + d.volume + ' lot)' : ''}`;
+    else if (k === 'modify') line = `SL/TP GÜNCELLENDİ: ticket ${d.ticket} (SL ${d.sl || 0} / TP ${d.tp || 0})`;
+    else if (k === 'pending') line = `BEKLEYEN EMİR: ${d.type} ${d.volume} ${d.symbol}`;
+    else if (k === 'cancel') line = `EMİR İPTAL: ticket ${d.ticket}`;
+    if (line) {
+      financeLog('[ajan] ' + line);
+      finPush('trade', { line });
+    }
+  });
+} catch {}
+
+function financeEnsureBridge() {
+  const f = finCfg();
+  const candidates = [String(f.pythonPath || '').trim(), 'python', 'py -3'].filter(Boolean);
+  /* Beast gömülü Python runtime kuruluysa en başa ekle (makinede Python olmasa da köprü çalışır) */
+  try {
+    const t = require('./agent/tools');
+    const emb = t.embeddedPythonExe();
+    if (emb && fs.existsSync(emb) && !candidates.includes(emb)) candidates.unshift(emb);
+  } catch {}
+  mt5bridge.start({
+    candidates,
+    terminal: String(f.terminalPath || '').trim(),
+  });
+  return mt5bridge.status();
+}
+
+/* MetaTrader5 paketi yoksa bir kez pip ile kurmayı dene */
+function financeTryInstall() {
+  if (financeState.installing || (financeState.installTried && finCfg().autoInstall === false)) return;
+  financeState.installing = true;
+  financeState.installTried = true;
+  financeLog('[MT5] MetaTrader5 python paketi kuruluyor…');
+  const py = mt5bridge.status().python || 'python';
+  /* 'py -3' gibi çok kelimeli kısa komutlar bölünür; tam yol tek exe'dir */
+  const parts = /[\\/]/.test(py) ? [py] : py.split(/\s+/);
+  const p = spawn(parts[0], [...parts.slice(1), '-m', 'pip', 'install', '--user', 'MetaTrader5'], { windowsHide: true });
+  let tail = '';
+  p.stdout.on('data', (c) => { tail = (tail + c).slice(-800); });
+  p.stderr.on('data', (c) => { tail = (tail + c).slice(-800); });
+  p.on('error', (e) => {
+    financeState.installing = false;
+    financeLog('[MT5] pip başlatılamadı: ' + String((e && e.message) || e));
+  });
+  p.on('exit', (code) => {
+    financeState.installing = false;
+    if (code === 0) {
+      financeLog('[MT5] MetaTrader5 paketi kuruldu — köprü yeniden başlatılıyor');
+      mt5bridge.stop();
+      financeEnsureBridge();
+    } else {
+      financeLog('[MT5] kurulum başarısız (kod ' + code + ') ' + tail.slice(-300));
+    }
+    finPush('install', { installing: false, code });
+  });
+}
+
+mt5bridge.on('bridge', (m) => {
+  if (m && m.connected) {
+    financeLog('[MT5] terminal bağlı: ' + ((m.terminal && (m.terminal.name + ' @ ' + m.terminal.company)) || 'MT5'));
+    if (m.account) financeLog(`[MT5] hesap ${m.account.login} · bakiye ${m.account.balance} ${m.account.currency}`);
+  } else if (m && m.error) {
+    financeLog('[MT5] bağlantı yok — ' + m.error);
+    if (/paket/i.test(m.error)) financeTryInstall();
+  }
+  finPush('bridge', { connected: !!(m && m.connected), error: (m && m.error) || '' });
+});
+mt5bridge.on('log', (m) => {
+  const line = String((m && m.line) || '');
+  if (!line) return;
+  financeLog('[mt5] ' + line.slice(0, 300));
+});
+
+/* ---------- TRADER ajanı (gizli engine oturumu + tur döngüsü) ---------- */
+
+function finTraderSession() {
+  let sid = financeState.traderSid;
+  if (sid) {
+    try {
+      const s = engine.cache.get(sid);
+      if (s) return s;
+    } catch {}
+    financeState.traderSid = null;
+  }
+  const s = engine._load(engine.createSession().id);
+  s.messages = s.messages || [];
+  s.bgTitle = 'Beast Finance · Trader'; /* _view.isBg → sohbet geçmişinde gizli */
+  try {
+    fs.appendFileSync(
+      engine._file(s.id),
+      JSON.stringify({ t: 'meta2', bgOf: '', title: 'Beast Finance · Trader', at: new Date().toISOString() }) + '\n'
+    );
+  } catch {}
+  engine.cache.set(s.id, s);
+  engine.markFinance(s.id, true); /* kalıcı finance etiketi (trader rolüyle) */
+  s.workspace = financeDir(); /* trader kendi klasöründe çalışır */
+  financeState.traderSid = s.id;
+  return s;
+}
+
+function finApplyTraderFields(s) {
+  const f = finCfg();
+  s.finance = true;
+  s.financeTrader = true;
+  s.financeAuto = f.allowTrading === true;
+  s.financeSymbols = f.symbols;
+  s.financeStrategy = String(f.strategy || '');
+  s.financeLimits = { maxLot: f.maxLot, maxPositions: f.maxPositions };
+  engine.cache.set(String(s.id), s);
+}
+
+function finTraderBrief() {
+  const f = finCfg();
+  return [
+    'Beast Finance TRADER başlatıldı — ilk tur: strateji çerçeveni kur ve piyasa taramasını yap.',
+    `İzleme listesi: ${(f.symbols || []).join(', ')}`,
+    `Tur aralığı: ${f.intervalSec} sn · Max lot: ${f.maxLot} · Max eşzamanlı pozisyon: ${f.maxPositions}`,
+    f.allowTrading
+      ? 'Otomatik işlem AÇIK: mt5_trade/mt5_close/mt5_modify/mt5_pending kullanabilirsin (limitler sistemce zorlanır).'
+      : 'Otomatik işlem KAPALI: SADECE analiz + net işlem önerileri yaz (sembol, yön, giriş, SL, TP, sebep); işlem açma.',
+    f.strategy ? `Sahibinin strateji notu: ${f.strategy}` : 'Strateji notu yok: trend + destek/direnç + momentum ile temel okuma yap.',
+    'Bu turda: mt5_status → hesap/pozisyon/fiyat verisi → değerlendirme → kararlar (veya BEKLE: sebep) → kısa rapor.',
+  ].join('\n');
+}
+
+function finTraderRound() {
+  if (!financeState.traderOn) return;
+  if (!engine) return;
+  const s = finTraderSession();
+  finApplyTraderFields(s);
+  if (engine.isBusy(s.id)) {
+    /* hâlâ çalışıyor — done eventinde tekrar planlanır */
+    return;
+  }
+  financeState.traderRounds += 1;
+  const f = finCfg();
+  const auto = f.allowTrading
+    ? 'İşlem açabilirsin — limitlere uy, SL\u2019siz pozisyon bırakma.'
+    : 'Otomatik işlem KAPALI — sadece analiz + öneri.';
+  const ok = engine.send(
+    s.id,
+    `FINANCE TUR #${financeState.traderRounds}: hesap + pozisyonlar + izleme listesi fiyatlarını çek; açık pozisyonları yönet (SL/TP güncelle, hedefe ulaşanı kapat); stratejine göre yeni fırsatları değerlendir. ${auto} Kısa rapor ver.`,
+    { userAction: false }
+  );
+  if (ok) {
+    financeState.lastRoundAt = Date.now();
+    finPush('trader', { state: 'running', round: financeState.traderRounds });
+  } else {
+    /* stop kapısı/yoğunluk — yarım dakika sonra sessizce tekrar dene */
+    clearTimeout(financeState.traderTimer);
+    financeState.traderTimer = setTimeout(() => { try { finTraderRound(); } catch {} }, 30000);
+  }
+}
+
+function finFlushOnDone(ev) {
+  if (!ev || (ev.type !== 'done' && ev.type !== 'error')) return;
+  if (String(ev.sessionId || '') !== String(financeState.traderSid || '')) return;
+  if (!financeState.traderOn) return;
+  clearTimeout(financeState.traderTimer);
+  const f = finCfg();
+  const iv = Math.max(30, Number(f.intervalSec) || 120) * 1000;
+  financeState.lastRoundAt = Date.now();
+  finPush('trader', { state: 'idle', round: financeState.traderRounds, nextInSec: iv / 1000 });
+  financeState.traderTimer = setTimeout(() => { try { finTraderRound(); } catch {} }, iv);
+}
+
+ipcMain.handle('finance:state', async () => {
+  const f = finCfg();
+  const busy = financeState.traderSid && engine ? engine.isBusy(financeState.traderSid) : false;
+  return {
+    ok: true,
+    mode: financeState.mode,
+    cfg: f,
+    bridge: mt5bridge.status(),
+    trader: { on: financeState.traderOn, busy, rounds: financeState.traderRounds, lastAt: financeState.lastRoundAt, sid: financeState.traderSid },
+    models: engine ? engine.publicState().models : [],
+  };
+});
+
+ipcMain.handle('finance:snapshot', async () => {
+  const f = finCfg();
+  const st = financeEnsureBridge();
+  let account = st.account || null;
+  let positions = [];
+  let symbols = [];
+  if (st.running) {
+    const [a, p, sy] = await Promise.all([
+      mt5bridge.call('account', {}, 8000).catch(() => null),
+      mt5bridge.call('positions', {}, 8000).catch(() => null),
+      mt5bridge.call('symbols', { symbols: f.symbols || [] }, 10000).catch(() => null),
+    ]);
+    if (a && a.ok) account = a.data && a.data.account;
+    if (p && p.ok) positions = (p.data && p.data.positions) || [];
+    if (sy && sy.ok) symbols = (sy.data && sy.data.symbols) || [];
+  }
+  const busy = financeState.traderSid && engine ? engine.isBusy(financeState.traderSid) : false;
+  return {
+    ok: true,
+    bridge: { running: st.running, connected: st.connected, error: st.error, terminal: st.terminal, python: st.python },
+    account,
+    positions,
+    symbols,
+    cfg: f,
+    trader: { on: financeState.traderOn, busy, rounds: financeState.traderRounds, lastAt: financeState.lastRoundAt },
+  };
+});
+
+ipcMain.handle('finance:mode', async (_e, payload) => {
+  financeState.mode = !!(payload && payload.on);
+  const sid = String((payload && payload.sessionId) || '');
+  if (sid && engine) {
+    try {
+      let s = engine.cache.get(sid);
+      if (!s) { try { s = engine._load(sid); } catch {} }
+      if (s && !s.botId && !s.bgJob) {
+        if (financeState.mode) {
+          engine.markFinance(sid, false); /* kalıcı etiket: finance geçmişine girer */
+          finApplyTraderFields(s);
+          s.financeTrader = false; /* chat copilot'ı — trader değil */
+        } else {
+          engine.unmarkFinance(sid); /* normal sohbete döner */
+        }
+        engine.cache.set(sid, s);
+      }
+    } catch {}
+  }
+  return { ok: true, mode: financeState.mode };
+});
+
+/* MT5 sembol seçici: terminaldeki tüm semboller (isteğe bağlı *filter*) */
+ipcMain.handle('finance:symbols:list', async (_e, filter) => {
+  if (!mt5bridge.running) return { ok: false, error: 'MT5 köprüsü bağlı değil — terminal açık mı?' };
+  return await mt5bridge.call('all_symbols', { filter: String(filter || '').trim() }, 20000);
+});
+
+ipcMain.handle('finance:settings', async (_e, patch) => {
+  const f = finCfg();
+  const p = patch || {};
+  if (p.symbols !== undefined) {
+    const arr = Array.isArray(p.symbols) ? p.symbols : String(p.symbols).split(/[,\s]+/);
+    f.symbols = arr.map((s) => String(s).trim().toUpperCase()).filter(Boolean).slice(0, 20);
+  }
+  if (p.intervalSec !== undefined) f.intervalSec = Math.max(30, Math.min(3600, Math.round(Number(p.intervalSec) || 120)));
+  if (p.maxLot !== undefined) f.maxLot = Math.max(0.01, Math.min(100, Number(p.maxLot) || 0.1));
+  if (p.maxPositions !== undefined) f.maxPositions = Math.max(1, Math.min(20, Math.round(Number(p.maxPositions) || 3)));
+  if (p.allowTrading !== undefined) f.allowTrading = !!p.allowTrading;
+  if (p.strategy !== undefined) f.strategy = String(p.strategy || '').slice(0, 2000);
+  if (p.pythonPath !== undefined) f.pythonPath = String(p.pythonPath || '').trim();
+  if (p.terminalPath !== undefined) f.terminalPath = String(p.terminalPath || '').trim();
+  if (p.traderSel !== undefined) {
+    f.traderSel = String(p.traderSel || '').trim();
+    if (financeState.traderSid && engine) {
+      try { engine.setSessionModel(financeState.traderSid, f.traderSel || null); } catch {}
+    }
+  }
+  saveSettings();
+  /* trader oturumu alanlarını tazele (oturum yoksa oluşturma — start'ta kurulur) */
+  if (financeState.traderSid && engine) {
+    try {
+      const ts = engine.cache.get(financeState.traderSid);
+      if (ts) finApplyTraderFields(ts);
+    } catch {}
+  }
+  return { ok: true, cfg: f };
+});
+
+ipcMain.handle('finance:trader:start', async () => {
+  if (!engine) return { ok: false, error: 'ajan hazır değil' };
+  const f = finCfg();
+  if (!engine.publicState().hasModel && !f.traderSel) return { ok: false, error: 'model yok — Ayarlar → Provider' };
+  const s = finTraderSession();
+  finApplyTraderFields(s);
+  try { engine.setSessionModel(s.id, f.traderSel || null); } catch {}
+  financeState.traderOn = true;
+  financeState.traderRounds = 0;
+  try { engine.clearStop(); } catch {}
+  const ok = engine.send(s.id, finTraderBrief(), { userAction: true });
+  if (!ok) {
+    financeState.traderOn = false;
+    return { ok: false, error: 'trader oturumu meşgul — birkaç saniye sonra tekrar dene' };
+  }
+  financeState.lastRoundAt = Date.now();
+  financeLog('[trader] başlatıldı (model: ' + (f.traderSel || 'genel aktif model') + ')');
+  finPush('trader', { state: 'running', round: 0 });
+  return { ok: true, sid: s.id };
+});
+
+ipcMain.handle('finance:trader:stop', async () => {
+  financeState.traderOn = false;
+  clearTimeout(financeState.traderTimer);
+  financeState.traderTimer = null;
+  let interrupted = false;
+  if (financeState.traderSid && engine && engine.isBusy(financeState.traderSid)) {
+    try { interrupted = engine.interrupt(financeState.traderSid, 'kullanıcı Beast Finance trader ajanını durdurdu'); } catch {}
+  }
+  financeLog('[trader] durduruldu');
+  finPush('trader', { state: 'stopped' });
+  return { ok: true, interrupted };
+});
+
+ipcMain.handle('finance:connect', async () => {
+  mt5bridge.stop();
+  const st = financeEnsureBridge();
+  return { ok: true, bridge: st };
+});
+
+ipcMain.handle('finance:close', async (_e, payload) => {
+  const ticket = Number(payload && payload.ticket);
+  if (!ticket) return { ok: false, error: 'ticket gerekli' };
+  if (!mt5bridge.running) return { ok: false, error: 'MT5 köprüsü bağlı değil' };
+  const r = await mt5bridge.call('close', { ticket, volume: Number(payload && payload.volume) || 0 }, 20000);
+  if (r && r.ok) {
+    financeLog('[panel] pozisyon kapatıldı: ticket ' + ticket);
+    finPush('trade', { line: 'POZİSYON KAPANDI (panel): ticket ' + ticket });
+  }
+  return r;
+});
+
+ipcMain.handle('finance:install', async () => {
+  financeState.installTried = false;
+  financeTryInstall();
+  return { ok: true, installing: true };
+});
+
 
 /* düşünme (reasoning) seviyesi */
 ipcMain.handle('think:set', (_e, v) => {

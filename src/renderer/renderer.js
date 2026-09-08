@@ -128,6 +128,33 @@ const els = {
   stMic: $('#stMic'),
   studioRow: $('#studioRow'),
   stSplit: $('#stSplit'),
+  finBtn: $('#finBtn'),
+  finPanel: $('#finPanel'),
+  finDot: $('#finDot'),
+  finTerm: $('#finTerm'),
+  finReconnect: $('#finReconnect'),
+  finBalance: $('#finBalance'),
+  finEquity: $('#finEquity'),
+  finProfit: $('#finProfit'),
+  finFree: $('#finFree'),
+  finTraderModel: $('#finTraderModel'),
+  finInterval: $('#finInterval'),
+  finMaxLot: $('#finMaxLot'),
+  finSymBtn: $('#finSymBtn'),
+  finAllow: $('#finAllow'),
+  finTraderBtn: $('#finTraderBtn'),
+  finTraderDot: $('#finTraderDot'),
+  finTraderStatus: $('#finTraderStatus'),
+  finPosList: $('#finPosList'),
+  finPosCount: $('#finPosCount'),
+  finSymList: $('#finSymList'),
+  finLog: $('#finLog'),
+  finSymAdd: $('#finSymAdd'),
+  finSymOverlay: $('#finSymOverlay'),
+  finSymClose: $('#finSymClose'),
+  finSymSearch: $('#finSymSearch'),
+  finSymPick: $('#finSymPick'),
+  finSymCount: $('#finSymCount'),
   stVideoEl: $('#stVideoEl'),
   stVideoName: $('#stVideoName'),
   stVideoOpen: $('#stVideoOpen'),
@@ -879,6 +906,9 @@ async function renderSessions(list) {
     tgSet = new Set(await beast.tgListSessions());
   } catch {}
   els.sessList.innerHTML = '';
+  /* BEAST FINANCE izolasyonu: finance modunda YALNIZ finance sohbetleri,
+     normal modda finance olmayanlar listelenir */
+  list = (list || []).filter((s) => (financeModeOn() ? !!s.finance : !s.finance));
   /* elle sıra: sessionOrder'daki id'ler önde (o sırayla), diğerleri engine sırasıyla arkada */
   const rank = new Map(sessionOrder.map((id, i) => [id, i]));
   const withRank = list.map((s, i) => ({ s, r: rank.has(s.id) ? rank.get(s.id) : 1e6 + i }));
@@ -977,6 +1007,8 @@ async function openSession(id) {
   els.msgs.innerHTML = '';
   showEmpty(s.messages.length === 0);
   renderTodos(s.todos || []);
+  /* finance modu açıkken oturum değişimi: yeni oturumu da finance bayrağıyla işaretle */
+  if (financeModeOn()) beast.financeMode(true, id).catch(() => {});
 
   for (let i = 0; i < s.messages.length; i++) {
     const m = s.messages[i];
@@ -2379,9 +2411,6 @@ async function renderInstallPane() {
       (r.canToggle
         ? '<button class="btn hr-tgl" data-on="' + (r.toggleOn ? '1' : '0') + '" style="width:auto;padding:2px 12px;flex:none">' + (r.toggleOn ? 'KAPAT' : 'AÇ') + '</button>'
         : '') +
-      (r.canInstall
-        ? '<button class="btn inst-kur" style="width:auto;padding:2px 12px;flex:none">KUR</button>'
-        : '') +
       badge(r.state) +
       pctLabel(r) +
       '</div>'
@@ -2394,16 +2423,6 @@ async function renderInstallPane() {
         b.textContent = '…';
         const r = await beast.headroomToggle(on).catch(() => null);
         toast(r && r.error ? r.error : (r && r.installing ? 'Headroom kuruluyor — birkaç dakika sürer' : (on ? 'Headroom açıldı' : 'Headroom kapatıldı')));
-        refresh();
-      });
-    });
-    /* Android emülatörü: KUR → arka plan SDK kurulumu (JDK + cmdline-tools + imaj) */
-    el.querySelectorAll('.inst-kur').forEach((b) => {
-      b.addEventListener('click', async () => {
-        b.disabled = true;
-        b.textContent = '…';
-        await beast.androidInstall().catch(() => {});
-        toast('Android SDK arka planda kuruluyor — ~1.5GB, internete göre 5-20 dk sürer');
         refresh();
       });
     });
@@ -6089,6 +6108,11 @@ async function init() {
     showEmpty(true);
   }
 
+  /* BEAST FINANCE: kapanışta mod açıktıysa geri yükle */
+  try {
+    if (localStorage.getItem('beast.financeMode') === '1') await setFinanceMode(true);
+  } catch {}
+
   els.newChat.addEventListener('click', async () => {
     try {
       const created = await beast.createSession();
@@ -7245,6 +7269,7 @@ function ideModeOn() {
 async function setIdeMode(on) {
   if (on && studioModeOn()) await setStudioMode(false); /* Studio açıkken IDE'ye geçiş — Studio kapanır */
   if (on && sbModeOn()) setSandboxMode(false); /* Sandbox açıkken IDE'ye geçiş — Sandbox kapanır */
+  if (on && financeModeOn()) setFinanceMode(false); /* Finance açıkken IDE'ye geçiş — Finance kapanır */
   document.body.classList.toggle('ide-mode', !!on);
   if (els.ideBtn) els.ideBtn.classList.toggle('on', !!on);
   /* soldaki marka: chat modunda BEAST Agent, IDE modunda BEAST Code, Studio modunda BEAST Studio */
@@ -7319,6 +7344,7 @@ function studioModeOn() {
 async function setStudioMode(on) {
   if (on && ideModeOn()) await setIdeMode(false); /* IDE açıkken Studio'ya geçiş — IDE kapanır */
   if (on && sbModeOn()) setSandboxMode(false); /* Sandbox açıkken Studio'ya geçiş — Sandbox kapanır */
+  if (on && financeModeOn()) setFinanceMode(false); /* Finance açıkken Studio'ya geçiş — Finance kapanır */
   document.body.classList.toggle('studio-mode', !!on);
   if (els.studioBtn) els.studioBtn.classList.toggle('on', !!on);
   /* ALT TERMINAL: yalnız Beast Code'a özgü — Studio'ya geçişte kapanır */
@@ -8049,6 +8075,450 @@ async function codeReloadIfOpen(p) {
 
 $('#ideBtn').addEventListener('click', () => setIdeMode(!ideModeOn()));
 if (els.studioBtn) els.studioBtn.addEventListener('click', () => setStudioMode(!studioModeOn()));
+
+/* ================= BEAST FINANCE MODU =================
+   Sol sidebar (sohbet geçmişi + izleyiciler) ve chat AYNI kalır; sağda MT5
+   işlem paneli: hesap, pozisyonlar, piyasa, trade ajanı kontrolleri, akış. */
+
+function financeModeOn() {
+  return document.body.classList.contains('finance-mode');
+}
+
+let finPollTimer = null;
+let finModelsFilled = false;
+let finLastPrices = new Map(); /* sembol → son bid (renk için) */
+const FIN_COLOR_UP = 'fs-up';
+const FIN_COLOR_DOWN = 'fs-down';
+
+function fmtMoney(v, cur) {
+  const n = Number(v);
+  if (!isFinite(n)) return '—';
+  const s = n.toLocaleString('tr-TR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  return cur ? s + ' ' + cur : s;
+}
+
+function finSetDot(state, bridge) {
+  if (!els.finDot) return;
+  els.finDot.classList.remove('on', 'off', 'busy');
+  if (state === true) els.finDot.classList.add('on');
+  else if (state === 'busy') els.finDot.classList.add('busy');
+  else els.finDot.classList.add('off');
+  if (els.finTerm) {
+    let label = 'MT5';
+    if (bridge) {
+      if (bridge.terminal) label = (bridge.terminal.name || 'MT5') + (bridge.terminal.company ? ' · ' + bridge.terminal.company : '');
+      else if (bridge.error) label = bridge.error.length > 60 ? bridge.error.slice(0, 60) + '…' : bridge.error;
+      else if (bridge.running) label = 'MT5 terminali bekleniyor…';
+      else label = 'Köprü kapalı';
+    }
+    els.finTerm.textContent = label;
+    els.finTerm.title = bridge && bridge.error ? bridge.error : label;
+  }
+}
+
+function finKvSet(el, text, cls) {
+  if (!el) return;
+  el.textContent = text;
+  el.classList.remove('pos', 'neg');
+  if (cls) el.classList.add(cls);
+}
+
+function finRenderAccount(acc) {
+  const cur = acc && acc.currency ? acc.currency : '';
+  finKvSet(els.finBalance, acc ? fmtMoney(acc.balance, cur) : '—');
+  finKvSet(els.finEquity, acc ? fmtMoney(acc.equity, cur) : '—');
+  const p = acc ? Number(acc.profit) || 0 : NaN;
+  finKvSet(els.finProfit, isFinite(p) ? (p > 0 ? '+' : '') + fmtMoney(p, cur) : '—', isFinite(p) && p !== 0 ? (p > 0 ? 'pos' : 'neg') : null);
+  finKvSet(els.finFree, acc ? fmtMoney(acc.margin_free, cur) : '—');
+}
+
+function finRenderPositions(list) {
+  if (!els.finPosList) return;
+  els.finPosList.textContent = '';
+  if (els.finPosCount) els.finPosCount.textContent = list && list.length ? '(' + list.length + ')' : '';
+  if (!list || !list.length) {
+    const d = document.createElement('div');
+    d.className = 'fin-empty';
+    d.textContent = 'Açık pozisyon yok';
+    els.finPosList.appendChild(d);
+    return;
+  }
+  for (const p of list) {
+    const row = document.createElement('div');
+    row.className = 'fin-pos';
+    const isBuy = String(p.type) === '0' || Number(p.type) === 0;
+    const profit = Number(p.profit) || 0;
+    row.innerHTML =
+      '<span class="fp-sym" title="ticket ' + p.ticket + '">' + (p.symbol || '?') + '</span>' +
+      '<span class="fp-dir ' + (isBuy ? 'buy">BUY' : 'sell">SELL') + '</span>' +
+      '<span class="fp-meta">' + (Number(p.volume) || 0) + ' lot · ' + (Number(p.price_open) || 0) + ' → ' + (Number(p.price_current) || 0) +
+      (p.sl ? ' · SL ' + p.sl : '') + (p.tp ? ' · TP ' + p.tp : '') + '</span>' +
+      '<span class="fp-pl ' + (profit >= 0 ? 'pos' : 'neg') + '">' + (profit >= 0 ? '+' : '') + profit.toFixed(2) + '</span>';
+    const btn = document.createElement('button');
+    btn.className = 'fp-close';
+    btn.title = 'Pozisyonu kapat';
+    btn.textContent = '✕';
+    btn.addEventListener('click', async () => {
+      const ok = await uiConfirm((p.symbol || '') + ' pozisyonu kapatılsın mı? (ticket ' + p.ticket + ')', 'Kapat');
+      if (!ok) return;
+      const r = await beast.financeClose(p.ticket).catch((e) => ({ ok: false, error: String((e && e.message) || e) }));
+      if (r && r.ok) toast('Pozisyon kapatıldı');
+      else toast('Kapatılamadı: ' + ((r && r.error) || '?'));
+      finSnapshot();
+    });
+    row.appendChild(btn);
+    els.finPosList.appendChild(row);
+  }
+}
+
+function finRenderSymbols(list) {
+  if (!els.finSymList) return;
+  els.finSymList.textContent = '';
+  if (!list || !list.length) {
+    const d = document.createElement('div');
+    d.className = 'fin-empty';
+    d.textContent = 'Sembol verisi yok';
+    els.finSymList.appendChild(d);
+    return;
+  }
+  for (const s of list) {
+    if (s && s.missing) continue;
+    const row = document.createElement('div');
+    row.className = 'fin-sym';
+    const bid = Number(s.bid) || 0;
+    const prev = finLastPrices.get(s.symbol);
+    let cls = '';
+    if (prev != null && bid !== prev) cls = bid > prev ? FIN_COLOR_UP : FIN_COLOR_DOWN;
+    if (bid) finLastPrices.set(s.symbol, bid);
+    const digits = s.digits != null ? Number(s.digits) : 5;
+    row.innerHTML =
+      '<span class="fs-name">' + (s.symbol || '?') + '</span>' +
+      '<span class="fs-price ' + cls + '">' + bid.toFixed(digits) + '</span>' +
+      '<span class="fs-spread">sp ' + (s.spread != null ? s.spread : '—') + '</span>';
+    els.finSymList.appendChild(row);
+  }
+}
+
+function finSymBtnLabel(list) {
+  const l = Array.isArray(list) ? list : [];
+  if (!l.length) return 'Seç…';
+  const head = l.slice(0, 3).join(', ');
+  return l.length > 3 ? head + ' +' + (l.length - 3) : head;
+}
+
+function finSymBtnUpdate() {
+  if (els.finSymBtn) {
+    els.finSymBtn.textContent = finSymBtnLabel(finWatch);
+    els.finSymBtn.title = finWatch.length
+      ? 'İzleme listesi: ' + finWatch.join(', ') + ' — değiştirmek için tıkla'
+      : 'MT5 sembol listesinden seç — tıkla';
+  }
+}
+
+function finTraderInputsSet(cfg) {
+  if (!cfg) return;
+  if (!finWatchDirty) finWatchSet(cfg.symbols);
+  const ae = document.activeElement;
+  if (els.finInterval && ae !== els.finInterval) els.finInterval.value = cfg.intervalSec || 120;
+  if (els.finMaxLot && ae !== els.finMaxLot) els.finMaxLot.value = cfg.maxLot || 0.1;
+  finSymBtnUpdate();
+  if (els.finAllow && ae !== els.finAllow) els.finAllow.checked = cfg.allowTrading === true;
+  if (els.finTraderModel && ae !== els.finTraderModel && cfg.traderSel) els.finTraderModel.value = cfg.traderSel;
+}
+
+function finRenderTrader(trader, cfg) {
+  if (!els.finTraderBtn) return;
+  const on = !!(trader && trader.on);
+  els.finTraderBtn.classList.toggle('stop', on);
+  els.finTraderBtn.innerHTML = on ? '■ Durdur' : '▶ Ajanı Başlat';
+  if (els.finTraderDot) {
+    els.finTraderDot.classList.remove('on', 'off', 'busy');
+    if (on) els.finTraderDot.classList.add(trader.busy ? 'busy' : 'on');
+    else els.finTraderDot.classList.add('off');
+  }
+  if (els.finTraderStatus) {
+    let t = '';
+    if (trader && trader.lastAt) {
+      const d = new Date(trader.lastAt);
+      t = ' · son tur ' + String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+    }
+    const mode = cfg && cfg.allowTrading ? 'OTOMATİK' : 'analiz modu';
+    els.finTraderStatus.textContent = on
+      ? (trader.busy ? 'Tur çalışıyor…' : 'Beklemede — sıradaki tur ' + (cfg && cfg.intervalSec ? cfg.intervalSec + ' sn' : '')) + ' · tur #' + (trader.rounds || 0) + ' · ' + mode + t
+      : 'Kapalı · ' + mode;
+  }
+}
+
+async function finFillModels() {
+  if (!els.finTraderModel) return;
+  let models = [];
+  try {
+    const st = await beast.getState();
+    models = (st && st.models) || [];
+  } catch {}
+  els.finTraderModel.textContent = '';
+  const optAuto = document.createElement('option');
+  optAuto.value = '';
+  optAuto.textContent = 'Genel aktif model';
+  els.finTraderModel.appendChild(optAuto);
+  for (const m of models) {
+    const o = document.createElement('option');
+    o.value = m.sel;
+    o.textContent = (m.providerName || m.sel) + ' · ' + m.model;
+    els.finTraderModel.appendChild(o);
+  }
+  finModelsFilled = true;
+}
+
+async function finSnapshot() {
+  if (!financeModeOn()) return;
+  let r = null;
+  try { r = await beast.financeSnapshot(); } catch {}
+  if (!r || !r.ok) {
+    finSetDot(false);
+    return;
+  }
+  const b = r.bridge || {};
+  finSetDot(b.connected ? true : b.running ? 'busy' : false, b);
+  finRenderAccount(r.account);
+  finRenderPositions(r.positions || []);
+  finRenderSymbols(r.symbols || []);
+  finTraderInputsSet(r.cfg);
+  finRenderTrader(r.trader, r.cfg);
+}
+
+function finLogLine(line) {
+  if (!els.finLog) return;
+  const d = document.createElement('div');
+  d.className = 'fin-log-new';
+  const now = new Date();
+  d.textContent = String(now.getHours()).padStart(2, '0') + ':' + String(now.getMinutes()).padStart(2, '0') + ':' + String(now.getSeconds()).padStart(2, '0') + ' ' + line;
+  els.finLog.insertBefore(d, els.finLog.firstChild);
+  for (const c of els.finLog.children) c.classList.remove('fin-log-new');
+  d.classList.add('fin-log-new');
+  while (els.finLog.children.length > 200) els.finLog.removeChild(els.finLog.lastChild);
+}
+
+function finOnEvent(ev) {
+  if (!ev || ev.type !== 'finance') return;
+  if (ev.fn === 'log' && ev.line) finLogLine(ev.line);
+  else if (ev.fn === 'trade' && ev.line) {
+    finLogLine(ev.line);
+    toast(ev.line);
+    finSnapshot();
+  } else if (ev.fn === 'bridge') {
+    finSetDot(ev.connected ? true : 'busy', { error: ev.error });
+  } else if (ev.fn === 'trader') {
+    if (ev.state === 'running') finLogLine('[trader] tur #' + (ev.round || 0) + ' başladı');
+    else if (ev.state === 'idle') finLogLine('[trader] tur #' + (ev.round || 0) + ' bitti — sıradaki tur ~' + (ev.nextInSec || '?') + ' sn');
+    else if (ev.state === 'stopped') finLogLine('[trader] durduruldu');
+  } else if (ev.fn === 'install') {
+    finLogLine('[MT5] paket kurulumu tamamlandı (kod ' + ev.code + ')');
+  }
+}
+beast.onEvent(finOnEvent);
+
+async function setFinanceMode(on) {
+  if (on && ideModeOn()) await setIdeMode(false);
+  if (on && studioModeOn()) await setStudioMode(false);
+  if (on && sbModeOn()) setSandboxMode(false);
+  document.body.classList.toggle('finance-mode', !!on);
+  if (els.finBtn) els.finBtn.classList.toggle('on', !!on);
+  const brandSub = document.querySelector('#brand .brand-sub');
+  if (brandSub) brandSub.textContent = on ? 'Finance' : 'Agent';
+  try { localStorage.setItem('beast.financeMode', on ? '1' : '0'); } catch {}
+  beast.financeMode(!!on, activeId).catch(() => {});
+  /* sohbet geçmişi listesi değişir: finance modunda yalnız finance sohbetleri */
+  try {
+    await refreshSessions();
+    const rows = [...els.sessList.querySelectorAll('.sess')];
+    const activeInList = activeId && rows.some((r) => r.dataset.sid === activeId);
+    if (!activeInList && rows.length && rows[0].dataset.sid) {
+      await openSession(rows[0].dataset.sid); /* en üstteki uygun sohbeti aç */
+    }
+  } catch {}
+  if (on) {
+    if (!finModelsFilled) await finFillModels();
+    finSnapshot();
+    if (!finPollTimer) finPollTimer = setInterval(finSnapshot, 3000);
+  } else if (finPollTimer) {
+    clearInterval(finPollTimer);
+    finPollTimer = null;
+  }
+}
+
+if (els.finBtn) {
+  els.finBtn.addEventListener('click', () => setFinanceMode(!financeModeOn()).catch(() => {}));
+}
+if (els.finReconnect) {
+  els.finReconnect.addEventListener('click', async () => {
+    toast('MT5 köprüsü yeniden başlatılıyor…');
+    await beast.financeConnect().catch(() => {});
+    finSnapshot();
+  });
+}
+
+/* trader kontrolleri: ayarlar anında kaydedilir (debounce) */
+let finCfgTimer = null;
+let finWatchDirty = false; /* picker/input değişikliği kaydedilmeyi bekliyor */
+function finSaveCfg(patch) {
+  if (patch && patch.symbols !== undefined) finWatchDirty = true;
+  clearTimeout(finCfgTimer);
+  finCfgTimer = setTimeout(() => {
+    beast.financeSettings(patch).then(() => { finWatchDirty = false; }).catch(() => { finWatchDirty = false; });
+  }, 400);
+}
+if (els.finInterval) els.finInterval.addEventListener('change', () => finSaveCfg({ intervalSec: Number(els.finInterval.value) || 120 }));
+if (els.finMaxLot) els.finMaxLot.addEventListener('change', () => finSaveCfg({ maxLot: Number(els.finMaxLot.value) || 0.1 }));
+if (els.finSymBtn) els.finSymBtn.addEventListener('click', finSymPickerOpen);
+if (els.finAllow) {
+  els.finAllow.addEventListener('change', async () => {
+    if (els.finAllow.checked) {
+      const ok = await uiConfirm(
+        'OTOMATİK İŞLEM açılıyor: trade ajanı GERÇEK hesapta emir açabilir/kapatabilir (max lot + pozisyon limitleriyle). Onaylıyor musun?',
+        'Aç',
+        'Vazgeç'
+      );
+      if (!ok) {
+        els.finAllow.checked = false;
+        return;
+      }
+    }
+    finSaveCfg({ allowTrading: els.finAllow.checked });
+  });
+}
+if (els.finTraderModel) {
+  els.finTraderModel.addEventListener('change', () => {
+    finSaveCfg({ traderSel: els.finTraderModel.value });
+    toast('Trade ajanı modeli: ' + (els.finTraderModel.value || 'genel aktif model'));
+  });
+}
+if (els.finTraderBtn) {
+  els.finTraderBtn.addEventListener('click', async () => {
+    if (els.finTraderBtn.classList.contains('stop')) {
+      await beast.financeTraderStop().catch(() => {});
+    } else {
+      const r = await beast.financeTraderStart().catch((e) => ({ ok: false, error: String((e && e.message) || e) }));
+      if (r && !r.ok) toast(r.error || 'Trader başlatılamadı');
+      else if (r && r.ok) toast('Trade ajanı başladı — turlar panelde izlenir');
+    }
+    finSnapshot();
+  });
+}
+
+/* ---------- PİYASA sembol seçici ----------
+   MT5 terminalindeki tüm semboller listelenir; tıkla → izleme listesine
+   ekle/çıkar. PİYASA kartı yalnız seçili sembolleri gösterir. */
+
+let finWatch = []; /* anlık izleme listesi (snapshot cfg'den senkron) */
+let finSymSearchTimer = null;
+let finSymRefreshTimer = null;
+
+function finWatchSet(list) {
+  finWatch = (Array.isArray(list) ? list : []).map((s) => String(s).trim().toUpperCase()).filter(Boolean);
+}
+
+function finToggleWatch(sym) {
+  const s = String(sym || '').toUpperCase();
+  const i = finWatch.indexOf(s);
+  if (i >= 0) finWatch.splice(i, 1);
+  else finWatch.push(s);
+  finSaveCfg({ symbols: [...finWatch] });
+  finSymBtnUpdate(); /* TRADE AJANI düğmesi anında güncellensin */
+  clearTimeout(finSymRefreshTimer);
+  finSymRefreshTimer = setTimeout(() => finSnapshot(), 700); /* PİYASA kartı tazelensin */
+  return i < 0; /* true = eklendi */
+}
+
+function finRenderPickRows(rows, q) {
+  if (!els.finSymPick) return;
+  els.finSymPick.textContent = '';
+  const term = String(q || '').trim().toUpperCase();
+  const matches = rows.filter((r) => {
+    if (!term) return true;
+    return (String(r.name || '').toUpperCase().includes(term) || String(r.desc || '').toUpperCase().includes(term));
+  });
+  if (els.finSymCount) els.finSymCount.textContent = matches.length ? matches.length + ' sembol' : '';
+  if (!matches.length) {
+    const d = document.createElement('div');
+    d.className = 'fin-empty';
+    d.textContent = term ? 'Eşleşme yok' : 'Sembol listesi boş';
+    els.finSymPick.appendChild(d);
+    return;
+  }
+  const cap = 300;
+  for (const r of matches.slice(0, cap)) {
+    const row = document.createElement('div');
+    row.className = 'fin-sym-row';
+    const on = finWatch.includes(String(r.name || '').toUpperCase());
+    row.innerHTML =
+      '<span class="fsr-check">' + (on ? '✓' : '') + '</span>' +
+      '<span class="fsr-name">' + escapeHtml(r.name || '?') + '</span>' +
+      '<span class="fsr-desc">' + escapeHtml((r.desc || '').slice(0, 60)) + '</span>';
+    if (on) row.classList.add('on');
+    row.addEventListener('click', () => {
+      const added = finToggleWatch(r.name);
+      row.classList.toggle('on', added);
+      row.querySelector('.fsr-check').textContent = added ? '✓' : '';
+    });
+    els.finSymPick.appendChild(row);
+  }
+  if (matches.length > cap) {
+    const d = document.createElement('div');
+    d.className = 'fin-empty';
+    d.textContent = '…' + (matches.length - cap) + ' sembol daha — daraltmak için ara';
+    els.finSymPick.appendChild(d);
+  }
+}
+
+async function finSymLoad(q) {
+  if (!els.finSymPick) return;
+  els.finSymPick.textContent = '';
+  const d = document.createElement('div');
+  d.className = 'fin-empty';
+  d.textContent = 'MT5 sembolleri çekiliyor…';
+  els.finSymPick.appendChild(d);
+  const r = await beast.financeSymbolsList(q).catch(() => ({ ok: false, error: 'köprü yok' }));
+  if (!r || !r.ok) {
+    els.finSymPick.textContent = '';
+    const e = document.createElement('div');
+    e.className = 'fin-empty';
+    e.textContent = (r && r.error) || 'MT5 sembolleri alınamadı';
+    els.finSymPick.appendChild(e);
+    if (els.finSymCount) els.finSymCount.textContent = '';
+    return;
+  }
+  finRenderPickRows((r.data && r.data.symbols) || [], q);
+}
+
+function finSymPickerOpen() {
+  if (!els.finSymOverlay) return;
+  els.finSymOverlay.hidden = false;
+  if (els.finSymSearch) els.finSymSearch.value = '';
+  finSymLoad('');
+  if (els.finSymSearch) els.finSymSearch.focus();
+}
+
+function finSymPickerClose() {
+  if (els.finSymOverlay) els.finSymOverlay.hidden = true;
+}
+
+if (els.finSymAdd) els.finSymAdd.addEventListener('click', finSymPickerOpen);
+if (els.finSymClose) els.finSymClose.addEventListener('click', finSymPickerClose);
+if (els.finSymOverlay) {
+  els.finSymOverlay.addEventListener('click', (e) => {
+    if (e.target === els.finSymOverlay) finSymPickerClose();
+  });
+  els.finSymOverlay.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') { e.stopPropagation(); finSymPickerClose(); }
+  });
+}
+if (els.finSymSearch) {
+  els.finSymSearch.addEventListener('input', () => {
+    clearTimeout(finSymSearchTimer);
+    finSymSearchTimer = setTimeout(() => finSymLoad(els.finSymSearch.value.trim()), 350);
+  });
+}
 $('#filePick').addEventListener('click', async () => {
   /* Studio modunda klasör seçimi Studio'nun KENDİ kökünü değiştirir —
      IDE köküne dokunmaz (dünyalar ayrıdır) */
@@ -8156,31 +8626,15 @@ $('#filePreview').addEventListener('click', async () => {
     toast((r && r.error) || 'preview açılamadı');
     return;
   }
-  /* ANDROID EMÜLATÖR: kuruluysa Expo uygulamaları emülatörde açılır —
-     AVD arka planda başlatılır (kendi penceresi açılır), ajan expo'yu kaldırır */
-  let ask = '';
-  if (kind === 'expo' || kind === 'react-native') {
-    const dev = await beast.androidStatus().catch(() => null);
-    const hasEmu = dev && dev.ok && dev.sdk && Array.isArray(dev.avds) && dev.avds.length;
-    if (hasEmu) {
-      beast.androidStartAvd(dev.avds[0]).catch(() => {});
-      toast('Android emülatörü başlatılıyor — ilk açılış 30-90 sn');
-      ask =
-        kind === 'expo'
-          ? 'Preview aç — bu klasör bir Expo/React Native projesi (app.json var). Android emülatörü başlatıldı; arka planda `npx expo start --android` çalıştır — uygulama emülatörde açılır (expo adb ile cihazı kendisi bulur). Çalışan http://localhost:PORT adresini raporda yaz.'
-          : 'Preview aç — bu klasör bir React Native projesi. Android emülatörü hazır. Metro\u2019yu arka planda başlat (scripts.start varsa `npm start`) ve uygulamayı emülatöre kur: `npx react-native run-android`. Sunucu adresini raporda yaz.';
-    }
-  }
-  if (!ask) {
-    ask =
-      kind === 'expo'
-        ? 'Preview aç — bu klasör bir Expo/React Native projesi (app.json var). Arka planda `npx expo start --tunnel` çalıştır (tunnel: telefon her ağdan bağlanabilir; web önizleme için `--web` de ekle). Sunucu kalkınca çalışan http://localhost:PORT adresini raporda yaz.'
-        : kind === 'react-native'
-          ? 'Preview aç — bu klasör bir React Native projesi. Metro sunucusunu arka planda başlat: package.json scripts.start varsa `npm start`, yoksa `npx react-native start`. Sunucu kalkınca çalışan http://localhost:PORT adresini raporda yaz.'
-          : kind === 'web'
-            ? 'Preview aç — bu proje dev-server ister. Doğru komutu package.json scripts\'ından seç (dev/start/serve — `npm run dev` vb.) ve arka planda başlat. Sunucu kalkınca çalışan http://localhost:PORT adresini raporda yaz.'
-            : 'Preview aç — bu projenin nasıl çalıştığını package.json / konfigürasyon dosyalarından anla, doğru dev komutunu arka planda başlat ve çalışan http://localhost:PORT adresini raporda yaz.';
-  }
+  /* MOBİL: tunnel (telefon QR) yolu — emülatör entegrasyonu kaldırıldı */
+  const ask =
+    kind === 'expo'
+      ? 'Preview aç — bu klasör bir Expo/React Native projesi (app.json var). Arka planda `npx expo start --tunnel` çalıştır (tunnel: telefon her ağdan bağlanabilir; web önizleme için `--web` de ekle). Sunucu kalkınca çalışan http://localhost:PORT adresini raporda yaz.'
+      : kind === 'react-native'
+        ? 'Preview aç — bu klasör bir React Native projesi. Metro sunucusunu arka planda başlat: package.json scripts.start varsa `npm start`, yoksa `npx react-native start`. Sunucu kalkınca çalışan http://localhost:PORT adresini raporda yaz.'
+        : kind === 'web'
+          ? 'Preview aç — bu proje dev-server ister. Doğru komutu package.json scripts\'ından seç (dev/start/serve — `npm run dev` vb.) ve arka planda başlat. Sunucu kalkınca çalışan http://localhost:PORT adresini raporda yaz.'
+          : 'Preview aç — bu projenin nasıl çalıştığını package.json / konfigürasyon dosyalarından anla, doğru dev komutunu arka planda başlat ve çalışan http://localhost:PORT adresini raporda yaz.';
   if (els.bcInput) {
     els.bcInput.value = ask;
     bcInputResize();
@@ -9810,6 +10264,7 @@ async function sbClone(input) {
 function setSandboxMode(on) {
   if (on && ideModeOn()) { setIdeMode(false); }
   if (on && studioModeOn()) { setStudioMode(false); }
+  if (on && financeModeOn()) { setFinanceMode(false); }
   document.body.classList.toggle('sandbox-mode', !!on);
   if (els.sbBtn) els.sbBtn.classList.toggle('on', !!on);
   /* marka + sol konsol başlığı: moduna göre BEAST Agent/Code/Studio/Sandbox */

@@ -90,6 +90,7 @@
           </div>
         </div>
         <button id="studioBtn" class="dd-btn dd-icon-btn" title="Beast Studio — video yapma/düzenleme" data-i18n-title="tipStudio"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="13" height="12" rx="2"/><path d="M15 10l7-4v12l-7-4"/></svg></button>
+        <button id="finBtn" class="dd-btn dd-icon-btn" title="Beast Finance — MT5 trade paneli (bilgisayardaki MetaTrader 5 ile çalışır)"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M7 15l4-5 3 3 5-7"/></svg></button>
         <button id="sbBtn" class="dd-btn dd-icon-btn" title="Beast Sandbox — GitHub reposu indir &amp; içinde çalış" data-i18n-title="tipSandbox"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg></button>
         <button id="railBtn" class="dd-btn dd-icon-btn" title="Paralel Ajan Konsolu" data-i18n-title="tipRail">&#x25A4;</button>
         <button id="watchBtn" class="dd-btn dd-icon-btn" title="İzleyiciler (Watchers)" data-i18n-title="tipWatch">&#x25CE;</button>
@@ -129,6 +130,57 @@
           <button id="sendBtn" title="Gönder" data-i18n-title="tipSend">&#x27A4;&#xFE0E;</button>
         </div>
       </div>
+
+      <section id="finPanel">
+        <div id="finHead">
+          <span id="finTitle">BEAST FINANCE</span>
+          <span id="finDot" class="fin-dot off" title="MT5 köprüsü"></span>
+          <span id="finTerm" title="">MT5</span>
+          <span class="file-spacer"></span>
+          <button id="finReconnect" title="MT5'e yeniden bağlan">&#x27F3;</button>
+        </div>
+        <div id="finBody">
+          <div class="fin-card">
+            <div class="fin-card-title">HESAP</div>
+            <div class="fin-grid">
+              <div class="fin-kv"><span>Bakiye</span><b id="finBalance">—</b></div>
+              <div class="fin-kv"><span>Özkaynak</span><b id="finEquity">—</b></div>
+              <div class="fin-kv"><span>Kâr/Zarar</span><b id="finProfit">—</b></div>
+              <div class="fin-kv"><span>Serbest Marj</span><b id="finFree">—</b></div>
+            </div>
+          </div>
+          <div class="fin-card">
+            <div class="fin-card-title">TRADE AJANI <span id="finTraderDot" class="fin-dot off" title="Trader durumu"></span></div>
+            <div class="fin-row"><select id="finTraderModel" title="Trader ajanının modeli — farklı API/model seçilebilir"></select></div>
+            <div class="fin-row fin-mini">
+              <label>Tur (sn)</label><input id="finInterval" type="number" min="30" max="3600" step="10" />
+              <label>Max lot</label><input id="finMaxLot" type="number" min="0.01" max="100" step="0.01" />
+            </div>
+            <div class="fin-row fin-mini"><label>Semboller</label><button id="finSymBtn" class="fin-sym-select" title="MT5 sembol listesinden seç — tıkla">&#8230;</button></div>
+            <div class="fin-row">
+              <label class="fin-check"><input id="finAllow" type="checkbox" /> Otomatik işlem (ajan trade açabilir)</label>
+              <button id="finTraderBtn" class="fin-start">&#9654;&#xFE0E; Ajanı Başlat</button>
+            </div>
+            <div id="finTraderStatus">Kapalı</div>
+          </div>
+          <div class="fin-card">
+            <div class="fin-card-title">POZİSYONLAR <span id="finPosCount"></span></div>
+            <div id="finPosList"><div class="fin-empty">Açık pozisyon yok</div></div>
+          </div>
+          <div class="fin-card">
+            <div class="fin-card-title">
+              PİYASA
+              <span class="file-spacer"></span>
+              <button id="finSymAdd" title="Sembol ekle/çıkar — MT5 sembol listesinden seç">&#43;</button>
+            </div>
+            <div id="finSymList"><div class="fin-empty">—</div></div>
+          </div>
+          <div class="fin-card fin-grow">
+            <div class="fin-card-title">AKIŞ</div>
+            <div id="finLog"></div>
+          </div>
+        </div>
+      </section>
 
       <div id="ideRow">
         <section id="codePane">
@@ -472,6 +524,21 @@
       </div>
       <div class="mini-body">
         <div id="watchList" class="mini-list"></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="finSymOverlay" class="mini-overlay" hidden>
+    <div class="mini-dialog fin-sym-dialog">
+      <div class="mini-head">
+        <span class="mini-title">MT5 SEMBOLLERİ</span>
+        <span id="finSymCount" class="fin-sym-count"></span>
+        <button class="mini-close" id="finSymClose" title="Kapat">&#x00D7;</button>
+      </div>
+      <div class="mini-body">
+        <input id="finSymSearch" placeholder="Sembol ara… (örn: XAU, BTC, EUR, US500)" spellcheck="false" autocomplete="off" />
+        <div id="finSymPick" class="mini-list"></div>
+        <div class="fin-sym-hint">Tıkla: izleme listesine ekle/çıkar — PİYASA kartına anında düşer</div>
       </div>
     </div>
   </div>

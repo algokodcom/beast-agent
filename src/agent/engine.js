@@ -10,6 +10,9 @@ const llm = require('./llm');
 const { chatStream, chatStreamAuto, chatOnce } = llm;
 const { chatCompletionsUrl, beastDir } = require('./config');
 const tools = require('./tools');
+let financetools = null;
+try { financetools = require('./financetools'); } catch {}
+const FINANCE_TOOL_SET = new Set(financetools ? financetools.NAMES : []);
 const research = require('./research');
 const agentdefs = require('./agentdefs');
 const memory = require('./memory');
@@ -1137,6 +1140,13 @@ class Engine {
           } else if (rec.t === 'bcws') {
             /* Beast Code oturumu: hangi çalışma klasörüne bağlı */
             session.bcWs = String(rec.ws || '');
+          } else if (rec.t === 'fin') {
+            /* Beast Finance oturumu: kalıcı izolasyon etiketi (finoff kapatır) */
+            session.finance = true;
+            session.financeTrader = !!rec.trader;
+          } else if (rec.t === 'finoff') {
+            session.finance = false;
+            session.financeTrader = false;
           } else if (rec.t === 'msg') {
             delete rec.t;
             session.messages.push(rec);
@@ -1273,8 +1283,34 @@ class Engine {
       count: s.messages.length,
       isBg,
       isBotDm: !!s.isBotDm,
+      finance: !!s.finance,
       bgStatus: isBg ? (job ? job.status : null) : null,
     };
+  }
+
+  /* Beast Finance etiketi: oturumu finance sohbeti olarak KALICI işaretler
+     (jsonl'e 'fin' satırı düşer — restart sonrası da hatırlanır) */
+  markFinance(id, trader = false) {
+    const s = this._load(String(id));
+    s.finance = true;
+    s.financeTrader = !!trader;
+    try {
+      fs.appendFileSync(this._file(s.id), JSON.stringify({ t: 'fin', trader: !!trader, at: nowIso() }) + '\n');
+    } catch {}
+    this.cache.set(String(s.id), s);
+    return s;
+  }
+
+  /* Finance etiketini kaldır — oturum normal sohbete döner */
+  unmarkFinance(id) {
+    const s = this._load(String(id));
+    s.finance = false;
+    s.financeTrader = false;
+    try {
+      fs.appendFileSync(this._file(s.id), JSON.stringify({ t: 'finoff', at: nowIso() }) + '\n');
+    } catch {}
+    this.cache.set(String(s.id), s);
+    return s;
   }
 
   /* #17 paralel ajan oturumları sol sohbet listesine KARIŞMAZ;
@@ -1595,6 +1631,46 @@ class Engine {
       '- Görüntü üretimi/thumbnail: ffmpeg -ss ortası -i girdi -frames:v 1.\n' +
       '- Soru sorma; malzemeden emin olamadığında ffprobe\u2019la kendin çöz. Kullanıcı /plan /build /auto ile modu değiştirir.\n' +
       (proj ? '# PROJE TALİMATLARI (workspace AGENTS/CLAUDE/CONTEXT dosyalarından — daima uy)\n' + proj + '\n' : '') +
+      FORMAT_RULES
+    );
+  }
+
+  /* Beast Finance: MT5 trading ajanı — chat copilot'ı VEYA otonom trader.
+     Oturum alanları (main enjekte eder): financeTrader, financeAuto,
+     financeSymbols, financeStrategy, financeLimits */
+  buildFinanceSystem(session) {
+    const nowD = new Date();
+    const localDate = nowD.toLocaleDateString('tr-TR');
+    const localTime = String(nowD.getHours()).padStart(2, '0') + ':00';
+    const isTrader = !!(session && session.financeTrader);
+    const auto = !!(session && session.financeAuto);
+    const symbols = Array.isArray(session && session.financeSymbols) ? session.financeSymbols.join(', ') : String((session && session.financeSymbols) || '');
+    const lim = (session && session.financeLimits) || {};
+    const modeBlock = isTrader
+      ? auto
+        ? 'ROL: OTONOM TRADER ⚡ — tur tur çalışıyorsun. Her turda: veri çek → değerlendir → GEREKİRSE işlem aç/kapat/SL-TP güncelle → kısa rapor. Sistem seni turlar; sohbette konuşmazsın.'
+        : 'ROL: GÖZLEMCİ ANALİST 🔍 — tur tur piyasa tararsın ama OTOMATİK İŞLEM KAPALI: mt5_trade/mt5_pending KULLANMA. Fırsatları net öneri olarak yaz (sembol, yön, giriş, SL, TP, sebep); sahibi onaylarsa açılır.'
+      : 'ROL: TRADING CO-PİLOT 💬 — sahibinle sohbet ediyorsun. Veri isterse mt5_* araçlarıyla çek, analiz et; işlem istenirse limitler içinde uygula, istenmezse sadece öneri ver.';
+    const proj = this._projectInstructions(session);
+    return (
+      'Sen BEAST FİNANS\u2019sın — bilgisayardaki MetaTrader 5 (MT5) terminaline köprüyle bağlı trading ajanı.\n' +
+      'ORTAM: Beast Finance uygulamasındasın — solda sohbet geçmişi + izleyiciler, ortada bu sohbet, SAĞ panelde MT5 işlem panosu (hesap, pozisyonlar, piyasa, AKIŞ) var.\n' +
+      'KÖPRÜ: MT5 terminaline Python stdio köprüsüyle bağlısın; panel 3 saniyede bir hesap/pozisyon/piyasa verisini tazeler. mt5_* araç çağrıların ve işlem hareketlerin (açılan/kapanan pozisyonlar) SAĞ paneldeki AKIŞ akışına canlı düşer — panelin orayı izlediğini bil.\n' +
+      'GÖREV ALANI: piyasa verisi okuma (fiyat/hesap/pozisyon/geçmiş), teknik değerlendirme, pozisyon yönetimi (aç/kapat/SL/TP), risk disiplini ve kısa karar raporları. Kod yazma işi DEĞİLDİR.\n' +
+      modeBlock + '\n' +
+      'MT5 ARAÇLARI: mt5_status (bağlantı), mt5_account (hesap), mt5_market (canlı fiyat), mt5_positions (açık pozisyonlar), mt5_orders (bekleyen emirler), mt5_history (kapanan işlemler), mt5_trade (piyasa emri), mt5_close (kapat), mt5_modify (SL/TP), mt5_pending (bekleyen emir), mt5_cancel (emir iptal).\n' +
+      'VERİ AKIŞI (her değerlendirmede): mt5_account + mt5_positions + mt5_market çağrılarını AYNI turda PARALEL ver; gerekiyorsa mt5_history ile son işlemleri gör.\n' +
+      (symbols ? `İZLEME LİSTESİ: ${symbols}\n` : '') +
+      (lim.maxLot ? `LİMİTLER: max lot ${lim.maxLot}` + (lim.maxPositions ? ` · max eşzamanlı pozisyon ${lim.maxPositions}` : '') + ' — bunları aşıp araç kullanma; sistem zaten reddeder.\n' : '') +
+      'RİSK DİSİPLİNİ:\n' +
+      '- SL\u2019siz pozisyon BIRAKMA: açtığın her işlemde mantıklı bir SL koy; SL\u2019siz kalan pozisyonu mt5_modify ile tamamla.\n' +
+      '- Martingale/kademeli lot artışı YASAK; kaybı geri kovalama (revenge trade) YASAK.\n' +
+      '- Emin olmadığında İŞLEM YOK — "BEKLE: <sebep>" yaz. Sık işlem > iyi işlem.\n' +
+      '- Hesap kaldıracı ve serbest marja göre pozisyon boyutunu düşük tut; tek işlemde serbest marjın büyük kısmını riske atma.\n' +
+      (session && session.financeStrategy ? `SAHİBİNİN STRATEJİ NOTU (önceliklidir):\n${session.financeStrategy}\n` : '') +
+      'RAPOR DİSİPLİNİ: kısa ve sayısal — sembol, yön, lot, giriş, SL/TP, sebep tek satırda. Uzun fal açma; tablo/liste kullanabilirsin.\n' +
+      `Yerel zaman: ${localDate} ${localTime} — piyasa saatlerine dikkat et (borsa/metal seansları kapalıysa spread genişler; hafta sonu FX kapalıdır).\n` +
+      (proj ? '# PROJE TALİMATLARI\n' + proj + '\n' : '') +
       FORMAT_RULES
     );
   }
@@ -3170,9 +3246,11 @@ class Engine {
       ? this.buildBgSystem(session)
       : session.studio
         ? this.buildStudioSystem(session)
-        : session.bcCode
-          ? this.buildBcSystem(session)
-          : await this.buildSystem(promptText, session);
+        : session.finance
+          ? this.buildFinanceSystem(session)
+          : session.bcCode
+            ? this.buildBcSystem(session)
+            : await this.buildSystem(promptText, session);
     // Granül izin: oturumun yetki seviyesine göre araç seti daraltılır.
     // Çoklu izin (ör. web+read) seçiliyse kümeler BİRLEŞİR — hepsinin araçları açık olur.
     const perms = this.sessionPermFor(session.id);
@@ -3182,6 +3260,10 @@ class Engine {
       for (const p of perms) for (const t of PERM_TOOL_SETS[p] || []) allowedSet.add(t);
     }
     let activeTools = allowedSet ? toolsList.filter((t) => allowedSet.has(t.function.name)) : toolsList;
+    /* Beast Finance: mt5_* araçları YALNIZ finance oturumlarında görünür */
+    if (FINANCE_TOOL_SET.size && !(session && session.finance)) {
+      activeTools = activeTools.filter((t) => !FINANCE_TOOL_SET.has(t.function.name));
+    }
     /* bot skill kısıtı: bota verilen yetkiye göre araç seti daraltılır */
     const toolLimit = this.sessionTools.get(String(session.id));
     if (toolLimit) activeTools = activeTools.filter((t) => toolLimit.has(t.function.name));

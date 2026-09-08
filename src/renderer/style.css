@@ -1,4 +1,4 @@
-﻿/* Beast Agent — monokrom tema: siyah + füme + beyaz */
+/* Beast Agent — monokrom tema: siyah + füme + beyaz */
 
 :root {
   --bg: #f7f7f8;
@@ -4191,4 +4191,331 @@ body.sandbox-mode #sandboxRow { display: flex; flex-direction: row; }
   font-size: 13px;
   font-weight: 700;
   pointer-events: none;
+}
+
+/* ================= BEAST FINANCE MODU =================
+   Studio/Sandbox'tan farklı düzen: SOL sidebar (sohbet geçmişi + izleyiciler)
+   ve ORTA chat AYNI kalır; SAĞDA MT5 işlem paneli açılır. İki ajan:
+   chat copilot'ı (aktif sohbet) + otonom TRADER (farklı API/model). */
+
+#finPanel { display: none; }
+
+body.finance-mode #main { position: relative; }
+
+body.finance-mode #finPanel {
+  display: flex;
+  flex-direction: column;
+  position: absolute;
+  top: 46px;
+  right: 0;
+  bottom: 0;
+  width: var(--finW, 400px);
+  min-width: 320px;
+  background: var(--bg);
+  border-left: 1px solid var(--border);
+  z-index: 40;
+}
+
+/* chat alanı sağda panel payı kadar kırpılır */
+body.finance-mode #chatScroll,
+body.finance-mode #composerWrap { margin-right: var(--finW, 400px); }
+
+#finBtn.on { background: var(--accent-dim); color: var(--accent); }
+
+#finHead {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+}
+#finTitle { font-size: 11px; font-weight: 800; letter-spacing: 1px; color: var(--accent); }
+#finTerm {
+  font-size: 11px;
+  color: var(--muted);
+  max-width: 150px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#finHead button {
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 13px;
+  cursor: pointer;
+  padding: 3px 7px;
+  border-radius: 6px;
+}
+#finHead button:hover { background: var(--panel2); color: var(--text); }
+
+.fin-dot {
+  flex: none;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+.fin-dot.on { background: #22c55e; box-shadow: 0 0 6px rgba(34, 197, 94, 0.7); }
+.fin-dot.off { background: #ef4444; }
+.fin-dot.busy { background: #eab308; box-shadow: 0 0 6px rgba(234, 179, 8, 0.7); }
+
+#finBody {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+}
+
+.fin-card {
+  flex: none;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+  padding: 9px 10px;
+}
+.fin-card.fin-grow { flex: 1 1 auto; min-height: 90px; display: flex; flex-direction: column; }
+.fin-card-title {
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 1px;
+  color: var(--muted);
+  margin-bottom: 7px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.fin-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px 10px;
+}
+.fin-kv { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.fin-kv span { font-size: 10px; color: var(--muted); }
+.fin-kv b { font-size: 13px; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.fin-row { display: flex; align-items: center; gap: 8px; margin-bottom: 7px; }
+.fin-row:last-child { margin-bottom: 0; }
+.fin-row.fin-mini { gap: 6px; }
+.fin-row.fin-mini label { flex: none; font-size: 10px; color: var(--muted); min-width: 44px; }
+.fin-row.fin-mini input { width: 60px; }
+.fin-row input, .fin-row select {
+  flex: 1;
+  min-width: 0;
+  background: var(--panel2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-size: 12px;
+  padding: 4px 7px;
+  border-radius: 6px;
+}
+.fin-row input:focus, .fin-row select:focus { border-color: var(--accent); outline: none; }
+
+/* TRADE AJANI sembol seçme düğmesi — tıklayınca MT5 sembol seçici açılır */
+.fin-sym-select {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  background: var(--panel2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-size: 12px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.fin-sym-select:hover { border-color: var(--accent); color: var(--accent); }
+.fin-check {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text);
+  cursor: pointer;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.fin-check input { flex: none; width: auto; }
+.fin-start {
+  flex: none;
+  background: var(--accent);
+  border: none;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 6px 12px;
+  border-radius: 7px;
+  cursor: pointer;
+}
+.fin-start:hover { filter: brightness(1.1); }
+.fin-start.stop { background: #ef4444; }
+
+#finTraderStatus {
+  margin-top: 7px;
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#finPosList, #finSymList { display: flex; flex-direction: column; gap: 5px; }
+.fin-empty { font-size: 11px; color: var(--muted); padding: 2px 0 4px; }
+
+.fin-pos {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 11px;
+  background: var(--panel2);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 5px 8px;
+}
+.fin-pos .fp-sym { font-weight: 700; min-width: 54px; }
+.fin-pos .fp-dir {
+  flex: none;
+  font-weight: 800;
+  font-size: 9px;
+  padding: 2px 5px;
+  border-radius: 5px;
+  letter-spacing: 0.5px;
+}
+.fin-pos .fp-dir.buy { background: rgba(34, 197, 94, 0.16); color: #22c55e; }
+.fin-pos .fp-dir.sell { background: rgba(239, 68, 68, 0.16); color: #ef4444; }
+.fin-pos .fp-meta { flex: 1; min-width: 0; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fin-pos .fp-pl { font-weight: 800; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.fin-pos .fp-pl.pos { color: #22c55e; }
+.fin-pos .fp-pl.neg { color: #ef4444; }
+.fin-pos .fp-close {
+  flex: none;
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 2px 5px;
+  border-radius: 5px;
+}
+.fin-pos .fp-close:hover { background: rgba(239, 68, 68, 0.15); color: #ef4444; }
+
+.fin-sym {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 7px;
+  font-size: 11px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  background: var(--panel2);
+  border: 1px solid var(--border);
+}
+.fin-sym .fs-name { font-weight: 700; }
+.fin-sym .fs-price { font-variant-numeric: tabular-nums; }
+.fin-sym .fs-up { color: #22c55e; }
+.fin-sym .fs-down { color: #ef4444; }
+.fin-sym .fs-spread { color: var(--muted); font-size: 10px; }
+
+#finLog {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  font-family: Consolas, monospace;
+  font-size: 10.5px;
+  line-height: 1.55;
+  color: var(--muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+#finLog .fin-log-new { color: var(--text); }
+
+/* PİYASA başlığındaki sembol ekleme ikonu */
+.fin-card-title button {
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 1px 6px;
+  border-radius: 5px;
+}
+.fin-card-title button:hover { background: var(--accent-dim); color: var(--accent); }
+
+/* MT5 sembol seçici modalı */
+.fin-sym-dialog { width: 460px; max-width: calc(100vw - 40px); }
+.fin-sym-count { font-size: 11px; color: var(--muted); margin-left: auto; margin-right: 6px; }
+#finSymSearch {
+  width: 100%;
+  box-sizing: border-box;
+  background: var(--panel2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-size: 12px;
+  padding: 6px 9px;
+  border-radius: 7px;
+  margin-bottom: 8px;
+}
+#finSymSearch:focus { border-color: var(--accent); outline: none; }
+.fin-sym-dialog .mini-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+#finSymPick {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.fin-sym-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  border: 1px solid transparent;
+}
+.fin-sym-row:hover { background: var(--panel2); }
+.fin-sym-row.on { background: var(--accent-dim); border-color: var(--accent); }
+.fin-sym-row .fsr-check {
+  flex: none;
+  width: 14px;
+  text-align: center;
+  color: var(--accent);
+  font-weight: 800;
+}
+.fin-sym-row .fsr-name { flex: none; min-width: 84px; font-weight: 700; color: var(--text); }
+.fin-sym-row .fsr-desc {
+  flex: 1;
+  min-width: 0;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.fin-sym-hint {
+  flex: none;
+  margin-top: 8px;
+  font-size: 10.5px;
+  color: var(--muted);
+  text-align: center;
 }

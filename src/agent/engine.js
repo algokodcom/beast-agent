@@ -4726,13 +4726,15 @@ const skills = require('./skills');
         });
       }
       if (name === 'ocr_read') return JSON.stringify(await this._ocrRead(args || {}, signal));
-      /* opencode general-agent portu: alt-ajan da edit/grep/glob kullanır */
+      /* opencode general-agent portu: alt-ajan da edit/grep/glob kullanır.
+         MT5 (mt5_*) araçları da tools.exec'e geçer (finance işçileri/danışma). */
       if (!(name === 'run_command' || name === 'read_file' || name === 'write_file' || name === 'edit_file' ||
             name === 'list_dir' || name === 'grep' || name === 'glob' ||
             name === 'git_commit' || name === 'git_diff_review' || name === 'git_pr_create' ||
             name === 'repo_map' || name === 'repo_symbols' ||
             name === 'xlsx_read' || name === 'xlsx_write' || name === 'xlsx_edit' ||
-            name === 'web_search' || name === 'http_fetch' || name === 'webfetch' || name === 'python_run')) {
+            name === 'web_search' || name === 'http_fetch' || name === 'webfetch' || name === 'python_run') &&
+          !FINANCE_TOOL_SET.has(name)) {
         return JSON.stringify({ ok: false, error: `unknown tool ${name}` });
       }
       return await tools.exec(name, args, { cwd: this.workspace, signal });
@@ -5256,10 +5258,16 @@ const skills = require('./skills');
         return JSON.stringify(await apps.call(name, args || {}, signal));
       }
       /* opencode tool registry portu: edit_file/grep/glob ana ajanın da araçları —
-         bunlar olmadan model write_file + tam dosya okuma döngüsüne düşer */
-      if (!(name === 'run_command' || name === 'read_file' || name === 'write_file' || name === 'edit_file' ||
-            name === 'list_dir' || name === 'grep' || name === 'glob' ||
-            name === 'web_search' || name === 'http_fetch' || name === 'webfetch' || name === 'python_run')) {
+         bunlar olmadan model write_file + tam dosya okuma döngüsüne düşer.
+         MT5 (mt5_*) araçları tools.exec → financetools.handlers'a yönlendirilir —
+         whitelist'te yoklarsa finance ajanı "unknown tool" yiyordu (işlem açamama
+         hatasının kök nedeni). */
+      if (
+        !(name === 'run_command' || name === 'read_file' || name === 'write_file' || name === 'edit_file' ||
+          name === 'list_dir' || name === 'grep' || name === 'glob' ||
+          name === 'web_search' || name === 'http_fetch' || name === 'webfetch' || name === 'python_run') &&
+        !FINANCE_TOOL_SET.has(name)
+      ) {
         return JSON.stringify({ ok: false, error: `unknown tool ${name}` });
       }
       return await tools.exec(name, args, { cwd: this._sessionWorkspace(sessionId), signal, wantDiff: true });

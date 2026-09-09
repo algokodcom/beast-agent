@@ -180,6 +180,19 @@ test('_bgFinish: sürekli iş done/error ile KAPANMAZ, aborted ile kapanır', ()
   assert.equal(eng._bgJobs.get('c1').status, 'aborted');
 });
 
+test('execTool: mt5_* araçları dispatch edilir (unknown tool DEĞİL)', async () => {
+  const eng = makeEngine();
+  const s = eng._load(eng.createSession().id);
+  s.finance = true;
+  eng.cache.set(s.id, s);
+  /* köprü yok → zarif hata döner ama "unknown tool" ASLA olmamalı
+     (finance ajanının işlem açamama hatasının kök nedeni buydu) */
+  const r = JSON.parse(await eng._execTool('mt5_status', {}, null, s.id));
+  assert.doesNotMatch(String(r.error || ''), /unknown tool/i);
+  const r2 = JSON.parse(await eng._execTool('mt5_positions', {}, null, s.id));
+  assert.doesNotMatch(String(r2.error || ''), /unknown tool/i);
+});
+
 test('agent_dm: finance ajanı finance dışına DM atamaz', async () => {
   const eng = makeEngine();
   eng.flushPendingReports = () => {};

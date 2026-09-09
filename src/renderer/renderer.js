@@ -5186,7 +5186,12 @@ async function dmClearAll() {
   toast('Ajan DM geçmişi silindi');
 }
 
-if (els.dmBtn) els.dmBtn.addEventListener('click', () => toggleDmRail($('#dmRail').classList.contains('dm-hidden')));
+if (els.dmBtn) {
+  els.dmBtn.addEventListener('click', () => {
+    /* kapalıyken (dm-hidden VAR) aç: toggle 'hide' SEMANTIĞI tersine çevrilir */
+    toggleDmRail(!$('#dmRail').classList.contains('dm-hidden'));
+  });
+}
 if (els.dmModalClose) els.dmModalClose.addEventListener('click', closeDmModal);
 if (els.dmModalClear) els.dmModalClear.addEventListener('click', dmClearAll);
 if (els.dmBackBtn) {

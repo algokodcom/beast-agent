@@ -359,6 +359,16 @@ class Engine {
     /* #17 kalıcı ajan geçmişi: restart sonrası işler + sohbetler kaybolmasın */
     this._bgJobsFile = path.join(this.sessionsDir, 'bg-jobs.json');
     this._loadBgJobsPersisted();
+    /* AJAN DM: paralel/finance ajanlarının birbirine attığı mesajlar
+       (AJAN DM paneli buradan beslenir; restart sonrası da durur) */
+    this._agentDms = [];
+    this._agentDmsFile = path.join(this.sessionsDir, 'agent-dms.json');
+    try {
+      const raw = JSON.parse(fs.readFileSync(this._agentDmsFile, 'utf8'));
+      this._agentDms = Array.isArray(raw.dms) ? raw.dms : [];
+    } catch {
+      this._agentDms = [];
+    }
     /* superyorizyon döngüsü: takılan/uzun süren ajanı CEO'ya bildirir */
     this._supTimer = setInterval(() => {
       try { this._supervise(); } catch {}
@@ -1835,14 +1845,23 @@ class Engine {
     const skList = (() => {
       try { return skills.scan(); } catch { return []; }
     })();
+    /* CHATTEKI BEAST KİMLİĞİ: finance ajanı da sahibin SOUL/USER/KURALLARINI taşır */
+    const mem = memory.loadAll();
+    const rules = memory.listRules();
+    const isWorker = !!(session && session.bgJob && !isTrader);
+    const modeBlock2 = isWorker
+      ? 'ROL: FİNANS İŞÇİSİ 🔎 — TEK bir görev için piyasa verisi toplar, analiz eder, RAPOR döndürürsün. mt5_trade/mt5_pending/mt5_close KULLANMA — yalnız okuma araçları (mt5_status/account/market/positions/orders/history). İş bitince kısa final raporu yaz.'
+      : modeBlock;
     return (
+      (mem.soul ? mem.soul.trim() + '\n\n' : '') +
       'Sen BEAST FİNANS\u2019sın — bilgisayardaki MetaTrader 5 (MT5) terminaline köprüyle bağlı trading ajanı.\n' +
       'ORTAM: Beast Finance uygulamasındasın — solda sohbet geçmişi + izleyiciler, ortada bu sohbet, SAĞ panelde MT5 işlem panosu (hesap, pozisyonlar, piyasa, AKIŞ) var.\n' +
       'KÖPRÜ: MT5 terminaline Python stdio köprüsüyle bağlısın; panel 3 saniyede bir hesap/pozisyon/piyasa verisini tazeler. mt5_* araç çağrıların ve işlem hareketlerin (açılan/kapanan pozisyonlar) SAĞ paneldeki AKIŞ akışına canlı düşer — panelin orayı izlediğini bil.\n' +
       'GÖREV ALANI: piyasa verisi okuma (fiyat/hesap/pozisyon/geçmiş), teknik değerlendirme, pozisyon yönetimi (aç/kapat/SL/TP), risk disiplini ve kısa karar raporları. Kod yazma işi DEĞİLDİR.\n' +
-      modeBlock + '\n' +
+      modeBlock2 + '\n' +
       'MT5 ARAÇLARI: mt5_status (bağlantı), mt5_account (hesap), mt5_market (canlı fiyat), mt5_positions (açık pozisyonlar), mt5_orders (bekleyen emirler), mt5_history (kapanan işlemler), mt5_trade (piyasa emri), mt5_close (kapat), mt5_modify (SL/TP), mt5_pending (bekleyen emir), mt5_cancel (emir iptal).\n' +
       'VERİ AKIŞI (her değerlendirmede): mt5_account + mt5_positions + mt5_market çağrılarını AYNI turda PARALEL ver; gerekiyorsa mt5_history ile son işlemleri gör.\n' +
+      'PARALEL + KOORDİNASYON: uzun araştırma/işleri run_background ile paralel finance işçisine devret (parent finance olduğu için işçi mt5 okuma araçlarını görür); koşan ajanlarla konuşmak için agent_dm (to: ajan başlığındaki anahtar kelime, örn "GOLD").\n' +
       (symbols ? `İZLEME LİSTESİ: ${symbols}\n` : '') +
       (lim.maxLot ? `LİMİTLER: max lot ${lim.maxLot}` + (lim.maxPositions ? ` · max eşzamanlı pozisyon ${lim.maxPositions}` : '') + ' — bunları aşıp araç kullanma; sistem zaten reddeder.\n' : '') +
       'RİSK DİSİPLİNİ:\n' +
@@ -1851,6 +1870,8 @@ class Engine {
       '- Emin olmadığında İŞLEM YOK — "BEKLE: <sebep>" yaz. Sık işlem > iyi işlem.\n' +
       '- Hesap kaldıracı ve serbest marja göre pozisyon boyutunu düşük tut; tek işlemde serbest marjın büyük kısmını riske atma.\n' +
       (session && session.financeStrategy ? `SAHİBİNİN STRATEJİ NOTU (önceliklidir):\n${session.financeStrategy}\n` : '') +
+      (mem.user ? `# USER\n${mem.user}\n` : '') +
+      (rules.length ? `# KURALLAR (sahibinin kalıcı talimatları — daima uy)\n${rules.map((r) => '- ' + r).join('\n')}\n` : '') +
       (skList.length
         ? '# SKILLS\nKurulu skill kataloğu: görev bir skill\u2019in tanımına uyarsa skill aracıyla gövdesini (SKILL.md) yükleyip uygula — tekerleği yeniden icat etme. Analysis/rapor/PDF gibi işlerde skill\u2019in prosedürüne uy.\n' +
           skList.map((s) => `- ${s.name}: ${s.description} [${s.path}]`).join('\n') + '\n'
@@ -2797,6 +2818,15 @@ class Engine {
       if (adef && (adef.mode === 'bg' || adef.mode === 'all')) bg.agentName = adef.name;
     }
     this.cache.set(bg.id, bg);
+    /* FİNANS İŞÇİSİ: parent finance oturumuyken (Beast Finance sohbeti) açılan
+       arka plan işi mt5_* okuma araçlarını görür ve finance promptuyla koşar —
+       chat Beast'i Finance'tan paralel finance ajanı açabilir */
+    const parentSess = parent ? this.cache.get(parent) || null : null;
+    if (parentSess && parentSess.finance) {
+      bg.finance = true;
+      bg.financeTrader = false; /* işçi — asla otonom trade, yalnız analiz/rapor */
+      bg.financeAuto = false;
+    }
     const ttl = String(title || t).replace(/\s+/g, ' ').trim().slice(0, 80) || 'arka plan görevi';
     /* #17 cache'teki nesneye de işaret koy — listSessions temiz başlık göstersin */
     bg.bgTitle = ttl;
@@ -3051,10 +3081,19 @@ class Engine {
     return { ok: true, job, messages: tail.slice(-30) };
   }
 
-  /* İş bitişi kaydı: status=done|error|aborted. Hata olursa üst sohbete haber gider. */
+  /* İş bitişi kaydı: status=done|error|aborted. Hata olursa üst sohbete haber gider.
+     SÜREKLİ (continuous) işler — Finance trade ajanları gibi tur tur koşanlar —
+     'done'/'error'da KAPANMAZ: tur sonu = aktivite tazelenir, iş koşmaya devam
+     eder (döngüyü main yönetir). Yalnız 'aborted' (kullanıcı iptali) gerçek bitiştir. */
   _bgFinish(sid, status, errorMsg) {
     const job = this._bgJobs.get(String(sid));
     if (!job || job.status !== 'running') return;
+    if (job.continuous && (status === 'done' || status === 'error')) {
+      job.lastActivityAt = nowIso();
+      if (status === 'error') job.errors = (job.errors || 0) + 1;
+      this._bgEmit();
+      return;
+    }
     job.status = status;
     job.revive = false;
     job.endedAt = nowIso();
@@ -3122,9 +3161,11 @@ class Engine {
     job.lastActivityAt = nowIso();
   }
 
-  /* Saf sınıflandırma (test edilebilir): null | 'stuck' | 'long' */
+  /* Saf sınıflandırma (test edilebilir): null | 'stuck' | 'long'
+     continuous işler (Finance trade ajanları) denetlenmez — turlar arası
+     boşluk normaldir; döngüyü main yönetir. */
   static superviseReason(job, nowMs) {
-    if (!job || job.status !== 'running') return null;
+    if (!job || job.status !== 'running' || job.continuous) return null;
     const started = Date.parse(job.startedAt || '') || nowMs;
     const lastAct = Date.parse(job.lastActivityAt || '') || started;
     const runMin = (nowMs - started) / 60000;
@@ -3365,6 +3406,7 @@ class Engine {
       `- Bağımsız araç çağrılarını aynı turda PARALEL ver.\n` +
       `- PDF gerekirse pip\u2019ten paket kurma (Türkçe bozar); Node\u2019un kurulu \`pdf-lib\`+fontkit\u2019iyle .js script yazıp \`node\` ile çalıştır. md→pdf çevirme: belge çıktısını doğrudan PDF olarak üret.\n` +
       `- ARAŞTIRMA SINIRI: 3-5 kaynak yeter; süre hedefi ~3 dakika. 2-3 denemede bulunamayan bilgiyi BIRAK — bulabildiğin kısmi sonucu raporla ve neyi bulamadığını yaz. Kapalı/gizli içerik peşinde koşma.\n` +
+      `AJAN KOORDİNASYONU: diğer koşan ajanlarla (paralel işler, finance ajanları) konuşman gerekiyorsa agent_dm aracını kullan — to: hedefin başlığındaki anahtar kelime (örn "GOLD", "Trader"), message: 1-3 cümlelik net mesaj. Senden istenen görevde başka bir ajanın zaten yaptığın işe ihtiyacı varsa DM ile haber ver.\n` +
       FORMAT_RULES + '\n' +
       `SON ÇIKTI: 3-5 satırlık net sonuç raporu, madde madde. Soru sorma, sohbet etme.`
     );
@@ -3421,6 +3463,11 @@ class Engine {
         );
         if (skillDef) toolsList = [...toolsList, skillDef];
       }
+      /* AJAN DM: koşan ajan oturumlarına (arka plan işleri + finance
+         ajanları) ajanlar-arası mesajlaşma aracı verilir */
+      if (session && (session.bgJob || (session.finance && session.bgTitle))) {
+        toolsList = [...toolsList, AGENT_DM_DEF];
+      }
       /* panel_run yalnız SANDBOX oturumlarında görünsün — diğer panellerde
          modelin alet çantasında olmasın (hook olmadan çalışmaz) */
       if (!(session && session.sbSandbox)) {
@@ -3430,12 +3477,12 @@ class Engine {
     /* opencode agent.ts port: özel ajan tanımı — prompt/model/araç/steps */
     const adef = this._agentDefFor(session, !!session.bgJob);
     const promptText = this._lastUserText(session);
-    let system = session.bgJob
-      ? this.buildBgSystem(session)
-      : session.studio
-        ? this.buildStudioSystem(session)
-        : session.finance
-          ? this.buildFinanceSystem(session)
+    let system = session.finance
+      ? this.buildFinanceSystem(session) /* finance önceliklidir — bg finance işçileri de finance promptuyla koşar */
+      : session.bgJob
+        ? this.buildBgSystem(session)
+        : session.studio
+          ? this.buildStudioSystem(session)
           : bcAgent
             ? this.buildOcSystem(session, bcAgent)
             : await this.buildSystem(promptText, session);
@@ -4714,6 +4761,10 @@ const skills = require('./skills');
       if (name === 'skill') {
         return JSON.stringify(this._skillBody(args));
       }
+      /* AJAN DM: ajanlar arası mesaj — hedef koşan ajanın oturumuna düşer */
+      if (name === 'agent_dm') {
+        return JSON.stringify(this._agentDmSend(sessionId, args));
+      }
       if (isBc) {
         /* opencode permission akışı (tool/external-directory.ts + her aracın
            ctx.ask'ı): önce workspace DIŞI erişim izni, sonra araç izni.
@@ -5234,6 +5285,26 @@ const skills = require('./skills');
 function emitSafe(engine, sessionId, ev) {
   engine.emit({ ...ev, sessionId });
 }
+
+/* AJAN DM aracı: paralel/finance ajanlarının birbirine kısa mesaj atması.
+   Salt metin — hedef ajanın oturumuna [AJAN DM] bloğu olarak düşer; AJAN DM
+   panelinde iki yönlü görünür. */
+const AGENT_DM_DEF = {
+  type: 'function',
+  function: {
+    name: 'agent_dm',
+    description:
+      'Send a short DM to another RUNNING agent (parallel agents / finance agents) to coordinate: share findings, ask status, warn about risk, hand off work. `to` = target session id OR a keyword from the agent title (e.g. "GOLD", "Trader"). The message is delivered to the other agent and shown in the Agent DM panel.',
+    parameters: {
+      type: 'object',
+      properties: {
+        to: { type: 'string', description: 'Target agent session id or a title keyword' },
+        message: { type: 'string', description: 'Short message (1-3 sentences)' },
+      },
+      required: ['to', 'message'],
+    },
+  },
+};
 
 const TOOLS = [
   ...tools.definitions,
@@ -6013,6 +6084,80 @@ Engine.prototype.clearTodos = function (sid) {
   } catch {}
   emitSafe(this, key, { type: 'todos', sessionId: key, todos: [] });
   return { ok: true, count: prev.length };
+};
+
+/* ---------- AJAN DM: ajanların birbirine mesajı ---------- */
+
+/* Ajan DM gönder: hedef koşan paralel/finance ajanı (id YA DA başlık
+   anahtar kelimesi). Teslim _pendingReports kuyruğuyla yapılır — hedef
+   meşgulse mesaj done olunca düşer, kaybolmaz. Panel agent-dms.json'dan. */
+Engine.prototype._agentDmSend = function (fromSid, args) {
+  try {
+    const to = String((args && args.to) || '').trim();
+    const text = String((args && args.message) || '').trim().slice(0, 1200);
+    if (!text) return { ok: false, error: 'mesaj boş' };
+    const jobs = this._bgJobs || new Map();
+    let target = jobs.has(to) ? to : '';
+    if (!target) {
+      const q = to.toLowerCase();
+      for (const [sid, j] of jobs) {
+        if (sid === String(fromSid)) continue;
+        if (j && j.title && String(j.title).toLowerCase().includes(q)) {
+          target = sid;
+          break;
+        }
+      }
+    }
+    if (!target || !jobs.has(target)) {
+      const titles = [...jobs.values()]
+        .filter((j) => j && j.status === 'running' && j.title)
+        .map((j) => j.title)
+        .slice(0, 8);
+      return {
+        ok: false,
+        error: 'hedef ajan bulunamadı: "' + to + '"' + (titles.length ? ' — koşan ajanlar: ' + titles.join(', ') : ''),
+      };
+    }
+    if (String(target) === String(fromSid)) return { ok: false, error: 'kendine DM atılamaz' };
+    const fromJob = jobs.get(String(fromSid));
+    const toJob = jobs.get(target);
+    const dm = {
+      at: new Date().toISOString(),
+      from: String(fromSid),
+      fromTitle: (fromJob && fromJob.title) || 'Ajan',
+      to: String(target),
+      toTitle: (toJob && toJob.title) || 'Ajan',
+      text,
+    };
+    this._agentDms = this._agentDms || [];
+    this._agentDms.push(dm);
+    if (this._agentDms.length > 400) this._agentDms.splice(0, this._agentDms.length - 400);
+    try {
+      fs.writeFileSync(this._agentDmsFile, JSON.stringify({ dms: this._agentDms }, null, 2));
+    } catch {}
+    emitSafe(this, target, { type: 'agent-dm', ...dm });
+    /* teslim: hedef meşgulse pending kuyruğunda bekler, done olunca düşer */
+    (this._pendingReports = this._pendingReports || []).push({
+      parentId: target,
+      text:
+        `[AJAN DM — ${dm.fromTitle}]\n${text}\n` +
+        `(Cevabını agent_dm aracıyla ver — to: "${dm.fromTitle}")`,
+    });
+    this.flushPendingReports(target);
+    return { ok: true, to: target, toTitle: dm.toTitle };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+};
+
+Engine.prototype.agentDmsList = function () {
+  return [...(this._agentDms || [])].slice(-200);
+};
+
+Engine.prototype.agentDmsClear = function () {
+  this._agentDms = [];
+  try { fs.rmSync(this._agentDmsFile, { force: true }); } catch {}
+  return { ok: true };
 };
 
 module.exports = Engine;

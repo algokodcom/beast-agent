@@ -5100,6 +5100,57 @@ ipcMain.handle('agent:send', (_e, { sessionId, text }) => {
     desktopEcho(sessionId, '/help', desktopSlashHelp());
     return true;
   }
+  if (t === '/autodel' || t.startsWith('/autodel ')) {
+    /* /autodel [all] — otomatik hatırlatmaları tek komutla sil (WA ile aynı davranış) */
+    const arg = t.slice(8).trim().toLowerCase();
+    if (arg === 'all' || arg === 'hepsi' || arg === 'hepsini') {
+      const r = cron.clearAll();
+      cronEmit();
+      desktopEcho(sessionId, t, r.ok ? `**Tüm zamanlanmış görevler silindi** (${r.count} adet).` : 'Temizlenemedi.');
+    } else {
+      const r = cron.removeIf(isReminderJob);
+      cronEmit();
+      const left = cron.list().filter((j) => j.enabled).length;
+      desktopEcho(
+        sessionId,
+        t,
+        r.count
+          ? `**${r.count} otomatik hatırlatma silindi.** Kalan aktif görev: ${left}`
+          : 'Silinecek otomatik hatırlatma yok — zaten temiz.'
+      );
+    }
+    return true;
+  }
+  if (t === '/deltodo' || t.startsWith('/deltodo ')) {
+    /* /deltodo [all] — todo listelerini temizle (WA ile aynı davranış) */
+    const arg = t.slice(8).trim().toLowerCase();
+    if (arg === 'all' || arg === 'hepsi' || arg === 'hepsini') {
+      let n = 0;
+      let items = 0;
+      try {
+        for (const v of engine.listSessions()) {
+          const r = engine.clearTodos(v.id);
+          if (r && r.ok) {
+            n++;
+            items += r.count || 0;
+          }
+        }
+      } catch {}
+      desktopEcho(sessionId, t, n ? `**Tüm oturumların todoları temizlendi** (${n} oturum, ${items} madde).` : 'Temizlenecek todo yok.');
+    } else {
+      const r = engine.clearTodos(String(sessionId || ''));
+      desktopEcho(
+        sessionId,
+        t,
+        r.ok
+          ? r.count
+            ? `**${r.count} todo temizlendi.** (tüm oturumlar: /deltodo all)`
+            : 'Todo listesi zaten boş. (tüm oturumlar: /deltodo all)'
+          : 'Oturum bulunamadı — todo listesi yok.'
+      );
+    }
+    return true;
+  }
   if (t === '/rules') {
     const rs = memory.listRules();
     desktopEcho(sessionId, t, rs.length ? '**Kalıcı kurallar:**\n' + rs.map((r0, i) => `${i + 1}. ${r0}`).join('\n') : 'Kalıcı kural yok — ekle: **/rule <metin>**');
@@ -5294,6 +5345,8 @@ function desktopSlashHelp() {
     '**/think 0-5** – düşünme seviyesi (0 kapalı · 5 max)',
     '**/agent [isim]** – özel ajan bağla / listele (%APPDATA%\\beast\\agents\\*.md)',
     '**/clear** – oturum geçmişini gerçekten sil (kod korunur)',
+    '**/autodel** – tüm otomatik hatırlatmaları tek komutla sil · **/autodel all** – cron görevleri dahil hepsi',
+    '**/deltodo** – bu oturumun todo listesini temizle · **/deltodo all** – tüm oturumların todoları',
     '**/notes** – bu oturumun notlarını göster',
     '**/rule <metin>** – kalıcı kural ekle · **/rules** – listele',
     '**/notify on|off** – hata mail bildirimini aç/kapa',
@@ -5827,9 +5880,18 @@ ipcMain.handle('memory:get', () => memory.loadAll());
 /* paralel ajanlar: canlı izleme (#14) */
 ipcMain.handle('agents:list', () => engine.listBgJobs());
 ipcMain.handle('agents:detail', (_e, id) => engine.bgDetail(id));
-ipcMain.handle('agents:cancel', (_e, id) => ({
-  ok: engine.interrupt(String(id || ''), 'kullanıcı Paralel Ajanlar panelinden (×) iptal etti'),
-}));
+ipcMain.handle('agents:cancel', (_e, id) => {
+  const sid = String(id || '');
+  /* Finance ajanı (sürekli iş): interrupt yetmez — döngüyü de kapat */
+  if (financeState && financeState.agents && financeState.agents.has(sid)) {
+    finAgentStop(sid, 'kullanıcı Paralel Ajanlar panelinden (×) iptal etti');
+    return { ok: true };
+  }
+  return { ok: !!engine.interrupt(sid, 'kullanıcı Paralel Ajanlar panelinden (×) iptal etti') };
+});
+/* AJAN DM paneli: ajanlar arası mesaj arşivi */
+ipcMain.handle('agent-dms:list', () => (engine ? engine.agentDmsList() : []));
+ipcMain.handle('agent-dms:clear', () => (engine ? engine.agentDmsClear() : { ok: false }));
 ipcMain.handle('ceo:get', () => !!engine.ceoMode);
 ipcMain.handle('ceo:set', (_e, v) => {
   settings.ceoMode = !!v;
@@ -8214,13 +8276,13 @@ const financetools = require('./agent/financetools');
 
 const financeState = {
   mode: false, /* chat oturumları finance bayrağı alıyor mu */
-  traderSid: null,
+  traderSid: null, /* ANA trader (panel kartı buna bağlı) */
   traderOn: false,
-  traderTimer: null,
   traderRounds: 0,
   lastRoundAt: 0,
   installing: false,
   installTried: false,
+  agents: new Map(), /* sid -> { symbols, main, round, timer } — AYNI ANDA koşan finance ajanları */
 };
 
 function financeDir() {
@@ -8232,7 +8294,10 @@ function financeDir() {
 function finCfg() {
   if (!settings.finance || typeof settings.finance !== 'object') settings.finance = {};
   const f = settings.finance;
-  if (!Array.isArray(f.symbols) || !f.symbols.length) f.symbols = ['EURUSD', 'XAUUSD', 'GBPUSD', 'BTCUSD'];
+  /* SADECE kullanıcının eklediği semboller görünür — artık varsayılan sembol YOK
+     (eski davranış EURUSD/XAUUSD/GBPUSD/BTCUSD'yi geri geri getiriyordu) */
+  if (!Array.isArray(f.symbols)) f.symbols = [];
+  if (typeof f.consultChat !== 'boolean') f.consultChat = true; /* her tur öncesi chat ajanından plan */
   if (!Number(f.intervalSec)) f.intervalSec = 120;
   if (!Number(f.maxLot)) f.maxLot = 0.1;
   if (f.maxPositions == null) f.maxPositions = 3;
@@ -8334,97 +8399,256 @@ mt5bridge.on('log', (m) => {
   financeLog('[mt5] ' + line.slice(0, 300));
 });
 
-/* ---------- TRADER ajanı (gizli engine oturumu + tur döngüsü) ---------- */
+/* ---------- FINANCE AJANLARI (paralel ajan mimarisi) ----------
+   Her finance ajanı = SÜREKLİ (continuous) paralel ajan: Paralel Ajanlar
+   panelinde canlı görünür, hareketleri (tool-start/status) panelde akar,
+   birden fazla ajan AYNI ANDA koşabilir (ana trader + sembol başına ayrı
+   ajanlar). Döngüyü main yönetir; engine 'done'/'error'da sürekli işi
+   KAPATMAZ (_bgFinish continuous dalı), yalnız kullanıcı iptali bitirir. */
 
-function finTraderSession() {
-  let sid = financeState.traderSid;
-  if (sid) {
-    try {
-      const s = engine.cache.get(sid);
-      if (s) return s;
-    } catch {}
-    financeState.traderSid = null;
+function finAgentSession(symbols, isMain) {
+  if (isMain) {
+    const sid = financeState.traderSid;
+    if (sid) {
+      try {
+        const s = engine.cache.get(sid);
+        if (s) return s;
+      } catch {}
+      financeState.traderSid = null;
+    }
   }
   const s = engine._load(engine.createSession().id);
   s.messages = s.messages || [];
-  s.bgTitle = 'Beast Finance · Trader'; /* _view.isBg → sohbet geçmişinde gizli */
+  const symLabel = symbols && symbols.length ? symbols.join(', ').slice(0, 40) : 'tüm liste';
+  const title = isMain ? 'Beast Finance · Trader' : 'Finance · ' + symLabel;
+  s.bgTitle = title; /* _view.isBg → sohbet geçmişinde gizli */
   try {
     fs.appendFileSync(
       engine._file(s.id),
-      JSON.stringify({ t: 'meta2', bgOf: '', title: 'Beast Finance · Trader', at: new Date().toISOString() }) + '\n'
+      JSON.stringify({ t: 'meta2', bgOf: '', title, at: new Date().toISOString() }) + '\n'
     );
   } catch {}
   engine.cache.set(s.id, s);
-  engine.markFinance(s.id, true); /* kalıcı finance etiketi (trader rolüyle) */
-  s.workspace = financeDir(); /* trader kendi klasöründe çalışır */
-  financeState.traderSid = s.id;
+  engine.markFinance(s.id, true); /* kalıcı finance etiketi (mt5_* araçları) */
+  s.workspace = financeDir(); /* ajan kendi klasöründe çalışır */
+  if (isMain) financeState.traderSid = s.id;
   return s;
 }
 
-function finApplyTraderFields(s) {
+/* Ajanı Paralel Ajanlar paneline kaydet — sürekli (continuous) iş olarak.
+   Panelde canlı hareket akışı + × ile durdurma buradan gelir. */
+function finAgentRegisterBg(s, symbols) {
+  try {
+    if (!engine || !engine._bgJobs) return;
+    const f = finCfg();
+    const symLabel = symbols && symbols.length ? symbols.join(', ').slice(0, 40) : 'tüm izleme listesi';
+    engine._bgJobs.set(String(s.id), {
+      id: s.id,
+      code: s.code,
+      title: s.bgTitle || 'Finance Ajanı',
+      task: `Beast Finance ajanı (${symLabel}) — ${f.allowTrading ? 'otonom tur tur işlem yönetimi' : 'analiz modunda tur tur tarama'}`,
+      agent: null,
+      parentId: '',
+      groupId: null,
+      status: 'running',
+      slot: false, /* eşzamanlılık slotu TÜKETMEZ — ana işleri bloklamaz */
+      continuous: true, /* tur sonları işi KAPATMAZ (_bgFinish) */
+      startedAt: new Date().toISOString(),
+      lastActivityAt: new Date().toISOString(),
+      lastNudgeAt: null,
+      checks: 0,
+      fixes: 0,
+      endedAt: null,
+      error: null,
+    });
+    engine._bgEmit();
+  } catch {}
+}
+
+function finApplyTraderFields(s, symbolsOverride) {
   const f = finCfg();
   s.finance = true;
   s.financeTrader = true;
   s.financeAuto = f.allowTrading === true;
-  s.financeSymbols = f.symbols;
+  s.financeSymbols = Array.isArray(symbolsOverride) && symbolsOverride.length ? symbolsOverride : f.symbols;
   s.financeStrategy = String(f.strategy || '');
   s.financeLimits = { maxLot: f.maxLot, maxPositions: f.maxPositions };
   engine.cache.set(String(s.id), s);
 }
 
-function finTraderBrief() {
+/* Yeni finance ajanı aç (ana trader YA DA sembol işçisi) */
+function finAgentCreate(symbols, isMain) {
   const f = finCfg();
+  const s = finAgentSession(symbols, isMain);
+  const record = {
+    symbols: symbols && symbols.length ? symbols.slice(0, 10) : [...(f.symbols || [])],
+    main: !!isMain,
+    round: 0,
+    timer: null,
+  };
+  financeState.agents.set(String(s.id), record);
+  finApplyTraderFields(s, record.symbols);
+  finAgentRegisterBg(s, record.symbols);
+  return { s, agent: record };
+}
+
+/* Ajanı durdur: timer kapat + oturumu kes + paralel ajan kaydını 'aborted' yaz */
+function finAgentStop(sid, reason) {
+  sid = String(sid || '');
+  const agent = financeState.agents.get(sid);
+  if (!agent) return false;
+  clearTimeout(agent.timer);
+  financeState.agents.delete(sid);
+  if (sid === String(financeState.traderSid || '')) financeState.traderSid = null;
+  try {
+    if (engine && engine.isBusy(sid)) {
+      engine.interrupt(sid, reason || 'kullanıcı finance ajanını durdurdu');
+    }
+  } catch {}
+  try {
+    const j = engine && engine._bgJobs ? engine._bgJobs.get(sid) : null;
+    if (j && j.status === 'running') {
+      j.status = 'aborted';
+      j.endedAt = new Date().toISOString();
+      j.error = String(reason || 'kullanıcı durdurdu').slice(0, 200);
+      engine._bgEmit();
+    }
+  } catch {}
+  finPush('trader', { state: 'idle', rounds: financeState.traderRounds });
+  return true;
+}
+
+function finTraderBrief(agent) {
+  const f = finCfg();
+  const syms = agent && agent.symbols && agent.symbols.length ? agent.symbols.join(', ') : (f.symbols || []).join(', ');
+  const who = agent && agent.main ? 'TRADER' : 'FINANCE AJANI';
   return [
-    'Beast Finance TRADER başlatıldı — ilk tur: strateji çerçeveni kur ve piyasa taramasını yap.',
-    `İzleme listesi: ${(f.symbols || []).join(', ')}`,
+    `Beast Finance ${who} başlatıldı — ilk tur: strateji çerçeveni kur ve piyasa taramasını yap.`,
+    `Odak semboller: ${syms || '(boş — mt5_status ile terminale bak, mantıklı semboller seç)'}`,
     `Tur aralığı: ${f.intervalSec} sn · Max lot: ${f.maxLot} · Max eşzamanlı pozisyon: ${f.maxPositions}`,
     f.allowTrading
       ? 'Otomatik işlem AÇIK: mt5_trade/mt5_close/mt5_modify/mt5_pending kullanabilirsin (limitler sistemce zorlanır).'
       : 'Otomatik işlem KAPALI: SADECE analiz + net işlem önerileri yaz (sembol, yön, giriş, SL, TP, sebep); işlem açma.',
     f.strategy ? `Sahibinin strateji notu: ${f.strategy}` : 'Strateji notu yok: trend + destek/direnç + momentum ile temel okuma yap.',
     'Bu turda: mt5_status → hesap/pozisyon/fiyat verisi → değerlendirme → kararlar (veya BEKLE: sebep) → kısa rapor.',
+    'Diğer finance/paralel ajanlarla koordinasyon için agent_dm aracı var (to: ajan başlığı anahtar kelimesi).',
   ].join('\n');
 }
 
-function finTraderRound() {
-  if (!financeState.traderOn) return;
-  if (!engine) return;
-  const s = finTraderSession();
-  finApplyTraderFields(s);
-  if (engine.isBusy(s.id)) {
-    /* hâlâ çalışıyor — done eventinde tekrar planlanır */
-    return;
-  }
-  financeState.traderRounds += 1;
-  const f = finCfg();
-  const auto = f.allowTrading
-    ? 'İşlem açabilirsin — limitlere uy, SL\u2019siz pozisyon bırakma.'
-    : 'Otomatik işlem KAPALI — sadece analiz + öneri.';
-  const ok = engine.send(
-    s.id,
-    `FINANCE TUR #${financeState.traderRounds}: hesap + pozisyonlar + izleme listesi fiyatlarını çek; açık pozisyonları yönet (SL/TP güncelle, hedefe ulaşanı kapat); stratejine göre yeni fırsatları değerlendir. ${auto} Kısa rapor ver.`,
-    { userAction: false }
-  );
-  if (ok) {
-    financeState.lastRoundAt = Date.now();
-    finPush('trader', { state: 'running', round: financeState.traderRounds });
-  } else {
-    /* stop kapısı/yoğunluk — yarım dakika sonra sessizce tekrar dene */
-    clearTimeout(financeState.traderTimer);
-    financeState.traderTimer = setTimeout(() => { try { finTraderRound(); } catch {} }, 30000);
+/* Her tur öncesi CHAT AJANINDAN plan iste: aynı motorun odaklı alt-ajanı
+   (_subagent) hesap/pozisyon/strateji bağlamıyla kısa işlem planı üretir.
+   Plan, tur mesajına [ANA AJAN PLANI] bloğu olarak eklenir. */
+async function finConsultPlan(f, agent, sid) {
+  if (!engine) return '';
+  let account = null;
+  let positions = [];
+  try {
+    if (mt5bridge.running) {
+      const [ac, ps] = await Promise.all([
+        mt5bridge.call('account', {}, 8000).catch(() => null),
+        mt5bridge.call('positions', {}, 8000).catch(() => null),
+      ]);
+      if (ac && ac.ok) account = ac.data && ac.data.account;
+      if (ps && ps.ok) positions = (ps.data && ps.data.positions) || [];
+    }
+  } catch {}
+  const auto = f.allowTrading ? 'AÇIK (işlem açabilir)' : 'KAPALI (yalnız öneri)';
+  const task =
+    'Beast Finance ajanı yeni tura giriyor. SEN mt5_* araçlarını KULLANMA, işlem AÇMA — ' +
+    'sana düşen iş: semboller için bu turun kısa işlem PLANINI üretmek ' +
+    '(sembol başına tek satır: AL/SAT/BEKLE + sebep + giriş/SL/TP fikri). ' +
+    'Güncel piyasa bağlamı gerekiyorsa web_search kullan; kurulu bir skill konuyla ilgiliyse skill aracıyla oku.';
+  const ctx = [
+    `Odak semboller: ${agent && agent.symbols && agent.symbols.length ? agent.symbols.join(', ') : (f.symbols || []).join(', ') || '(boş — ajan kendi bulabilir)'}`,
+    `Otomatik işlem: ${auto} · max lot ${f.maxLot} · max eşzamanlı pozisyon ${f.maxPositions}`,
+    account
+      ? `Hesap: bakiye ${account.balance} ${account.currency} · özkaynak ${account.equity ?? '?'} · serbest marj ${account.margin_free ?? '?'} · kaldıraç 1:${account.leverage ?? '?'}`
+      : 'Hesap verisi alınamadı.',
+    positions.length
+      ? 'Açık pozisyonlar:\n' +
+        positions
+          .slice(0, 10)
+          .map((p) => {
+            const t = String(p.type ?? '');
+            const side = /sell|1/.test(t) ? 'SATIŞ' : 'ALIŞ';
+            return `- ${p.symbol || '?'} ${side} ${p.volume || '?'} lot @ ${p.price_open || '?'} · kâr/zarar ${p.profit ?? '?'}`;
+          })
+          .join('\n')
+      : 'Açık pozisyon yok.',
+    f.strategy ? `Sahibinin strateji notu: ${f.strategy}` : 'Strateji notu yok — temel teknik okuma (trend + destek/direnç + momentum).',
+    'Plan EN FAZLA ~15 satır; planı işlem yapmadan sadece METİN olarak döndür.',
+  ].join('\n');
+  try {
+    const signal = typeof AbortSignal !== 'undefined' && AbortSignal.timeout ? AbortSignal.timeout(90000) : undefined;
+    const res = await engine._subagent(task, ctx, signal, sid || null, '');
+    return String(res || '').trim().slice(0, 4000);
+  } catch {
+    return '';
   }
 }
 
+/* Bir ajanın TEK turu: (opsiyonel) ana ajan planı + tur emri */
+function finAgentRound(sid) {
+  const agent = financeState.agents.get(String(sid));
+  if (!agent || !engine) return;
+  if (engine.isBusy(sid)) {
+    /* hâlâ çalışıyor — done eventinde tekrar planlanır */
+    return;
+  }
+  agent.round += 1;
+  if (agent.main) financeState.traderRounds = agent.round;
+  const f = finCfg();
+  try {
+    const s = engine.cache.get(String(sid));
+    if (s) finApplyTraderFields(s, agent.symbols);
+  } catch {}
+  const auto = f.allowTrading
+    ? 'İşlem açabilirsin — limitlere uy, SL\u2019siz pozisyon bırakma.'
+    : 'Otomatik işlem KAPALI — sadece analiz + öneri.';
+  const focus = agent.symbols.length ? `Odak: ${agent.symbols.join(', ')}. ` : '';
+  const round = `FINANCE TUR #${agent.round}: ${focus}hesap + pozisyonlar + fiyatları çek; açık pozisyonları yönet (SL/TP güncelle, hedefe ulaşanı kapat); stratejine göre yeni fırsatları değerlendir. ${auto} Kısa rapor ver.`;
+  const launch = (planBlock) => {
+    if (!financeState.agents.has(String(sid))) return;
+    const ok = engine.send(sid, planBlock + round, { userAction: false });
+    if (ok) {
+      financeState.lastRoundAt = Date.now();
+      if (agent.main) finPush('trader', { state: 'running', round: agent.round });
+    } else {
+      /* stop kapısı/yoğunluk — yarım dakika sonra sessizce tekrar dene */
+      clearTimeout(agent.timer);
+      agent.timer = setTimeout(() => { try { finAgentRound(sid); } catch {} }, 30000);
+    }
+  };
+  if (f.consultChat === false) {
+    /* danışma kapalı: tur doğrudan başlar */
+    launch('');
+    return;
+  }
+  if (agent.main) finPush('trader', { state: 'consult', round: agent.round });
+  finConsultPlan(f, agent, String(sid))
+    .then((plan) => launch(plan ? `[ANA AJAN PLANI — bu turun varsayılan stratejisi; strateji notuyla çelişirse not önceliklidir]\n${plan}\n\n` : ''))
+    .catch(() => launch(''));
+}
+
+/* Tur/durum sonları: sürekli ajan döngüsünü besle; kullanıcı iptalinde kapat */
 function finFlushOnDone(ev) {
   if (!ev || (ev.type !== 'done' && ev.type !== 'error')) return;
-  if (String(ev.sessionId || '') !== String(financeState.traderSid || '')) return;
-  if (!financeState.traderOn) return;
-  clearTimeout(financeState.traderTimer);
+  const sid = String(ev.sessionId || '');
+  const agent = financeState.agents.get(sid);
+  if (!agent) return;
+  /* Paralel Ajanlar panelinden × (interrupt abort'u) → ajanı gerçekten kapat */
+  if (ev.type === 'done' && ev.aborted) {
+    finAgentStop(sid, String(ev.reason || 'kullanıcı durdurdu'));
+    return;
+  }
+  clearTimeout(agent.timer);
   const f = finCfg();
   const iv = Math.max(30, Number(f.intervalSec) || 120) * 1000;
   financeState.lastRoundAt = Date.now();
-  finPush('trader', { state: 'idle', round: financeState.traderRounds, nextInSec: iv / 1000 });
-  financeState.traderTimer = setTimeout(() => { try { finTraderRound(); } catch {} }, iv);
+  if (agent.main) {
+    finPush('trader', { state: 'idle', round: agent.round, nextInSec: iv / 1000 });
+  }
+  agent.timer = setTimeout(() => { try { finAgentRound(sid); } catch {} }, iv);
 }
 
 ipcMain.handle('finance:state', async () => {
@@ -8531,34 +8755,74 @@ ipcMain.handle('finance:trader:start', async () => {
   if (!engine) return { ok: false, error: 'ajan hazır değil' };
   const f = finCfg();
   if (!engine.publicState().hasModel && !f.traderSel) return { ok: false, error: 'model yok — Ayarlar → Provider' };
-  const s = finTraderSession();
-  finApplyTraderFields(s);
-  try { engine.setSessionModel(s.id, f.traderSel || null); } catch {}
+  /* ANA trader: varsa aynen sürdür, yoksa yeni sürekli ajan aç */
+  let mainSid = '';
+  let mainAgent = null;
+  for (const [sid, a] of financeState.agents) {
+    if (a.main) {
+      mainSid = sid;
+      mainAgent = a;
+      break;
+    }
+  }
+  if (!mainSid) {
+    const created = finAgentCreate([], true);
+    mainSid = String(created.s.id);
+    mainAgent = created.agent;
+  }
+  try { engine.setSessionModel(mainSid, f.traderSel || null); } catch {}
   financeState.traderOn = true;
-  financeState.traderRounds = 0;
   try { engine.clearStop(); } catch {}
-  const ok = engine.send(s.id, finTraderBrief(), { userAction: true });
+  const ok = engine.send(mainSid, finTraderBrief(mainAgent), { userAction: true });
   if (!ok) {
     financeState.traderOn = false;
     return { ok: false, error: 'trader oturumu meşgul — birkaç saniye sonra tekrar dene' };
   }
   financeState.lastRoundAt = Date.now();
   financeLog('[trader] başlatıldı (model: ' + (f.traderSel || 'genel aktif model') + ')');
-  finPush('trader', { state: 'running', round: 0 });
-  return { ok: true, sid: s.id };
+  finPush('trader', { state: 'running', round: mainAgent.round });
+  return { ok: true, sid: mainSid };
 });
 
 ipcMain.handle('finance:trader:stop', async () => {
   financeState.traderOn = false;
-  clearTimeout(financeState.traderTimer);
-  financeState.traderTimer = null;
-  let interrupted = false;
-  if (financeState.traderSid && engine && engine.isBusy(financeState.traderSid)) {
-    try { interrupted = engine.interrupt(financeState.traderSid, 'kullanıcı Beast Finance trader ajanını durdurdu'); } catch {}
+  /* ANA trader'ı durdur (sembol işçileri rail × ile ayrı durdurulur) */
+  let mainSid = '';
+  for (const [sid, a] of financeState.agents) {
+    if (a.main) {
+      mainSid = sid;
+      break;
+    }
   }
+  const stopped = mainSid ? finAgentStop(mainSid, 'kullanıcı Beast Finance trader ajanını durdurdu') : false;
+  const interrupted = !!stopped;
   financeLog('[trader] durduruldu');
   finPush('trader', { state: 'stopped' });
   return { ok: true, interrupted };
+});
+
+/* SEMBOL İŞÇİSİ: PİYASA kartındaki ▶ ile sembol başına AYRI finance ajanı —
+   hepsi AYNI ANDA koşar, Paralel Ajanlar panelinde canlı görünür */
+ipcMain.handle('finance:agent:spawn', async (_e, payload) => {
+  if (!engine) return { ok: false, error: 'ajan hazır değil' };
+  const f = finCfg();
+  if (!engine.publicState().hasModel && !f.traderSel) return { ok: false, error: 'model yok — Ayarlar → Provider' };
+  const symbol = String((payload && payload.symbol) || '').trim().toUpperCase();
+  if (!symbol) return { ok: false, error: 'sembol gerekli' };
+  for (const [, a] of financeState.agents) {
+    if (!a.main && a.symbols.length === 1 && a.symbols[0] === symbol) {
+      return { ok: false, error: symbol + ' için ajan zaten koşuyor (Paralel Ajanlar panelinden durdurabilirsin)' };
+    }
+  }
+  const created = finAgentCreate([symbol], false);
+  try { engine.setSessionModel(created.s.id, f.traderSel || null); } catch {}
+  const ok = engine.send(created.s.id, finTraderBrief(created.agent), { userAction: true });
+  if (!ok) {
+    finAgentStop(String(created.s.id), 'oturum meşgul — ajan başlatılamadı');
+    return { ok: false, error: 'ajan oturumu meşgul — birkaç saniye sonra tekrar dene' };
+  }
+  financeLog('[ajan] ' + symbol + ' işçisi başlatıldı');
+  return { ok: true, sid: created.s.id, title: created.s.bgTitle };
 });
 
 ipcMain.handle('finance:connect', async () => {

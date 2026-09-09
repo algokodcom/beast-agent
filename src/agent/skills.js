@@ -137,7 +137,7 @@ Get-Content "$env:APPDATA\\beast\\sessions\\bg-jobs.json" | ConvertFrom-Json | %
 | \`bin/beast-agent.js\` | CLI: \`beast\` (başlat), \`beast update\`, \`beast uninstall\` |
 
 ## SLASH KOMUTLARI
-/help · /version · /new · /open <kod> · /sessions · /stop · /start · /restart · /change [n] · /model <isim> · /think 0-5 · /clear · /notes · /rule <metin> · /rules · /notify on|off · /screenshot · /approve [always] · /deny · /update [now] · /usage · /backup · /status · /skills
+/help · /version · /new · /open <kod> · /sessions · /stop · /start · /restart · /change [n] · /model <isim> · /think 0-5 · /clear · /autodel [all] (hatırlatmaları sil) · /deltodo [all] (todoları sil) · /cron list|clear|del <id> (WA) · /notes · /rule <metin> · /rules · /notify on|off · /screenshot · /approve [always] · /deny · /update [now] · /usage · /backup · /status · /skills
 
 ## AYAR SEKMELERİ
 Provider · Fallout · Skills · Paralel Ajanlar · TTS · E-posta · Entegrasyonlar · Web Arama · MCP · Olaylar · Cron · Maliyet · Loglar · Panel · Limitler · Güvenlik · Güncelleme

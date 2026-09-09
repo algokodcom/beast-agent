@@ -94,6 +94,7 @@
         <button id="finBtn" class="dd-btn dd-icon-btn" title="Beast Finance — MT5 trade paneli (bilgisayardaki MetaTrader 5 ile çalışır)"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M7 15l4-5 3 3 5-7"/></svg></button>
         <button id="sbBtn" class="dd-btn dd-icon-btn" title="Beast Sandbox — GitHub reposu indir &amp; içinde çalış" data-i18n-title="tipSandbox"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg></button>
         <button id="railBtn" class="dd-btn dd-icon-btn" title="Paralel Ajan Konsolu" data-i18n-title="tipRail">&#x25A4;</button>
+        <button id="dmBtn" class="dd-btn dd-icon-btn" title="Ajan DM — ajanlar arası konuşma" data-i18n-title="tipAgentDm">&#x2709;&#xFE0E;</button>
         <button id="watchBtn" class="dd-btn dd-icon-btn" title="İzleyiciler (Watchers)" data-i18n-title="tipWatch">&#x25CE;</button>
         <button id="cronBtn" class="dd-btn dd-icon-btn" title="Cron Görevler" data-i18n-title="tipCron">&#x23F1;&#xFE0E;</button>
         <button id="termCBtn" class="dd-btn dd-icon-btn" title="CMD terminali" data-i18n-title="tipTermC">&#x276F;&#xFE0E;</button>
@@ -344,6 +345,19 @@
       <div id="railList"></div>
       <div id="sideFoot2">
         <span class="foot-label2" data-i18n="labelParallel">Paralel Ajanlar</span>
+      </div>
+    </aside>
+
+    <aside id="dmRail" class="dm-hidden">
+      <div id="dmRailHead">
+        <span id="dmRailTitle" data-i18n="labelAgentDm">AJAN DM</span>
+        <button id="dmClear" title="DM geçmişini temizle" aria-label="DM geçmişini temizle">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#111" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>
+        </button>
+      </div>
+      <div id="dmRailList"></div>
+      <div id="sideFoot2">
+        <span class="foot-label2" data-i18n="labelAgentDm">Ajan DM</span>
       </div>
     </aside>
   </div>

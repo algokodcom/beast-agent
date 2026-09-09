@@ -42,6 +42,9 @@ const els = {
   netDot: $('#netDot'),
   railBtn: $('#railBtn'),
   railClear: $('#railClear'),
+  dmBtn: $('#dmBtn'),
+  dmRailList: $('#dmRailList'),
+  dmClear: $('#dmClear'),
   watchBtn: $('#watchBtn'),
   watchPaneList: $('#watchPaneList'),
   watchPaneOpen: $('#watchPaneOpen'),
@@ -4999,6 +5002,113 @@ async function loadRailChat(id) {
   }
 }
 
+/* ---------------- AJAN DM sütunu (ajanlar arası konuşma) ----------------
+   rail ile aynı mimari: sağda ikinci sütun, dmBtn ile açılır/kapanır.
+   DM'ler ajanların agent_dm araç çağrılarından gelir; çiftlere gruplanır. */
+
+const dmState = {
+  dms: [], // { at, from, fromTitle, to, toTitle, text }
+  open: new Set(), // açık thread key'leri
+};
+
+function dmPairOf(dm) {
+  const a = String(dm.from || '');
+  const b = String(dm.to || '');
+  return a < b ? a + '|' + b : b + '|' + a;
+}
+
+function dmPairTitle(dm) {
+  const a = String(dm.fromTitle || 'Ajan');
+  const b = String(dm.toTitle || 'Ajan');
+  return a < b ? a + ' ↔ ' + b : b + ' ↔ ' + a;
+}
+
+function dmTime(iso) {
+  const d = new Date(iso || '');
+  if (!d.getTime()) return '';
+  return d.toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' });
+}
+
+function renderDmRail() {
+  const list = els.dmRailList;
+  if (!list) return;
+  if (!dmState.dms.length) {
+    list.innerHTML = '<div class="dm-empty">Ajanlar arasında DM yok.<br>Ajanlar agent_dm aracıyla birbirine mesaj attıkça burada görünür.</div>';
+    return;
+  }
+  /* çiftlere grupla (kronolojik) — en yeni thread üstte */
+  const threads = new Map();
+  for (const dm of dmState.dms) {
+    const key = dmPairOf(dm);
+    if (!threads.has(key)) threads.set(key, []);
+    threads.get(key).push(dm);
+  }
+  const rows = [...threads.entries()].sort(
+    (x, y) => new Date(y[1][y[1].length - 1].at) - new Date(x[1][x[1].length - 1].at)
+  );
+  list.innerHTML = '';
+  for (const [key, msgs] of rows) {
+    const open = dmState.open.has(key);
+    const last = msgs[msgs.length - 1];
+    const el = document.createElement('div');
+    el.className = 'dmt' + (open ? ' open' : '');
+    el.innerHTML =
+      '<div class="dmt-head">' +
+      `<span class="dmt-title">${escapeHtml(dmPairTitle(last))}</span>` +
+      `<span class="dmt-count">${msgs.length}</span>` +
+      '</div>' +
+      `<div class="dmt-last">${escapeHtml(String(last.text || '').replace(/\s+/g, ' ').slice(0, 90))} · ${dmTime(last.at)}</div>` +
+      '<div class="dmt-msgs">' +
+      msgs
+        .map(
+          (m) =>
+            `<div class="dmt-msg"><span class="dm-who">${escapeHtml(String(m.fromTitle || 'Ajan'))} → ${escapeHtml(String(m.toTitle || 'Ajan'))}</span>` +
+            `${escapeHtml(String(m.text || ''))}<span class="dm-at">${dmTime(m.at)}</span></div>`
+        )
+        .join('') +
+      '</div>';
+    el.addEventListener('click', () => {
+      if (dmState.open.has(key)) dmState.open.delete(key);
+      else dmState.open.add(key);
+      renderDmRail();
+      const again = els.dmRailList.querySelector('.dmt.open .dmt-msgs');
+      if (again) again.scrollTop = again.scrollHeight;
+    });
+    list.appendChild(el);
+  }
+}
+
+async function refreshDmRail() {
+  try {
+    const dms = await beast.agentDmsList();
+    if (Array.isArray(dms)) dmState.dms = dms;
+  } catch {}
+  renderDmRail();
+}
+
+function toggleDmRail(hide) {
+  const rail = $('#dmRail');
+  if (!rail) return;
+  rail.classList.toggle('dm-hidden', !!hide);
+  if (els.dmBtn) els.dmBtn.classList.toggle('on', !hide);
+  if (!hide) refreshDmRail();
+}
+
+if (els.dmBtn) {
+  els.dmBtn.addEventListener('click', () => {
+    toggleDmRail(!$('#dmRail').classList.contains('dm-hidden'));
+  });
+}
+if (els.dmClear) {
+  els.dmClear.addEventListener('click', async () => {
+    if (!(await uiConfirm('TÜM ajan DM geçmişi silinsin mi?', 'Sil'))) return;
+    try { await beast.agentDmsClear(); } catch {}
+    dmState.dms = [];
+    renderDmRail();
+    toast('Ajan DM geçmişi silindi');
+  });
+}
+
 function renderAgentsPane() {
   const pane = $('#tab-agents');
   if (!pane) return;
@@ -5141,6 +5251,20 @@ function onEvent(ev) {
     maybeAutoOpenRail();
     updateAgentIds();
     scheduleAgentsRender();
+    return;
+  }
+  /* AJAN DM: ajanlar arası mesaj — panel açıksa canlı düşer */
+  if (ev.type === 'agent-dm') {
+    dmState.dms.push({
+      at: ev.at,
+      from: ev.from,
+      fromTitle: ev.fromTitle,
+      to: ev.to,
+      toTitle: ev.toTitle,
+      text: ev.text,
+    });
+    if (dmState.dms.length > 400) dmState.dms.splice(0, dmState.dms.length - 400);
+    if ($('#dmRail') && !$('#dmRail').classList.contains('dm-hidden')) renderDmRail();
     return;
   }
   /* OFFLINE MESAJ KUYRUĞU: bağlantı + kuyruk olayları (sessionId filtresinden önce) */
@@ -6066,6 +6190,8 @@ const SLASH_COMMANDS = [
   { cmd: '/notify', desc: 'hata maili aç/kapa · /notify on|off' },
   { cmd: '/think ', desc: 'düşünme seviyesi · /think 0-5 (0 kapalı)' },
   { cmd: '/clear', desc: 'oturum geçmişini GERÇEKTEN sil (kod korunur)' },
+  { cmd: '/autodel', desc: 'tüm otomatik hatırlatmaları sil · /autodel all: cron dahil hepsi' },
+  { cmd: '/deltodo', desc: 'todo listesini temizle · /deltodo all: tüm oturumlar' },
   { cmd: '/start', desc: 'durdurulan servisleri devam ettir' },
   { cmd: '/rule ', desc: 'kalıcı kural ekle' },
   { cmd: '/rules', desc: 'kalıcı kuralları listele' },
@@ -8342,7 +8468,17 @@ function finRenderSymbols(list) {
     row.innerHTML =
       '<span class="fs-name">' + (s.symbol || '?') + '</span>' +
       '<span class="fs-price ' + cls + '">' + bid.toFixed(digits) + '</span>' +
-      '<span class="fs-spread">sp ' + (s.spread != null ? s.spread : '—') + '</span>';
+      '<span class="fs-spread">sp ' + (s.spread != null ? s.spread : '—') + '</span>' +
+      '<button class="fs-agent" title="' + escapeHtml(s.symbol || '') + ' için AYRI finance ajanı başlat (paralel koşar)">&#9654;&#xFE0E;</button>';
+    const spawnBtn = row.querySelector('.fs-agent');
+    if (spawnBtn) {
+      spawnBtn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const r = await beast.financeAgentSpawn(s.symbol).catch((err) => ({ ok: false, error: String((err && err.message) || err) }));
+        if (r && r.ok) toast(s.symbol + ' için ajan başladı — Paralel Ajanlar panelinde izle');
+        else toast((r && r.error) || 'Ajan başlatılamadı');
+      });
+    }
     els.finSymList.appendChild(row);
   }
 }

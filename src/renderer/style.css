@@ -2072,6 +2072,140 @@ body.browser-open #settingsDialog { width: min(70vw, calc(100vw - var(--bw, 480p
   letter-spacing: 0.5px;
 }
 
+/* ---------- sağ sütun 2: AJAN DM (ajanlar arası konuşma) ---------- */
+
+#dmRail {
+  flex: none;
+  width: 270px;
+  min-width: 270px;
+  min-height: 0;
+  background: var(--panel);
+  border-left: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+}
+#dmRail.dm-hidden { display: none; }
+
+#dmRailHead {
+  padding: 12px 12px 10px 16px;
+  font-weight: 800;
+  letter-spacing: 1px;
+  font-size: 13px;
+  color: var(--text);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+/* rail gizliyken DM sütunu sağ kenara yaslanır — pencere butonları alanı */
+body.rail-hidden #dmRailHead { padding-right: 148px; }
+#dmRailTitle { flex: 1; text-align: left; }
+#dmClear {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  background: none;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  color: #111;
+}
+#dmClear:hover { background: rgba(0, 0, 0, 0.08); }
+#dmClear svg { display: block; }
+
+#dmRailList {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  padding: 4px 8px;
+}
+.dm-empty {
+  color: var(--muted);
+  font-size: 11.5px;
+  text-align: center;
+  padding: 18px 10px;
+  line-height: 1.5;
+}
+.dmt {
+  margin-bottom: 6px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 7px 9px;
+  cursor: pointer;
+  color: var(--muted);
+  min-width: 0;
+  overflow: hidden;
+}
+.dmt:hover, .dmt.open { background: var(--panel2); color: var(--text); }
+.dmt-head { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.dmt-title {
+  flex: 1; min-width: 0;
+  font-size: 12.5px; font-weight: 700;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.dmt-count {
+  flex: none; font-size: 10.5px;
+  background: var(--accent-dim); color: var(--accent);
+  border-radius: 8px; padding: 1px 7px; font-weight: 700;
+}
+.dmt-last {
+  font-size: 11px; margin-top: 4px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.dmt-msgs {
+  display: none;
+  margin-top: 6px;
+  max-height: 300px; overflow-y: auto;
+  display: none;
+  flex-direction: column;
+  gap: 5px;
+}
+.dmt.open .dmt-msgs { display: flex; }
+.dmt-msg {
+  font-size: 11px; line-height: 1.5;
+  background: var(--panel2);
+  border-radius: 6px;
+  padding: 5px 7px;
+  word-break: break-word;
+}
+.dmt-msg .dm-who {
+  display: block;
+  font-weight: 800;
+  font-size: 10px;
+  letter-spacing: 0.4px;
+  color: var(--accent);
+  margin-bottom: 2px;
+}
+.dmt-msg .dm-at {
+  display: block;
+  font-size: 9.5px;
+  color: var(--muted);
+  margin-top: 2px;
+}
+
+/* PİYASA satırındaki ▶ ajan butonu */
+.fin-sym { position: relative; }
+.fin-sym .fs-agent {
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  border: none;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 11px;
+  padding: 2px 4px;
+  border-radius: 4px;
+  visibility: hidden;
+}
+.fin-sym:hover .fs-agent { visibility: visible; color: var(--accent); }
+.fin-sym .fs-agent:hover { background: var(--accent-dim); }
+
 /* ---------- BOT SİSTEMİ (sol panel alt bölümü + bot sayfası) ---------- */
 
 /* üst bardaki aktif bot rozeti */

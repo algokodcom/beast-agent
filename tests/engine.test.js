@@ -99,6 +99,64 @@ test('skill aracı: katalogdaki SKILL.md gövdesini döndürür', async () => {
   assert.equal(bad.ok, false);
 });
 
+/* ---------- sürekli paralel ajanlar + AJAN DM ---------- */
+
+test('superviseReason: sürekli (continuous) işler denetlenmez', () => {
+  const now = Date.now();
+  const job = {
+    status: 'running',
+    continuous: true,
+    startedAt: new Date(now - 3600000).toISOString(),
+    lastActivityAt: new Date(now - 3400000).toISOString(),
+  };
+  assert.equal(Engine.superviseReason(job, now), null);
+  const normal = {
+    status: 'running',
+    startedAt: new Date(now - 3600000).toISOString(),
+    lastActivityAt: new Date(now - 3400000).toISOString(),
+  };
+  assert.ok(Engine.superviseReason(normal, now)); // normal iş yine denetlenir
+});
+
+test('_bgFinish: sürekli iş done/error ile KAPANMAZ, aborted ile kapanır', () => {
+  const eng = makeEngine();
+  eng._bgJobs.set('c1', {
+    id: 'c1', status: 'running', continuous: true, slot: false,
+    startedAt: new Date().toISOString(), lastActivityAt: new Date().toISOString(),
+  });
+  eng._bgFinish('c1', 'done');
+  assert.equal(eng._bgJobs.get('c1').status, 'running');
+  eng._bgFinish('c1', 'error', 'bir hata');
+  assert.equal(eng._bgJobs.get('c1').status, 'running');
+  assert.equal(eng._bgJobs.get('c1').errors, 1);
+  eng._bgFinish('c1', 'aborted', 'kullanıcı durdurdu');
+  assert.equal(eng._bgJobs.get('c1').status, 'aborted');
+});
+
+test('agent_dm: koşan ajanlara DM gider, kayıt kalıcı listeye düşer', async () => {
+  const eng = makeEngine();
+  eng.flushPendingReports = () => {}; // teslim akışı testin dışında
+  eng._bgJobs.set('a1', { id: 'a1', code: 'AAA', title: 'Finance · GOLD', status: 'running', continuous: true });
+  eng._bgJobs.set('a2', { id: 'a2', code: 'BBB', title: 'Beast Finance · Trader', status: 'running', continuous: true });
+  /* başlık anahtar kelimesiyle hedefleme */
+  const r = JSON.parse(await eng._execTool('agent_dm', { to: 'GOLD', message: 'fiyat 2400 üstünde, dikkat' }, null, 'a2'));
+  assert.equal(r.ok, true);
+  assert.equal(r.to, 'a1');
+  const dms = eng.agentDmsList();
+  assert.equal(dms.length, 1);
+  assert.equal(dms[0].fromTitle, 'Beast Finance · Trader');
+  assert.equal(dms[0].toTitle, 'Finance · GOLD');
+  /* kendine DM reddedilir */
+  const self = JSON.parse(await eng._execTool('agent_dm', { to: 'a2', message: 'selam' }, null, 'a2'));
+  assert.equal(self.ok, false);
+  /* olmayan hedef zarif hata */
+  const noHit = JSON.parse(await eng._execTool('agent_dm', { to: 'boyle-ajan-yok', message: 'x' }, null, 'a2'));
+  assert.equal(noHit.ok, false);
+  /* temizleme */
+  eng.agentDmsClear();
+  assert.equal(eng.agentDmsList().length, 0);
+});
+
 /* ---------- payload builder ---------- */
 
 test('tool_call/tool mesajları birlikte tutulur', () => {

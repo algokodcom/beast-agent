@@ -2190,7 +2190,52 @@ class Engine {
         flat[k] = rest;
       }
     }
-    return [{ role: 'system', content: system }, ...head, ...flat];
+    /* emniyet: assistant(tool_calls) ↔ tool sonucu ÇİFTLERİ hizala —
+       yetim tool mesajı / cevapsız tool_call sağlayıcıda
+       "Messages with role 'tool' must be a response to a preceding message
+       with 'tool_calls'" (HTTP 400) verir (tur ortası enjeksiyon/kırpma
+       çifti böldüğünde). */
+    return Engine._alignToolPairs([{ role: 'system', content: system }, ...head, ...flat]);
+  }
+
+  /* assistant(tool_calls) + hemen ardından gelen tool sonuçlarını hizalar:
+     - cevabı GELMEYEN tool_call, assistant'tan DÜŞER (sonuç yok)
+     - karşılıksız tool sonucu (yetim) DÜŞER
+     - hiç sonucu olmayan assistant, düz metin asistana döner
+     - tool_calls'sız mesajların ardından gelen tool'lar da yetimdir → düşer */
+  static _alignToolPairs(msgs) {
+    const out = [];
+    for (let i = 0; i < msgs.length; i++) {
+      const m = msgs[i];
+      if (m && m.role === 'assistant' && Array.isArray(m.tool_calls) && m.tool_calls.length) {
+        const results = [];
+        let j = i + 1;
+        while (j < msgs.length && msgs[j] && msgs[j].role === 'tool') {
+          results.push(msgs[j]);
+          j++;
+        }
+        const answered = new Set(results.map((r) => String(r.tool_call_id || '')));
+        const kept = m.tool_calls.filter((tc) => answered.has(String(tc.id || '')));
+        if (kept.length === m.tool_calls.length) {
+          out.push(m);
+        } else if (kept.length) {
+          out.push({ ...m, tool_calls: kept });
+        } else {
+          const plain = { ...m };
+          delete plain.tool_calls;
+          out.push(plain);
+        }
+        const keepIds = new Set(kept.map((tc) => String(tc.id || '')));
+        for (const r of results) {
+          if (keepIds.has(String(r.tool_call_id || ''))) out.push(r);
+        }
+        i = j - 1;
+        continue;
+      }
+      if (m && m.role === 'tool') continue; // yetim araç sonucu
+      out.push(m);
+    }
+    return out;
   }
 
   _lastUserText(session) {
@@ -6152,6 +6197,21 @@ Engine.prototype._agentDmSend = function (fromSid, args) {
     if (String(target) === String(fromSid)) return { ok: false, error: 'kendine DM atılamaz' };
     const fromJob = jobs.get(String(fromSid));
     const toJob = jobs.get(target);
+    /* FİNANS SINIRI: Beast Finance oturumu agent_dm kullansa bile finance
+       dünyasının DIŞINA ÇIKMAZ — yalnız finance ajanlarına DM atabilir
+       (trader ↔ GOLD işçisi ↔ finance işçileri). Finance dışı hedef reddedilir. */
+    const fromSess = this.cache.get(String(fromSid)) || null;
+    if (fromSess && fromSess.finance) {
+      const targetSess = this.cache.get(String(target)) || null;
+      if (!targetSess || !targetSess.finance) {
+        return {
+          ok: false,
+          error:
+            'Beast Finance ajanı yalnız finance dünyasındaki ajanlara DM atabilir — hedef finance dışı: ' +
+            String((toJob && toJob.title) || to),
+        };
+      }
+    }
     /* konu etiketi: aynı konudaki DM'ler panelde AYNI oturumda toplanır */
     const topic = String((args && args.topic) || '').replace(/\s+/g, ' ').trim().slice(0, 60) || '(genel)';
     const dm = {

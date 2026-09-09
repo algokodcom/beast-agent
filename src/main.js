@@ -5063,22 +5063,19 @@ ipcMain.handle('agent:send', (_e, { sessionId, text }) => {
       }
     }
   } catch {}
-  /* BEAST FINANCE: finance modu açıkken bu sohbet finance listesine girer ve
-     mt5_* araçlarını görür (botlar hariç); mod kapalıysa etiket kaldırılır */
+  /* BEAST FINANCE: finance modunda yazılan sohbetler KALICI finance etiketi
+     taşır — beast finance'ta kayıtlı kalır; normal modda yazmak etiketi
+     KALDIRMAZ (oturum finance dışına çıkamaz) */
   try {
     if (sessionId) {
       const fsid = String(sessionId);
       let fsess = engine.cache.get(fsid);
       if (!fsess) { try { fsess = engine._load(fsid); } catch {} }
-      if (fsess && !fsess.botId && !fsess.bgJob) {
-        if (financeState.mode) {
-          if (!fsess.finance) engine.markFinance(fsid, false);
-          finApplyTraderFields(fsess);
-          fsess.financeTrader = false; /* chat copilot'ı — trader değil */
-          engine.cache.set(fsid, fsess);
-        } else if (fsess.finance) {
-          engine.unmarkFinance(fsid); /* normal modda yazınca normal sohbete döner */
-        }
+      if (fsess && !fsess.botId && !fsess.bgJob && financeState.mode && !fsess.finance) {
+        engine.markFinance(fsid, false);
+        finApplyTraderFields(fsess);
+        fsess.financeTrader = false; /* chat copilot'ı — trader değil */
+        engine.cache.set(fsid, fsess);
       }
     }
   } catch {}
@@ -8369,6 +8366,22 @@ try {
   });
 } catch {}
 
+/* TOOLS klasörü izleyici: ajan write_file ile tool yazdığında (ya da elle)
+   konsol OTOMATİK güncellenir — restart gerekmez */
+try {
+  fs.mkdirSync(customtools.dir(), { recursive: true });
+  let toolWatchTimer = null;
+  fs.watch(customtools.dir(), { recursive: true }, () => {
+    clearTimeout(toolWatchTimer);
+    toolWatchTimer = setTimeout(() => {
+      customtools.invalidate();
+      try {
+        if (win && !win.isDestroyed()) win.webContents.send('agent:event', { type: 'tools-changed' });
+      } catch {}
+    }, 400);
+  });
+} catch {}
+
 function financeEnsureBridge() {
   const f = finCfg();
   const candidates = [String(f.pythonPath || '').trim(), 'python', 'py -3'].filter(Boolean);
@@ -8744,10 +8757,9 @@ ipcMain.handle('finance:mode', async (_e, payload) => {
                (eski davranış WhatsApp oturumunu da finance listesine karıştırıyordu) */
             needNew = true;
           }
-        } else {
-          /* mod kapandı: aktif finance oturumu normal sohbete döner */
-          if (s.finance) engine.unmarkFinance(sid);
         }
+        /* mod kapandığında finance oturumları etiketlerini KORUR —
+           beast finance'ta kayıtlı kalırlar (kaybolmazlar) */
         engine.cache.set(sid, s);
       }
     } catch {}

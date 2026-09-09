@@ -40,6 +40,22 @@ function invalidate() {
   cache = null;
 }
 
+/* klasör damgası: ajan/kullanıcı klasöre elle müdahale edince (write_file
+   vb.) cache BAYATLAR — damga değişince otomatik yeniden taranır */
+let lastStamp = 0;
+function folderStamp() {
+  try { return fs.statSync(dir()).mtimeMs; } catch { return 0; }
+}
+
+function ensureFresh() {
+  const s = folderStamp();
+  if (dirty || !cache || s !== lastStamp) {
+    cache = scan();
+    dirty = false;
+    lastStamp = s;
+  }
+}
+
 function readTool(d) {
   try {
     const json = JSON.parse(fs.readFileSync(path.join(d, 'tool.json'), 'utf8'));
@@ -81,10 +97,7 @@ function list() {
 
 /* engine _chatTurn'e OpenAI function formatında şemalar */
 function definitions() {
-  if (dirty || !cache) {
-    cache = scan();
-    dirty = false;
-  }
+  ensureFresh();
   return cache.map((t) => ({
     type: 'function',
     function: {
@@ -97,10 +110,7 @@ function definitions() {
 }
 
 function names() {
-  if (dirty || !cache) {
-    cache = scan();
-    dirty = false;
-  }
+  ensureFresh();
   return cache.map((t) => 'tool__' + t.id);
 }
 

@@ -2240,6 +2240,14 @@ body.rail-hidden #dmRailHead { padding-right: 148px; }
   flex-direction: column;
   align-items: stretch;
 }
+/* tek oturum sohbeti: kaydırılabilir blok */
+.dm-thread-msgs {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  max-height: 56vh;
+  overflow-y: auto;
+}
 .dm-hint {
   flex: none;
   font-size: 10px;

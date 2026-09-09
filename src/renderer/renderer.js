@@ -50,6 +50,7 @@ const els = {
   dmModalClose: $('#dmModalClose'),
   dmModalClear: $('#dmModalClear'),
   dmColumnBtn: $('#dmColumnBtn'),
+  dmBackBtn: $('#dmBackBtn'),
   watchBtn: $('#watchBtn'),
   watchPaneList: $('#watchPaneList'),
   watchPaneOpen: $('#watchPaneOpen'),
@@ -5025,13 +5026,13 @@ async function loadRailChat(id) {
 }
 
 /* ---------------- AJAN DM (ajanlar arası konuşma) ----------------
-   İki görünüm: ✉ modal (oturum listesi) + yan sütun (canlı akış).
-   Thread anahtarı = ajan çifti + KONU — aynı konudaki mesajlar tek
-   oturumda toplanır, gelen/giden hepsi kronolojik görünür. */
+   Paralel Ajanlar gibi: ✉ sağdaki SÜTUNU açar/kapatır (oturum listesi,
+   canlı akış). Sütunda bir oturuma tıklayınca SOHBET yalnızca MODAL'da
+   açılır — gelen/giden hepsi kronolojik. Thread = ajan çifti + KONU. */
 
 const dmState = {
   dms: [], // { at, from, fromTitle, to, toTitle, topic, text }
-  open: new Set(), // açık thread key'leri (modal + sütun ortak)
+  modalThread: null, // modalde açık oturum key'i (null = oturum listesi)
 };
 
 function dmThreadOf(dm) {
@@ -5074,35 +5075,27 @@ function dmMsgHtml(m) {
   );
 }
 
-/* --- yan sütun --- */
+/* --- sağ sütun: OTURUM LİSTESİ (rail gibi) --- */
 
 function renderDmRail() {
   const list = els.dmRailList;
   if (!list) return;
   if (!dmState.dms.length) {
-    list.innerHTML = '<div class="dm-empty">Ajanlar arasında DM yok.<br>Ajanlar agent_dm aracıyla birbirine mesaj attıkça burada görünür.</div>';
+    list.innerHTML = '<div class="dm-empty">Ajanlar arasında DM yok.<br>Ajanlar agent_dm aracıyla birbirine mesaj attıkça oturumlar burada birikir.</div>';
     return;
   }
   list.innerHTML = '';
   for (const [key, msgs] of dmThreads()) {
-    const open = dmState.open.has(key);
     const last = msgs[msgs.length - 1];
     const el = document.createElement('div');
-    el.className = 'dmt' + (open ? ' open' : '');
+    el.className = 'dmt';
     el.innerHTML =
       '<div class="dmt-head">' +
       `<span class="dmt-title">${escapeHtml(dmThreadTitle(last))}</span>` +
       `<span class="dmt-count">${msgs.length}</span>` +
       '</div>' +
-      `<div class="dmt-last">${escapeHtml(String(last.text || '').replace(/\s+/g, ' ').slice(0, 90))} · ${dmTime(last.at)}</div>` +
-      '<div class="dmt-msgs">' + msgs.map(dmMsgHtml).join('') + '</div>';
-    el.addEventListener('click', () => {
-      if (dmState.open.has(key)) dmState.open.delete(key);
-      else dmState.open.add(key);
-      renderDmRail();
-      const again = els.dmRailList.querySelector('.dmt.open .dmt-msgs');
-      if (again) again.scrollTop = again.scrollHeight;
-    });
+      `<div class="dmt-last">${escapeHtml(String(last.text || '').replace(/\s+/g, ' ').slice(0, 90))} · ${dmTime(last.at)}</div>`;
+    el.addEventListener('click', () => openDmModal(key)); // sohbet yalnız modalde
     list.appendChild(el);
   }
 }
@@ -5113,6 +5106,7 @@ async function refreshDmRail() {
     if (Array.isArray(dms)) dmState.dms = dms;
   } catch {}
   renderDmRail();
+  if (els.dmOverlay && !els.dmOverlay.hidden) renderDmModal();
 }
 
 function toggleDmRail(hide) {
@@ -5123,45 +5117,58 @@ function toggleDmRail(hide) {
   if (!hide) refreshDmRail();
 }
 
-/* --- modal (✉ butonu) --- */
+/* --- modal: SOHBET (yalnız burada tam döküm) --- */
 
 function renderDmModal() {
   const list = els.dmDialogList;
   if (!list) return;
   if (!dmState.dms.length) {
-    list.innerHTML = '<div class="dm-empty">Henüz ajan DM\u2019i yok.<br>Ajanlar agent_dm aracıyla birbirine mesaj attıkça oturumlar burada birikir.</div>';
+    list.innerHTML = '<div class="dm-empty">Henüz ajan DM\u2019i yok.<br>Ajanlar agent_dm aracıyla birbirine mesaj attıkça oturumlar birikir.</div>';
+    if (els.dmDialogTitle) els.dmDialogTitle.textContent = 'AJAN DM — OTURUMLAR';
+    if (els.dmBackBtn) els.dmBackBtn.hidden = true;
     return;
   }
+  if (dmState.modalThread) {
+    /* TEK OTURUM: tam sohbet dökümü */
+    const msgs = (dmThreads().find(([k]) => k === dmState.modalThread) || [null, []])[1];
+    if (!msgs.length) {
+      dmState.modalThread = null;
+      return renderDmModal();
+    }
+    if (els.dmDialogTitle) els.dmDialogTitle.textContent = dmThreadTitle(msgs[msgs.length - 1]);
+    if (els.dmBackBtn) els.dmBackBtn.hidden = false;
+    list.innerHTML = '<div class="dm-thread-msgs">' + msgs.map(dmMsgHtml).join('') + '</div>';
+    const box = list.querySelector('.dm-thread-msgs');
+    if (box) box.scrollTop = box.scrollHeight;
+    return;
+  }
+  /* OTURUM LİSTESİ */
+  if (els.dmDialogTitle) els.dmDialogTitle.textContent = 'AJAN DM — OTURUMLAR';
+  if (els.dmBackBtn) els.dmBackBtn.hidden = true;
   list.innerHTML = '';
   for (const [key, msgs] of dmThreads()) {
-    const open = dmState.open.has(key);
     const last = msgs[msgs.length - 1];
     const el = document.createElement('div');
-    el.className = 'dmt' + (open ? ' open' : '');
+    el.className = 'dmt';
     el.innerHTML =
       '<div class="dmt-head">' +
       `<span class="dmt-title">${escapeHtml(dmThreadTitle(last))}</span>` +
       `<span class="dmt-count">${msgs.length}</span>` +
       '</div>' +
-      `<div class="dmt-last">${escapeHtml(String(last.text || '').replace(/\s+/g, ' ').slice(0, 120))} · ${dmTime(last.at)}</div>` +
-      '<div class="dmt-msgs">' + msgs.map(dmMsgHtml).join('') + '</div>';
+      `<div class="dmt-last">${escapeHtml(String(last.text || '').replace(/\s+/g, ' ').slice(0, 120))} · ${dmTime(last.at)}</div>`;
     el.addEventListener('click', () => {
-      if (dmState.open.has(key)) dmState.open.delete(key);
-      else dmState.open.add(key);
+      dmState.modalThread = key;
       renderDmModal();
-      const again = els.dmDialogList.querySelector('.dmt.open .dmt-msgs');
-      if (again) again.scrollTop = again.scrollHeight;
     });
     list.appendChild(el);
   }
 }
 
-async function openDmModal() {
+function openDmModal(threadKey) {
   if (!els.dmOverlay) return;
+  dmState.modalThread = threadKey || null;
   els.dmOverlay.hidden = false;
-  await refreshDmRail(); // kayıtları tazele
-  renderDmModal();
-  if (els.dmBtn) els.dmBtn.classList.add('on');
+  refreshDmRail().then(() => renderDmModal());
 }
 
 function closeDmModal() {
@@ -5173,14 +5180,21 @@ async function dmClearAll() {
   if (!(await uiConfirm('TÜM ajan DM geçmişi silinsin mi?', 'Sil'))) return;
   try { await beast.agentDmsClear(); } catch {}
   dmState.dms = [];
+  dmState.modalThread = null;
   renderDmRail();
   renderDmModal();
   toast('Ajan DM geçmişi silindi');
 }
 
-if (els.dmBtn) els.dmBtn.addEventListener('click', openDmModal);
+if (els.dmBtn) els.dmBtn.addEventListener('click', () => toggleDmRail($('#dmRail').classList.contains('dm-hidden')));
 if (els.dmModalClose) els.dmModalClose.addEventListener('click', closeDmModal);
 if (els.dmModalClear) els.dmModalClear.addEventListener('click', dmClearAll);
+if (els.dmBackBtn) {
+  els.dmBackBtn.addEventListener('click', () => {
+    dmState.modalThread = null; // oturum listesine dön
+    renderDmModal();
+  });
+}
 if (els.dmOverlay) {
   els.dmOverlay.addEventListener('click', (e) => {
     if (e.target === els.dmOverlay) closeDmModal();
@@ -5193,7 +5207,7 @@ if (els.dmClear) els.dmClear.addEventListener('click', dmClearAll);
 if (els.dmColumnBtn) {
   els.dmColumnBtn.addEventListener('click', () => {
     closeDmModal();
-    toggleDmRail(false); // yan sütunda canlı akış
+    toggleDmRail(false); // sütunda canlı akış
   });
 }
 
@@ -5554,6 +5568,11 @@ function onEvent(ev) {
       error: ev.error,
     });
     if (toolUi.logRows.length > 60) toolUi.logRows.splice(0, toolUi.logRows.length - 60);
+    scheduleToolRender();
+    return;
+  }
+  /* TOOLS klasörü değişti (ajan yeni tool yazdı / elle edit) — konsolu tazele */
+  if (ev.type === 'tools-changed') {
     scheduleToolRender();
     return;
   }

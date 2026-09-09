@@ -86,6 +86,53 @@ test('finance: sistem promptu SKILLS kataloğunu içerir', () => {
   assert.ok(sys.includes('- ' + list[0].name));
 });
 
+/* ---------- payload tool-çifti hizalama (HTTP 400 emniyeti) ---------- */
+
+test('payload hizalama: yetim tool sonucu / cevapsız tool_call temizlenir', () => {
+  const msgs = [
+    { role: 'user', content: 'soru' },
+    {
+      role: 'assistant',
+      content: '',
+      tool_calls: [
+        { id: '1', type: 'function', function: { name: 'a', arguments: '{}' } },
+        { id: '2', type: 'function', function: { name: 'b', arguments: '{}' } },
+      ],
+    },
+    { role: 'tool', tool_call_id: '1', name: 'a', content: '{"ok":true}' },
+    { role: 'user', content: '(tur ortası enjeksiyon)' },
+    { role: 'tool', tool_call_id: '2', name: 'b', content: '{"ok":true}' }, // kullanıcı bölünce yetim
+    { role: 'tool', tool_call_id: '999', name: 'x', content: '{"ok":true}' }, // tam yetim
+    { role: 'assistant', content: 'cevap' },
+  ];
+  const out = Engine._alignToolPairs(msgs);
+  const toolsLeft = out.filter((m) => m.role === 'tool');
+  assert.equal(toolsLeft.length, 1);
+  assert.equal(toolsLeft[0].tool_call_id, '1');
+  const a = out.find((m) => m.role === 'assistant' && m.tool_calls);
+  assert.equal(a.tool_calls.length, 1);
+  assert.equal(a.tool_calls[0].id, '1');
+  /* hiç sonucu olmayan assistant → düz metin asistan */
+  const plain = Engine._alignToolPairs([
+    { role: 'user', content: 'x' },
+    {
+      role: 'assistant',
+      content: 'süreç',
+      tool_calls: [{ id: '9', type: 'function', function: { name: 'z', arguments: '{}' } }],
+    },
+  ]);
+  assert.ok(!plain[1].tool_calls);
+  assert.equal(plain[1].content, 'süreç');
+  /* tool_calls'sız asistandan sonra gelen tool → yetim, düşer */
+  const orphan = Engine._alignToolPairs([
+    { role: 'assistant', content: 'selam' },
+    { role: 'tool', tool_call_id: '5', name: 'q', content: '{"ok":true}' },
+    { role: 'user', content: 'devam' },
+  ]);
+  assert.equal(orphan.length, 2);
+  assert.equal(orphan[1].role, 'user');
+});
+
 test('skill aracı: katalogdaki SKILL.md gövdesini döndürür', async () => {
   const eng = makeEngine();
   const list = require('../src/agent/skills').scan();
@@ -131,6 +178,27 @@ test('_bgFinish: sürekli iş done/error ile KAPANMAZ, aborted ile kapanır', ()
   assert.equal(eng._bgJobs.get('c1').errors, 1);
   eng._bgFinish('c1', 'aborted', 'kullanıcı durdurdu');
   assert.equal(eng._bgJobs.get('c1').status, 'aborted');
+});
+
+test('agent_dm: finance ajanı finance dışına DM atamaz', async () => {
+  const eng = makeEngine();
+  eng.flushPendingReports = () => {};
+  eng.cache.set('f1', { id: 'f1', finance: true }); // finance ajanı (GOLD işçisi)
+  eng.cache.set('c1', { id: 'c1' }); // normal ajan (kod işçisi)
+  eng._bgJobs.set('f1', { id: 'f1', code: 'F1', title: 'Finance · GOLD', status: 'running', continuous: true });
+  eng._bgJobs.set('c1', { id: 'c1', code: 'C1', title: 'Kod İşçisi', status: 'running' });
+  /* finance → finance dışı: RED */
+  const out = JSON.parse(await eng._execTool('agent_dm', { to: 'Kod', message: 'merhaba' }, null, 'f1'));
+  assert.equal(out.ok, false);
+  assert.match(String(out.error || ''), /finance/i);
+  /* finance → finance: serbest */
+  eng.cache.set('f2', { id: 'f2', finance: true });
+  eng._bgJobs.set('f2', { id: 'f2', code: 'F2', title: 'Finance · TSLA', status: 'running', continuous: true });
+  const within = JSON.parse(await eng._execTool('agent_dm', { to: 'TSLA', message: 'fiyat düştü' }, null, 'f1'));
+  assert.equal(within.ok, true);
+  /* dış ajan finance'e DM BAŞLATABİLİR (tek yön koordinasyon) */
+  const into = JSON.parse(await eng._execTool('agent_dm', { to: 'GOLD', message: 'durum ne?' }, null, 'c1'));
+  assert.equal(into.ok, true);
 });
 
 test('agent_dm: koşan ajanlara DM gider, kayıt kalıcı listeye düşer', async () => {

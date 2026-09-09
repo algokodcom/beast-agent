@@ -13,6 +13,7 @@ const tools = require('./tools');
 let financetools = null;
 try { financetools = require('./financetools'); } catch {}
 const FINANCE_TOOL_SET = new Set(financetools ? financetools.NAMES : []);
+const customtools = require('./customtools');
 const research = require('./research');
 const agentdefs = require('./agentdefs');
 const memory = require('./memory');
@@ -1232,7 +1233,14 @@ class Engine {
         let r;
         try { r = JSON.parse(l); } catch { continue; }
         if (r.t === 'meta') out.push(JSON.stringify({ t: 'meta', id: s.id, code: s.code, createdAt: s.createdAt }));
-        else if (r.t === 'meta2' || r.t === 'bot' || r.t === 'todo') out.push(l);
+        /* KALICİ ETİKETLER compact'ta ASLA düşmez — özellikle 'fin'/'finoff':
+           silinirse finance oturumu etiketini KAYBEDER ve mt5_* araçları
+           "unknown tool" olur (bayat compact kaybı bu yüzden) */
+        else if (
+          r.t === 'meta2' || r.t === 'bot' || r.t === 'todo' ||
+          r.t === 'fin' || r.t === 'finoff' ||
+          r.t === 'agent' || r.t === 'bcws' || r.t === 'botdm'
+        ) out.push(l);
       }
       if (lastNotesLine) out.push(lastNotesLine);
       /* korunan pencere: son N mesaj */
@@ -1419,7 +1427,12 @@ class Engine {
       const kept = lines.filter((l) => {
         try {
           const r = JSON.parse(l);
-          return r.t === 'meta' || r.t === 'meta2' || r.t === 'bot' || r.t === 'todo';
+          /* kalıcı etiketler korunur (fin/finoff dahil — finance bayrağı kaybolmasın) */
+          return (
+            r.t === 'meta' || r.t === 'meta2' || r.t === 'bot' || r.t === 'todo' ||
+            r.t === 'fin' || r.t === 'finoff' ||
+            r.t === 'agent' || r.t === 'bcws' || r.t === 'botdm'
+          );
         } catch { return false; }
       });
       const tmp = file + '.tmp';
@@ -3453,6 +3466,9 @@ class Engine {
       toolsList = await mcp.mergeTools(toolsList);
       /* Beast Apps: kurulu app'lerin araçları (app__<id>__<tool>) modele açılır */
       toolsList = apps.mergeTools(toolsList);
+      /* KİŞİSEL TOOLLAR: %APPDATA%\beast\tools\<ad>\ — kullanıcı yazmışsa
+         TÜM oturumlara (BEAST FINANCE dahil) tool__<ad> olarak açılır */
+      toolsList = [...toolsList, ...customtools.definitions()];
       /* Beast Finance: skill aracı da açık — kataloğun SKILL.md gövdesi
          modele açılır (skill handler'ı zaten tüm oturumlar için çalışır,
          definition yalnız BC'de vardı; finance chat copilot + trader ikisi de)
@@ -3464,8 +3480,13 @@ class Engine {
         if (skillDef) toolsList = [...toolsList, skillDef];
       }
       /* AJAN DM: koşan ajan oturumlarına (arka plan işleri + finance
-         ajanları) ajanlar-arası mesajlaşma aracı verilir */
-      if (session && (session.bgJob || (session.finance && session.bgTitle))) {
+         ajanları) VE ana sohbete verilir — chat Beast'i de ajana DM atabilir;
+         müşteri bot oturumları (botId ≠ beast) ve botlar arası DM hariç */
+      if (
+        session &&
+        !session.isBotDm &&
+        (session.bgJob || session.finance || !session.botId || session.botId === 'beast')
+      ) {
         toolsList = [...toolsList, AGENT_DM_DEF];
       }
       /* panel_run yalnız SANDBOX oturumlarında görünsün — diğer panellerde
@@ -3890,6 +3911,8 @@ class Engine {
         // Paralel yürütme — bağımsız çağrılar beklemesin
         session.toolsSinceReflect = (session.toolsSinceReflect || 0) + res.toolCalls.length;
         if (!this._knownToolNames) this._knownToolNames = new Set([...TOOLS.map((t) => t.function.name), ...opencode.toolmap.names()]);
+        /* kişisel tool sonradan yazılabilir — isim havuzunu canlı tazele */
+        for (const n of customtools.names()) this._knownToolNames.add(n);
         await Promise.all(
           res.toolCalls.map(async (tc) => {
             let name = tc.function && tc.function.name;
@@ -4765,6 +4788,10 @@ const skills = require('./skills');
       if (name === 'agent_dm') {
         return JSON.stringify(this._agentDmSend(sessionId, args));
       }
+      /* KİŞİSEL TOOL: %APPDATA%\beast\tools\ — çocuk node prosesinde izole koşar */
+      if (String(name).startsWith('tool__')) {
+        return JSON.stringify(await customtools.call(name, args));
+      }
       if (isBc) {
         /* opencode permission akışı (tool/external-directory.ts + her aracın
            ctx.ask'ı): önce workspace DIŞI erişim izni, sonra araç izni.
@@ -4796,7 +4823,9 @@ const skills = require('./skills');
            "always" onaylı araçlar doğrudan geçer. (BC dışı oturumlar — opencode
            izin sistemi yalnız Beast Code oturumlarında koşar) */
         if (
-          (Engine.RISKY_TOOLS.has(name) || String(name).startsWith('mcp__')) &&
+          (Engine.RISKY_TOOLS.has(name) ||
+            String(name).startsWith('mcp__') ||
+            String(name).startsWith('tool__')) && /* kişisel tool = kullanıcı kodu koşturur */
           !this.alwaysAllowTools.has(name) &&
           this.approvals && typeof this.approvals.request === 'function'
         ) {

@@ -48,6 +48,22 @@ const els = {
   watchBtn: $('#watchBtn'),
   watchPaneList: $('#watchPaneList'),
   watchPaneOpen: $('#watchPaneOpen'),
+  toolBoxAdd: $('#toolAdd'),
+  toolList: $('#toolList'),
+  toolFolderBtn: $('#toolFolderBtn'),
+  toolOverlay: $('#toolOverlay'),
+  toolClose: $('#toolClose'),
+  toolDialogTitle: $('#toolDialogTitle'),
+  toolName: $('#toolName'),
+  toolDesc: $('#toolDesc'),
+  toolParams: $('#toolParams'),
+  toolCode: $('#toolCode'),
+  toolFormErr: $('#toolFormErr'),
+  toolTestArgs: $('#toolTestArgs'),
+  toolTestBtn: $('#toolTestBtn'),
+  toolTestOut: $('#toolTestOut'),
+  toolSaveBtn: $('#toolSaveBtn'),
+  toolDeleteBtn: $('#toolDeleteBtn'),
   watchPaneLog: $('#watchPaneLog'),
   cronBtn: $('#cronBtn'),
   watchOverlay: $('#watchOverlay'),
@@ -5110,6 +5126,192 @@ if (els.dmClear) {
   });
 }
 
+/* ---------------- TOOLS konsolu (kişisel araçlar) ----------------
+   %APPDATA%\beast\tools\<ad>\tool.json + run.js — kullanıcı kendi araçlarını
+   yazar; finance dahil TÜM oturumlar tool__<ad> olarak çağırır. Sol panelde
+   buradan görüntülenir, yazılır, test edilir, silinir. */
+
+const toolUi = {
+  tools: [],
+  editId: null,
+  logRows: [],
+};
+
+const TOOL_EXAMPLE_CODE =
+  "'use strict';\n" +
+  "// KİŞİSEL TOOL — stdin: JSON args · stdout: JSON sonuç\n" +
+  "const fs = require('fs');\n" +
+  "let raw = '';\n" +
+  "try { raw = fs.readFileSync(0, 'utf8'); } catch {}\n" +
+  "let args = {};\n" +
+  "try { args = JSON.parse(raw || '{}'); } catch {}\n" +
+  "// Buraya kendi işini yaz (MT5 köprüsü, özel API, hesap, sinyal…)\n" +
+  "console.log(JSON.stringify({ ok: true, echo: args }));\n";
+
+let toolRenderTimer = null;
+function scheduleToolRender() {
+  if (toolRenderTimer) return;
+  toolRenderTimer = setTimeout(() => {
+    toolRenderTimer = null;
+    renderToolBox();
+  }, 500);
+}
+
+async function renderToolBox() {
+  const list = els.toolList;
+  if (!list) return;
+  try { toolUi.tools = (await beast.toolsList()) || []; } catch { toolUi.tools = []; }
+  list.textContent = '';
+  if (!toolUi.tools.length) {
+    const d = document.createElement('div');
+    d.className = 'tool-empty';
+    d.textContent = 'Tool yok — + ile kendi aracını yaz (Finance dahil tüm oturumlarda çalışır)';
+    list.appendChild(d);
+    return;
+  }
+  for (const t of toolUi.tools) {
+    const row = document.createElement('div');
+    row.className = 'tool-row';
+    const last = toolUi.logRows.filter((l) => l.toolId === t.id).slice(-1)[0];
+    const st = last ? (last.ok ? 'ok' : 'err') : 'idle';
+    const tip = last
+      ? 'son çalışma ' + dmTime(last.at) + (last.error ? ' · hata: ' + last.error : ' · ' + last.ms + ' ms')
+      : 'hiç çalışmadı';
+    row.innerHTML =
+      '<span class="tool-dot ' + st + '" title="' + escapeHtml(tip) + '"></span>' +
+      '<span class="tool-name" title="' + escapeHtml(t.description || '') + '">' + escapeHtml(t.name) + '</span>' +
+      '<span class="tool-btns">' +
+      '<button class="tb-run" title="Aç & test çalıştır">&#9654;&#xFE0E;</button>' +
+      '<button class="tb-edit" title="Düzenle">&#9998;&#xFE0E;</button>' +
+      '<button class="tb-del" title="Sil">&#10005;&#xFE0E;</button>' +
+      '</span>';
+    row.querySelector('.tb-run').addEventListener('click', () => openToolDialog(t));
+    row.querySelector('.tb-edit').addEventListener('click', () => openToolDialog(t));
+    row.querySelector('.tb-del').addEventListener('click', async () => {
+      if (!(await uiConfirm('"' + t.name + '" toolu silinsin mi? (ajanlar artık çağıramaz)', 'Sil'))) return;
+      const r = await beast.toolDelete(t.id).catch(() => ({ ok: false }));
+      if (r && r.ok) {
+        toast('Tool silindi');
+        renderToolBox();
+      } else toast((r && r.error) || 'Silinemedi');
+    });
+    list.appendChild(row);
+  }
+}
+
+function openToolDialog(t) {
+  if (!els.toolOverlay) return;
+  toolUi.editId = t ? t.id : null;
+  els.toolDialogTitle.textContent = t ? 'TOOL · ' + t.name : 'YENİ TOOL';
+  els.toolName.value = t ? t.name : '';
+  els.toolDesc.value = t ? t.description || '' : '';
+  els.toolParams.value = t
+    ? JSON.stringify(t.parameters || { type: 'object', properties: {} }, null, 2)
+    : '{\n  "type": "object",\n  "properties": {},\n  "required": []\n}';
+  els.toolCode.value = t ? t.code || TOOL_EXAMPLE_CODE : TOOL_EXAMPLE_CODE;
+  els.toolTestArgs.value = t && t.parameters && Array.isArray(t.parameters.required) && t.parameters.required.length
+    ? JSON.stringify(Object.fromEntries(t.parameters.required.map((k) => [k, ''])), null, 1)
+    : '';
+  els.toolTestOut.hidden = true;
+  els.toolTestOut.textContent = '';
+  els.toolFormErr.hidden = true;
+  els.toolDeleteBtn.hidden = !t;
+  els.toolOverlay.hidden = false;
+  els.toolName.focus();
+}
+
+function closeToolDialog() {
+  if (els.toolOverlay) els.toolOverlay.hidden = true;
+}
+
+function toolErr(msg) {
+  if (els.toolFormErr) {
+    els.toolFormErr.textContent = msg;
+    els.toolFormErr.hidden = !msg;
+  }
+}
+
+if (els.toolBoxAdd) els.toolBoxAdd.addEventListener('click', () => openToolDialog(null));
+if (els.toolFolderBtn) els.toolFolderBtn.addEventListener('click', () => beast.toolsOpenFolder());
+if (els.toolClose) els.toolClose.addEventListener('click', closeToolDialog);
+if (els.toolOverlay) {
+  els.toolOverlay.addEventListener('click', (e) => {
+    if (e.target === els.toolOverlay) closeToolDialog();
+  });
+  els.toolOverlay.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') { e.stopPropagation(); closeToolDialog(); }
+  });
+}
+if (els.toolSaveBtn) {
+  els.toolSaveBtn.addEventListener('click', async () => {
+    toolErr('');
+    const name = String(els.toolName.value || '').trim();
+    if (!name) return toolErr('Tool adı gerekli');
+    let parameters = null;
+    try {
+      parameters = JSON.parse(els.toolParams.value || '{}');
+    } catch {
+      return toolErr('Parametre şeması geçerli JSON değil');
+    }
+    const code = String(els.toolCode.value || '').trim();
+    if (!code) return toolErr('run.js kodu boş olamaz');
+    const r = await beast
+      .toolSave({ id: toolUi.editId, name, description: String(els.toolDesc.value || ''), parameters, code })
+      .catch((e) => ({ ok: false, error: String((e && e.message) || e) }));
+    if (r && r.ok) {
+      closeToolDialog();
+      toast('Tool kaydedildi — ajanlar tool__' + r.id + ' olarak çağırabilir (Finance dahil)');
+      renderToolBox();
+    } else {
+      toolErr((r && r.error) || 'Kaydedilemedi');
+    }
+  });
+}
+if (els.toolDeleteBtn) {
+  els.toolDeleteBtn.addEventListener('click', async () => {
+    if (!toolUi.editId) return;
+    const t = toolUi.tools.find((x) => x.id === toolUi.editId);
+    if (!(await uiConfirm('"' + ((t && t.name) || toolUi.editId) + '" toolu silinsin mi?', 'Sil'))) return;
+    const r = await beast.toolDelete(toolUi.editId).catch(() => ({ ok: false }));
+    if (r && r.ok) {
+      closeToolDialog();
+      toast('Tool silindi');
+      renderToolBox();
+    } else toast((r && r.error) || 'Silinemedi');
+  });
+}
+if (els.toolTestBtn) {
+  els.toolTestBtn.addEventListener('click', async () => {
+    toolErr('');
+    let args = {};
+    try {
+      args = JSON.parse(els.toolTestArgs.value || '{}');
+    } catch {
+      return toolErr('Test argümanları geçerli JSON değil');
+    }
+    const id = toolUi.editId || String(els.toolName.value || '').trim().toLowerCase().replace(/[^a-z0-9_-]+/g, '_').replace(/^_+|_+$/g, '');
+    if (!id) return toolErr('Önce tool adı gir');
+    /* önce kaydet (yeni tool ilk testte de diskte olsun) */
+    const sr = await beast
+      .toolSave({
+        id: toolUi.editId,
+        name: String(els.toolName.value || id),
+        description: String(els.toolDesc.value || ''),
+        parameters: (() => {
+          try { return JSON.parse(els.toolParams.value || '{}'); } catch { return null; }
+        })() || { type: 'object', properties: {} },
+        code: String(els.toolCode.value || ''),
+      })
+      .catch((e) => ({ ok: false, error: String((e && e.message) || e) }));
+    if (!sr || !sr.ok) return toolErr((sr && sr.error) || 'Tool kaydedilemedi');
+    els.toolTestOut.hidden = false;
+    els.toolTestOut.textContent = 'çalışıyor…';
+    const r = await beast.toolRun(sr.id, args).catch((e) => ({ ok: false, error: String((e && e.message) || e) }));
+    els.toolTestOut.textContent = JSON.stringify(r, null, 2).slice(0, 8000);
+    renderToolBox();
+  });
+}
+
 function renderAgentsPane() {
   const pane = $('#tab-agents');
   if (!pane) return;
@@ -5266,6 +5468,20 @@ function onEvent(ev) {
     });
     if (dmState.dms.length > 400) dmState.dms.splice(0, dmState.dms.length - 400);
     if ($('#dmRail') && !$('#dmRail').classList.contains('dm-hidden')) renderDmRail();
+    return;
+  }
+  /* KİŞİSEL TOOL çalışma kaydı — TOOLS konsolunun nokta göstergeleri */
+  if (ev.type === 'tool-log') {
+    toolUi.logRows.push({
+      at: ev.at,
+      tool: ev.tool,
+      toolId: ev.toolId,
+      ok: ev.ok,
+      ms: ev.ms,
+      error: ev.error,
+    });
+    if (toolUi.logRows.length > 60) toolUi.logRows.splice(0, toolUi.logRows.length - 60);
+    scheduleToolRender();
     return;
   }
   /* OFFLINE MESAJ KUYRUĞU: bağlantı + kuyruk olayları (sessionId filtresinden önce) */
@@ -6415,6 +6631,7 @@ async function init() {
   };
 
   refreshAgentsPane();
+  renderToolBox(); // TOOLS konsolu: kişisel araçlar sol panelde
 
   els.sendBtn.addEventListener('click', sendCurrent);
   els.stopBtn.addEventListener('click', () => {
@@ -8616,7 +8833,15 @@ async function setFinanceMode(on) {
   const brandSub = document.querySelector('#brand .brand-sub');
   if (brandSub) brandSub.textContent = on ? 'Finance' : 'Agent';
   try { localStorage.setItem('beast.financeMode', on ? '1' : '0'); } catch {}
-  beast.financeMode(!!on, activeId).catch(() => {});
+  const fm = await beast.financeMode(!!on, activeId).catch(() => ({}));
+  /* finance modu açıldı ama aktif oturum NORMAL (örn. WhatsApp sohbeti) ise
+     ASLA o oturumu finance'e çevirme — kendine ÖZEL finance oturumu aç */
+  if (on && fm && fm.needNew) {
+    try {
+      const created = await beast.createSession();
+      if (created && created.id) await openSession(created.id);
+    } catch {}
+  }
   /* sohbet geçmişi listesi değişir: finance modunda yalnız finance sohbetleri */
   try {
     await refreshSessions();

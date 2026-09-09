@@ -3605,6 +3605,7 @@ app.whenReady().then(() => {
     reloadBackend();
     syncWhitelist(); // bot sistemi: whitelist.json aynası ilk açılışta garanti
     try { bots.ensureBotCodes(); } catch {} // her bota benzersiz 5 haneli kod garanti
+    try { customtools.seedIfEmpty(); } catch {} // kişisel toollar klasörü boşsa örnek tool kur
     createSplash();
     createWindow();
     log.info('main', 'Beast Agent başlatıldı');
@@ -5892,6 +5893,27 @@ ipcMain.handle('agents:cancel', (_e, id) => {
 /* AJAN DM paneli: ajanlar arası mesaj arşivi */
 ipcMain.handle('agent-dms:list', () => (engine ? engine.agentDmsList() : []));
 ipcMain.handle('agent-dms:clear', () => (engine ? engine.agentDmsClear() : { ok: false }));
+
+/* ---------- KİŞİSEL TOOLLAR (%APPDATA%\beast\tools\) ---------- */
+ipcMain.handle('tools:list', () => customtools.list());
+ipcMain.handle('tools:save', (_e, tool) => customtools.save(tool || {}));
+ipcMain.handle('tools:delete', (_e, id) => customtools.remove(id));
+ipcMain.handle('tools:run', async (_e, payload) => {
+  const id = String((payload && payload.id) || '');
+  const args = (payload && payload.args) || {};
+  const r = await customtools.call('tool__' + id, args);
+  return r;
+});
+ipcMain.handle('tools:openFolder', () => {
+  try {
+    const d = customtools.dir();
+    fs.mkdirSync(d, { recursive: true });
+    require('electron').shell.openPath(d);
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+});
 ipcMain.handle('ceo:get', () => !!engine.ceoMode);
 ipcMain.handle('ceo:set', (_e, v) => {
   settings.ceoMode = !!v;
@@ -8273,6 +8295,7 @@ function studioWatchStop() {
    oturumu, tur tur piyasa tarayıp (farklı API/model seçilebilir) işlem kovalar. */
 const mt5bridge = require('./mt5bridge');
 const financetools = require('./agent/financetools');
+const customtools = require('./agent/customtools');
 
 const financeState = {
   mode: false, /* chat oturumları finance bayrağı alıyor mu */
@@ -8334,6 +8357,15 @@ try {
       financeLog('[ajan] ' + line);
       finPush('trade', { line });
     }
+  });
+} catch {}
+
+/* KİŞİSEL TOOLLAR: çalışma kaydı renderer'a (TOOLS konsolu buradan beslenir) */
+try {
+  customtools.setNotify((entry) => {
+    try {
+      if (win && !win.isDestroyed()) win.webContents.send('agent:event', { type: 'tool-log', ...entry });
+    } catch {}
   });
 } catch {}
 
@@ -8695,23 +8727,32 @@ ipcMain.handle('finance:snapshot', async () => {
 ipcMain.handle('finance:mode', async (_e, payload) => {
   financeState.mode = !!(payload && payload.on);
   const sid = String((payload && payload.sessionId) || '');
+  let needNew = false;
   if (sid && engine) {
     try {
       let s = engine.cache.get(sid);
       if (!s) { try { s = engine._load(sid); } catch {} }
-      if (s && !s.botId && !s.bgJob) {
+      if (s && !s.bgJob && (!s.botId || s.botId === 'beast')) {
         if (financeState.mode) {
-          engine.markFinance(sid, false); /* kalıcı etiket: finance geçmişine girer */
-          finApplyTraderFields(s);
-          s.financeTrader = false; /* chat copilot'ı — trader değil */
+          if (s.finance) {
+            /* zaten finance oturumu — aynen sürdür */
+            finApplyTraderFields(s);
+            s.financeTrader = false; /* chat copilot'ı — trader değil */
+          } else {
+            /* NORMAL oturum (örn. WhatsApp sohbeti) finance modundayken ASLA
+               finance'e çevrilmez — ayrı bir finance oturumu açılır.
+               (eski davranış WhatsApp oturumunu da finance listesine karıştırıyordu) */
+            needNew = true;
+          }
         } else {
-          engine.unmarkFinance(sid); /* normal sohbete döner */
+          /* mod kapandı: aktif finance oturumu normal sohbete döner */
+          if (s.finance) engine.unmarkFinance(sid);
         }
         engine.cache.set(sid, s);
       }
     } catch {}
   }
-  return { ok: true, mode: financeState.mode };
+  return { ok: true, mode: financeState.mode, needNew };
 });
 
 /* MT5 sembol seçici: terminaldeki tüm semboller (isteğe bağlı *filter*) */

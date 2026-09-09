@@ -22,6 +22,16 @@
         </div>
         <div id="watchPaneList"></div>
       </div>
+      <div id="toolBox">
+        <div id="toolBoxHead">
+          <span id="toolBoxTitle">TOOLLAR</span>
+          <span class="bot-bar-btns">
+            <button id="toolFolderBtn" title="Toollar klasörünü aç (%APPDATA%\beast\tools)"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/></svg></button>
+            <button id="toolAdd" title="Yeni tool yaz">+</button>
+          </span>
+        </div>
+        <div id="toolList"></div>
+      </div>
       <div id="botBar">
         <div id="botBarHead">
           <span id="botBarTitle" data-i18n="bot_head">BOTLAR</span>
@@ -363,10 +373,39 @@
     </aside>
   </div>
 
+  <div id="toolOverlay" hidden>
+    <div id="toolDialog">
+      <div id="toolDialogHead">
+        <span id="toolDialogTitle">YENİ TOOL</span>
+        <button id="toolClose" title="Kapat">&#x2715;&#xFE0E;</button>
+      </div>
+      <div class="tool-form">
+        <label>Tool adı (ajan tool__<ad> olarak çağırır)</label>
+        <input id="toolName" placeholder="örn: gold_emir" spellcheck="false" autocomplete="off" />
+        <label>Açıklama — ajan bu metni görüp ne zaman çağıracağını anlar</label>
+        <input id="toolDesc" placeholder="örn: GOLD için özel emir açar (side, lot, sl, tp)" spellcheck="false" autocomplete="off" />
+        <label>Parametre şeması (JSON)</label>
+        <textarea id="toolParams" rows="6" spellcheck="false" placeholder='{"type":"object","properties":{"side":{"type":"string"},"lot":{"type":"number"}},"required":["side"]}'></textarea>
+        <label>run.js kodu — stdin: JSON args · stdout: JSON sonuç (console.log)</label>
+        <textarea id="toolCode" rows="12" spellcheck="false" placeholder="const args = JSON.parse(...); console.log(JSON.stringify({ ok: true }));"></textarea>
+        <div id="toolFormErr" class="sub" style="color:var(--err)" hidden></div>
+      </div>
+      <div id="toolTestRow">
+        <input id="toolTestArgs" placeholder='deneme argümanları (JSON): {"mesaj":"merhaba"}' spellcheck="false" autocomplete="off" />
+        <button id="toolTestBtn">&#9654;&#xFE0E; Çalıştır</button>
+      </div>
+      <pre id="toolTestOut" hidden></pre>
+      <div id="toolDialogBtns">
+        <button id="toolDeleteBtn" class="tool-danger" hidden>Sil</button>
+        <span class="file-spacer"></span>
+        <button id="toolSaveBtn" class="tool-primary">Kaydet</button>
+      </div>
+    </div>
+  </div>
+
   <div id="settingsOverlay" hidden>
     <div id="settingsDialog">
-      <aside id="setTabs">
-        <div class="set-tabs-title" data-i18n="set_title">AYARLAR</div>
+      <aside id="setTabs">        <div class="set-tabs-title" data-i18n="set_title">AYARLAR</div>
         <nav class="set-tabs-list">
         <button class="tab active" data-tab="lang" data-i18n="tab_lang">Dil</button>
         <button class="tab" data-tab="provider" data-i18n="tab_provider">Provider</button>

@@ -2274,6 +2274,225 @@ body.rail-hidden #dmRailHead { padding-right: 148px; }
   letter-spacing: 1.5px;
   color: var(--muted);
 }
+
+/* ---------- sol panel: TOOLS konsolu (kişisel araçlar) ---------- */
+#toolBox {
+  flex: none;
+  max-height: 32%;
+  display: none;
+  flex-direction: column;
+  border-top: 1px solid var(--border);
+  padding: 6px 8px 6px;
+}
+body:not(.ide-mode):not(.studio-mode):not(.sandbox-mode) #toolBox { display: flex; }
+#toolBoxHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 2px 2px 6px;
+  font-size: 10.5px;
+  font-weight: 800;
+  letter-spacing: 1.5px;
+  color: var(--muted);
+}
+#toolList {
+  min-height: 40px;
+  max-height: 200px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.tool-empty {
+  color: var(--muted);
+  font-size: 10.5px;
+  line-height: 1.5;
+  padding: 6px 2px;
+}
+.tool-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 3px 4px;
+  border-radius: 6px;
+  cursor: pointer;
+  color: var(--text);
+}
+.tool-row:hover { background: var(--panel2); }
+.tool-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--border);
+}
+.tool-dot.ok { background: #43c463; }
+.tool-dot.err { background: var(--err); }
+.tool-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tool-btns {
+  flex: none;
+  display: flex;
+  gap: 2px;
+  visibility: hidden;
+}
+.tool-row:hover .tool-btns { visibility: visible; }
+.tool-btns button {
+  border: none;
+  background: none;
+  color: var(--muted);
+  font-size: 11px;
+  cursor: pointer;
+  padding: 2px 5px;
+  border-radius: 4px;
+}
+.tool-btns button:hover { background: var(--accent-dim); color: var(--accent); }
+.tool-btns .tb-del:hover { color: var(--err); background: rgba(220, 60, 60, 0.12); }
+
+/* ---------- TOOL editör dialogu ---------- */
+#toolOverlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  z-index: 300;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+#toolOverlay[hidden] { display: none; }
+#toolDialog {
+  width: min(760px, 92vw);
+  max-height: 88vh;
+  overflow-y: auto;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+#toolDialogHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 1px;
+  color: var(--text);
+}
+#toolDialogHead button {
+  border: none;
+  background: none;
+  color: var(--muted);
+  font-size: 13px;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 6px;
+}
+#toolDialogHead button:hover { color: var(--err); background: rgba(220, 60, 60, 0.1); }
+.tool-form {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.tool-form label {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  color: var(--muted);
+  margin-top: 4px;
+}
+.tool-form input,
+.tool-form textarea {
+  width: 100%;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 7px 9px;
+  font-size: 12px;
+  font-family: Consolas, monospace;
+}
+.tool-form input { font-family: inherit; }
+.tool-form textarea { resize: vertical; min-height: 60px; }
+.tool-form input:focus,
+.tool-form textarea:focus { outline: none; border-color: var(--accent); }
+#toolTestRow {
+  display: flex;
+  gap: 6px;
+}
+#toolTestArgs {
+  flex: 1;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 7px 9px;
+  font-size: 12px;
+  font-family: Consolas, monospace;
+}
+#toolTestArgs:focus { outline: none; border-color: var(--accent); }
+#toolTestBtn {
+  border: none;
+  background: var(--accent-dim);
+  color: var(--accent);
+  font-weight: 800;
+  font-size: 12px;
+  border-radius: 8px;
+  padding: 7px 12px;
+  cursor: pointer;
+}
+#toolTestBtn:hover { filter: brightness(1.1); }
+#toolTestOut {
+  margin: 0;
+  max-height: 220px;
+  overflow: auto;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text);
+}
+#toolDialogBtns {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.tool-primary {
+  border: none;
+  background: var(--accent);
+  color: #fff;
+  font-weight: 800;
+  font-size: 12.5px;
+  border-radius: 8px;
+  padding: 8px 16px;
+  cursor: pointer;
+}
+.tool-primary:hover { filter: brightness(1.08); }
+.tool-danger {
+  border: none;
+  background: rgba(220, 60, 60, 0.12);
+  color: var(--err);
+  font-weight: 700;
+  font-size: 12px;
+  border-radius: 8px;
+  padding: 8px 14px;
+  cursor: pointer;
+}
+.tool-danger:hover { background: rgba(220, 60, 60, 0.2); }
 .bot-bar-btns { display: flex; gap: 4px; }
 .bot-bar-btns button {
   border: none; background: none; color: var(--muted);

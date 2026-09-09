@@ -8725,7 +8725,17 @@ ipcMain.handle('finance:settings', async (_e, patch) => {
   const p = patch || {};
   if (p.symbols !== undefined) {
     const arr = Array.isArray(p.symbols) ? p.symbols : String(p.symbols).split(/[,\s]+/);
-    f.symbols = arr.map((s) => String(s).trim().toUpperCase()).filter(Boolean).slice(0, 20);
+    const next = arr.map((s) => String(s).trim().toUpperCase()).filter(Boolean).slice(0, 20);
+    /* SEMBOL GEÇMİŞİ: eklenen/silinen her sembol hatırlanır — izleme listesi
+       tamamen silinse bile semboller geçmişte kalır, seçicide TEK TIKLA
+       tekrar eklenir (brokere search'e gerek kalmaz). */
+    const hist = Array.isArray(f.symbolHistory) ? f.symbolHistory.slice() : [];
+    for (const s of [...(f.symbols || []), ...next]) {
+      const u = String(s).toUpperCase();
+      if (u && !hist.includes(u)) hist.push(u);
+    }
+    f.symbolHistory = hist.slice(-40);
+    f.symbols = next;
   }
   if (p.intervalSec !== undefined) f.intervalSec = Math.max(30, Math.min(3600, Math.round(Number(p.intervalSec) || 120)));
   if (p.maxLot !== undefined) f.maxLot = Math.max(0.01, Math.min(100, Number(p.maxLot) || 0.1));

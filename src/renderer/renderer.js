@@ -150,6 +150,7 @@ const els = {
   finInterval: $('#finInterval'),
   finMaxLot: $('#finMaxLot'),
   finSymBtn: $('#finSymBtn'),
+  finWatchClear: $('#finWatchClear'),
   finAllow: $('#finAllow'),
   finTraderBtn: $('#finTraderBtn'),
   finTraderDot: $('#finTraderDot'),
@@ -8502,6 +8503,10 @@ function finSymBtnUpdate() {
 function finTraderInputsSet(cfg) {
   if (!cfg) return;
   if (!finWatchDirty) finWatchSet(cfg.symbols);
+  /* sembol geçmişi (silinenler dahil) — seçicide "SON SEMBOLLER" olarak çıkar */
+  finSymHist = Array.isArray(cfg.symbolHistory)
+    ? cfg.symbolHistory.map((s) => String(s).trim().toUpperCase()).filter(Boolean).slice(0, 40)
+    : [];
   const ae = document.activeElement;
   if (els.finInterval && ae !== els.finInterval) els.finInterval.value = cfg.intervalSec || 120;
   if (els.finMaxLot && ae !== els.finMaxLot) els.finMaxLot.value = cfg.maxLot || 0.1;
@@ -8695,6 +8700,7 @@ if (els.finTraderBtn) {
    ekle/çıkar. PİYASA kartı yalnız seçili sembolleri gösterir. */
 
 let finWatch = []; /* anlık izleme listesi (snapshot cfg'den senkron) */
+let finSymHist = []; /* sembol geçmişi — silinenler dahil, seçicide tek tıkla geri ekleme */
 let finSymSearchTimer = null;
 let finSymRefreshTimer = null;
 
@@ -8718,12 +8724,41 @@ function finRenderPickRows(rows, q) {
   if (!els.finSymPick) return;
   els.finSymPick.textContent = '';
   const term = String(q || '').trim().toUpperCase();
+  /* arama boşken ÜSTTE geçmiş bölümü: silinen semboller TEK TIKLA geri eklenir */
+  if (!term && finSymHist.length) {
+    const sec = document.createElement('div');
+    sec.className = 'fin-sym-sec';
+    sec.textContent = 'SON SEMBOLLER (sildiklerin dahil — tek tıkla geri ekle)';
+    els.finSymPick.appendChild(sec);
+    for (const name of finSymHist) {
+      const row = document.createElement('div');
+      row.className = 'fin-sym-row';
+      const on = finWatch.includes(name);
+      row.innerHTML =
+        '<span class="fsr-check">' + (on ? '✓' : '') + '</span>' +
+        '<span class="fsr-name">' + escapeHtml(name) + '</span>' +
+        '<span class="fsr-desc">' + (on ? 'izlemede' : 'silinmiş — eklemek için tıkla') + '</span>';
+      if (on) row.classList.add('on');
+      row.addEventListener('click', () => {
+        const added = finToggleWatch(name);
+        row.classList.toggle('on', added);
+        row.querySelector('.fsr-check').textContent = added ? '✓' : '';
+        row.querySelector('.fsr-desc').textContent = added ? 'izlemede' : 'silinmiş — eklemek için tıkla';
+      });
+      els.finSymPick.appendChild(row);
+    }
+    const sep = document.createElement('div');
+    sep.className = 'fin-sym-sec';
+    sep.textContent = 'TÜM MT5 SEMBOLLERİ';
+    els.finSymPick.appendChild(sep);
+  }
   const matches = rows.filter((r) => {
     if (!term) return true;
     return (String(r.name || '').toUpperCase().includes(term) || String(r.desc || '').toUpperCase().includes(term));
   });
   if (els.finSymCount) els.finSymCount.textContent = matches.length ? matches.length + ' sembol' : '';
   if (!matches.length) {
+    if (!term && finSymHist.length) return; /* geçmiş zaten gösterildi */
     const d = document.createElement('div');
     d.className = 'fin-empty';
     d.textContent = term ? 'Eşleşme yok' : 'Sembol listesi boş';
@@ -8788,6 +8823,26 @@ function finSymPickerClose() {
 }
 
 if (els.finSymAdd) els.finSymAdd.addEventListener('click', finSymPickerOpen);
+if (els.finWatchClear) {
+  els.finWatchClear.addEventListener('click', async () => {
+    if (!finWatch.length) {
+      toast('İzleme listesi zaten boş');
+      return;
+    }
+    const ok = await uiConfirm(
+      'İzleme listesindeki TÜM semboller silinsin mi? (' + finWatch.join(', ') + ')\nSilinenler geçmişte kalır — sembol seçicide TEK TIKLA geri ekleyebilirsin.',
+      'Tümünü Sil',
+      'Vazgeç'
+    );
+    if (!ok) return;
+    finWatchSet([]);
+    finSaveCfg({ symbols: [] });
+    finSymBtnUpdate();
+    clearTimeout(finSymRefreshTimer);
+    finSymRefreshTimer = setTimeout(() => finSnapshot(), 700);
+    toast('İzleme listesi temizlendi — semboller geçmişte duruyor');
+  });
+}
 if (els.finSymClose) els.finSymClose.addEventListener('click', finSymPickerClose);
 if (els.finSymOverlay) {
   els.finSymOverlay.addEventListener('click', (e) => {

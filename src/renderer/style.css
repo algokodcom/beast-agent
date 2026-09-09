@@ -2206,6 +2206,20 @@ body.rail-hidden #dmRailHead { padding-right: 148px; }
 .fin-sym:hover .fs-agent { visibility: visible; color: var(--accent); }
 .fin-sym .fs-agent:hover { background: var(--accent-dim); }
 
+/* sembol seçicide bölüm başlıkları (geçmiş / tüm semboller) */
+.fin-sym-sec {
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.6px;
+  color: var(--accent);
+  padding: 8px 4px 3px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 3px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* ---------- BOT SİSTEMİ (sol panel alt bölümü + bot sayfası) ---------- */
 
 /* üst bardaki aktif bot rozeti */

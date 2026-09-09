@@ -6192,7 +6192,34 @@ Engine.prototype._agentDmSend = function (fromSid, args) {
         }
       }
     }
-    if (!target || !jobs.has(target)) {
+    /* ANA OTURUM FALLBACK: chat oturumları this.cache'te yaşar (_bgJobs dışında).
+       Finance trader → ana Beast DM zinciri böyle kapanır: ajan sahibine
+       (ana sohbete) DM ile rapor verebilir. Eşleşme: bgTitle / title / kod. */
+    if (!target) {
+      const q = to.toLowerCase();
+      for (const [sid, s] of this.cache) {
+        if (sid === String(fromSid)) continue;
+        if (!s || s.bgJob || s.isBotDm) continue;
+        if (s.botId && s.botId !== 'beast') continue;
+        const hay = [s.bgTitle, s.title, s.code].map((x) => String(x || '').toLowerCase());
+        if (hay.some((x) => x && x.includes(q))) {
+          target = sid;
+          break;
+        }
+      }
+    }
+    if (String(target) === String(fromSid)) return { ok: false, error: 'kendine DM atılamaz' };
+    const fromJob = jobs.get(String(fromSid));
+    const toJob = jobs.get(target);
+    const targetIsAgent = jobs.has(target);
+    const mainChatSess = targetIsAgent ? null : this.cache.get(String(target)) || null;
+    const targetIsMainChat = !!(
+      mainChatSess &&
+      !mainChatSess.bgJob &&
+      !mainChatSess.isBotDm &&
+      (!mainChatSess.botId || mainChatSess.botId === 'beast')
+    );
+    if (!targetIsAgent && !targetIsMainChat) {
       const titles = [...jobs.values()]
         .filter((j) => j && j.status === 'running' && j.title)
         .map((j) => j.title)
@@ -6202,32 +6229,25 @@ Engine.prototype._agentDmSend = function (fromSid, args) {
         error: 'hedef ajan bulunamadı: "' + to + '"' + (titles.length ? ' — koşan ajanlar: ' + titles.join(', ') : ''),
       };
     }
-    if (String(target) === String(fromSid)) return { ok: false, error: 'kendine DM atılamaz' };
-    const fromJob = jobs.get(String(fromSid));
-    const toJob = jobs.get(target);
-    /* FİNANS SINIRI: Beast Finance oturumu agent_dm kullansa bile finance
-       dünyasının DIŞINA ÇIKMAZ — yalnız finance ajanlarına DM atabilir
-       (trader ↔ GOLD işçisi ↔ finance işçileri). Finance dışı hedef reddedilir. */
-    const fromSess = this.cache.get(String(fromSid)) || null;
-    if (fromSess && fromSess.finance) {
-      const targetSess = this.cache.get(String(target)) || null;
-      if (!targetSess || !targetSess.finance) {
-        return {
-          ok: false,
-          error:
-            'Beast Finance ajanı yalnız finance dünyasındaki ajanlara DM atabilir — hedef finance dışı: ' +
-            String((toJob && toJob.title) || to),
-        };
-      }
-    }
+    /* TÜM ajanlar birbiriyle iletişim kurabilir — sınırsız DM (yalnız kendine
+       DM atanamaz). Finance ajanları da dahil herkes herkesle konuşur. */
     /* konu etiketi: aynı konudaki DM'ler panelde AYNI oturumda toplanır */
     const topic = String((args && args.topic) || '').replace(/\s+/g, ' ').trim().slice(0, 60) || '(genel)';
+    const fromTitle =
+      fromJob && fromJob.title
+        ? String(fromJob.title)
+        : fromSess
+          ? 'Beast · ' + String(fromSess.code || '')
+          : 'Ajan';
+    const toTitle = targetIsAgent
+      ? String((toJob && toJob.title) || 'Ajan')
+      : String((mainChatSess && (mainChatSess.bgTitle || mainChatSess.title)) || 'Beast');
     const dm = {
       at: new Date().toISOString(),
       from: String(fromSid),
-      fromTitle: (fromJob && fromJob.title) || 'Ajan',
+      fromTitle,
       to: String(target),
-      toTitle: (toJob && toJob.title) || 'Ajan',
+      toTitle,
       topic,
       text,
     };
@@ -6238,15 +6258,19 @@ Engine.prototype._agentDmSend = function (fromSid, args) {
       fs.writeFileSync(this._agentDmsFile, JSON.stringify({ dms: this._agentDms }, null, 2));
     } catch {}
     emitSafe(this, target, { type: 'agent-dm', ...dm });
-    /* teslim: hedef meşgulse pending kuyruğunda bekler, done olunca düşer.
-       Cevap zinciri AYNI thread'den sürsün diye topic geri bildirilir. */
-    (this._pendingReports = this._pendingReports || []).push({
-      parentId: target,
-      text:
-        `[AJAN DM — ${dm.fromTitle} · konu: "${topic}"]\n${text}\n` +
-        `(Cevabını agent_dm aracıyla ver — to: "${dm.fromTitle}", topic: "${topic}")`,
-    });
-    this.flushPendingReports(target);
+    /* teslim: hedef AJANSA (arka plan işi / finance ajanı) mesaj olarak düşer —
+       meşgulse pending kuyruğunda bekler, done olunca görünür.
+       DÜZ CHAT OTURUMUNA (sahibin sohbet geçmişi) ENJEKTE ETMEYİZ — DM trafik
+       yalnız AJAN DM konsolunda görünür, senin sohbetlerin karışmaz. */
+    if (targetIsAgent) {
+      (this._pendingReports = this._pendingReports || []).push({
+        parentId: target,
+        text:
+          `[AJAN DM — ${dm.fromTitle} · konu: "${topic}"]\n${text}\n` +
+          `(Cevabını agent_dm aracıyla ver — to: "${dm.fromTitle}", topic: "${topic}")`,
+      });
+      this.flushPendingReports(target);
+    }
     return { ok: true, to: target, toTitle: dm.toTitle, topic };
   } catch (e) {
     return { ok: false, error: String((e && e.message) || e) };

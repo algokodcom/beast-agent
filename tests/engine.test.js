@@ -193,25 +193,30 @@ test('execTool: mt5_* araçları dispatch edilir (unknown tool DEĞİL)', async 
   assert.doesNotMatch(String(r2.error || ''), /unknown tool/i);
 });
 
-test('agent_dm: finance ajanı finance dışına DM atamaz', async () => {
+test('agent_dm: tüm koşan ajanlar birbiriyle iletişim kurabilir', async () => {
   const eng = makeEngine();
   eng.flushPendingReports = () => {};
   eng.cache.set('f1', { id: 'f1', finance: true }); // finance ajanı (GOLD işçisi)
-  eng.cache.set('c1', { id: 'c1' }); // normal ajan (kod işçisi)
+  eng.cache.set('c1', { id: 'c1', bgJob: true }); // normal ajan (kod işçisi)
   eng._bgJobs.set('f1', { id: 'f1', code: 'F1', title: 'Finance · GOLD', status: 'running', continuous: true });
   eng._bgJobs.set('c1', { id: 'c1', code: 'C1', title: 'Kod İşçisi', status: 'running' });
-  /* finance → finance dışı: RED */
+  /* finance → finance dışı iş ajanı: SERBEST (sınırsız DM) */
   const out = JSON.parse(await eng._execTool('agent_dm', { to: 'Kod', message: 'merhaba' }, null, 'f1'));
-  assert.equal(out.ok, false);
-  assert.match(String(out.error || ''), /finance/i);
-  /* finance → finance: serbest */
-  eng.cache.set('f2', { id: 'f2', finance: true });
-  eng._bgJobs.set('f2', { id: 'f2', code: 'F2', title: 'Finance · TSLA', status: 'running', continuous: true });
-  const within = JSON.parse(await eng._execTool('agent_dm', { to: 'TSLA', message: 'fiyat düştü' }, null, 'f1'));
-  assert.equal(within.ok, true);
-  /* dış ajan finance'e DM BAŞLATABİLİR (tek yön koordinasyon) */
+  assert.equal(out.ok, true);
+  /* dış ajan finance'e DM atabilir */
   const into = JSON.parse(await eng._execTool('agent_dm', { to: 'GOLD', message: 'durum ne?' }, null, 'c1'));
   assert.equal(into.ok, true);
+  /* finance ajanı ANA SOHBETE rapor verebilir (kod ile eşleşme) */
+  eng.cache.set('chat1', { id: 'chat1', code: '9KPH3U' });
+  const reply = JSON.parse(await eng._execTool('agent_dm', { to: '9KPH3U', message: 'rapor: köprü down, bekliyorum' }, null, 'f1'));
+  assert.equal(reply.ok, true);
+  assert.equal(reply.to, 'chat1');
+  /* kendine DM: RED */
+  const self = JSON.parse(await eng._execTool('agent_dm', { to: 'f1', message: 'selam' }, null, 'f1'));
+  assert.equal(self.ok, false);
+  /* olmayan hedef zarif hata */
+  const noHit = JSON.parse(await eng._execTool('agent_dm', { to: 'boyle-ajan-yok', message: 'x' }, null, 'f1'));
+  assert.equal(noHit.ok, false);
 });
 
 test('agent_dm: koşan ajanlara DM gider, kayıt kalıcı listeye düşer', async () => {

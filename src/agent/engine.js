@@ -2718,7 +2718,13 @@ class Engine {
     }
     this.emit({ type: 'message', sessionId: s.id, message: msg });
     this.emit({ type: 'sessions' });
-    this._run(s).catch(() => {});
+    /* sessiz catch YOK: tur kurulumu patlarsa hata UI'ya düşsün —
+       "ajan cvp vermiyor, hata görünmüyor" bu yüzdendi */
+    this._run(s).catch((e) => {
+      try {
+        this.emit({ type: 'error', sessionId: s.id, error: String((e && e.message) || e) });
+      } catch {}
+    });
     return true;
   }
 
@@ -3074,6 +3080,19 @@ class Engine {
 
   /* #17 iş kayıtlarını diske yaz — uygulama kapansa da geçmiş dursun.
      Oturum dosyası silinmiş işler (elle silinmiş) geri yazılmaz. */
+  /* ATOMİK YAZIM: önce .tmp sonra rename — iki instance çakışsın ya da
+     proses yazım ortasında ölse bile dosya ASLA 0 bayt bozulmaz
+     (bg-jobs.json 0 bayt olunca tüm ajanlar kayboluyordu) */
+  _atomicWrite(file, data) {
+    try {
+      const tmp = file + '.tmp';
+      fs.writeFileSync(tmp, data);
+      fs.renameSync(tmp, file);
+    } catch {
+      try { fs.writeFileSync(file, data); } catch {}
+    }
+  }
+
   _saveBgJobs() {
     try {
       const jobs = [];
@@ -3083,7 +3102,7 @@ class Engine {
         delete c._persisted;
         jobs.push(c);
       }
-      fs.writeFileSync(this._bgJobsFile, JSON.stringify({ v: 1, jobs }) + '\n');
+      this._atomicWrite(this._bgJobsFile, JSON.stringify({ v: 1, jobs }) + '\n');
     } catch {}
   }
 
@@ -6229,7 +6248,11 @@ Engine.prototype._agentDmSend = function (fromSid, args) {
           if (sid === String(fromSid)) continue;
           if (!s || s.bgJob || s.isBotDm) continue;
           if (s.botId && s.botId !== 'beast') continue;
-          const hay = [s.bgTitle, s.title, s.code].map((x) => String(x || '').toLowerCase());
+          /* tam başlık da eşleşir: ajan DM'den gelen "Beast · KOD" başlığıyla
+             cevap verir — fromTitle formatı birebir tanınmalı */
+          const hay = [s.bgTitle, s.title, s.code, s.code ? 'beast · ' + s.code : ''].map((x) =>
+            String(x || '').toLowerCase()
+          );
           if (hay.some((x) => x && x.includes(q))) {
             target = sid;
             break;
@@ -6356,7 +6379,7 @@ Engine.prototype._persistAgentDms = function () {
   try {
     const groups = {};
     for (const [, g] of this._agentGroups || new Map()) groups[g.id] = g;
-    fs.writeFileSync(this._agentDmsFile, JSON.stringify({ dms: this._agentDms, groups }, null, 2));
+    this._atomicWrite(this._agentDmsFile, JSON.stringify({ dms: this._agentDms, groups }, null, 2));
   } catch {}
 };
 

@@ -211,6 +211,10 @@ test('agent_dm: tüm koşan ajanlar birbiriyle iletişim kurabilir', async () =>
   const reply = JSON.parse(await eng._execTool('agent_dm', { to: '9KPH3U', message: 'rapor: köprü down, bekliyorum' }, null, 'f1'));
   assert.equal(reply.ok, true);
   assert.equal(reply.to, 'chat1');
+  /* TAM BAŞLIKLA eşleşme: ajan DM'den gelen "Beast · KOD" başlığıyla cevap verir */
+  const reply2 = JSON.parse(await eng._execTool('agent_dm', { to: 'Beast · 9KPH3U', message: 'tamam, izdeyim' }, null, 'f1'));
+  assert.equal(reply2.ok, true);
+  assert.equal(reply2.to, 'chat1');
   /* kendine DM: RED */
   const self = JSON.parse(await eng._execTool('agent_dm', { to: 'f1', message: 'selam' }, null, 'f1'));
   assert.equal(self.ok, false);

@@ -45,6 +45,7 @@ const els = {
   watchBtn: $('#watchBtn'),
   watchPaneList: $('#watchPaneList'),
   watchPaneOpen: $('#watchPaneOpen'),
+  watchPaneLog: $('#watchPaneLog'),
   cronBtn: $('#cronBtn'),
   watchOverlay: $('#watchOverlay'),
   cronOverlay: $('#cronOverlay'),
@@ -52,6 +53,11 @@ const els = {
   cronClose: $('#cronClose'),
   watchList: $('#watchList'),
   cronModalList: $('#cronModalList'),
+  watchLogOverlay: $('#watchLogOverlay'),
+  watchLogClose: $('#watchLogClose'),
+  watchLogSel: $('#watchLogSel'),
+  watchLogClear: $('#watchLogClear'),
+  watchLogList: $('#watchLogList'),
   browserBar: $('#browserBar'),
   bbBack: $('#bbBack'),
   bbFwd: $('#bbFwd'),
@@ -5611,6 +5617,11 @@ async function renderWatchersPane(force) {
       `</div></div>`;
     const btns = document.createElement('div');
     btns.className = 'wp-btns';
+    const lg = document.createElement('button');
+    lg.className = 'wp-btn';
+    lg.innerHTML = '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/></svg>';
+    lg.title = _t('w_log_title');
+    lg.addEventListener('click', (e) => { e.stopPropagation(); openWatchLogModal(w.id); });
     const t = document.createElement('button');
     t.className = 'wp-btn';
     t.textContent = w.enabled ? '❚❚' : '▶';
@@ -5632,7 +5643,7 @@ async function renderWatchersPane(force) {
       renderWatchersPane(true);
       renderWatchersModal(true);
     });
-    btns.append(t, d);
+    btns.append(lg, t, d);
     row.appendChild(btns);
     row.addEventListener('click', () => openWatchModal());
     list.appendChild(row);
@@ -5669,6 +5680,11 @@ async function renderWatchersModal(force) {
       `</div></div>`;
     const btns = document.createElement('div');
     btns.style.cssText = 'display:flex;gap:6px;flex:none';
+    const lg = document.createElement('button');
+    lg.className = 'mr-btn';
+    lg.innerHTML = '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/></svg>';
+    lg.title = _t('w_log_title');
+    lg.addEventListener('click', () => openWatchLogModal(w.id));
     const t = document.createElement('button');
     t.className = 'mr-btn';
     t.textContent = w.enabled ? '❚❚' : '▶';
@@ -5679,10 +5695,83 @@ async function renderWatchersModal(force) {
     d.textContent = '×';
     d.title = _t('cr_del');
     d.addEventListener('click', async () => { await beast.watchersRemove(w.id); renderWatchersModal(); });
-    btns.append(t, d);
+    btns.append(lg, t, d);
     row.appendChild(btns);
     els.watchList.appendChild(row);
   }
+}
+
+/* ---------- İZLEYİCİ LOG MODALI ----------
+   Her izleyicinin logu AYRI tutulur (watcher-logs.json) ve AYRI gösterilir:
+   üstteki seçiciyle izleyici seç → yalnız onun denetim kayıtları listelenir. */
+let watchLogSelId = '';
+let lastWatchLogKey = '';
+let lastWatchLogSelKey = '';
+
+async function renderWatchLogModal(force) {
+  if (!els.watchLogOverlay) return;
+  let rows = [];  try { rows = (await beast.watchersList()) || []; } catch {}
+  let logsMap = {};  try { logsMap = (await beast.watchersLogs()) || {}; } catch {}
+  /* seçim: yok olan seçilmişse ilk izleyiciye düş */
+  if (!rows.some((w) => w.id === watchLogSelId)) watchLogSelId = rows.length ? rows[0].id : '';
+  /* seçici — izleyici listesi değişmediyse DOM'a dokunma (odak korunur) */
+  const selKey = JSON.stringify(rows.map((w) => [w.id, w.name, w.enabled]));
+  if (selKey !== lastWatchLogSelKey) {
+    lastWatchLogSelKey = selKey;
+    els.watchLogSel.innerHTML = '';
+    if (!rows.length) {
+      const o = document.createElement('option');
+      o.textContent = _t('w_empty');
+      o.value = '';
+      els.watchLogSel.appendChild(o);
+    } else {
+      for (const w of rows) {
+        const o = document.createElement('option');
+        o.value = w.id;
+        o.textContent = (w.enabled ? '' : '⏸ ') + w.name;
+        els.watchLogSel.appendChild(o);
+      }
+    }
+    els.watchLogSel.value = watchLogSelId;
+  }
+  /* log satırları — yalnız seçili izleyicinin kayıtları */
+  const entries = watchLogSelId ? (logsMap[watchLogSelId] || []) : [];
+  const key = JSON.stringify([watchLogSelId, selKey, entries]);
+  if (!force && key === lastWatchLogKey) return;
+  lastWatchLogKey = key;
+  els.watchLogList.innerHTML = '';
+  if (!watchLogSelId || !entries.length) {
+    els.watchLogList.innerHTML = '<div class="mini-empty">' + _t('w_log_empty') + '</div>';
+    return;
+  }
+  const evBadge = { ok: ['ok', _t('w_log_ev_ok')], trigger: ['trigger', _t('w_log_ev_trigger')], error: ['error', _t('w_log_ev_error')] };
+  for (const en of entries) {
+    const [cls, label] = evBadge[en.ev] || ['ok', en.ev];
+    const row = document.createElement('div');
+    row.className = 'wl-row';
+    row.innerHTML =
+      `<span class="wl-time">${escapeHtml(fmtWhen(en.ts))}</span>` +
+      `<span class="wl-badge ${cls}">${escapeHtml(label)}</span>` +
+      `<span class="wl-main">` +
+      (en.ev === 'error'
+        ? `<span class="wl-err">${escapeHtml(String(en.error || '').slice(0, 120))}</span>`
+        : (en.value !== null && en.value !== undefined ? escapeHtml(String(en.value).slice(0, 120)) : '—')) +
+      `</span>`;
+    els.watchLogList.appendChild(row);
+  }
+}
+
+function closeWatchLogModal() {
+  toggleMini(els.watchLogOverlay, true);
+  stopMiniRefresh();
+}
+
+async function openWatchLogModal(id) {
+  if (id) watchLogSelId = String(id);
+  lastWatchLogSelKey = ''; /* seçici her açılışta TAZE kurulsun */
+  toggleMini(els.watchLogOverlay, false);
+  await renderWatchLogModal(true);
+  startMiniRefresh();
 }
 
 let lastCronKey = '';
@@ -5746,6 +5835,7 @@ function startMiniRefresh() {
   stopMiniRefresh();
   miniRefreshTimer = setInterval(async () => {
     if (els.watchOverlay && !els.watchOverlay.hidden) await renderWatchersModal();
+    else if (els.watchLogOverlay && !els.watchLogOverlay.hidden) await renderWatchLogModal();
     else if (els.cronOverlay && !els.cronOverlay.hidden) await renderCronModal();
     else stopMiniRefresh();
   }, 4000);
@@ -6487,11 +6577,28 @@ async function init() {
   /* cron modülü — olay bağlama */
   if (els.watchBtn) els.watchBtn.addEventListener('click', openWatchModal);
   if (els.watchPaneOpen) els.watchPaneOpen.addEventListener('click', openWatchModal);
+  if (els.watchPaneLog) els.watchPaneLog.addEventListener('click', () => openWatchLogModal());
   if (els.cronBtn) els.cronBtn.addEventListener('click', openCronModal);
   if (els.watchClose) els.watchClose.addEventListener('click', closeWatchModal);
   if (els.cronClose) els.cronClose.addEventListener('click', closeCronModal);
+  if (els.watchLogClose) els.watchLogClose.addEventListener('click', closeWatchLogModal);
+  if (els.watchLogSel) els.watchLogSel.addEventListener('change', () => {
+    watchLogSelId = els.watchLogSel.value;
+    lastWatchLogKey = '';
+    renderWatchLogModal(true);
+  });
+  if (els.watchLogClear) els.watchLogClear.addEventListener('click', async () => {
+    if (!watchLogSelId) return;
+    await beast.watchersLogsClear(watchLogSelId);
+    lastWatchLogKey = '';
+    await renderWatchLogModal(true);
+    toast(_t('w_log_cleared'));
+  });
   if (els.watchOverlay) els.watchOverlay.addEventListener('click', (e) => {
     if (e.target === els.watchOverlay) closeWatchModal();
+  });
+  if (els.watchLogOverlay) els.watchLogOverlay.addEventListener('click', (e) => {
+    if (e.target === els.watchLogOverlay) closeWatchLogModal();
   });
   if (els.cronOverlay) els.cronOverlay.addEventListener('click', (e) => {
     if (e.target === els.cronOverlay) closeCronModal();
@@ -6579,6 +6686,7 @@ async function init() {
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
       if ($('#botOverlay') && !$('#botOverlay').hidden) { botOverlaySetOpen(false); return; }
+      if (els.watchLogOverlay && !els.watchLogOverlay.hidden) { closeWatchLogModal(); return; }
       if (els.watchOverlay && !els.watchOverlay.hidden) { closeWatchModal(); return; }
       if (els.cronOverlay && !els.cronOverlay.hidden) { closeCronModal(); return; }
       if (!els.settingsOverlay.hidden) closeSettings();

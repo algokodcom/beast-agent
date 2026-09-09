@@ -136,12 +136,13 @@ function list() {
   return jobs.map((j) => ({ ...j }));
 }
 
-function add({ name, schedule, prompt, once, sessionId }) {
+function add({ name, schedule, prompt, once, sessionId, kind }) {
   const n = String(name || '').trim().slice(0, 80) || 'Görev';
   const s = String(schedule || '').trim();
   const p = String(prompt || '').trim().slice(0, 4000);
   if (!isValidSchedule(s)) return { ok: false, error: 'geçersiz cron ifadesi (örn: */15 * * * *)' };
   if (!p) return { ok: false, error: 'görev metni boş olamaz' };
+  const k = String(kind || '').trim().slice(0, 24);
   const job = {
     id: uid(),
     name: n,
@@ -150,6 +151,7 @@ function add({ name, schedule, prompt, once, sessionId }) {
     sessionId: sessionId || null,
     once: !!once,
     enabled: true,
+    ...(k ? { kind: k } : {}),
     createdAt: new Date().toISOString(),
     lastRunAt: null,
     nextRunAt: nextRunFrom(s, new Date()),
@@ -184,6 +186,17 @@ function remove(id) {
   jobs = jobs.filter((j) => j.id !== id);
   save();
   return { ok: jobs.length < before };
+}
+
+/* Koşula uyan TÜM görevleri sil (/autodel, "hatırlatmaları sil"). */
+function removeIf(pred) {
+  const before = jobs.length;
+  jobs = jobs.filter((j) => {
+    try { return !pred(j); } catch { return true; }
+  });
+  const count = before - jobs.length;
+  if (count) save();
+  return { ok: true, count };
 }
 
 /* Tüm görevleri bellekten ve diskten sil; zamanlayıcıyı durdur.
@@ -233,17 +246,43 @@ function tick() {
   }
 }
 
+/* Uygulama kapalıyken saati geçen tek-seferlik hatırlatma için teslim penceresi:
+   bu kadar süre geçmediyse uyarı GECİKMELİ de olsa teslim edilir. */
+const ONCE_GRACE_MS = 60 * 60 * 1000;
+
+/* Açılış uzlaşması (saf): saati geçmiş tek-seferlik hatırlatmalar eski
+   davranışta nextRunFrom ile GELECEK YILIN aynı gününe yeniden kuruluyordu —
+   bayat kayıt ölümsüzleşip tekrar tekrar önüne düşüyordu. Artık: grace
+   içindeyse "fire" listesine (gecikmeli teslim), bayatsa listeden düşer.
+   Tekrarlıların nextRunAt'ı her zamanki gibi yeniden hesaplanır. */
+function reconcile(list, now, graceMs) {
+  const keep = [];
+  const fire = [];
+  for (const job of list) {
+    if (!job.enabled) { keep.push(job); continue; }
+    const nr = job.nextRunAt ? new Date(job.nextRunAt).getTime() : 0;
+    if (job.once && nr && nr <= now) {
+      if (now - nr <= graceMs) fire.push(job);
+      continue; // bayat olan burada düşer
+    }
+    if (!nr || nr <= now) {
+      keep.push({ ...job, nextRunAt: nextRunFrom(job.schedule, new Date(now)) });
+      continue;
+    }
+    keep.push(job);
+  }
+  return { jobs: keep, fire };
+}
+
 function init(hooks) {
   onFire = (hooks && hooks.onFire) || null;
   load();
-  for (const job of jobs) {
-    if (job.enabled && (!job.nextRunAt || new Date(job.nextRunAt).getTime() <= Date.now())) {
-      job.nextRunAt = nextRunFrom(job.schedule, new Date());
-    }
-  }
+  const r = reconcile(jobs, Date.now(), ONCE_GRACE_MS);
+  jobs = r.jobs;
   save();
   if (timer) clearInterval(timer);
   timer = setInterval(tick, 20 * 1000);
+  for (const job of r.fire) fire(job); // grace içindeki bayat hatırlatmayı gecikmeli teslim et
 }
 
 /* /stop: zamanlayıcıyı durdur (init ile geri başlar) */
@@ -252,4 +291,4 @@ function stop() {
   timer = null;
 }
 
-module.exports = { init, stop, list, add, update, remove, clearAll, toggle, runNow, parseCron, nextRunFrom, isValidSchedule, reminderSchedule };
+module.exports = { init, stop, list, add, update, remove, removeIf, clearAll, toggle, runNow, parseCron, nextRunFrom, isValidSchedule, reminderSchedule, reconcile, ONCE_GRACE_MS };

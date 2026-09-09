@@ -146,6 +146,10 @@ contextBridge.exposeInMainWorld('beast', {
 
   watchersToggle: (id) => ipcRenderer.invoke('watchers:toggle', id),
 
+  watchersLogs: () => ipcRenderer.invoke('watchers:logs'),
+
+  watchersLogsClear: (id) => ipcRenderer.invoke('watchers:logsClear', id),
+
   providerKeys: () => ipcRenderer.invoke('providers:keys'),
 
   openPath: (p) => ipcRenderer.invoke('shell:openPath', p),

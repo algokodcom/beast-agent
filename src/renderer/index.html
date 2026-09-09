@@ -17,7 +17,8 @@
         <div id="watchPaneHead">
           <span id="watchPaneTitle" data-i18n="w_pane">İZLEYİCİLER</span>
           <span class="file-spacer"></span>
-          <button id="watchPaneOpen" title="İzleyicileri yönet">+</button>
+          <button id="watchPaneLog" title="İzleyici loglarını gör" data-i18n-title="tipWatchLog"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/></svg></button>
+          <button id="watchPaneOpen" title="İzleyicileri yönet" data-i18n-title="tipWatch">+</button>
         </div>
         <div id="watchPaneList"></div>
       </div>
@@ -524,6 +525,22 @@
       </div>
       <div class="mini-body">
         <div id="watchList" class="mini-list"></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="watchLogOverlay" class="mini-overlay" hidden>
+    <div class="mini-dialog">
+      <div class="mini-head">
+        <span class="mini-title" data-i18n="w_log_title">İzleyici Logları</span>
+        <button class="mini-close" id="watchLogClose" title="Kapat" data-i18n-title="btn_close">&#x00D7;</button>
+      </div>
+      <div class="mini-body">
+        <div id="watchLogBar">
+          <select id="watchLogSel" class="mini-select"></select>
+          <button id="watchLogClear" class="mr-btn" title="Seçili izleyicinin loglarını temizle" data-i18n-title="w_log_clear"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/></svg></button>
+        </div>
+        <div id="watchLogList" class="mini-list"></div>
       </div>
     </div>
   </div>

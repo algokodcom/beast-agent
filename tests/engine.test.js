@@ -41,6 +41,64 @@ test('todo: 20 ile sınırlı', () => {
   assert.equal(sanitizeTodoItems(items).length, 20);
 });
 
+/* ---------- clearTodos (/deltodo) ---------- */
+
+test('clearTodos: listeyi boşaltır, dosyaya boş t:todo yazar, restart sonrası da boş kalır', () => {
+  const eng = makeEngine();
+  const s = eng.createSession();
+  const sid = s.id;
+  const items = [
+    { title: 'Planla', status: 'active' },
+    { title: 'Uygula', status: 'pending' },
+    { title: 'Bitir', status: 'done' },
+  ];
+  /* gerçek todo_write akışı gibi: bellek + dosya */
+  eng.todos.set(sid, items);
+  fs.appendFileSync(eng._file(sid), JSON.stringify({ t: 'todo', items }) + '\n');
+
+  const r = eng.clearTodos(sid);
+  assert.equal(r.ok, true);
+  assert.equal(r.count, 3);
+  assert.deepEqual(eng.todos.get(sid), []);
+
+  /* restart benzeti: bellek dışı yeniden yükleme — son t:todo kaydı kazanır */
+  eng.cache.delete(sid);
+  const reloaded = eng._load(sid);
+  assert.deepEqual(reloaded.todos, []);
+
+  /* olmayan oturum reddedilir */
+  assert.equal(eng.clearTodos('yok-oturum').ok, false);
+});
+
+/* ---------- Beast Finance: skills kataloğu + skill aracı ---------- */
+
+test('finance: sistem promptu SKILLS kataloğunu içerir', () => {
+  const eng = makeEngine();
+  const s = eng._load(eng.createSession().id);
+  s.finance = true;
+  s.financeTrader = true;
+  const sys = eng.buildFinanceSystem(s);
+  assert.ok(sys.includes('# SKILLS'));
+  assert.ok(sys.includes('SKILL.md'));
+  /* tohumlar kurulu olmalı — katalogda en az bir isim görünür */
+  const list = require('../src/agent/skills').scan();
+  assert.ok(list.length > 0);
+  assert.ok(sys.includes('- ' + list[0].name));
+});
+
+test('skill aracı: katalogdaki SKILL.md gövdesini döndürür', async () => {
+  const eng = makeEngine();
+  const list = require('../src/agent/skills').scan();
+  assert.ok(list.length > 0);
+  const r = JSON.parse(await eng._execTool('skill', { name: list[0].name }, null, 's1'));
+  assert.equal(r.ok, true);
+  assert.equal(r.name, list[0].name);
+  assert.ok(r.content.length > 0);
+  /* olmayan skill zarif hata verir */
+  const bad = JSON.parse(await eng._execTool('skill', { name: 'boyle-skill-yok' }, null, 's1'));
+  assert.equal(bad.ok, false);
+});
+
 /* ---------- payload builder ---------- */
 
 test('tool_call/tool mesajları birlikte tutulur', () => {

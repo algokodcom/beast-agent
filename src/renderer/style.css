@@ -133,7 +133,6 @@ body:not(.ide-mode):not(.studio-mode):not(.sandbox-mode) #watchPane { display: f
 }
 #watchPaneTitle { font-size: 10.5px; letter-spacing: 2px; color: var(--muted); font-weight: 800; }
 #watchPaneHead button {
-  margin-left: auto;
   background: none;
   border: 1px solid var(--border);
   border-radius: 7px;
@@ -142,7 +141,13 @@ body:not(.ide-mode):not(.studio-mode):not(.sandbox-mode) #watchPane { display: f
   font-size: 12px;
   line-height: 1.2;
   padding: 1px 7px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
+/* LOG ve + butonları sağda YAN YANA BİTİŞİK dursun: yalnız ilkinde itici boşluk */
+#watchPaneHead button:first-of-type { margin-left: auto; }
 #watchPaneHead button:hover { color: var(--text); background: var(--panel2); }
 #watchPaneList { flex: 1; overflow-y: auto; padding: 4px; }
 .wp-row {
@@ -1464,6 +1469,35 @@ body.browser-open .mini-overlay { right: var(--bw, 480px); }
 .mr-btn:hover { color: var(--accent); }
 .mr-btn.del:hover { color: var(--err); }
 
+/* ---------- İzleyici log modalı (her izleyicinin logu ayrı) ---------- */
+#watchLogBar { display: flex; gap: 6px; align-items: center; margin-bottom: 10px; }
+#watchLogSel { flex: 1; min-width: 0; }
+.mini-select {
+  background: var(--panel2);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  color: var(--text);
+  font-size: 12px;
+  padding: 4px 6px;
+}
+.wl-row {
+  display: flex; align-items: baseline; gap: 7px;
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: 8px; padding: 5px 8px;
+}
+.wl-row:hover { background: var(--panel2); }
+.wl-time { flex: none; color: var(--muted); font-size: 10px; min-width: 56px; }
+.wl-badge {
+  flex: none; font-size: 9px; font-weight: 800; letter-spacing: 0.5px;
+  padding: 1px 6px; border-radius: 5px; border: 1px solid var(--border);
+  text-transform: uppercase;
+}
+.wl-badge.ok { color: var(--muted); }
+.wl-badge.trigger { color: var(--accent); border-color: var(--accent); }
+.wl-badge.error { color: var(--err); border-color: var(--err); }
+.wl-main { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; }
+.wl-err { color: var(--err); font-size: 11px; }
+
 /* #26 ajan dosya kartı */
 .file-card {
   display: flex;
@@ -1916,6 +1950,7 @@ body.browser-open #settingsDialog { width: min(70vw, calc(100vw - var(--bw, 480p
   flex: none;
   width: 250px;
   min-width: 250px;
+  min-height: 0;
   background: var(--panel);
   border-left: 1px solid var(--border);
   display: flex;
@@ -1957,9 +1992,19 @@ body.browser-open #settingsDialog { width: min(70vw, calc(100vw - var(--bw, 480p
 }
 #railClear:hover { background: rgba(0, 0, 0, 0.08); }
 #railClear svg { display: block; }
-}
 
-#railList { flex: 1; overflow-y: auto; overflow-x: hidden; padding: 4px 8px; }
+/* rail listesi: kartlar ekranı aştığında KAYDIRILABİLİR olmalı —
+   flex:1 + min-height:0 + overflow-y:auto üçlüsü zorunlu. overscroll-behavior
+   sayfa geri kaydırma animasyonunu da keser. */
+#railList {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  padding: 4px 8px;
+}
 
 .rail-empty {
   color: var(--muted);

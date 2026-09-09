@@ -1830,6 +1830,11 @@ class Engine {
         : 'ROL: GÖZLEMCİ ANALİST 🔍 — tur tur piyasa tararsın ama OTOMATİK İŞLEM KAPALI: mt5_trade/mt5_pending KULLANMA. Fırsatları net öneri olarak yaz (sembol, yön, giriş, SL, TP, sebep); sahibi onaylarsa açılır.'
       : 'ROL: TRADING CO-PİLOT 💬 — sahibinle sohbet ediyorsun. Veri isterse mt5_* araçlarıyla çek, analiz et; işlem istenirse limitler içinde uygula, istenmezse sadece öneri ver.';
     const proj = this._projectInstructions(session);
+    /* Skills kataloğu: finance oturumlarında da skill'ler çağrılabilir
+       (skill aracı _chatTurn'de finance oturumlarına enjekte edilir). */
+    const skList = (() => {
+      try { return skills.scan(); } catch { return []; }
+    })();
     return (
       'Sen BEAST FİNANS\u2019sın — bilgisayardaki MetaTrader 5 (MT5) terminaline köprüyle bağlı trading ajanı.\n' +
       'ORTAM: Beast Finance uygulamasındasın — solda sohbet geçmişi + izleyiciler, ortada bu sohbet, SAĞ panelde MT5 işlem panosu (hesap, pozisyonlar, piyasa, AKIŞ) var.\n' +
@@ -1846,6 +1851,10 @@ class Engine {
       '- Emin olmadığında İŞLEM YOK — "BEKLE: <sebep>" yaz. Sık işlem > iyi işlem.\n' +
       '- Hesap kaldıracı ve serbest marja göre pozisyon boyutunu düşük tut; tek işlemde serbest marjın büyük kısmını riske atma.\n' +
       (session && session.financeStrategy ? `SAHİBİNİN STRATEJİ NOTU (önceliklidir):\n${session.financeStrategy}\n` : '') +
+      (skList.length
+        ? '# SKILLS\nKurulu skill kataloğu: görev bir skill\u2019in tanımına uyarsa skill aracıyla gövdesini (SKILL.md) yükleyip uygula — tekerleği yeniden icat etme. Analysis/rapor/PDF gibi işlerde skill\u2019in prosedürüne uy.\n' +
+          skList.map((s) => `- ${s.name}: ${s.description} [${s.path}]`).join('\n') + '\n'
+        : '') +
       'RAPOR DİSİPLİNİ: kısa ve sayısal — sembol, yön, lot, giriş, SL/TP, sebep tek satırda. Uzun fal açma; tablo/liste kullanabilirsin.\n' +
       `Yerel zaman: ${localDate} ${localTime} — piyasa saatlerine dikkat et (borsa/metal seansları kapalıysa spread genişler; hafta sonu FX kapalıdır).\n` +
       (proj ? '# PROJE TALİMATLARI\n' + proj + '\n' : '') +
@@ -3402,6 +3411,16 @@ class Engine {
       toolsList = await mcp.mergeTools(toolsList);
       /* Beast Apps: kurulu app'lerin araçları (app__<id>__<tool>) modele açılır */
       toolsList = apps.mergeTools(toolsList);
+      /* Beast Finance: skill aracı da açık — kataloğun SKILL.md gövdesi
+         modele açılır (skill handler'ı zaten tüm oturumlar için çalışır,
+         definition yalnız BC'de vardı; finance chat copilot + trader ikisi de)
+         Not: BC oturumları zaten opencode registry'sinden skill'i görür. */
+      if (session && session.finance) {
+        const skillDef = (opencode.toolmap.definitions() || []).find(
+          (d) => d && d.function && d.function.name === 'skill'
+        );
+        if (skillDef) toolsList = [...toolsList, skillDef];
+      }
       /* panel_run yalnız SANDBOX oturumlarında görünsün — diğer panellerde
          modelin alet çantasında olmasın (hook olmadan çalışmaz) */
       if (!(session && session.sbSandbox)) {
@@ -4653,6 +4672,26 @@ const skills = require('./skills');
     return null;
   }
 
+  /* opencode skill aracı gövdesi: katalogdan eşleşen SKILL.md'yi okur.
+     Salt-okur — tüm oturum türlerinde (BC/finance/chat/trader) aynı yol. */
+  _skillBody(args) {
+    const wanted = String((args && args.name) || '').trim();
+    let list = [];
+    try { list = skills.scan(); } catch {}
+    const hit = list.find((s) => s && s.name === wanted) || null;
+    if (!hit) {
+      return {
+        ok: false,
+        error:
+          'skill bulunamadı: ' + (wanted || '(boş)') +
+          (list.length ? ' — mevcut: ' + list.map((s) => s.name).join(', ') : ''),
+      };
+    }
+    let body = '';
+    try { body = fs.readFileSync(hit.path, 'utf8'); } catch {}
+    return { ok: true, name: hit.name, path: hit.path, content: body.slice(0, 24000) };
+  }
+
   async _execTool(name, args, signal, sessionId) {
     try {
       /* opencode mantığı (BC): model opencode builtin dilinde çağırır —
@@ -4669,6 +4708,12 @@ const skills = require('./skills');
       /* ANA KOD KİLİDİ: korumalı bölgeye yazma/silme girişimi daha kapıdan geçmez */
       const blocked = this._guardTool(name, args);
       if (blocked) return blocked;
+      /* opencode skill aracı: katalogdaki SKILL.md gövdesini modele açar.
+         Salt-okur ve güvenli — BC dahil TÜM oturum türlerinde çalışır
+         (Beast Finance chat copilot + trader buradan kullanır). */
+      if (name === 'skill') {
+        return JSON.stringify(this._skillBody(args));
+      }
       if (isBc) {
         /* opencode permission akışı (tool/external-directory.ts + her aracın
            ctx.ask'ı): önce workspace DIŞI erişim izni, sonra araç izni.
@@ -4694,24 +4739,6 @@ const skills = require('./skills');
           });
         } catch (permErr) {
           return JSON.stringify({ ok: false, error: AskService.errorText(permErr) });
-        }
-        /* opencode skill aracı: katalogdaki SKILL.md gövdesini modele açar */
-        if (name === 'skill') {
-          const wanted = String((args && args.name) || '').trim();
-          let list = [];
-          try { list = skills.scan(); } catch {}
-          const hit = list.find((s) => s && s.name === wanted) || null;
-          if (!hit) {
-            return JSON.stringify({
-              ok: false,
-              error:
-                'skill bulunamadı: ' + (wanted || '(boş)') +
-                (list.length ? ' — mevcut: ' + list.map((s) => s.name).join(', ') : ''),
-            });
-          }
-          let body = '';
-          try { body = fs.readFileSync(hit.path, 'utf8'); } catch {}
-          return JSON.stringify({ ok: true, name: hit.name, path: hit.path, content: body.slice(0, 24000) });
         }
       } else {
         /* onay kapısı: riskli araçta dış onay bekle; reddedilirse araç çalışmaz.
@@ -5967,6 +5994,25 @@ Engine.prototype.undoLastTodo = function (sid) {
   const j = this._undoJournal.get(String(sid || '')) || [];
   if (!j.length) return { ok: false, error: 'geri alınacak değişiklik yok' };
   return this.undoTodo(sid, j[j.length - 1].todoId);
+};
+
+/* /deltodo: oturumun todo listesini tamamen temizler. Dosyaya BOŞ t:todo
+   kaydı append edilir — yüklemede son kayıt kazanır, restart sonrası da
+   boş kalır (eski t:todo satırları yeniden canlanamaz). */
+Engine.prototype.clearTodos = function (sid) {
+  const key = String(sid || '');
+  try {
+    if (!key || !fs.existsSync(this._file(key))) return { ok: false, error: 'oturum bulunamadı' };
+  } catch {
+    return { ok: false, error: 'oturum bulunamadı' };
+  }
+  const prev = this.todos.get(key) || [];
+  this.todos.set(key, []);
+  try {
+    fs.appendFileSync(this._file(key), JSON.stringify({ t: 'todo', items: [] }) + '\n');
+  } catch {}
+  emitSafe(this, key, { type: 'todos', sessionId: key, todos: [] });
+  return { ok: true, count: prev.length };
 };
 
 module.exports = Engine;

@@ -6,7 +6,8 @@
    kind=logs  → Beast log dosyası taranır; son windowMin dakikadaki error/warn sayısı
                 değer olur ("10 dk içinde 3+ hata olursa bağır")
    Koşul sağlanınca ilgili oturuma mesaj düşer (WA köprüsüne de otomatik akar).
-   Depo: %APPDATA%\beast\watchers.json */
+   Depo: %APPDATA%\beast\watchers.json
+   Loglar: %APPDATA%\beast\watcher-logs.json (ana depodan AYRI; izleyici başına denetim kaydı) */
 
 const fs = require('fs');
 const path = require('path');
@@ -18,7 +19,89 @@ function file() {
   return path.join(beastRoot(), 'watchers.json');
 }
 
+/* İzleyici logları ANA depodan AYRI tutulur: watcher-logs.json
+   Yapı: { logs: { [watcherId]: [{ ts, ev: ok|trigger|error, value, error }] } }
+   İzleyici başına LOG_CAP kayıt tutulur (yenisi eklenince en eskisi düşer). */
+const LOG_CAP = 200;
+const LOG_FILE = 'watcher-logs.json';
+
+function logFile() {
+  return path.join(beastRoot(), LOG_FILE);
+}
+
 let items = [];
+let logs = {}; // watcherId -> [{ ts, ev, value, error }]
+let logsDirty = false;
+
+function loadLogs() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(logFile(), 'utf8'));
+    logs = raw && typeof raw.logs === 'object' && raw.logs !== null ? raw.logs : {};
+  } catch {
+    logs = {};
+  }
+}
+
+function saveLogs(force) {
+  if (!logsDirty && !force) return;
+  try {
+    fs.mkdirSync(beastRoot(), { recursive: true });
+    fs.writeFileSync(logFile(), JSON.stringify({ logs }, null, 2));
+    logsDirty = false;
+  } catch {}
+}
+
+/* Tek izleyiciye log kaydı düş — değer/seri hale getirilemezse güvenli temsil */
+function pushLog(id, ev, value, error) {
+  let v = null;
+  if (value !== undefined && value !== null) {
+    try {
+      v = typeof value === 'object' ? JSON.stringify(value).slice(0, 200) : value;
+    } catch {
+      v = String(value).slice(0, 200);
+    }
+  }
+  const arr = Array.isArray(logs[id]) ? logs[id] : (logs[id] = []);
+  arr.push({
+    ts: new Date().toISOString(),
+    ev, // 'ok' | 'trigger' | 'error'
+    value: v,
+    error: error ? String(error).slice(0, 300) : '',
+  });
+  if (arr.length > LOG_CAP) arr.splice(0, arr.length - LOG_CAP);
+  logsDirty = true;
+}
+
+/* Bir izleyicinin logları — en yeni en başta */
+function logEntries(id) {
+  const arr = Array.isArray(logs[String(id)]) ? logs[String(id)] : [];
+  return arr.slice().reverse();
+}
+
+/* Tüm izleyicilerin logları — { [watcherId]: [...] }, en yeni en başta */
+function logsAll() {
+  const out = {};
+  for (const k of Object.keys(logs)) out[k] = logEntries(k);
+  return out;
+}
+
+/* Logları temizle — id verilirse yalnız o izleyici, yoksa hepsi */
+function logClear(id) {
+  if (id) delete logs[String(id)];
+  else logs = {};
+  saveLogs(true);
+  return { ok: true };
+}
+
+/* Artık var olmayan izleyicilerin loglarını temizle */
+function pruneLogs() {
+  const ids = new Set(items.map((w) => w.id));
+  let changed = false;
+  for (const k of Object.keys(logs)) {
+    if (!ids.has(k)) { delete logs[k]; changed = true; }
+  }
+  if (changed) saveLogs(true);
+}
 
 function load() {
   try {
@@ -27,6 +110,8 @@ function load() {
   } catch {
     items = [];
   }
+  loadLogs();
+  pruneLogs();
 }
 
 function save() {
@@ -189,6 +274,7 @@ function remove(id) {
   const before = items.length;
   items = items.filter((w) => w.id !== id);
   save();
+  if (items.length < before) logClear(id); /* izleyici gitti → logları da gitsin */
   return { ok: items.length < before };
 }
 
@@ -283,6 +369,7 @@ async function tickOnce(deps = {}) {
       const r = applyCheck(w, value, now);
       Object.assign(w, r.patch);
       w.lastError = '';
+      pushLog(w.id, r.triggered ? 'trigger' : 'ok', value);
       if (r.triggered) {
         if (typeof hooks.onTrigger === 'function') hooks.onTrigger({ ...w }, value);
         events.push({ id: w.id, name: w.name, value });
@@ -290,9 +377,11 @@ async function tickOnce(deps = {}) {
     } catch (e) {
       w.lastCheckAt = new Date(now).toISOString();
       w.lastError = String((e && e.message) || e).slice(0, 300);
+      pushLog(w.id, 'error', undefined, w.lastError);
     }
   }
   save();
+  saveLogs();
   return events;
 }
 
@@ -330,4 +419,7 @@ module.exports = {
   applyCheck,
   isDue,
   cooldownActive,
+  logEntries,
+  logsAll,
+  logClear,
 };

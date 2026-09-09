@@ -1106,6 +1106,8 @@ function waSlashHelp() {
     '• */usage* – bugünkü kullanım',
     '• */backup* – tüm veriyi ŞİFRELİ yedekle (Beast Kodu imzalı, Masaüstü\\Beast-Backups)',
     '• */status* – bağlantı ve servis durumu',
+    '• */autodel* – tüm otomatik hatırlatmaları (bayat/eski dahil) tek komutla sil · */autodel all*: cron görevleri dahil hepsi',
+    '• */deltodo* – bu oturumun todo listesini temizle · */deltodo all*: tüm oturumların todoları',
     '',
     'Gruplarda beni @mention ile çağır; ardışık mesajlarını tek cevapta birleştiririm.',
   ].join('\n');
@@ -1646,6 +1648,58 @@ async function tryWaSlash(jid, rawText, senderNum, payload0) {
       } else {
         out = 'Kullanım: `/cron list` · `/cron clear` (hepsini sil) · `/cron del <id>`';
       }
+    } else if (cmd === 'autodel') {
+      /* /autodel [all] — TÜM otomatik hatırlatmaları tek komutla sil.
+         Bayat/eski kayıtlar dahil: kind=reminder + eski isim/prompt önekleri eşleşir.
+         /autodel all → cron görevleri dahil her şey (=/cron clear) */
+      const sub = String(arg || '').toLowerCase().trim();
+      if (sub === 'all' || sub === 'hepsi' || sub === 'hepsini') {
+        const r = cron.clearAll();
+        cronEmit();
+        out = r.ok
+          ? `*Tüm zamanlanmış görevler silindi* (${r.count} adet).`
+          : 'Temizlenemedi.';
+      } else {
+        const r = cron.removeIf(isReminderJob);
+        cronEmit();
+        const left = cron.list().filter((j) => j.enabled).length;
+        out = r.count
+          ? `*${r.count} otomatik hatırlatma silindi.* Kalan aktif görev: ${left}`
+          : 'Silinecek otomatik hatırlatma yok — zaten temiz.';
+      }
+    } else if (cmd === 'deltodo') {
+      /* /deltodo [all] — todo listelerini temizler: arg=all → TÜM oturumlar;
+         yoksa yalnız bu sohbetin oturumu. Panelden de düşsün diye 'todos'
+         olayı emit edilir (engine.clearTodos). */
+      const sub = String(arg || '').toLowerCase().trim();
+      if (sub === 'all' || sub === 'hepsi' || sub === 'hepsini') {
+        let n = 0;
+        let items = 0;
+        try {
+          for (const v of engine.listSessions()) {
+            const r = engine.clearTodos(v.id);
+            if (r && r.ok) {
+              n++;
+              items += r.count || 0;
+            }
+          }
+        } catch {}
+        out = n
+          ? `*Tüm oturumların todoları temizlendi* (${n} oturum, ${items} madde).`
+          : 'Temizlenecek todo yok.';
+      } else {
+        const sid = waChats.get(jid) || waSingleSid || '';
+        if (!sid) {
+          out = 'Bu sohbette açık oturum yok — todo listesi de yok.';
+        } else {
+          const r = engine.clearTodos(sid);
+          out = r.ok
+            ? (r.count
+                ? `*${r.count} todo temizlendi.* (tüm oturumlar için: /deltodo all)`
+                : 'Todo listesi zaten boş. (tüm oturumlar için: /deltodo all)')
+            : 'Oturum bulunamadı — todo listesi yok.';
+        }
+      }
     } else if (cmd === 'beastcode') {
       /* /beastcode [görev] — WhatsApp'tan UZAKTAN KODLAMA modu:
          masaüstünde GERÇEK Beast Code paneli açılır (IDE ekranı), sohbet
@@ -2084,6 +2138,22 @@ async function documentToTextAsync(media) {
 
 /* ---------- WA hatırlatıcı ---------- */
 
+/* Hatırlatma job'ı mı? Yeni kayıtlarda kind='reminder' var; eski (bayat)
+   kayıtlar isim/prompt önekinden tanınır — /autodel ve doğal dil silme
+   bunu kullanır. */
+function isReminderJob(j) {
+  if (!j || typeof j !== 'object') return false;
+  if (j.kind === 'reminder') return true;
+  const n = String(j.name || '');
+  const p = String(j.prompt || '');
+  return (
+    /^Hatırlatma:/.test(n) ||
+    /^Tekrarlı hatırlatma:/.test(n) ||
+    p.startsWith('[HATIRLATMA ZAMANI]') ||
+    p.startsWith('[TEKRARLI HATIRLATMA]')
+  );
+}
+
 function scheduleReminder({ when, message, sessionId, repeat }) {
   try {
     const msg = String(message || '').trim();
@@ -2097,6 +2167,7 @@ function scheduleReminder({ when, message, sessionId, repeat }) {
         name: 'Tekrarlı hatırlatma: ' + msg.slice(0, 40),
         schedule: s.schedule,
         prompt: `[TEKRARLI HATIRLATMA] Kullanıcıya şunu hatırlat: "${msg}". Kısaca ve nazikçe bildir.`,
+        kind: 'reminder',
         sessionId: sessionId || undefined,
       });
       if (!r.ok) return r;
@@ -2111,6 +2182,7 @@ function scheduleReminder({ when, message, sessionId, repeat }) {
       name: 'Hatırlatma: ' + msg.slice(0, 40),
       schedule: cronExpr,
       prompt: `[HATIRLATMA ZAMANI] Kullanıcıya şunu hatırlat: "${msg}". Kısaca ve nazikçe bildir.`,
+      kind: 'reminder',
       once: true,
       sessionId: sessionId || undefined,
     });
@@ -2287,6 +2359,23 @@ async function handleWaIncoming(jid, payload, senderNum) {
         r.ok
           ? `*Tüm cron görevleri silindi* (${r.count} adet). Zamanlayıcı durduruldu.`
           : 'Cron temizlenemedi.'
+      ).catch(() => {});
+      return;
+    }
+
+    /* "hatırlatmaları sil" / "alarm temizle" / "reminders kaldır" → yalnızca
+       otomatik hatırlatmalar silinir (cron görevlerine dokunulmaz). */
+    if (
+      /hat[iı]rlat|alarm|remind/.test(lc) &&
+      /(sil|sıl|temizle|kaldır|iptal|sıfırla|kapat)/.test(lc)
+    ) {
+      const r = cron.removeIf(isReminderJob);
+      cronEmit();
+      await sendWaSafe(
+        jid,
+        r.count
+          ? `*${r.count} otomatik hatırlatma silindi.* Zamanlanmış kalan görev: ${cron.list().filter((j) => j.enabled).length}`
+          : 'Silinecek otomatik hatırlatma yok — zaten temiz.'
       ).catch(() => {});
       return;
     }
@@ -3307,11 +3396,11 @@ function reloadBackend() {
       }
       /* CRON → TÜM AKTİF ENTEGRASYONLAR: cron işi bittiğinde cevap (ya da
          hata) sahibin bağlı olduğu her kanala yansıtılır — WA + Telegram +
-         Discord. Aynı kanal hem cron oturumuna bağlıysa TEK cevap alır. */
-      if ((ev.type === 'done' || ev.type === 'error') && cronAnswerPending.has(String(ev.sessionId))) {
-        const cjob = cronAnswerPending.get(String(ev.sessionId));
-        cronAnswerPending.delete(String(ev.sessionId));
-        if (!ev.aborted) {
+         Discord. Aynı kanal hem cron oturumuna bağlıysa TEK cevap alır.
+         Bayat (TTL aşımı) bekleme kaydı Take ile düşer, yansıtılmaz. */
+      if (ev.type === 'done' || ev.type === 'error') {
+        const cjob = cronAnswerPendingTake(ev.sessionId);
+        if (cjob && !ev.aborted) {
           (async () => {
             try {
               let txt = '';
@@ -6519,8 +6608,40 @@ function cronEmit() {
 
 /* Cron cevabı bekleme haritası: sid -> job. İş 'done' olunca cevap
    SAHİBİN bağlı olduğu TÜM AKTİF entegrasyonlara yansıtılır (kullanıcı
-   hangi kanaldan ajanla iletişimde belli değil). */
+   hangi kanaldan ajanla iletişimde belli değil). Kayıtlar TTL'li —
+   done/error hiç gelmezse bayat bekleme sonraki done'a yansıtılmaz. */
 const cronAnswerPending = new Map();
+const cronAnswerPendingAt = new Map();
+const CRON_ANSWER_TTL_MS = 30 * 60 * 1000;
+
+function cronAnswerPendingSet(sid, job) {
+  cronAnswerPendingSweep();
+  cronAnswerPending.set(String(sid), job);
+  cronAnswerPendingAt.set(String(sid), Date.now());
+}
+
+function cronAnswerPendingDrop(sid) {
+  cronAnswerPending.delete(String(sid));
+  cronAnswerPendingAt.delete(String(sid));
+}
+
+/* Bayat kayıt (TTL aşımı) haritalardan temizlenir */
+function cronAnswerPendingSweep() {
+  const now = Date.now();
+  for (const [k, at] of cronAnswerPendingAt) {
+    if (now - at > CRON_ANSWER_TTL_MS) cronAnswerPendingDrop(k);
+  }
+}
+
+/* Kaydı okuyup düşürür; bayat kayıt ise null döner (yansıtma yok) */
+function cronAnswerPendingTake(sid) {
+  const k = String(sid);
+  const job = cronAnswerPending.get(k);
+  const at = cronAnswerPendingAt.get(k) || 0;
+  cronAnswerPendingDrop(k);
+  if (!job || Date.now() - at > CRON_ANSWER_TTL_MS) return null;
+  return job;
+}
 
 /* OTOMATİK YENİ SOHBET YOK: cron/izleyici/fallout tetiklendiğinde oturum
    seçimi — kayıtlı id'nin DOSYASI hâlâ duruyorsa O, değilse EN GÜNCEL
@@ -6600,11 +6721,11 @@ function cronFire(job) {
     if (sid !== String(job.sessionId || '')) {
       cron.update(job.id, { sessionId: sid });
     }
-    cronAnswerPending.set(String(sid), job);
+    cronAnswerPendingSet(sid, job);
     const sent = engine.send(sid, {
       text: `[cron: ${job.name}]\n${job.prompt}`,
     });
-    if (!sent) cronAnswerPending.delete(String(sid)); // gönderilemedi — bayat bekleme bırakma
+    if (!sent) cronAnswerPendingDrop(sid); // gönderilemedi — bayat bekleme bırakma
   } catch {}
   cronEmit();
 }
@@ -7124,6 +7245,9 @@ ipcMain.handle('watchers:toggle', (_e, id) => {
   watchers.patch(String(id), { enabled: !w.enabled });
   return { ok: true, watcher: watchers.get(String(id)) };
 });
+/* izleyici logları — ana depodan ayrı watcher-logs.json üzerinden */
+ipcMain.handle('watchers:logs', () => watchers.logsAll());
+ipcMain.handle('watchers:logsClear', (_e, id) => watchers.logClear(id ? String(id) : null));
 ipcMain.handle('cron:add', (_e, job) => {
   const r = cron.add(job || {});
   cronEmit();

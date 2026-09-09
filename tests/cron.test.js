@@ -93,3 +93,36 @@ test('reminderSchedule: doğrudan cron kabul, bozuk ve bilinmeyen reddedilir', (
   assert.equal(cron.reminderSchedule('zaman değil', 'daily').ok, false);
   assert.equal(cron.reminderSchedule(null, '61 * * * *').ok, false);
 });
+
+/* ---------- reconcile: bayat tek-seferlik hatırlatma temizliği ---------- */
+
+test('reconcile: bayat once job düşer (gelecek yıla kurulmaz), grace içindeki gecikmeli fire edilir', () => {
+  const now = new Date(2026, 8, 9, 12, 0, 0).getTime(); // 2026-09-09 12:00
+  const stale = { id: 's1', name: 'Hatırlatma: eski', schedule: '0 9 1 1 *', prompt: 'p', once: true, enabled: true, nextRunAt: new Date(2026, 0, 1, 9, 0).getTime() };
+  const late = { id: 's2', name: 'Hatırlatma: yeni', schedule: '0 9 9 9 *', prompt: 'p', once: true, enabled: true, nextRunAt: new Date(2026, 8, 9, 11, 30).getTime() }; // 30 dk önce
+  const future = { id: 's3', name: 'Hatırlatma: gelecek', schedule: '0 9 10 9 *', prompt: 'p', once: true, enabled: true, nextRunAt: now + 3600000 };
+  const repeating = { id: 'r1', name: 'görev', schedule: '0 9 * * *', prompt: 'p', once: false, enabled: true, nextRunAt: new Date(2026, 8, 8, 9, 0).getTime() }; // dün
+  const disabled = { id: 'd1', name: 'kapalı', schedule: '0 9 * * *', prompt: 'p', once: false, enabled: false, nextRunAt: null };
+
+  const r = cron.reconcile([stale, late, future, repeating, disabled], now, cron.ONCE_GRACE_MS);
+  const ids = r.jobs.map((j) => j.id);
+  assert.equal(ids.includes('s1'), false); // bayat: sessizce silindi
+  assert.equal(ids.includes('s2'), false); // grace içinde: fire listesinde
+  assert.equal(ids.includes('s3'), true);  // gelecek: korundu
+  assert.equal(ids.includes('d1'), true);  // kapalı: korundu
+  assert.equal(ids.includes('r1'), true);  // tekrarlı: korundu
+  const rep = r.jobs.find((j) => j.id === 'r1');
+  assert.ok(rep.nextRunAt > now); // sonraki çalışma yeniden hesaplandı
+  assert.deepEqual(r.fire.map((j) => j.id), ['s2']);
+});
+
+test('removeIf: koşula uyan görevleri toplu siler, kind alanı saklanır', () => {
+  const a = cron.add({ name: 'Hatırlatma: çay', schedule: '0 9 * * *', prompt: '[HATIRLATMA ZAMANI] çay iç', kind: 'reminder' });
+  assert.equal(a.ok, true);
+  assert.equal(a.job.kind, 'reminder');
+  cron.add({ name: 'rapor', schedule: '0 18 * * 1-5', prompt: 'rapor hazırla' });
+  const r = cron.removeIf((j) => j.kind === 'reminder');
+  assert.equal(r.count, 1);
+  assert.equal(cron.list().some((j) => j.name === 'rapor'), true);
+  assert.equal(cron.list().some((j) => j.kind === 'reminder'), false);
+});

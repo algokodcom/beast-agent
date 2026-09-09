@@ -228,10 +228,10 @@ test('agent_dm: koşan ajanlara DM gider, kayıt kalıcı listeye düşer', asyn
   const r = JSON.parse(await eng._execTool('agent_dm', { to: 'GOLD', message: 'fiyat 2400 üstünde, dikkat' }, null, 'a2'));
   assert.equal(r.ok, true);
   assert.equal(r.to, 'a1');
-  const dms = eng.agentDmsList();
-  assert.equal(dms.length, 1);
-  assert.equal(dms[0].fromTitle, 'Beast Finance · Trader');
-  assert.equal(dms[0].toTitle, 'Finance · GOLD');
+  const list = eng.agentDmsList();
+  assert.equal(list.dms.length, 1);
+  assert.equal(list.dms[0].fromTitle, 'Beast Finance · Trader');
+  assert.equal(list.dms[0].toTitle, 'Finance · GOLD');
   /* kendine DM reddedilir */
   const self = JSON.parse(await eng._execTool('agent_dm', { to: 'a2', message: 'selam' }, null, 'a2'));
   assert.equal(self.ok, false);
@@ -240,7 +240,45 @@ test('agent_dm: koşan ajanlara DM gider, kayıt kalıcı listeye düşer', asyn
   assert.equal(noHit.ok, false);
   /* temizleme */
   eng.agentDmsClear();
-  assert.equal(eng.agentDmsList().length, 0);
+});
+
+test('agent_dm: grup sohbeti kurulur, tüm üyelere düşer, iş bitince kapanır', async () => {
+  const eng = makeEngine();
+  eng.flushPendingReports = () => {};
+  eng._bgJobs.set('a1', { id: 'a1', code: 'AAA', title: 'Finance · GOLD', status: 'running', continuous: true });
+  eng._bgJobs.set('a2', { id: 'a2', code: 'BBB', title: 'Beast Finance · Trader', status: 'running', continuous: true });
+  eng._bgJobs.set('a3', { id: 'a3', code: 'CCC', title: 'Kod İşçisi', status: 'running' });
+  /* Trader grubu kurar: hedef GOLD — üye olur, mesaj a3'e düşmez */
+  const g1 = JSON.parse(await eng._execTool('agent_dm', { to: 'GOLD', group: 'ALTIN EKİP', message: 'GOLD 2400 üstü — ortak karar: bekleyelim mi?' }, null, 'a2'));
+  assert.equal(g1.ok, true);
+  assert.equal(g1.group, 'ALTIN EKİP');
+  assert.ok(Array.isArray(g1.members) && g1.members.length === 2);
+  let list = eng.agentDmsList();
+  assert.equal(list.dms.length, 1);
+  assert.equal(list.dms[0].group, 'grp:altin ekip');
+  assert.equal(list.groups.length, 1);
+  assert.equal(list.groups[0].members.length, 2);
+  /* GOLD aynı gruba cevap: grup yeniden kullanılır, üye sayısı sabit */
+  const g2 = JSON.parse(await eng._execTool('agent_dm', { group: 'Altın Ekip', to: 'Trader', message: 'katılıyorum, 2400 support olsun' }, null, 'a1'));
+  assert.equal(g2.ok, true);
+  list = eng.agentDmsList();
+  assert.equal(list.groups.length, 1);
+  assert.equal(list.groups[0].members.length, 2);
+  assert.equal(list.dms.length, 2);
+  /* to'suz grup mesajı: mevcut gruba herkese düşer */
+  const g3 = JSON.parse(await eng._execTool('agent_dm', { group: 'ALTIN EKİP', message: 'son durum: SL güncellendi' }, null, 'a2'));
+  assert.equal(g3.ok, true);
+  /* a2'nin işi bitti → 1:1 DM'leri kapanır ama grupta a1 hâlâ koşuyor → grup AÇIK kalır */
+  eng._bgJobs.get('a2').status = 'done';
+  eng._agentDmClose('a2');
+  list = eng.agentDmsList();
+  assert.equal(list.groups[0].closed, false);
+  eng._bgJobs.get('a1').status = 'done';
+  eng._agentDmClose('a1');
+  list = eng.agentDmsList();
+  assert.equal(list.groups[0].closed, true);
+  /* temizleme */
+  eng.agentDmsClear();
 });
 
 /* ---------- payload builder ---------- */

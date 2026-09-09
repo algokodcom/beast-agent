@@ -364,9 +364,17 @@ class Engine {
        (AJAN DM paneli buradan beslenir; restart sonrası da durur) */
     this._agentDms = [];
     this._agentDmsFile = path.join(this.sessionsDir, 'agent-dms.json');
+    /* AJAN DM GRUPLARI: ajanların agent_dm ile kurduğu grup sohbetleri
+       (id → {id,title,members,titles,createdAt,closed,closedAt}) */
+    this._agentGroups = new Map();
     try {
       const raw = JSON.parse(fs.readFileSync(this._agentDmsFile, 'utf8'));
       this._agentDms = Array.isArray(raw.dms) ? raw.dms : [];
+      if (raw.groups && typeof raw.groups === 'object') {
+        for (const g of Object.values(raw.groups)) {
+          if (g && g.id && g.title) this._agentGroups.set(String(g.id), g);
+        }
+      }
     } catch {
       this._agentDms = [];
     }
@@ -1874,7 +1882,7 @@ class Engine {
       modeBlock2 + '\n' +
       'MT5 ARAÇLARI: mt5_status (bağlantı), mt5_account (hesap), mt5_market (canlı fiyat), mt5_positions (açık pozisyonlar), mt5_orders (bekleyen emirler), mt5_history (kapanan işlemler), mt5_trade (piyasa emri), mt5_close (kapat), mt5_modify (SL/TP), mt5_pending (bekleyen emir), mt5_cancel (emir iptal).\n' +
       'VERİ AKIŞI (her değerlendirmede): mt5_account + mt5_positions + mt5_market çağrılarını AYNI turda PARALEL ver; gerekiyorsa mt5_history ile son işlemleri gör.\n' +
-      'PARALEL + KOORDİNASYON: uzun araştırma/işleri run_background ile paralel finance işçisine devret (parent finance olduğu için işçi mt5 okuma araçlarını görür); koşan ajanlarla konuşmak için agent_dm (to: ajan başlığındaki anahtar kelime, örn "GOLD").\n' +
+      'PARALEL + KOORDİNASYON: uzun araştırma/işleri run_background ile paralel finance işçisine devret (parent finance olduğu için işçi mt5 okuma araçlarını görür); koşan ajanlarla konuşmak için agent_dm (to: ajan başlığındaki anahtar kelime, örn "GOLD"; ortak karar için group: "İSİM" ile grup sohbeti kur — mesaj tüm üyelere düşer). Görevin bitince DM/grup sohbetleri otomatik KAPANIR (geçmiş panelde kalır).\n' +
       (symbols ? `İZLEME LİSTESİ: ${symbols}\n` : '') +
       (lim.maxLot ? `LİMİTLER: max lot ${lim.maxLot}` + (lim.maxPositions ? ` · max eşzamanlı pozisyon ${lim.maxPositions}` : '') + ' — bunları aşıp araç kullanma; sistem zaten reddeder.\n' : '') +
       'RİSK DİSİPLİNİ:\n' +
@@ -3181,6 +3189,8 @@ class Engine {
       }
       /* #17 öz-kurtarma hakları tükendi → owner'a anlık altyapı uyarısı */
       this._notifyOwnerTaskFailed(job, msg);
+      /* AJAN DM: işi kesin bitti — ajanın DM/grup sohbetleri kapanır */
+      try { this._agentDmClose(sid); } catch {}
       if (grouped) {
         /* #18 hatalı üye de gruba yazılır — birleşik raporda görünecek */
         this._bgGroupRecord(job.title, 'error', 'HATA: ' + msg.slice(0, 300));
@@ -3204,6 +3214,11 @@ class Engine {
         this._pendingReports.push({ parentId: job.parentId, text });
         this.flushPendingReports(job.parentId);
       }
+      /* AJAN DM: işi bitti (kullanıcı iptali dahil) — sohbetler kapanır */
+      try { this._agentDmClose(sid); } catch {}
+    } else if (status === 'done') {
+      /* AJAN DM: görev tamamlandı — ajanın DM/grup sohbetleri kapanır */
+      try { this._agentDmClose(sid); } catch {}
     }
   }
 
@@ -3464,7 +3479,7 @@ class Engine {
       `- Bağımsız araç çağrılarını aynı turda PARALEL ver.\n` +
       `- PDF gerekirse pip\u2019ten paket kurma (Türkçe bozar); Node\u2019un kurulu \`pdf-lib\`+fontkit\u2019iyle .js script yazıp \`node\` ile çalıştır. md→pdf çevirme: belge çıktısını doğrudan PDF olarak üret.\n` +
       `- ARAŞTIRMA SINIRI: 3-5 kaynak yeter; süre hedefi ~3 dakika. 2-3 denemede bulunamayan bilgiyi BIRAK — bulabildiğin kısmi sonucu raporla ve neyi bulamadığını yaz. Kapalı/gizli içerik peşinde koşma.\n` +
-      `AJAN KOORDİNASYONU: diğer koşan ajanlarla (paralel işler, finance ajanları) konuşman gerekiyorsa agent_dm aracını kullan — to: hedefin başlığındaki anahtar kelime (örn "GOLD", "Trader"), message: 1-3 cümlelik net mesaj. Senden istenen görevde başka bir ajanın zaten yaptığın işe ihtiyacı varsa DM ile haber ver.\n` +
+      `AJAN KOORDİNASYONU: diğer koşan ajanlarla (paralel işler, finance ajanları) konuşman gerekiyorsa agent_dm aracını kullan — to: hedefin başlığındaki anahtar kelime (örn "GOLD", "Trader"), message: 1-3 cümlelik net mesaj. Senden istenen görevde başka bir ajanın zaten yaptığın işe ihtiyacı varsa DM ile haber ver. Birden fazla ajanla ORTAK KARAR almanız gerekiyorsa group: "İSİM" vererek grup sohbeti kur — mesajın tüm üyelere düşer, cevaplar aynı gruba gelir. Görevin bitince DM/grup sohbetleri otomatik KAPANIR (geçmiş panelde kalır).\n` +
       FORMAT_RULES + '\n' +
       `SON ÇIKTI: 3-5 satırlık net sonuç raporu, madde madde. Soru sorma, sohbet etme.`
     );
@@ -5377,15 +5392,16 @@ const AGENT_DM_DEF = {
   function: {
     name: 'agent_dm',
     description:
-      'Send a short DM to another running agent (parallel agents / finance agents) to coordinate: share findings, ask status, warn about risk, hand off work. `to` = target session id OR a keyword from the agent title (e.g. "GOLD", "Trader"). `topic` = short subject label — replies to the same topic stay in the SAME conversation thread, so ALWAYS reuse the topic you were DMed with when replying.',
+      'Send a short DM to another running agent (parallel agents / finance agents) to coordinate: share findings, ask status, warn about risk, hand off work, and MAKE JOINT DECISIONS. `to` = target session id OR a keyword from the agent title (e.g. "GOLD", "Trader"). `topic` = short subject label — replies to the same topic stay in the SAME conversation thread, so ALWAYS reuse the topic you were DMed with when replying. `group` = optional group-chat name (e.g. "GOLD EKIP"): creates or reuses a group conversation, adds the target agent as a member, and your message is delivered to EVERY member — use groups when a decision needs multiple agents.',
     parameters: {
       type: 'object',
       properties: {
         to: { type: 'string', description: 'Target agent session id or a title keyword' },
         topic: { type: 'string', description: 'Short subject label for the conversation thread, e.g. "GOLD pozisyon riski"' },
         message: { type: 'string', description: 'Short message (1-3 sentences)' },
+        group: { type: 'string', description: 'Optional group-chat name — send to ALL members of that group (creates it on first use, adds the target agent)' },
       },
-      required: ['to', 'message'],
+      required: ['message'],
     },
   },
 };
@@ -6180,89 +6196,142 @@ Engine.prototype._agentDmSend = function (fromSid, args) {
     const to = String((args && args.to) || '').trim();
     const text = String((args && args.message) || '').trim().slice(0, 1200);
     if (!text) return { ok: false, error: 'mesaj boş' };
+    const groupName = String((args && args.group) || '').replace(/\s+/g, ' ').trim().slice(0, 40);
     const jobs = this._bgJobs || new Map();
-    let target = jobs.has(to) ? to : '';
-    if (!target) {
-      const q = to.toLowerCase();
-      for (const [sid, j] of jobs) {
-        if (sid === String(fromSid)) continue;
-        if (j && j.title && String(j.title).toLowerCase().includes(q)) {
-          target = sid;
-          break;
-        }
-      }
-    }
-    /* ANA OTURUM FALLBACK: chat oturumları this.cache'te yaşar (_bgJobs dışında).
-       Finance trader → ana Beast DM zinciri böyle kapanır: ajan sahibine
-       (ana sohbete) DM ile rapor verebilir. Eşleşme: bgTitle / title / kod. */
-    if (!target) {
-      const q = to.toLowerCase();
-      for (const [sid, s] of this.cache) {
-        if (sid === String(fromSid)) continue;
-        if (!s || s.bgJob || s.isBotDm) continue;
-        if (s.botId && s.botId !== 'beast') continue;
-        const hay = [s.bgTitle, s.title, s.code].map((x) => String(x || '').toLowerCase());
-        if (hay.some((x) => x && x.includes(q))) {
-          target = sid;
-          break;
-        }
-      }
-    }
-    if (String(target) === String(fromSid)) return { ok: false, error: 'kendine DM atılamaz' };
     const fromJob = jobs.get(String(fromSid));
-    const toJob = jobs.get(target);
-    const targetIsAgent = jobs.has(target);
-    const mainChatSess = targetIsAgent ? null : this.cache.get(String(target)) || null;
-    const targetIsMainChat = !!(
-      mainChatSess &&
-      !mainChatSess.bgJob &&
-      !mainChatSess.isBotDm &&
-      (!mainChatSess.botId || mainChatSess.botId === 'beast')
-    );
-    if (!targetIsAgent && !targetIsMainChat) {
-      const titles = [...jobs.values()]
-        .filter((j) => j && j.status === 'running' && j.title)
-        .map((j) => j.title)
-        .slice(0, 8);
-      return {
-        ok: false,
-        error: 'hedef ajan bulunamadı: "' + to + '"' + (titles.length ? ' — koşan ajanlar: ' + titles.join(', ') : ''),
-      };
-    }
-    /* TÜM ajanlar birbiriyle iletişim kurabilir — sınırsız DM (yalnız kendine
-       DM atanamaz). Finance ajanları da dahil herkes herkesle konuşur. */
-    /* konu etiketi: aynı konudaki DM'ler panelde AYNI oturumda toplanır */
-    const topic = String((args && args.topic) || '').replace(/\s+/g, ' ').trim().slice(0, 60) || '(genel)';
+    /* gönderici koşan ajan değilse (düz chat oturumu) cache'ten oturum bilgisi */
+    const fromSess = fromJob ? null : this.cache.get(String(fromSid)) || null;
     const fromTitle =
       fromJob && fromJob.title
         ? String(fromJob.title)
         : fromSess
-          ? 'Beast · ' + String(fromSess.code || '')
+          ? 'Beast · ' + String(fromSess.bgTitle || fromSess.title || fromSess.code || '')
           : 'Ajan';
-    const toTitle = targetIsAgent
-      ? String((toJob && toJob.title) || 'Ajan')
-      : String((mainChatSess && (mainChatSess.bgTitle || mainChatSess.title)) || 'Beast');
-    const dm = {
-      at: new Date().toISOString(),
-      from: String(fromSid),
-      fromTitle,
-      to: String(target),
-      toTitle,
-      topic,
-      text,
-    };
-    this._agentDms = this._agentDms || [];
-    this._agentDms.push(dm);
-    if (this._agentDms.length > 400) this._agentDms.splice(0, this._agentDms.length - 400);
-    try {
-      fs.writeFileSync(this._agentDmsFile, JSON.stringify({ dms: this._agentDms }, null, 2));
-    } catch {}
+    /* hedef çöz: oturum id YA DA başlık anahtar kelimesi (koşan ajanlar +
+       ANA OTURUM FALLBACK: chat oturumları this.cache'te yaşar — finance
+       trader → ana Beast DM zinciri böyle kapanır). */
+    let target = '';
+    if (to) {
+      target = jobs.has(to) ? to : '';
+      if (!target) {
+        const q = to.toLowerCase();
+        for (const [sid, j] of jobs) {
+          if (sid === String(fromSid)) continue;
+          if (j && j.title && String(j.title).toLowerCase().includes(q)) {
+            target = sid;
+            break;
+          }
+        }
+      }
+      if (!target) {
+        const q = to.toLowerCase();
+        for (const [sid, s] of this.cache) {
+          if (sid === String(fromSid)) continue;
+          if (!s || s.bgJob || s.isBotDm) continue;
+          if (s.botId && s.botId !== 'beast') continue;
+          const hay = [s.bgTitle, s.title, s.code].map((x) => String(x || '').toLowerCase());
+          if (hay.some((x) => x && x.includes(q))) {
+            target = sid;
+            break;
+          }
+        }
+      }
+      if (String(target) === String(fromSid)) return { ok: false, error: 'kendine DM atılamaz' };
+      if (!target) {
+        const titles = [...jobs.values()]
+          .filter((j) => j && j.status === 'running' && j.title)
+          .map((j) => j.title)
+          .slice(0, 8);
+        return {
+          ok: false,
+          error: 'hedef ajan bulunamadı: "' + to + '"' + (titles.length ? ' — koşan ajanlar: ' + titles.join(', ') : ''),
+        };
+      }
+    } else if (!groupName) {
+      return { ok: false, error: 'to (hedef ajan) ya da group (grup adı) gerekli' };
+    }
+    const toJob = target ? jobs.get(target) : null;
+    const mainChatSess = target && !toJob ? this.cache.get(String(target)) || null : null;
+    const toTitle = target
+      ? toJob
+        ? String((toJob && toJob.title) || 'Ajan')
+        : String((mainChatSess && (mainChatSess.bgTitle || mainChatSess.title)) || 'Beast')
+      : '';
+    /* konu etiketi: aynı konudaki DM'ler panelde AYNI oturumda toplanır */
+    const topic = String((args && args.topic) || '').replace(/\s+/g, ' ').trim().slice(0, 60) || '(genel)';
+    const at = new Date().toISOString();
+
+    /* GRUP SOHBETİ: kur/yeniden kullan, hedefi üye yap, mesaj HER ÜYEYE düşer.
+       Ajanlar ortak kararları burada tartışır; iş bitince sohbet kapanır. */
+    if (groupName) {
+      /* gid Türkçe-kararsız normalize: ALTIN/Altın/altın aynı grup */
+      const gid =
+        'grp:' +
+        groupName
+          .toLowerCase()
+          .replace(/\u0307/g, '')
+          .replace(/ı/g, 'i')
+          .replace(/ğ/g, 'g')
+          .replace(/ü/g, 'u')
+          .replace(/ş/g, 's')
+          .replace(/ö/g, 'o')
+          .replace(/ç/g, 'c');
+      let g = this._agentGroups.get(gid);
+      if (!g) {
+        if (!target) return { ok: false, error: 'yeni grup için to ile en az bir ajan belirt' };
+        g = { id: gid, title: groupName, members: [], titles: {}, createdAt: at, closed: false };
+        this._agentGroups.set(gid, g);
+      }
+      g.titles = g.titles || {};
+      const addMember = (sid, title) => {
+        sid = String(sid);
+        if (!g.members.includes(sid)) g.members.push(sid);
+        if (title) g.titles[sid] = title;
+      };
+      addMember(fromSid, fromTitle);
+      if (target) addMember(target, toTitle);
+      g.closed = false; /* yeni mesaj → sohbet yeniden aktif */
+      delete g.closedAt;
+      const dm = {
+        at,
+        from: String(fromSid),
+        fromTitle,
+        to: target || '',
+        toTitle: target ? toTitle : 'grup',
+        group: gid,
+        groupTitle: g.title,
+        topic,
+        text,
+      };
+      this._pushAgentDm(dm);
+      for (const m of g.members) {
+        if (m === String(fromSid) || !jobs.has(m)) continue;
+        emitSafe(this, m, { type: 'agent-dm', ...dm });
+        (this._pendingReports = this._pendingReports || []).push({
+          parentId: m,
+          text:
+            `[AJAN DM (grup: "${g.title}") — ${dm.fromTitle} · konu: "${topic}"]\n${text}\n` +
+            `(Cevabını agent_dm aracıyla ver — group: "${g.title}", to: "${dm.fromTitle}", topic: "${topic}")`,
+        });
+        this.flushPendingReports(m);
+      }
+      this._persistAgentDms();
+      return {
+        ok: true,
+        group: g.title,
+        members: g.members.map((m) => g.titles[m] || m),
+        ...(target ? { to: target, toTitle } : {}),
+        topic,
+      };
+    }
+
+    /* BİREYSEL DM — DÜZ CHAT OTURUMUNA (sahibin sohbet geçmişi) ENJEKTE
+       ETMEYİZ: DM trafik yalnız AJAN DM konsolunda görünür. */
+    const dm = { at, from: String(fromSid), fromTitle, to: String(target), toTitle, topic, text };
+    this._pushAgentDm(dm);
+    this._persistAgentDms();
     emitSafe(this, target, { type: 'agent-dm', ...dm });
-    /* teslim: hedef AJANSA (arka plan işi / finance ajanı) mesaj olarak düşer —
-       meşgulse pending kuyruğunda bekler, done olunca görünür.
-       DÜZ CHAT OTURUMUNA (sahibin sohbet geçmişi) ENJEKTE ETMEYİZ — DM trafik
-       yalnız AJAN DM konsolunda görünür, senin sohbetlerin karışmaz. */
-    if (targetIsAgent) {
+    if (jobs.has(target)) {
       (this._pendingReports = this._pendingReports || []).push({
         parentId: target,
         text:
@@ -6277,12 +6346,60 @@ Engine.prototype._agentDmSend = function (fromSid, args) {
   }
 };
 
+Engine.prototype._pushAgentDm = function (dm) {
+  this._agentDms = this._agentDms || [];
+  this._agentDms.push(dm);
+  if (this._agentDms.length > 600) this._agentDms.splice(0, this._agentDms.length - 600);
+};
+
+Engine.prototype._persistAgentDms = function () {
+  try {
+    const groups = {};
+    for (const [, g] of this._agentGroups || new Map()) groups[g.id] = g;
+    fs.writeFileSync(this._agentDmsFile, JSON.stringify({ dms: this._agentDms, groups }, null, 2));
+  } catch {}
+};
+
+/* AJAN İŞİ BİTİNCE: o ajanın bireysel DM'leri kapanır; üyesi olduğu
+   gruplarda DİĞER koşan ajan kalmadıysa grup sohbeti de kapanır.
+   Geçmiş panelde GÖRÜNMEYE DEVAM EDER (silinmez, "Geçmiş" bölümüne düşer). */
+Engine.prototype._agentDmClose = function (sid) {
+  sid = String(sid);
+  const now = new Date().toISOString();
+  let changed = false;
+  for (const dm of this._agentDms || []) {
+    if (dm.closed || dm.group) continue;
+    if (String(dm.from) === sid || String(dm.to) === sid) {
+      dm.closed = true;
+      dm.closedAt = now;
+      changed = true;
+    }
+  }
+  const jobs = this._bgJobs || new Map();
+  for (const [, g] of this._agentGroups || new Map()) {
+    if (g.closed || !(g.members || []).includes(sid)) continue;
+    const anyRunning = g.members.some((m) => {
+      const j = jobs.get(m);
+      return j && j.status === 'running';
+    });
+    if (!anyRunning) {
+      g.closed = true;
+      g.closedAt = now;
+      changed = true;
+    }
+  }
+  if (changed) this._persistAgentDms();
+};
+
 Engine.prototype.agentDmsList = function () {
-  return [...(this._agentDms || [])].slice(-200);
+  const groups = [];
+  for (const [, g] of this._agentGroups || new Map()) groups.push(g);
+  return { dms: [...(this._agentDms || [])].slice(-600), groups };
 };
 
 Engine.prototype.agentDmsClear = function () {
   this._agentDms = [];
+  this._agentGroups = new Map();
   try { fs.rmSync(this._agentDmsFile, { force: true }); } catch {}
   return { ok: true };
 };

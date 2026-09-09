@@ -8764,6 +8764,15 @@ ipcMain.handle('finance:mode', async (_e, payload) => {
       }
     } catch {}
   }
+  if (financeState.mode) {
+    /* OTOMATİK TRADER: finance modu açılır açılmaz trader botu devreye girer
+       (best-effort — model/köprü yoksa sessizce atlanır, log'a düşer) */
+    financeTraderStart()
+      .then((r) => {
+        if (!r || !r.ok) financeLog('[trader] otomatik başlatılamadı: ' + ((r && r.error) || 'bilinmeyen'));
+      })
+      .catch(() => {});
+  }
   return { ok: true, mode: financeState.mode, needNew };
 });
 
@@ -8814,7 +8823,9 @@ ipcMain.handle('finance:settings', async (_e, patch) => {
   return { ok: true, cfg: f };
 });
 
-ipcMain.handle('finance:trader:start', async () => {
+/* Trader botu başlat: ANA trader varsa sürdür, yoksa yeni sürekli ajan aç.
+   finance:trader:start'tan VE finance modu AÇILDIĞINDAN otomatik çağrılır. */
+async function financeTraderStart() {
   if (!engine) return { ok: false, error: 'ajan hazır değil' };
   const f = finCfg();
   if (!engine.publicState().hasModel && !f.traderSel) return { ok: false, error: 'model yok — Ayarlar → Provider' };
@@ -8827,6 +8838,11 @@ ipcMain.handle('finance:trader:start', async () => {
       mainAgent = a;
       break;
     }
+  }
+  /* zaten koşuyorsa yeniden brief düşürme — sessizce onayla */
+  if (mainSid && financeState.traderOn) {
+    const mj = engine._bgJobs && engine._bgJobs.get(mainSid);
+    if (mj && mj.status === 'running') return { ok: true, sid: mainSid, already: true };
   }
   if (!mainSid) {
     const created = finAgentCreate([], true);
@@ -8845,7 +8861,9 @@ ipcMain.handle('finance:trader:start', async () => {
   financeLog('[trader] başlatıldı (model: ' + (f.traderSel || 'genel aktif model') + ')');
   finPush('trader', { state: 'running', round: mainAgent.round });
   return { ok: true, sid: mainSid };
-});
+}
+
+ipcMain.handle('finance:trader:start', () => financeTraderStart());
 
 ipcMain.handle('finance:trader:stop', async () => {
   financeState.traderOn = false;

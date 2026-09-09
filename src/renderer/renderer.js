@@ -5031,18 +5031,35 @@ async function loadRailChat(id) {
    açılır — gelen/giden hepsi kronolojik. Thread = ajan çifti + KONU. */
 
 const dmState = {
-  dms: [], // { at, from, fromTitle, to, toTitle, topic, text }
+  dms: [], // { at, from, fromTitle, to, toTitle, topic, text, group?, closed? }
+  groups: [], // { id, title, members, titles, createdAt, closed, closedAt }
   modalThread: null, // modalde açık oturum key'i (null = oturum listesi)
 };
 
+function dmGroupOf(id) {
+  return (dmState.groups || []).find((g) => String(g.id) === String(id)) || null;
+}
+
 function dmThreadOf(dm) {
+  if (dm.group) return 'G|' + String(dm.group);
   const a = String(dm.from || '');
   const b = String(dm.to || '');
   const pair = a < b ? a + '|' + b : b + '|' + a;
   return pair + '|' + String(dm.topic || '(genel)').toLowerCase();
 }
 
+function dmThreadClosed(msgs) {
+  const last = msgs[msgs.length - 1];
+  if (!last) return false;
+  if (last.group) {
+    const g = dmGroupOf(last.group);
+    return !!(g && g.closed);
+  }
+  return !!last.closed;
+}
+
 function dmThreadTitle(dm) {
+  if (dm.group) return '👥 ' + String(dm.groupTitle || 'Grup');
   const a = String(dm.fromTitle || 'Ajan');
   const b = String(dm.toTitle || 'Ajan');
   const pair = a < b ? a + ' ↔ ' + b : b + ' ↔ ' + a;
@@ -5069,13 +5086,60 @@ function dmTime(iso) {
 }
 
 function dmMsgHtml(m) {
+  const who = m.group
+    ? escapeHtml(String(m.fromTitle || 'Ajan'))
+    : `${escapeHtml(String(m.fromTitle || 'Ajan'))} → ${escapeHtml(String(m.toTitle || 'Ajan'))}`;
   return (
-    `<div class="dmt-msg"><span class="dm-who">${escapeHtml(String(m.fromTitle || 'Ajan'))} → ${escapeHtml(String(m.toTitle || 'Ajan'))}</span>` +
+    `<div class="dmt-msg"><span class="dm-who">${who}</span>` +
     `${escapeHtml(String(m.text || ''))}<span class="dm-at">${dmTime(m.at)}</span></div>`
   );
 }
 
+/* bir sohbet kartı (rail + modal ortak): AKTİF/GEÇMİŞ ayrımı için closed
+   bayrağı kartta işaretlenir */
+function dmThreadCard(key, msgs, onClick) {
+  const last = msgs[msgs.length - 1];
+  const closed = dmThreadClosed(msgs);
+  const el = document.createElement('div');
+  el.className = 'dmt' + (closed ? ' dmt-closed' : '');
+  let membersLine = '';
+  if (last.group) {
+    const g = dmGroupOf(last.group);
+    if (g && Array.isArray(g.members) && g.members.length) {
+      const names = g.members.map((m) => (g.titles && g.titles[m]) || m).slice(0, 4);
+      membersLine = `<div class="dmt-members">👥 ${escapeHtml(names.join(', '))}</div>`;
+    }
+  }
+  el.innerHTML =
+    '<div class="dmt-head">' +
+    `<span class="dmt-title">${escapeHtml(dmThreadTitle(last))}</span>` +
+    `<span class="dmt-count">${closed ? 'kapandı' : msgs.length}</span>` +
+    '</div>' +
+    membersLine +
+    `<div class="dmt-last">${escapeHtml(String(last.text || '').replace(/\s+/g, ' ').slice(0, 90))} · ${dmTime(last.at)}</div>`;
+  el.addEventListener('click', onClick);
+  return el;
+}
+
 /* --- sağ sütun: OTURUM LİSTESİ (rail gibi) --- */
+
+/* AKTİF/GEÇMİŞ ayrılmış sohbet listesi (rail + modal ortak) */
+function dmAppendThreadSections(list, onClickThread) {
+  const all = dmThreads();
+  const act = all.filter(([, msgs]) => !dmThreadClosed(msgs));
+  const past = all.filter(([, msgs]) => dmThreadClosed(msgs));
+  const sec = (label, items) => {
+    if (!items.length) return;
+    const h = document.createElement('div');
+    h.className = 'dm-sec';
+    h.textContent = label;
+    list.appendChild(h);
+    for (const [key, msgs] of items) list.appendChild(dmThreadCard(key, msgs, () => onClickThread(key)));
+  };
+  sec('● AKTİF', act);
+  sec('— GEÇMİŞ', past);
+  return all.length;
+}
 
 function renderDmRail() {
   const list = els.dmRailList;
@@ -5085,25 +5149,17 @@ function renderDmRail() {
     return;
   }
   list.innerHTML = '';
-  for (const [key, msgs] of dmThreads()) {
-    const last = msgs[msgs.length - 1];
-    const el = document.createElement('div');
-    el.className = 'dmt';
-    el.innerHTML =
-      '<div class="dmt-head">' +
-      `<span class="dmt-title">${escapeHtml(dmThreadTitle(last))}</span>` +
-      `<span class="dmt-count">${msgs.length}</span>` +
-      '</div>' +
-      `<div class="dmt-last">${escapeHtml(String(last.text || '').replace(/\s+/g, ' ').slice(0, 90))} · ${dmTime(last.at)}</div>`;
-    el.addEventListener('click', () => openDmModal(key)); // sohbet yalnız modalde
-    list.appendChild(el);
-  }
+  dmAppendThreadSections(list, (key) => openDmModal(key)); // sohbet yalnız modalde
 }
 
 async function refreshDmRail() {
   try {
-    const dms = await beast.agentDmsList();
-    if (Array.isArray(dms)) dmState.dms = dms;
+    const res = await beast.agentDmsList();
+    if (Array.isArray(res)) dmState.dms = res;
+    else {
+      dmState.dms = (res && res.dms) || [];
+      dmState.groups = (res && res.groups) || [];
+    }
   } catch {}
   renderDmRail();
   if (els.dmOverlay && !els.dmOverlay.hidden) renderDmModal();
@@ -5142,26 +5198,14 @@ function renderDmModal() {
     if (box) box.scrollTop = box.scrollHeight;
     return;
   }
-  /* OTURUM LİSTESİ */
-  if (els.dmDialogTitle) els.dmDialogTitle.textContent = 'AJAN DM — OTURUMLAR';
+  /* OTURUM LİSTESİ — AKTİF + GEÇMİŞ bölümleri */
+  if (els.dmDialogTitle) els.dmDialogTitle.textContent = 'AJAN DM — AKTİF & GEÇMİŞ';
   if (els.dmBackBtn) els.dmBackBtn.hidden = true;
   list.innerHTML = '';
-  for (const [key, msgs] of dmThreads()) {
-    const last = msgs[msgs.length - 1];
-    const el = document.createElement('div');
-    el.className = 'dmt';
-    el.innerHTML =
-      '<div class="dmt-head">' +
-      `<span class="dmt-title">${escapeHtml(dmThreadTitle(last))}</span>` +
-      `<span class="dmt-count">${msgs.length}</span>` +
-      '</div>' +
-      `<div class="dmt-last">${escapeHtml(String(last.text || '').replace(/\s+/g, ' ').slice(0, 120))} · ${dmTime(last.at)}</div>`;
-    el.addEventListener('click', () => {
-      dmState.modalThread = key;
-      renderDmModal();
-    });
-    list.appendChild(el);
-  }
+  dmAppendThreadSections(list, (key) => {
+    dmState.modalThread = key;
+    renderDmModal();
+  });
 }
 
 function openDmModal(threadKey) {

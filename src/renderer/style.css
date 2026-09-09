@@ -2157,6 +2157,18 @@ body.rail-hidden #dmRailHead { padding-right: 148px; }
   font-size: 11px; margin-top: 4px;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+/* AJAN DM: AKTİF/GEÇMİŞ bölüm başlıkları + kapalı sohbet görünümü */
+.dm-sec {
+  font-size: 10.5px; font-weight: 800; letter-spacing: 0.08em;
+  color: var(--muted);
+  padding: 8px 2px 4px;
+}
+.dmt.dmt-closed { opacity: 0.62; }
+.dmt.dmt-closed .dmt-count { background: var(--border); color: var(--muted); }
+.dmt-members {
+  font-size: 10.5px; color: var(--muted); margin-top: 3px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
 .dmt-msgs {
   display: none;
   margin-top: 6px;

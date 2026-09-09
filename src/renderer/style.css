@@ -110,15 +110,16 @@ body {
 }
 #newChat:hover { background: rgba(19, 19, 21, 0.14); }
 
-#sessList { flex: 1; overflow-y: auto; padding: 4px 8px; }
+#sessList { flex: 1 1 0; min-height: 0; overflow-y: auto; padding: 4px 8px; }
 
 /* ---------- İZLEYİCİLER paneli (sol kenar çubuğu — sohbet geçmişinin alt yarısı) ----------
-   Yalnız agent (chat) modunda görünür; IDE/Studio/Sandbox'ta sessList ile birlikte gizli. */
+   Yalnız agent (chat) modunda görünür; IDE/Studio/Sandbox'ta sessList ile birlikte gizli.
+   Sohbet geçmişi + izleyiciler + toollar EŞİT yer paylaşır (flex 1 1 0). */
 #watchPane {
   display: none;
   flex-direction: column;
-  height: 36%;
-  min-height: 120px;
+  flex: 1 1 0;
+  min-height: 110px;
   border-top: 1px solid var(--border);
   background: var(--panel);
 }
@@ -2187,6 +2188,66 @@ body.rail-hidden #dmRailHead { padding-right: 148px; }
   margin-top: 2px;
 }
 
+/* ---------- AJAN DM modalı (✉) ---------- */
+#dmOverlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  z-index: 300;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+#dmOverlay[hidden] { display: none; }
+#dmDialog {
+  width: min(680px, 92vw);
+  max-height: 86vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 14px 16px;
+  gap: 10px;
+}
+#dmDialogHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 1px;
+  color: var(--text);
+}
+#dmDialogHead button {
+  border: none;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 13px;
+  padding: 2px 6px;
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+}
+#dmDialogHead button:hover { color: var(--accent); background: var(--panel2); }
+#dmDialogHead .bot-bar-btns { display: flex; gap: 4px; }
+#dmDialogList {
+  flex: 1 1 auto;
+  min-height: 200px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+}
+.dm-hint {
+  flex: none;
+  font-size: 10px;
+  color: var(--muted);
+  text-align: center;
+  letter-spacing: 0.4px;
+}
+
 /* PİYASA satırındaki ▶ ajan butonu */
 .fin-sym { position: relative; }
 .fin-sym .fs-agent {
@@ -2275,10 +2336,11 @@ body.rail-hidden #dmRailHead { padding-right: 148px; }
   color: var(--muted);
 }
 
-/* ---------- sol panel: TOOLS konsolu (kişisel araçlar) ---------- */
+/* ---------- sol panel: TOOLS konsolu (kişisel araçlar) ----------
+   Sohbet geçmişi + izleyiciler + toollar EŞİT yer paylaşır (flex 1 1 0). */
 #toolBox {
-  flex: none;
-  max-height: 32%;
+  flex: 1 1 0;
+  min-height: 90px;
   display: none;
   flex-direction: column;
   border-top: 1px solid var(--border);
@@ -2296,8 +2358,8 @@ body:not(.ide-mode):not(.studio-mode):not(.sandbox-mode) #toolBox { display: fle
   color: var(--muted);
 }
 #toolList {
+  flex: 1 1 auto;
   min-height: 40px;
-  max-height: 200px;
   overflow-y: auto;
   display: flex;
   flex-direction: column;

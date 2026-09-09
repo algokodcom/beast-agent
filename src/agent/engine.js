@@ -5317,17 +5317,19 @@ function emitSafe(engine, sessionId, ev) {
 
 /* AJAN DM aracı: paralel/finance ajanlarının birbirine kısa mesaj atması.
    Salt metin — hedef ajanın oturumuna [AJAN DM] bloğu olarak düşer; AJAN DM
-   panelinde iki yönlü görünür. */
+   panelinde iki yönlü görünür. topic verirsen aynı konudaki mesajlar aynı
+   oturumda toplanır (cevap zinciri tek thread'de devam eder). */
 const AGENT_DM_DEF = {
   type: 'function',
   function: {
     name: 'agent_dm',
     description:
-      'Send a short DM to another RUNNING agent (parallel agents / finance agents) to coordinate: share findings, ask status, warn about risk, hand off work. `to` = target session id OR a keyword from the agent title (e.g. "GOLD", "Trader"). The message is delivered to the other agent and shown in the Agent DM panel.',
+      'Send a short DM to another running agent (parallel agents / finance agents) to coordinate: share findings, ask status, warn about risk, hand off work. `to` = target session id OR a keyword from the agent title (e.g. "GOLD", "Trader"). `topic` = short subject label — replies to the same topic stay in the SAME conversation thread, so ALWAYS reuse the topic you were DMed with when replying.',
     parameters: {
       type: 'object',
       properties: {
         to: { type: 'string', description: 'Target agent session id or a title keyword' },
+        topic: { type: 'string', description: 'Short subject label for the conversation thread, e.g. "GOLD pozisyon riski"' },
         message: { type: 'string', description: 'Short message (1-3 sentences)' },
       },
       required: ['to', 'message'],
@@ -6150,12 +6152,15 @@ Engine.prototype._agentDmSend = function (fromSid, args) {
     if (String(target) === String(fromSid)) return { ok: false, error: 'kendine DM atılamaz' };
     const fromJob = jobs.get(String(fromSid));
     const toJob = jobs.get(target);
+    /* konu etiketi: aynı konudaki DM'ler panelde AYNI oturumda toplanır */
+    const topic = String((args && args.topic) || '').replace(/\s+/g, ' ').trim().slice(0, 60) || '(genel)';
     const dm = {
       at: new Date().toISOString(),
       from: String(fromSid),
       fromTitle: (fromJob && fromJob.title) || 'Ajan',
       to: String(target),
       toTitle: (toJob && toJob.title) || 'Ajan',
+      topic,
       text,
     };
     this._agentDms = this._agentDms || [];
@@ -6165,15 +6170,16 @@ Engine.prototype._agentDmSend = function (fromSid, args) {
       fs.writeFileSync(this._agentDmsFile, JSON.stringify({ dms: this._agentDms }, null, 2));
     } catch {}
     emitSafe(this, target, { type: 'agent-dm', ...dm });
-    /* teslim: hedef meşgulse pending kuyruğunda bekler, done olunca düşer */
+    /* teslim: hedef meşgulse pending kuyruğunda bekler, done olunca düşer.
+       Cevap zinciri AYNI thread'den sürsün diye topic geri bildirilir. */
     (this._pendingReports = this._pendingReports || []).push({
       parentId: target,
       text:
-        `[AJAN DM — ${dm.fromTitle}]\n${text}\n` +
-        `(Cevabını agent_dm aracıyla ver — to: "${dm.fromTitle}")`,
+        `[AJAN DM — ${dm.fromTitle} · konu: "${topic}"]\n${text}\n` +
+        `(Cevabını agent_dm aracıyla ver — to: "${dm.fromTitle}", topic: "${topic}")`,
     });
     this.flushPendingReports(target);
-    return { ok: true, to: target, toTitle: dm.toTitle };
+    return { ok: true, to: target, toTitle: dm.toTitle, topic };
   } catch (e) {
     return { ok: false, error: String((e && e.message) || e) };
   }

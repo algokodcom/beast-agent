@@ -25,6 +25,7 @@ const mcp = require('./mcp');
 const apps = require('./apps');
 const pdfwrite = require('./pdfwrite');
 const { estTokens, estMsgTokens } = require('./tokens');
+const squeeze = require('./squeeze');
 const log = require('./logger');
 /* opencode mantığı (birebir port): ajanlar, izinler, tool seti, promptlar —
    Beast Code (bcCode) oturumları bu çekirdek üzerinden koşar */
@@ -767,6 +768,12 @@ class Engine {
      413/TPM "Requested N" hatası → gerçek token sayısı öğrenilir, tahmin
      kalibre edilir ve aynı model BİR KEZ daha sıkı sıkıştırmayla denenir. */
   async _streamWithFallbacks(session, payload, activeTools, signal, onDelta, sel, wasVision) {
+    /* SQUEEZE (varsayılan kapalı): istek kopyası sıkıştırılır — oturum kaydı
+       değişmez. Provider limiti kontrolünden ÖNCE uygulanır ki limit hesabı
+       küçülmüş gövdeyi görsün. */
+    if (squeeze.isEnabled()) {
+      payload = squeeze.apply(payload, { cacheKey: String(session.id || '') });
+    }
     const cands = this._chatCandidates(sel, wasVision);
     let lastErr = null;
     for (let i = 0; i < cands.length; i++) {
@@ -4773,10 +4780,14 @@ const skills = require('./skills');
     ];
     try {
       for (let turn = 0; turn < SUB_MAX_TURNS; turn++) {
+        let sendMsgs = [{ role: 'system', content: system }, ...msgs.slice(1)];
+        if (squeeze.isEnabled()) {
+          sendMsgs = squeeze.apply(sendMsgs, { cacheKey: String(sessionId || 'subagent') });
+        }
         const res = await chatStreamAuto(
           sel,
           {
-            messages: [{ role: 'system', content: system }, ...msgs.slice(1)],
+            messages: sendMsgs,
             tools: subTools,
             reasoningEffort: this._thinkEffort(),
             cacheKey: String(sessionId || 'subagent'),

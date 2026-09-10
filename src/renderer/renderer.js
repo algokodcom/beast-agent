@@ -1213,7 +1213,6 @@ function addFiles(files, mode) {
 /* ---------------- settings ---------------- */
 
 let setTab = 'lang'; /* ayarlar artık DİL sekmesiyle açılır */
-let hrPaneTimer = null; /* headroom-status → Kurulum sekmesi debounce tazeleme */
 
 /* DİL sekmesi: arayüz dili seçimi (eski sağ-alt dil ikonunun yerine) */
 function renderLangPane() {
@@ -1280,7 +1279,7 @@ async function renderActiveSettingsTab() {
     case 'cron': await openCron(); break;
     case 'agenda': await renderAgendaPane(); break;
     case 'usage': await renderUsagePane(); break;
-    case 'headroom': await renderHeadroomPane(); break;
+    case 'squeeze': await renderSqueezePane(); break;
     case 'agents': await refreshAgentsPane(); break;
     case 'logs': await renderLogPane(); break;
     case 'dash': await renderDashboardPane(); break;
@@ -1364,7 +1363,7 @@ function switchTab(name) {
   document.querySelectorAll('#setTabs .tab').forEach((b) =>
     b.classList.toggle('active', b.dataset.tab === name)
   );
-    for (const p of ['lang', 'provider', 'fallout', 'skills', 'agents', 'tts', 'install', 'email', 'integrations', 'websearch', 'mcp', 'events', 'empati', 'cron', 'agenda', 'usage', 'headroom', 'logs', 'dash', 'sec', 'update']) {
+    for (const p of ['lang', 'provider', 'fallout', 'skills', 'agents', 'tts', 'install', 'email', 'integrations', 'websearch', 'mcp', 'events', 'empati', 'cron', 'agenda', 'usage', 'squeeze', 'logs', 'dash', 'sec', 'update']) {
     const el = $('#tab-' + p);
     if (el) el.hidden = p !== name; // guard: eksik pane tüm sekmeleri kilitlemesin
   }
@@ -1374,7 +1373,7 @@ function switchTab(name) {
   if (name === 'email') renderEmailPane();
   if (name === 'usage') renderUsagePane();
   if (name === 'install') renderInstallPane();
-  if (name === 'headroom') renderHeadroomPane();
+  if (name === 'squeeze') renderSqueezePane();
   if (name === 'events') renderEventsPane();
   if (name === 'empati') renderEmpatiPane();
   if (name === 'logs') renderLogPane();
@@ -2332,91 +2331,90 @@ function ttsFlushTail() {
 /* ---------------- KURULUM SEKMESİ: bileşenler OTOMATİK kurulur ----------------
    Eksik/kısmen inmiş bileşen sekme açılınca kendiliğinden indirilir; kullanıcı
    hiçbir düğmeye basmaz. Durum canlı güncellenir (4 sn'de bir). */
-/* ---------- TOKEN SIKIŞTIRMA (Headroom) sekmesi ----------
-   Opsiyonel yerel sıkıştırma proxy'si: açıkken LLM girdisi %30-70 küçülür.
-   Aç/Kapat buradan; CLI kurulumu Kurulum sekmesinde görülür. */
-let hrStatsTimer = null;
+/* ---------- SQUEEZE (kendi token sıkıştırıcımız) sekmesi ----------
+   Varsayılan KAPALI. Açıkken her LLM isteğinin kopyası gönderimden önce
+   sıkıştırılır: tekrar eden büyük bloklar bağlamda bir kez gider, eski araç
+   çıktıları başlık + önizlemeye iner. Oturum kaydı değişmez. */
+let sqStatsTimer = null;
 
-async function renderHeadroomPane() {
-  const pane = $('#tab-headroom');
+async function renderSqueezePane() {
+  const pane = $('#tab-squeeze');
   if (!pane) return;
-  const st = await beast.headroomStatus().catch(() => null);
-
+  const st = await beast.squeezeStatus().catch(() => null);
+  const on = !!(st && st.enabled);
+  const s = (st && st.stats) || {};
   const fmtN = (n) => new Intl.NumberFormat('tr-TR').format(Math.round(Number(n) || 0));
-  let stHtml = '';
-  if (st) {
-    const readyN = (st.proxies || []).filter((p) => p.ready).length;
-    let stateTxt;
-    if (st.installing) stateTxt = '⏳ arka planda kuruluyor — uv tool install headroom-ai[proxy] (birkaç dakika)';
-    else if (st.enabled && readyN) stateTxt = '🟢 açık — proxy: ' + (st.proxies || []).filter((p) => p.ready).map((p) => '127.0.0.1:' + p.port).join(', ');
-    else if (st.enabled) stateTxt = '⏳ proxy başlatılıyor… (ilk açılış ~30 sn)';
-    else if (st.failed) stateTxt = '⛔ ' + (st.error || 'kurulum başarısız');
-    else if (st.installed) stateTxt = '⚪ kapalı — kurulu, aşağıdaki düğmeyle etkinleştir';
-    else stateTxt = '⚪ kapalı — açınca uv ile otomatik kurulur (birkaç dakika)';
-    stHtml = '<div class="sub" style="margin-top:10px;font-size:12px;text-align:center">' + escapeHtml(stateTxt) + '</div>';
-  }
 
-  const stats = await beast.headroomStats().catch(() => null);
+  const stHtml =
+    '<div class="sub" style="margin-top:10px;font-size:12px;text-align:center">' +
+    (on
+      ? '🟢 açık — her isteğin kopyası gönderimden önce sıkıştırılır; oturum kaydın değişmez'
+      : '⚪ kapalı (varsayılan) — açınca yeni isteklerde uygulanır, geçmişe dokunmaz') +
+    '</div>';
+
   let statsHtml = '';
-  if (stats && stats.ok && (stats.input || stats.saved)) {
+  if (s.calls) {
     statsHtml =
       '<div class="divider"></div>' +
-      '<h2 style="text-align:center">Tasarruf (proxy açıkken)</h2>' +
+      '<h2 style="text-align:center">Tasarruf</h2>' +
       '<div style="display:flex;gap:24px;flex-wrap:wrap;margin-top:8px;justify-content:center">' +
-      '<div><div style="font-size:20px;font-weight:800;color:var(--ok)">%' + Math.round(stats.savingsPercent || 0) + '</div><div class="sub">sıkıştırma oranı</div></div>' +
-      '<div><div style="font-size:20px;font-weight:800">' + new Intl.NumberFormat('tr-TR').format(stats.proxyCompressionSaved || 0) + '</div><div class="sub">kaydedilen token</div></div>' +
-      '<div><div style="font-size:20px;font-weight:800">' + new Intl.NumberFormat('tr-TR').format(stats.input || 0) + '</div><div class="sub">toplam girdi token</div></div>' +
-      '</div>';
+      '<div title="Son istekte tahmini token tasarrufu"><div style="font-size:20px;font-weight:800;color:var(--ok)">%' + (s.lastPercent || 0) + '</div><div class="sub">son istekte sıkıştırma</div></div>' +
+      '<div><div style="font-size:20px;font-weight:800">' + fmtN(s.savedTokens) + '</div><div class="sub">toplam kaydedilen token (tahmini)</div></div>' +
+      '<div><div style="font-size:20px;font-weight:800">' + fmtN(s.changedCalls) + '</div><div class="sub">sıkıştırılan istek</div></div>' +
+      '</div>' +
+      '<div class="sub" style="text-align:center;margin-top:8px">tekrar bloğu: ' + fmtN(s.deduped) +
+      ' · eski araç çıktısı: ' + fmtN(s.compactedTools) +
+      ' · skill: ' + fmtN(s.compactedSkills) +
+      ' · kullanıcı içeriği: ' + fmtN(s.compactedUsers) + '</div>';
   }
 
-  /* AÇ/KAPAT düğmesi: ortalanmış + SVG ikonlu (play/pause — uygulama ikon stili) */
+  pane.innerHTML =
+    '<h2 style="text-align:center">' + _t('tab_squeeze') + '</h2>' +
+    '<div style="display:flex;flex-direction:column;align-items:center;gap:10px;margin-top:18px">' +
+    '<button id="sqToggle" class="btn" style="width:auto;padding:11px 16px;display:inline-flex;align-items:center;gap:8px;justify-content:center" title=""></button>' +
+    '<span id="sqToggleMsg" class="sub" style="margin:0;text-align:center;max-width:560px"></span>' +
+    '</div>' +
+    stHtml + statsHtml +
+    (s.calls ? '<div style="text-align:center;margin-top:12px"><button id="sqReset" class="btn" style="width:auto;padding:6px 12px;font-size:12px">İstatistiği sıfırla</button></div>' : '');
+
   const svgPlay =
     '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="6 3 20 12 6 21 6 3"/></svg>';
   const svgPause =
     '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>';
-  pane.innerHTML =
-    '<h2 style="text-align:center">' + _t('tab_headroom') + '</h2>' +
-    '<div class="sub" style="text-align:center;max-width:620px;margin:0 auto">Headroom yerel proxy\u2019si — araç çıktıları, loglar ve JSON yükleri modele gitmeden sıkıştırılır; orijinali yerelde saklanır. Token faturasını %30-70 düşürür. Yalnız OpenAI-uyumlu sağlayıcı trafiğini etkiler; kapalıyken hiçbir şey değişmez.</div>' +
-    '<div style="display:flex;flex-direction:column;align-items:center;gap:10px;margin-top:18px">' +
-    '<button id="hrToggle" class="btn" style="width:auto;padding:11px 16px;display:inline-flex;align-items:center;gap:8px;justify-content:center" title=""></button>' +
-    '<span id="hrToggleMsg" class="sub" style="margin:0;text-align:center;max-width:560px"></span>' +
-    '</div>' +
-    stHtml + statsHtml;
-
-  const btn = $('#hrToggle');
+  const btn = $('#sqToggle');
   if (btn) {
-    const on = !!(st && st.enabled);
     /* yalnız SVG ikon — anlamı durum satırı + tooltip taşır */
     btn.innerHTML = on ? svgPause : svgPlay;
-    btn.title = on ? 'Token sıkıştırmayı kapat' : 'Token sıkıştırmayı aç';
+    btn.title = on ? 'Squeeze\'i kapat' : 'Squeeze\'i aç';
     btn.setAttribute('aria-label', btn.title);
     btn.addEventListener('click', async () => {
-      const msg = $('#hrToggleMsg');
+      const msg = $('#sqToggleMsg');
       btn.disabled = true;
       btn.innerHTML = '<span>…</span>';
-      const r = await beast.headroomToggle(!on).catch(() => null);
+      const r = await beast.squeezeToggle(!on).catch(() => null);
       if (msg) {
-        if (r && r.installing) {
-          msg.textContent = 'Headroom arka planda kuruluyor — birkaç dakika sonra hazır olur, bu sekme açık kalabilir.';
-        } else if (r && r.error) {
-          msg.textContent = r.error;
-        } else {
-          msg.textContent = !on ? 'Açıldı — proxy hazır olunca trafiği yönlendirir' : 'Kapatıldı — trafik sağlayıcıya düz gidiyor';
-        }
+        msg.textContent = r && r.ok
+          ? (!on ? 'Açıldı — sonraki istekler sıkıştırılarak gönderilir' : 'Kapatıldı — istekler olduğu gibi gider')
+          : 'Ayar kaydedilemedi';
       }
-      setTimeout(() => renderHeadroomPane(), 2500);
+      setTimeout(() => renderSqueezePane(), 400);
+    });
+  }
+  const rb = $('#sqReset');
+  if (rb) {
+    rb.addEventListener('click', async () => {
+      rb.disabled = true;
+      await beast.squeezeReset().catch(() => null);
+      renderSqueezePane();
     });
   }
 
   /* açıkken istatistikler canlı aksın */
-  if (hrStatsTimer) clearInterval(hrStatsTimer);
-  hrStatsTimer = setInterval(async () => {
-    if (pane.hidden) { clearInterval(hrStatsTimer); return; }
-    const s2 = await beast.headroomStatus().catch(() => null);
-    const cur = $('#hrToggle');
-    if (s2 && cur && cur.disabled) return; /* toggle işlemi sürüyor */
-    await renderHeadroomPane();
-  }, 6000);
+  if (sqStatsTimer) clearInterval(sqStatsTimer);
+  sqStatsTimer = setInterval(() => {
+    if (pane.hidden) { clearInterval(sqStatsTimer); return; }
+    renderSqueezePane();
+  }, 5000);
 }
 
 async function renderInstallPane() {
@@ -2486,24 +2484,10 @@ async function renderInstallPane() {
       '<div class="sub" style="font-size:11px">' + escapeHtml(r.detail || '') + (r.mb ? ' · ' + r.mb + ' MB' : '') + '</div>' +
       bar(r) +
       '</div>' +
-      (r.canToggle
-        ? '<button class="btn hr-tgl" data-on="' + (r.toggleOn ? '1' : '0') + '" style="width:auto;padding:2px 12px;flex:none">' + (r.toggleOn ? 'KAPAT' : 'AÇ') + '</button>'
-        : '') +
       badge(r.state) +
       pctLabel(r) +
       '</div>'
     )).join('');
-    /* Headroom aç/kapa: toggle kurulum + proxy başlatmayı arka planda tetikler */
-    el.querySelectorAll('.hr-tgl').forEach((b) => {
-      b.addEventListener('click', async () => {
-        const on = b.dataset.on !== '1';
-        b.disabled = true;
-        b.textContent = '…';
-        const r = await beast.headroomToggle(on).catch(() => null);
-        toast(r && r.error ? r.error : (r && r.installing ? 'Headroom kuruluyor — birkaç dakika sürer' : (on ? 'Headroom açıldı' : 'Headroom kapatıldı')));
-        refresh();
-      });
-    });
   };
 
   const refresh = async () => {
@@ -5743,19 +5727,6 @@ function onEvent(ev) {
     const isBc = bcSessionId && ev.sessionId === bcSessionId;
     if (!isBc && ev.sessionId && ev.sessionId !== activeId) return;
     showPermissionCard(req, isBc);
-    return;
-  }
-  /* Headroom durum değişimi → açık olan sekmeyi tazele (Token Sıkıştırma / Kurulum) */
-  if (ev.type === 'headroom-status') {
-    try {
-      const iPane = document.getElementById('tab-install');
-      const hPane = document.getElementById('tab-headroom');
-      const open = (!iPane || iPane.hidden) && (!hPane || hPane.hidden) ? '' : (!hPane || hPane.hidden ? 'install' : 'headroom');
-      if (open) {
-        clearTimeout(hrPaneTimer);
-        hrPaneTimer = setTimeout(() => { (open === 'headroom' ? renderHeadroomPane() : renderInstallPane()).catch(() => {}); }, 1500);
-      }
-    } catch {}
     return;
   }
   /* EMPATİ LOOP: proaktif bildirim (masaüstü) + sekme canlı yenileme.

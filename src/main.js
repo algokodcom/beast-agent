@@ -28,7 +28,7 @@ const bus = require('./agent/bus');
 const computeruse = require('./agent/computeruse');
 const fsguard = require('./agent/fsguard');
 const log = require('./agent/logger');
-const headroom = require('./agent/headroom');
+const squeeze = require('./agent/squeeze');
 const QRCode = require('qrcode'); /* Expo Go QR (bc-expurl) — whatsapp ile aynı paket */
 
 /* Renderer'a sır gönderirken kullanılan maske; kaydederken aynen geri gelirse
@@ -3465,29 +3465,9 @@ function reloadBackend() {
      süreç koşucusu (sandbox:run IPC ile aynı makine). */
   engine.sbRunHook = sbRunStartManaged;
 
-  /* HEADROOM (opsiyonel token sıkıştırma proxy'si): engine zincirinden provider
-     listesi alınır; durum değişince renderer'a 'headroom-status' düşer */
-  headroom.setProviderGetter(() => {
-    const seen = new Map();
-    for (const c of (engine && engine.cfg && engine.cfg.chain) || []) {
-      if (!c || !c.providerId || !c.url || seen.has(c.providerId)) continue;
-      seen.set(c.providerId, {
-        id: String(c.providerId),
-        name: String(c.providerName || c.providerId),
-        baseUrl: String(c.url).replace(/\/chat\/completions$/, ''),
-      });
-    }
-    return [...seen.values()];
-  });
-  headroom.setStatusSink((st) => {
-    try {
-      if (win && !win.isDestroyed()) win.webContents.send('agent:event', { type: 'headroom-status', status: st });
-    } catch {}
-  });
-  /* ayarlardan açık kaldıysa: uygulama açılışında arka planda başlat */
-  if (settings.headroom && settings.headroom.enabled) {
-    setTimeout(() => { headroom.setEnabled(true).catch(() => {}); }, 4000);
-  }
+  /* SQUEEZE (opsiyonel token sıkıştırma): varsayılan KAPALI; ayar açıksa
+     her LLM isteğinin kopyası gönderimden önce sıkıştırılır. */
+  squeeze.setEnabled(!!(settings.squeeze && settings.squeeze.enabled));
   return engine.publicState();
 }
 
@@ -3718,7 +3698,6 @@ app.whenReady().then(() => {
       flushBrowserStorage(); // x.com/google oturumları (cookies) diske yazılsın
       try { toolsMod.disposeShellSessions(); } catch {} // kalıcı shell oturumlarını kapat
       try { require('./agent/mcp').stopAll(); } catch {} // MCP server süreçlerini kapat
-      try { headroom.stopAll(); } catch {} // headroom proxy süreçlerini kapat
     });
 
     if (process.argv.includes('--smoke')) {
@@ -6673,44 +6652,24 @@ ipcMain.handle('install:status', async () => {
   /* 8) Edge TTS (bulut) */
   rows.push({ id: 'edge', name: 'Edge TTS — seslendirme', state: 'cloud', detail: 'bulut — kurulum gerekmez' });
 
-  /* 9) Headroom CLI — arka plan paket kurulumu burada görünür;
-     aç/kapat Token Sıkıştırma sekmesinde */
-  {
-    const st = headroom.probe();
-    let state = 'optional';
-    if (st.installed) state = 'ok';
-    else if (st.installing) state = 'loading';
-    if (st.failed) state = 'failed';
-    rows.push({
-      id: 'headroom',
-      name: 'Headroom CLI — token sıkıştırma motoru',
-      state,
-      detail: st.installing
-        ? 'arka planda kuruluyor — uv tool install headroom-ai[proxy]'
-        : st.failed
-          ? (st.error || 'kurulum başarısız')
-          : st.installed
-            ? 'kurulu — aç/kapat: Token Sıkıştırma sekmesi'
-            : 'kurulu değil — Token Sıkıştırma sekmesinden açınca otomatik kurulur',
-      ...(st.installing ? pctFields('headroom') : {}),
-    });
-  }
-
   return rows;
 });
 
 /* cua-driver kurulumunu şimdi başlat (Kurulum sekmesi otomatiği + elle tetikleme) */
 ipcMain.handle('cua:install', () => require('./agent/computeruse').autoInstall());
 
-/* HEADROOM (opsiyonel token sıkıştırma): aç/kapa + durum */
-ipcMain.handle('headroom:toggle', async (_e, on) => {
-  settings.headroom = { ...(settings.headroom || {}), enabled: !!on };
+/* SQUEEZE (kendi token sıkıştırıcımız): aç/kapa + durum + istatistik */
+ipcMain.handle('squeeze:toggle', (_e, on) => {
+  settings.squeeze = { ...(settings.squeeze || {}), enabled: !!on };
   saveSettings();
-  const r = await headroom.setEnabled(!!on).catch((e) => ({ ok: false, error: String((e && e.message) || e) }));
-  return r;
+  squeeze.setEnabled(!!on);
+  return { ok: true, enabled: !!on };
 });
-ipcMain.handle('headroom:status', () => headroom.probe());
-ipcMain.handle('headroom:stats', () => headroom.stats());
+ipcMain.handle('squeeze:status', () => ({ enabled: squeeze.isEnabled(), stats: squeeze.getStats() }));
+ipcMain.handle('squeeze:reset', () => {
+  squeeze.resetStats();
+  return { ok: true, stats: squeeze.getStats() };
+});
 
 /* ANDROID EMÜLATÖR: kaldırıldı — mobil önizleme tunnel (telefon QR) yoluyla yapılır */
 
@@ -11083,7 +11042,6 @@ ipcMain.handle('custom:set', (_e, list) => {
   });
   saveSettings();
   engine.setCustomProviders(settings.customProviders);
-  headroom.syncProviders(); /* headroom açıksa proxy setini yeni listeye uydur */
   return engine.publicState();
 });
 

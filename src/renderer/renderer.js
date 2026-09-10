@@ -229,6 +229,7 @@ const els = {
   cronSchedule: $('#cronSchedule'),
   cronPrompt: $('#cronPrompt'),
   cronAddBtn: $('#cronAddBtn'),
+  cronCancel: $('#cronCancel'),
   cronList: $('#cronList'),
   gearBtn: $('#gearBtn'),
   settingsOverlay: $('#settingsOverlay'),
@@ -1242,6 +1243,7 @@ async function renderActiveSettingsTab() {
     case 'events': await renderEventsPane(); break;
     case 'empati': await renderEmpatiPane(); break;
     case 'cron': await openCron(); break;
+    case 'agenda': await renderAgendaPane(); break;
     case 'usage': await renderUsagePane(); break;
     case 'headroom': await renderHeadroomPane(); break;
     case 'agents': await refreshAgentsPane(); break;
@@ -1327,12 +1329,14 @@ function switchTab(name) {
   document.querySelectorAll('#setTabs .tab').forEach((b) =>
     b.classList.toggle('active', b.dataset.tab === name)
   );
-    for (const p of ['lang', 'provider', 'fallout', 'skills', 'agents', 'tts', 'install', 'email', 'integrations', 'websearch', 'mcp', 'events', 'empati', 'cron', 'usage', 'headroom', 'logs', 'dash', 'sec', 'update']) {
+    for (const p of ['lang', 'provider', 'fallout', 'skills', 'agents', 'tts', 'install', 'email', 'integrations', 'websearch', 'mcp', 'events', 'empati', 'cron', 'agenda', 'usage', 'headroom', 'logs', 'dash', 'sec', 'update']) {
     const el = $('#tab-' + p);
     if (el) el.hidden = p !== name; // guard: eksik pane tüm sekmeleri kilitlemesin
   }
   if (name === 'lang') renderLangPane();
   if (name === 'cron') openCron();
+  if (name === 'agenda') renderAgendaPane();
+  if (name === 'email') renderEmailPane();
   if (name === 'usage') renderUsagePane();
   if (name === 'install') renderInstallPane();
   if (name === 'headroom') renderHeadroomPane();
@@ -2640,7 +2644,25 @@ async function renderEmailPane() {
       <input id="mailSmtpPort" class="inp" placeholder="465" autocomplete="off" />
       <button id="mailSave" class="btn ghost">${_t('mail_save')}</button>
     </div>` +
-    '<div class="sub" style="margin-top:8px">' + _t('mail_note') + '</div>';
+    '<div class="sub" style="margin-top:8px">' + _t('mail_note') + '</div>' +
+    '<div class="divider"></div>' +
+    '<h2>' + _t('mail_inbox') + '</h2>' +
+    '<div style="display:flex;gap:8px;margin:6px 0;align-items:center">' +
+    '<button id="mailRefresh" class="btn ghost">' + _t('mail_refresh') + '</button>' +
+    '<button id="mailCompose" class="btn ghost">' + _t('mail_compose') + '</button>' +
+    '<span id="mailMsg" class="sub" style="margin:0"></span></div>' +
+    '<div id="mailList"></div>' +
+    '<div id="mailRead" hidden style="margin-top:10px"></div>' +
+    '<div id="mailWrite" hidden style="margin-top:10px">' +
+    '<div class="form-grid" style="grid-template-columns:1fr 1fr">' +
+    '<input id="mwTo" class="inp" placeholder="' + _t('mail_to') + '" autocomplete="off" />' +
+    '<input id="mwSubject" class="inp" placeholder="' + _t('mail_subject') + '" autocomplete="off" />' +
+    '</div>' +
+    '<textarea id="mwBody" class="inp" rows="6" placeholder="' + _t('mail_body') + '" style="margin-top:6px;width:100%"></textarea>' +
+    '<div style="display:flex;gap:8px;margin-top:6px">' +
+    '<button id="mwSend" class="btn">' + _t('mail_send') + '</button>' +
+    '<button id="mwCancel" class="btn ghost">' + _t('btn_close') + '</button>' +
+    '</div></div>';
 
   try {
     const em = await beast.getEmail();
@@ -2672,6 +2694,86 @@ async function renderEmailPane() {
     if (pass && pass !== PASS_MASK) { savedPass = pass; mailPass.value = PASS_MASK; passChanged = false; }
     toast(_t('mail_saved'));
   });
+
+  /* ---- gelen kutusu + okuma + gönderme ---- */
+  const mailMsg = $('#mailMsg');
+  const mailList = $('#mailList');
+  const mailRead = $('#mailRead');
+  const mailWrite = $('#mailWrite');
+  const openWrite = (to, subject) => {
+    if (!mailWrite) return;
+    mailWrite.hidden = false;
+    $('#mwTo').value = to || '';
+    $('#mwSubject').value = subject || '';
+    $('#mwBody').value = '';
+    $('#mwBody').focus();
+  };
+  const loadInbox = async () => {
+    if (!mailList) return;
+    if (mailMsg) mailMsg.textContent = '…';
+    if (mailRead) mailRead.hidden = true;
+    const r = await beast.emailList({ limit: 15 }).catch((e) => ({ ok: false, error: String((e && e.message) || e) }));
+    if (mailMsg) mailMsg.textContent = '';
+    if (!r || r.ok === false) {
+      mailList.innerHTML = '<div class="sub">' + escapeHtml((r && r.error) || '?') + '</div>';
+      return;
+    }
+    const msgs = r.messages || [];
+    mailList.innerHTML = msgs.length
+      ? msgs
+          .map(
+            (m) =>
+              '<div class="cj-job" data-uid="' + escapeHtml(String(m.uid)) + '" style="cursor:pointer">' +
+              '<div class="cj-info"><div class="cj-name">' + escapeHtml(m.subject || '(konu yok)') + '</div>' +
+              '<div class="cj-meta">' + escapeHtml(m.from || '') + ' · ' + escapeHtml(fmtWhen(m.date)) + '</div></div></div>'
+          )
+          .join('')
+      : '<div class="sub">' + _t('mail_empty') + '</div>';
+    mailList.querySelectorAll('[data-uid]').forEach((row) =>
+      row.addEventListener('click', async () => {
+        const uid = Number(row.dataset.uid);
+        const subjectEl = row.querySelector('.cj-name');
+        if (mailRead) {
+          mailRead.hidden = false;
+          mailRead.innerHTML = '<div class="sub">…</div>';
+        }
+        const rr = await beast.emailRead(uid).catch(() => null);
+        if (!mailRead) return;
+        if (rr && rr.ok) {
+          mailRead.innerHTML =
+            '<div class="sub" style="white-space:pre-wrap;max-height:220px;overflow:auto">' +
+            escapeHtml(rr.content || '') +
+            '</div><button id="mailReply" class="btn ghost" style="margin-top:6px">' + _t('mail_reply') + '</button>';
+          const rp = $('#mailReply');
+          if (rp)
+            rp.addEventListener('click', () =>
+              openWrite('', 'Re: ' + (subjectEl ? subjectEl.textContent : ''))
+            );
+        } else {
+          mailRead.innerHTML = '<div class="sub">' + escapeHtml((rr && rr.error) || _t('mail_read_fail')) + '</div>';
+        }
+      })
+    );
+  };
+  if ($('#mailRefresh')) $('#mailRefresh').addEventListener('click', loadInbox);
+  if ($('#mailCompose')) $('#mailCompose').addEventListener('click', () => openWrite('', ''));
+  if ($('#mwCancel')) $('#mwCancel').addEventListener('click', () => { if (mailWrite) mailWrite.hidden = true; });
+  if ($('#mwSend')) $('#mwSend').addEventListener('click', async () => {
+    const to = $('#mwTo').value.trim();
+    const subject = $('#mwSubject').value.trim();
+    const body = $('#mwBody').value;
+    if (!to) { toast(_t('mail_need_to')); return; }
+    const r = await beast.emailSend({ to, subject, body }).catch((e) => ({ ok: false, error: String((e && e.message) || e) }));
+    if (r && r.ok) {
+      toast(_t('mail_sent'));
+      if (mailWrite) mailWrite.hidden = true;
+      loadInbox();
+    } else {
+      toast((r && r.error) || _t('mail_send_fail'));
+    }
+  });
+  /* ayar kayıtlıysa ve sekme GÖRÜNÜRse gelen kutusunu yükle (boşuna IMAP bağlantısı yok) */
+  if (savedPass && $('#mailUser').value.trim() && !pane.hidden) loadInbox();
 }
 
 /* ---------------- integrations (WhatsApp) ---------------- */
@@ -5572,7 +5674,15 @@ function renderAgentsPane() {
 /* ---------------- events from engine ---------------- */
 
 function onEvent(ev) {
-  if (ev.type === 'sessions') { refreshSessions(); return; }
+    if (ev.type === 'notify-click') {
+      /* toast tıklandı: ilgili panele atla */
+      if (ev.target === 'watchers') openWatchModal();
+      else if (ev.target === 'cron') openSettings().then(() => switchTab('cron')).catch(() => {});
+      else if (ev.target === 'agents') { toggleRail(true); refreshAgentsPane(); }
+      else openSettings().catch(() => {});
+      return;
+    }
+    if (ev.type === 'sessions') { refreshSessions(); return; }
   if (ev.type === 'approval') {
     /* Beast Studio oturumunun onayı: panelde ipucu + kart sohbete düşer */
     if (stSessionId && ev.sessionId === stSessionId) {
@@ -6333,6 +6443,13 @@ async function openWatchLogModal(id) {
 }
 
 let lastCronKey = '';
+/* Cron DÜZENLEME: satıra tıkla → form dolar, buton "Güncelle"ye döner */
+let editingCronId = '';
+function resetCronEdit() {
+  editingCronId = '';
+  if (els.cronAddBtn) els.cronAddBtn.textContent = _t('cron_add');
+  if (els.cronCancel) els.cronCancel.hidden = true;
+}
 async function renderCronModal(force) {
   let jobs = [];
   try { jobs = (await beast.cronList()) || []; } catch {}
@@ -6755,17 +6872,115 @@ function renderCronList(jobs) {
     btns.appendChild(mkBtn(j.enabled ? '❚❚' : '▶', j.enabled ? _t('cr_pause') : _t('cr_start'), async () => { await beast.cronToggle(j.id); refreshCron(); }));
     btns.appendChild(mkBtn('×', _t('cr_del'), async () => { await beast.cronDelete(j.id); refreshCron(); }));
     row.appendChild(btns);
-    dot.addEventListener('click', () => {
-      els.cronName.value = j.name;
+    const loadEdit = () => {
+      editingCronId = j.id;
+      els.cronName.value = j.name || '';
       els.cronPreset.value = '__custom';
-      els.cronSchedule.value = j.schedule;
-      els.cronPrompt.value = j.prompt;
-    });
+      els.cronSchedule.value = j.schedule || '';
+      els.cronPrompt.value = j.prompt || '';
+      if (els.cronAddBtn) els.cronAddBtn.textContent = _t('cr_update');
+      if (els.cronCancel) els.cronCancel.hidden = false;
+      els.cronName.focus();
+      toast(_t('cr_edit_loaded'));
+    };
+    dot.addEventListener('click', loadEdit);
+    info.addEventListener('click', loadEdit);
+    dot.title = (j.enabled ? _t('cr_dot_on') : _t('cr_dot_off')) + ' — ' + _t('cr_edit_hint');
     els.cronList.appendChild(row);
   }
 }
 
 function openCron() { refreshCron(); }
+
+/* ---------------- AJANDA: yaklaşan cron + hatırlatıcı + izleyiciler ---------------- */
+
+function isReminderLike(j) {
+  if (!j) return false;
+  if (j.kind === 'reminder') return true;
+  const n = String(j.name || '');
+  const p = String(j.prompt || '');
+  return (
+    /^Hatırlatma:/.test(n) ||
+    /^Tekrarlı hatırlatma:/.test(n) ||
+    p.startsWith('[HATIRLATMA ZAMANI]') ||
+    p.startsWith('[TEKRARLI HATIRLATMA]')
+  );
+}
+
+function relTime(ms) {
+  const diff = ms - Date.now();
+  const abs = Math.abs(diff);
+  const dk = Math.round(abs / 60000);
+  const saat = Math.floor(dk / 60);
+  const gun = Math.floor(saat / 24);
+  let label;
+  if (dk < 1) return _t('aj_now');
+  else if (dk < 60) label = dk + ' dk';
+  else if (saat < 24) label = saat + ' sa';
+  else label = gun + ' gün';
+  return diff >= 0 ? label + ' ' + _t('aj_later') : label + ' ' + _t('aj_ago');
+}
+
+async function renderAgendaPane() {
+  const pane = $('#tab-agenda');
+  if (!pane) return;
+  let jobs = [];
+  let ws = [];
+  try { jobs = (await beast.cronList()) || []; } catch {}
+  try { ws = (await beast.watchersList()) || []; } catch {}
+  const items = [];
+  for (const j of jobs) {
+    if (!j.enabled) continue;
+    const t = j.nextRunAt ? new Date(j.nextRunAt).getTime() : 0;
+    if (!t) continue;
+    items.push({ type: isReminderLike(j) ? 'rem' : 'cron', name: j.name || j.id, at: t, meta: j.schedule, id: j.id });
+  }
+  for (const w of ws) {
+    if (!w.enabled) continue;
+    const every = w.everySec ? w.everySec * 1000 : (w.everyMin || 15) * 60000;
+    const last = w.lastCheckAt ? new Date(w.lastCheckAt).getTime() : 0;
+    items.push({
+      type: 'watch',
+      name: w.name,
+      at: last ? last + every : Date.now(),
+      meta: opText(w) + ' · her ' + fmtEvery(w),
+      id: w.id,
+    });
+  }
+  items.sort((a, b) => a.at - b.at);
+  const badge = { cron: '🕐', rem: '⏰', watch: '👁' };
+  const rows = items.length
+    ? items
+        .map(
+          (it) =>
+            '<div class="cron-job ag-item" data-type="' + it.type + '" data-id="' + escapeHtml(it.id) + '" style="cursor:pointer">' +
+            '<div class="cj-info"><div class="cj-name">' + badge[it.type] + ' ' + escapeHtml(it.name) + '</div>' +
+            '<div class="cj-meta">' + escapeHtml(String(it.meta || '')) + ' · <b>' + escapeHtml(relTime(it.at)) + '</b> · ' + escapeHtml(fmtTime(it.at)) + '</div></div></div>'
+        )
+        .join('')
+    : '<div class="cron-empty">' + _t('aj_empty') + '</div>';
+  let notifOn = true;
+  try { notifOn = !!(await beast.notifyGet()).toast; } catch {}
+  pane.innerHTML =
+    '<h2>' + _t('aj_h2') + '</h2><div class="sub">' + _t('aj_sub') + '</div>' +
+    '<label class="lock-row" style="margin-top:8px"><input type="checkbox" id="ajNotify" ' + (notifOn ? 'checked' : '') + '/><span>' + _t('aj_notify') + '</span></label>' +
+    '<div style="margin-top:10px">' + rows + '</div>';
+  const nj = $('#ajNotify');
+  if (nj) nj.addEventListener('change', async (e) => {
+    await beast.notifySet(e.target.checked).catch(() => {});
+    toast(e.target.checked ? _t('aj_notify_on') : _t('aj_notify_off'));
+  });
+  pane.querySelectorAll('.ag-item').forEach((row) => {
+    row.addEventListener('click', () => {
+      if (row.dataset.type === 'watch') {
+        closeSettings();
+        openWatchModal();
+      } else {
+        switchTab('cron');
+      }
+    });
+  });
+}
 
 /* ---------------- boot ---------------- */
 
@@ -7161,6 +7376,59 @@ async function init() {
   if (els.watchLogOverlay) els.watchLogOverlay.addEventListener('click', (e) => {
     if (e.target === els.watchLogOverlay) closeWatchLogModal();
   });
+
+  /* watcher EKLEME formu: tür seçimine göre alanlar açılır/kapanır */
+  const wKindSel = $('#wAddKind');
+  const wSyncKind = () => {
+    const k = wKindSel ? wKindSel.value : 'web';
+    const web = $('#wAddWeb');
+    const cond = $('#wAddCond');
+    const logs = $('#wAddLogs');
+    if (web) web.hidden = k !== 'web';
+    if (cond) cond.hidden = k === 'logs';
+    if (logs) logs.hidden = k !== 'logs';
+  };
+  if (wKindSel) {
+    wKindSel.addEventListener('change', wSyncKind);
+    wSyncKind();
+  }
+  const wAddBtn = $('#wAddBtn');
+  if (wAddBtn) {
+    wAddBtn.addEventListener('click', async () => {
+      const kind = wKindSel ? wKindSel.value : 'web';
+      const input = {
+        name: $('#wAddName').value.trim(),
+        kind,
+        everyMin: Number($('#wAddEvery').value) || 15,
+      };
+      if (kind === 'web') {
+        input.url = $('#wAddUrl').value.trim();
+        input.path = $('#wAddPath').value.trim();
+      }
+      if (kind !== 'logs') {
+        input.op = $('#wAddOp').value;
+        const v = $('#wAddValue').value.trim();
+        input.value = input.op === 'changed' || v === '' ? null : (Number.isNaN(Number(v)) ? v : Number(v));
+      } else {
+        input.level = $('#wAddLevel').value;
+        input.windowMin = Number($('#wAddWindow').value) || 10;
+        input.re = $('#wAddRe').value.trim();
+        input.op = 'gt';
+        input.value = 0;
+      }
+      const r = await beast.watchersAdd(input).catch((e) => ({ ok: false, error: String((e && e.message) || e) }));
+      if (!r || r.ok === false) { toast((r && r.error) || 'İzleyici eklenemedi'); return; }
+      for (const id of ['#wAddName', '#wAddUrl', '#wAddPath', '#wAddValue', '#wAddRe']) {
+        const el = $(id);
+        if (el) el.value = '';
+      }
+      lastWatchKey = '';
+      lastWatchPaneKey = '';
+      await renderWatchersModal(true);
+      await renderWatchersPane(true);
+      toast(_t('w_added'));
+    });
+  }
   if (els.cronOverlay) els.cronOverlay.addEventListener('click', (e) => {
     if (e.target === els.cronOverlay) closeCronModal();
   });
@@ -7173,12 +7441,26 @@ async function init() {
     const schedule = els.cronSchedule.value.trim();
     const prompt = els.cronPrompt.value.trim();
     if (!schedule || !prompt) { toast('Cron ifadesi ve görev metni gerekli'); return; }
-    const r = await beast.cronAdd({ name, schedule, prompt });
-    if (!r.ok) { toast(r.error || 'Eklenemedi'); return; }
+    if (editingCronId) {
+      const r = await beast.cronUpdate(editingCronId, { name, schedule, prompt });
+      if (!r || r.ok === false) { toast((r && r.error) || 'Güncellenemedi'); return; }
+      toast(_t('cr_updated'));
+    } else {
+      const r = await beast.cronAdd({ name, schedule, prompt });
+      if (!r.ok) { toast(r.error || 'Eklenemedi'); return; }
+      toast(_t('cr_added'));
+    }
     els.cronName.value = ''; els.cronSchedule.value = ''; els.cronPrompt.value = '';
-    toast('Görev eklendi');
+    resetCronEdit();
     refreshCron();
   });
+  if (els.cronCancel) {
+    els.cronCancel.addEventListener('click', () => {
+      els.cronName.value = ''; els.cronSchedule.value = ''; els.cronPrompt.value = '';
+      resetCronEdit();
+      toast(_t('cr_edit_cancelled'));
+    });
+  }
   document.addEventListener('mousemove', (e) => {
     if (!rz) return;
     const w = Math.max(300, Math.min(rz.sw - (e.clientX - rz.sx), window.innerWidth - 340));

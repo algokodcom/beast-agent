@@ -1,6 +1,6 @@
 'use strict';
 
-const { app, BrowserWindow, WebContentsView, ipcMain, shell, dialog, Tray, Menu, nativeImage, desktopCapturer, session, net: electronNet, clipboard } = require('electron');
+const { app, BrowserWindow, WebContentsView, ipcMain, shell, dialog, Tray, Menu, nativeImage, desktopCapturer, session, net: electronNet, clipboard, Notification } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const http = require('http');
@@ -272,6 +272,8 @@ try {
 try { nodemailer = require('nodemailer'); } catch {}
 
 const APP_DIR = path.join(app.getPath('appData'), 'beast');
+/* Windows toast bildirimleri için AppUserModelID erken ayarlanmalı */
+try { app.setAppUserModelId('com.quantumalgo.beastagent'); } catch {}
 /* mem0-native embedding modeli whisper ile AYNI cache'i kullanır (src/agent/mem0.js okur) */
 process.env.BEAST_MODELS_DIR = path.join(APP_DIR, 'models');
 
@@ -301,6 +303,8 @@ for (const d of [APP_DIR, SESSIONS_DIR]) fs.mkdirSync(d, { recursive: true });
 
 let win = null;
 let engine = null;
+/* Paralel ajan durum takibi: bitişte BİR kez toast bildirimi (spam yok) */
+const bgNotifSeen = new Map(); // sid -> son görülen durum
 let settings = loadSettings();
 ensureBeastCode();
 startHealthServer(); /* splash/boot aşamasından itibaren /health ayakta */
@@ -3232,6 +3236,17 @@ function reloadBackend() {
     },
     emit: (ev) => {
       if (win && !win.isDestroyed()) win.webContents.send('agent:event', ev);
+      /* PARALEL AJAN BİTİŞİ: running → done/error/aborted geçişinde tek toast */
+      if (ev.type === 'agents' && Array.isArray(ev.jobs)) {
+        for (const j of ev.jobs) {
+          const prev = bgNotifSeen.get(j.id);
+          bgNotifSeen.set(j.id, j.status);
+          if (prev === 'running' && j.status && j.status !== 'running' && j.status !== 'queued' && !j.continuous) {
+            const durum = j.status === 'done' ? 'tamamlandı' : j.status === 'error' ? 'HATA ile bitti' : 'iptal edildi';
+            toastNotify(`Ajan: ${j.title || j.code || 'görev'}`, durum, 'agents');
+          }
+        }
+      }
       /* opencode permission (BC): ask kanalı UI'a zaten yukarıda düştü — WA
          sahibine de tek satır bildir gitsin (/approve · /approve always · /deny) */
       if (ev.type === 'permission.asked' && ev.request && wa && wa.connected) {
@@ -3739,6 +3754,30 @@ function showWin() {
     win.show();
     win.focus();
   }
+}
+
+/* ---------- Windows toast bildirimi ----------
+   watcher/cron/paralel ajan bitişinde sistem bildirimi; tıklanınca pencere
+   açılır ve renderer'a notify-click eventi gider (ilgili panel açılır).
+   Ayarlardan kapatılabilir: settings.notifyToast === false */
+function toastNotify(title, body, target) {
+  try {
+    if (settings.notifyToast === false) return;
+    if (typeof Notification === 'undefined' || !Notification.isSupported()) return;
+    const n = new Notification({
+      title: String(title || 'Beast Agent').slice(0, 120),
+      body: String(body || '').slice(0, 240),
+      icon: path.join(__dirname, '..', 'assets', 'tray.png'),
+      silent: false,
+    });
+    n.on('click', () => {
+      showWin();
+      if (win && !win.isDestroyed()) {
+        win.webContents.send('agent:event', { type: 'notify-click', target: String(target || '') });
+      }
+    });
+    n.show();
+  } catch {}
 }
 
 /* ---------------- dahili tarayıcı ---------------- */
@@ -6875,6 +6914,11 @@ function cronFire(job) {
     const sent = engine.send(sid, {
       text: `[cron: ${job.name}]\n${job.prompt}`,
     });
+    toastNotify(
+      `Cron: ${job.name}`,
+      isReminderJob(job) ? 'Hatırlatma zamanı geldi' : String(job.prompt || '').slice(0, 160),
+      'cron'
+    );
     if (!sent) cronAnswerPendingDrop(sid); // gönderilemedi — bayat bekleme bırakma
   } catch {}
   cronEmit();
@@ -6892,6 +6936,7 @@ function watcherFire(w, value) {
       w.op === 'changed'
         ? 'izlenen değer değişti'
         : `kural sağlandı (son değer ${value}, koşul ${w.op} ${w.value ?? ''})`;
+    toastNotify(`İzleyici: ${w.name}`, target, 'watchers');
     engine.send(sid, {
       text:
         `[IZLEYICI: ${w.name}] ${target}. ` +
@@ -7425,6 +7470,13 @@ ipcMain.handle('cron:runNow', (_e, id) => {
   const r = cron.runNow(id);
   cronEmit();
   return r;
+});
+/* Masaüstü (toast) bildirimleri aç/kapa */
+ipcMain.handle('notify:get', () => ({ toast: settings.notifyToast !== false }));
+ipcMain.handle('notify:set', (_e, on) => {
+  settings.notifyToast = !!on;
+  saveSettings();
+  return { toast: settings.notifyToast };
 });
 
 /* ---------------- tarayıcı IPC ---------------- */
@@ -10902,6 +10954,10 @@ ipcMain.handle('email:set', (_e, cfg) => {
   saveSettings();
   return { ...settings.email, pass: settings.email.pass ? '***' : '' };
 });
+/* E-posta paneli: gelen kutusu + okuma + gönderim (engine köprüsüyle aynı fonksiyonlar) */
+ipcMain.handle('email:list', (_e, opts) => emailList(opts || {}));
+ipcMain.handle('email:read', (_e, uid) => emailRead(uid));
+ipcMain.handle('email:send', (_e, msg) => emailSend(msg || {}));
 
 /* ---------- ekran görüntüsü ---------- */
 

@@ -455,6 +455,7 @@
         <button class="tab" data-tab="events" data-i18n="tab_events">Olay Merkezi</button>
         <button class="tab" data-tab="empati" data-i18n="tab_empati">Empati Loop</button>
         <button class="tab" data-tab="cron" data-i18n="tab_cron">Cron</button>
+        <button class="tab" data-tab="agenda" data-i18n="tab_agenda">Ajanda</button>
         <button class="tab" data-tab="usage" data-i18n="tab_usage">Maliyet · Limit</button>
         <button class="tab" data-tab="headroom" data-i18n="tab_headroom">Token Sıkıştırma</button>
         <button class="tab" data-tab="logs" data-i18n="tab_logs">Log</button>
@@ -506,9 +507,11 @@
             </div>
             <textarea id="cronPrompt" rows="3" placeholder="Agent'a verilecek görev…" data-i18n-ph="cron_prompt_ph"></textarea>
             <button id="cronAddBtn" data-i18n="cron_add">+ Görev Ekle</button>
+            <button id="cronCancel" class="ghost" hidden data-i18n="cr_cancel_edit">Vazgeç</button>
           </div>
           <div id="cronList"></div>
         </div>
+        <div id="tab-agenda" class="pane" hidden></div>
       </section>
     </div>
   </div>
@@ -612,6 +615,43 @@
         <button class="mini-close" id="watchClose" title="Kapat" data-i18n-title="btn_close">&#x00D7;</button>
       </div>
       <div class="mini-body">
+        <div id="wAddBox">
+          <div class="mini-add-row">
+            <input id="wAddName" class="inp" data-i18n-ph="w_add_name" placeholder="İsim" maxlength="80" />
+            <select id="wAddKind" class="inp mini-select">
+              <option value="web" data-i18n="w_kind_web">Web</option>
+              <option value="battery" data-i18n="w_kind_battery">Pil</option>
+              <option value="logs" data-i18n="w_kind_logs">Log</option>
+            </select>
+            <input id="wAddEvery" class="inp" type="number" min="1" max="1440" value="15" title="dakika" style="width:70px" />
+            <button id="wAddBtn" data-i18n="w_add">+</button>
+          </div>
+          <div class="mini-add-row" id="wAddWeb">
+            <input id="wAddUrl" class="inp" data-i18n-ph="w_add_url" placeholder="https://..." />
+            <input id="wAddPath" class="inp" data-i18n-ph="w_add_path" placeholder="json path (örn: data.price)" />
+          </div>
+          <div class="mini-add-row" id="wAddCond">
+            <select id="wAddOp" class="inp mini-select">
+              <option value="lte">&lt;=</option>
+              <option value="lt">&lt;</option>
+              <option value="gte">&gt;=</option>
+              <option value="gt">&gt;</option>
+              <option value="eq">=</option>
+              <option value="neq">≠</option>
+              <option value="changed" data-i18n="w_op_changed">değişti</option>
+            </select>
+            <input id="wAddValue" class="inp" data-i18n-ph="w_add_value" placeholder="eşik değer" />
+          </div>
+          <div class="mini-add-row" id="wAddLogs" hidden>
+            <select id="wAddLevel" class="inp mini-select">
+              <option value="error">error</option>
+              <option value="warn">warn</option>
+              <option value="info">info</option>
+            </select>
+            <input id="wAddWindow" class="inp" type="number" min="1" max="720" value="10" title="pencere (dk)" style="width:80px" />
+            <input id="wAddRe" class="inp" data-i18n-ph="w_add_re" placeholder="regex (opsiyonel)" />
+          </div>
+        </div>
         <div id="watchList" class="mini-list"></div>
       </div>
     </div>

@@ -147,6 +147,8 @@ contextBridge.exposeInMainWorld('beast', {
   cronDelete: (id) => ipcRenderer.invoke('cron:delete', id),
   cronToggle: (id) => ipcRenderer.invoke('cron:toggle', id),
   cronRunNow: (id) => ipcRenderer.invoke('cron:runNow', id),
+  notifyGet: () => ipcRenderer.invoke('notify:get'),
+  notifySet: (on) => ipcRenderer.invoke('notify:set', on),
 
   watchersList: () => ipcRenderer.invoke('watchers:list'),
 
@@ -222,6 +224,9 @@ contextBridge.exposeInMainWorld('beast', {
   whereWasISet: (cfg) => ipcRenderer.invoke('wherewasi:set', cfg),
   getEmail: () => ipcRenderer.invoke('email:get'),
   setEmail: (cfg) => ipcRenderer.invoke('email:set', cfg),
+  emailList: (opts) => ipcRenderer.invoke('email:list', opts),
+  emailRead: (uid) => ipcRenderer.invoke('email:read', uid),
+  emailSend: (msg) => ipcRenderer.invoke('email:send', msg),
   captureScreen: () => ipcRenderer.invoke('screen:capture'),
   waListSessions: () => ipcRenderer.invoke('wa:sessions'),
   botsList: () => ipcRenderer.invoke('bots:list'),

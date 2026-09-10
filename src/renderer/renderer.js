@@ -180,6 +180,8 @@ const els = {
   finTraderStatus: $('#finTraderStatus'),
   finPosList: $('#finPosList'),
   finPosCount: $('#finPosCount'),
+  finOrdList: $('#finOrdList'),
+  finOrdCount: $('#finOrdCount'),
   finSymList: $('#finSymList'),
   finLog: $('#finLog'),
   finSymAdd: $('#finSymAdd'),
@@ -8874,6 +8876,56 @@ function finRenderPositions(list) {
   }
 }
 
+/* MT5 bekleyen emir tipi → etiket + renk sınıfı (0..7) */
+const FIN_ORDER_TYPES = {
+  0: { t: 'BUY', c: 'buy' },
+  1: { t: 'SELL', c: 'sell' },
+  2: { t: 'BUY LIMIT', c: 'buy' },
+  3: { t: 'SELL LIMIT', c: 'sell' },
+  4: { t: 'BUY STOP', c: 'buy' },
+  5: { t: 'SELL STOP', c: 'sell' },
+  6: { t: 'BUY STP-LMT', c: 'buy' },
+  7: { t: 'SELL STP-LMT', c: 'sell' },
+};
+
+function finRenderOrders(list) {
+  if (!els.finOrdList) return;
+  els.finOrdList.textContent = '';
+  if (els.finOrdCount) els.finOrdCount.textContent = list && list.length ? '(' + list.length + ')' : '';
+  if (!list || !list.length) {
+    const d = document.createElement('div');
+    d.className = 'fin-empty';
+    d.textContent = 'Bekleyen emir yok';
+    els.finOrdList.appendChild(d);
+    return;
+  }
+  for (const o of list) {
+    const row = document.createElement('div');
+    row.className = 'fin-pos fin-ord';
+    const ot = FIN_ORDER_TYPES[Number(o.type)] || { t: String(o.type ?? '?'), c: '' };
+    const vol = Number(o.volume_current) || Number(o.volume_initial) || 0;
+    row.innerHTML =
+      '<span class="fp-sym" title="ticket ' + o.ticket + '">' + escapeHtml(String(o.symbol || '?')) + '</span>' +
+      '<span class="fp-dir ' + ot.c + '">' + ot.t + '</span>' +
+      '<span class="fp-meta">' + vol + ' lot @ ' + (Number(o.price_open) || 0) +
+      (o.sl ? ' · SL ' + o.sl : '') + (o.tp ? ' · TP ' + o.tp : '') + '</span>';
+    const btn = document.createElement('button');
+    btn.className = 'fp-close';
+    btn.title = 'Bekleyen emri iptal et';
+    btn.textContent = '✕';
+    btn.addEventListener('click', async () => {
+      const ok = await uiConfirm((o.symbol || '') + ' bekleyen emri iptal edilsin mi? (ticket ' + o.ticket + ')', 'İptal Et');
+      if (!ok) return;
+      const r = await beast.financeCancel(o.ticket).catch((e) => ({ ok: false, error: String((e && e.message) || e) }));
+      if (r && r.ok) toast('Emir iptal edildi');
+      else toast('İptal edilemedi: ' + ((r && r.error) || '?'));
+      finSnapshot();
+    });
+    row.appendChild(btn);
+    els.finOrdList.appendChild(row);
+  }
+}
+
 function finRenderSymbols(list) {
   if (!els.finSymList) return;
   els.finSymList.textContent = '';
@@ -9038,6 +9090,8 @@ function finRenderTrader(trader, cfg) {
     else els.finTraderDot.classList.add('off');
   }
   if (els.finTraderStatus) {
+    els.finTraderStatus.classList.toggle('on', on);
+    els.finTraderStatus.classList.toggle('busy', !!(on && trader && trader.busy));
     let t = '';
     if (trader && trader.lastAt) {
       const d = new Date(trader.lastAt);
@@ -9087,6 +9141,7 @@ async function finSnapshot() {
   finSetDot(b.connected ? true : b.running ? 'busy' : false, b);
   finRenderAccount(r.account);
   finRenderPositions(r.positions || []);
+  finRenderOrders(r.orders || []);
   finRenderSymbols(r.symbols || []);
   if (Array.isArray(r.roles) && r.roles.length) finRolesCatalog = r.roles;
   finTraderInputsSet(r.cfg);

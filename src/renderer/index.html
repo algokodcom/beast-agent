@@ -161,7 +161,7 @@
               <div class="fin-kv"><span>Serbest Marj</span><b id="finFree">—</b></div>
             </div>
           </div>
-          <div class="fin-card">
+          <div class="fin-card fin-card-trader">
             <div class="fin-card-title">TRADE AJANI <span id="finTraderDot" class="fin-dot off" title="Trader durumu"></span></div>
             <div class="fin-row"><select id="finTraderModel" title="Trader ajanının modeli — farklı API/model seçilebilir"></select></div>
             <div class="fin-row fin-mini">
@@ -173,7 +173,7 @@
               <label>Analiz ekibi</label>
               <div id="finRoles" class="fin-roles" title="Trader&#39;ın yanında koşacak uzman ajanlar — tüm skill + mt5 erişimli, işlem açmazlar"></div>
             </div>
-            <div class="fin-row">
+            <div class="fin-row fin-btn-row">
               <button id="finTraderBtn" class="fin-start">&#9654;&#xFE0E; Ajanı Başlat</button>
             </div>
             <div id="finTraderStatus">Kapalı</div>
@@ -181,6 +181,10 @@
           <div class="fin-card">
             <div class="fin-card-title">POZİSYONLAR <span id="finPosCount"></span></div>
             <div id="finPosList"><div class="fin-empty">Açık pozisyon yok</div></div>
+          </div>
+          <div class="fin-card">
+            <div class="fin-card-title">BEKLEYEN EMİRLER <span id="finOrdCount"></span></div>
+            <div id="finOrdList"><div class="fin-empty">Bekleyen emir yok</div></div>
           </div>
           <div class="fin-card">
             <div class="fin-card-title">

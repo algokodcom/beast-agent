@@ -8519,7 +8519,7 @@ function finAgentRegisterBg(s, symbols) {
     const f = finCfg();
     const symLabel = symbols && symbols.length ? symbols.join(', ').slice(0, 40) : 'tüm izleme listesi';
     const roleDef = finRoleDef(s.financeRole);
-    engine._bgJobs.set(String(s.id), {
+    const job = {
       id: s.id,
       code: s.code,
       title: s.bgTitle || 'Finance Ajanı',
@@ -8529,6 +8529,10 @@ function finAgentRegisterBg(s, symbols) {
       agent: null,
       parentId: '',
       groupId: null,
+      /* FİNANS EKİBİ DM GRUBU: trader + analiz ekibi + sembol işçileri TEK
+         gruba girer — mesajlar ayrı ayrı 1:1 thread'lere dağılmaz */
+      dmGroupId: 'team:finance',
+      dmGroupTitle: 'Beast Finance EKİP',
       status: 'running',
       slot: false, /* eşzamanlılık slotu TÜKETMEZ — ana işleri bloklamaz */
       continuous: true, /* tur sonları işi KAPATMAZ (_bgFinish) */
@@ -8539,8 +8543,12 @@ function finAgentRegisterBg(s, symbols) {
       fixes: 0,
       endedAt: null,
       error: null,
-    });
+    };
+    engine._bgJobs.set(String(s.id), job);
     engine._bgEmit();
+    /* otomatik ekip grubuna katıl: grup thread'i ilk ajanla kurulur,
+       sonraki her finance ajanı aynı gruba eklenir (katılım postu düşer) */
+    engine._agentTeamJoin(job);
   } catch {}
 }
 
@@ -8758,15 +8766,18 @@ ipcMain.handle('finance:snapshot', async () => {
   const st = financeEnsureBridge();
   let account = st.account || null;
   let positions = [];
+  let orders = [];
   let symbols = [];
   if (st.running) {
-    const [a, p, sy] = await Promise.all([
+    const [a, p, o, sy] = await Promise.all([
       mt5bridge.call('account', {}, 8000).catch(() => null),
       mt5bridge.call('positions', {}, 8000).catch(() => null),
+      mt5bridge.call('orders', {}, 8000).catch(() => null),
       mt5bridge.call('symbols', { symbols: f.symbols || [] }, 10000).catch(() => null),
     ]);
     if (a && a.ok) account = a.data && a.data.account;
     if (p && p.ok) positions = (p.data && p.data.positions) || [];
+    if (o && o.ok) orders = (o.data && o.data.orders) || [];
     if (sy && sy.ok) symbols = (sy.data && sy.data.symbols) || [];
   }
   const busy = financeState.traderSid && engine ? engine.isBusy(financeState.traderSid) : false;
@@ -8775,6 +8786,7 @@ ipcMain.handle('finance:snapshot', async () => {
     bridge: { running: st.running, connected: st.connected, error: st.error, terminal: st.terminal, python: st.python },
     account,
     positions,
+    orders,
     symbols,
     cfg: f,
     roles: FIN_ROLES,
@@ -8995,6 +9007,19 @@ ipcMain.handle('finance:close', async (_e, payload) => {
   if (r && r.ok) {
     financeLog('[panel] pozisyon kapatıldı: ticket ' + ticket);
     finPush('trade', { line: 'POZİSYON KAPANDI (panel): ticket ' + ticket });
+  }
+  return r;
+});
+
+/* Bekleyen emri panelden iptal et (ajanın mt5_cancel aracıyla aynı köprü) */
+ipcMain.handle('finance:cancel', async (_e, payload) => {
+  const ticket = Number(payload && payload.ticket);
+  if (!ticket) return { ok: false, error: 'ticket gerekli' };
+  if (!mt5bridge.running) return { ok: false, error: 'MT5 köprüsü bağlı değil' };
+  const r = await mt5bridge.call('cancel', { ticket }, 20000);
+  if (r && r.ok) {
+    financeLog('[panel] bekleyen emir iptal edildi: ticket ' + ticket);
+    finPush('trade', { line: 'EMİR İPTAL (panel): ticket ' + ticket });
   }
   return r;
 });

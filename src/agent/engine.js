@@ -1894,6 +1894,10 @@ class Engine {
         macro:
           'ROL: MAKRO AJANI 🌍 — büyük resim uzmanısın, İşlem AÇMAZSIN (mt5_trade/mt5_pending/mt5_close KULLANMA). Her turda web_search ile güncel makro manşetleri + ekonomik takvim riskleri (faiz, CPI, jeopolitik); DXY/altın/petrol bağıntılarını odak sembollere çevir; sembol başına yön eğilimi + TEMKİN/BEKLE notu ver.',
       })[String((session && session.financeRole) || '')] || '';
+    /* FİNANS EKİBİ: tüm finance ajanları tek DM grubundadır — sohbet grup
+       thread'inde toplanır (ayrı ayrı 1:1 thread'lere dağılmaz) */
+    const finJob = this._bgJobs && this._bgJobs.get(String(session && session.id));
+    const teamLine = finJob && finJob.teamGid ? this._agentTeamPromptLine(finJob.teamGid) : '';
     return (
       (mem.soul ? mem.soul.trim() + '\n\n' : '') +
       'Sen BEAST FİNANS\u2019sın — bilgisayardaki MetaTrader 5 (MT5) terminaline köprüyle bağlı trading ajanı.\n' +
@@ -1902,6 +1906,7 @@ class Engine {
       'GÖREV ALANI: piyasa verisi okuma (fiyat/hesap/pozisyon/geçmiş), teknik değerlendirme, pozisyon yönetimi (aç/kapat/SL/TP), risk disiplini ve kısa karar raporları. Kod yazma işi DEĞİLDİR.\n' +
       modeBlock2 + '\n' +
       (roleBlock ? roleBlock + '\n' : '') +
+      (teamLine || '') +
       'MT5 ARAÇLARI: mt5_status (bağlantı), mt5_account (hesap), mt5_market (canlı fiyat), mt5_positions (açık pozisyonlar), mt5_orders (bekleyen emirler), mt5_history (kapanan işlemler), mt5_trade (piyasa emri), mt5_close (kapat), mt5_modify (SL/TP), mt5_pending (bekleyen emir), mt5_cancel (emir iptal).\n' +
       'VERİ AKIŞI (her değerlendirmede): mt5_account + mt5_positions + mt5_market çağrılarını AYNI turda PARALEL ver; gerekiyorsa mt5_history ile son işlemleri gör.\n' +
       'PARALEL + KOORDİNASYON: uzun araştırma/işleri run_background ile paralel finance işçisine devret (parent finance olduğu için işçi mt5 okuma araçlarını görür); koşan ajanlarla konuşmak için agent_dm (to: ajan başlığındaki anahtar kelime, örn "GOLD"; ortak karar için group: "İSİM" ile grup sohbeti kur — mesaj tüm üyelere düşer). Görevin bitince DM/grup sohbetleri otomatik KAPANIR (geçmiş panelde kalır).\n' +
@@ -6448,18 +6453,30 @@ Engine.prototype._pushAgentDm = function (dm) {
    ortak DM grubuna girer — tartışma ZORUNLU (sistem promptuyla). ---------- */
 
 /* İş başlarken çağrılır: aynı parent / bg-gruptan başka ajan varsa (varsa
-   önceden kurulmuştur) hepsini TEK ekip grubuna katar + katılım postu düşer. */
+   önceden kurulmuştur) hepsini TEK ekip grubuna katar + katılım postu düşer.
+   dmGroupId verilirse (finans ekibi gibi hazır grup) parent şartı aranmaz —
+   aynı dmGroupId'li TÜM ajanlar tek gruba toplanır. */
 Engine.prototype._agentTeamJoin = function (job) {
   try {
     if (!job || !job.id) return;
     const parent = String(job.parentId || '');
-    if (!parent) return;
-    const gid = 'team:' + (job.groupId || parent);
+    const explicit = String(job.dmGroupId || '');
+    if (!parent && !explicit) return;
+    const gid = explicit || 'team:' + (job.groupId || parent);
     const base =
-      String(job.task || job.title || 'ortak görev').replace(/\s+/g, ' ').trim().slice(0, 28) || 'ortak görev';
+      String(job.dmGroupTitle || job.task || job.title || 'ortak görev').replace(/\s+/g, ' ').trim().slice(0, 40) ||
+      'ortak görev';
     let g = this._agentGroups.get(gid);
     if (!g) {
-      g = { id: gid, title: base + ' EKİP', members: [], titles: {}, createdAt: nowIso(), closed: false, team: true };
+      g = {
+        id: gid,
+        title: job.dmGroupTitle ? base : base + ' EKİP',
+        members: [],
+        titles: {},
+        createdAt: nowIso(),
+        closed: false,
+        team: true,
+      };
       this._agentGroups.set(gid, g);
     }
     g.closed = false;
@@ -6470,9 +6487,13 @@ Engine.prototype._agentTeamJoin = function (job) {
       if (!g.members.includes(id)) g.members.push(id);
       if (title) g.titles[id] = String(title);
     };
-    /* aynı ortak görevdeki DİĞER ajanlar (aborted olanlar hariç) */
+    /* aynı ortak görevdeki / aynı hazır gruptaki DİĞER ajanlar (aborted hariç) */
     const mates = [...this._bgJobs.values()].filter(
-      (j) => j && String(j.id) !== String(job.id) && String(j.parentId) === parent && j.status !== 'aborted'
+      (j) =>
+        j &&
+        String(j.id) !== String(job.id) &&
+        j.status !== 'aborted' &&
+        (explicit ? String(j.dmGroupId || '') === explicit : String(j.parentId) === parent)
     );
     add(job.id, job.title);
     for (const m of mates) add(m.id, m.title);

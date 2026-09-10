@@ -341,6 +341,41 @@ test('agent_dm: aynı gruptaki üyelerin 1:1 DM\u2019leri GRUP İÇİNE düşer 
   eng.agentDmsClear();
 });
 
+test('finance ekibi: tüm finance ajanları TEK DM grubuna girer, mesajlar grup içinde toplanır', async () => {
+  const eng = makeEngine();
+  eng.flushPendingReports = () => {};
+  const mk = (id, title) => ({
+    id,
+    code: id.toUpperCase(),
+    title,
+    status: 'running',
+    continuous: true,
+    parentId: '',
+    groupId: null,
+    dmGroupId: 'team:finance',
+    dmGroupTitle: 'Beast Finance EKİP',
+  });
+  const j1 = mk('f1', 'Beast Finance · Trader');
+  const j2 = mk('f2', 'Finance · Risk Ajanı');
+  eng._bgJobs.set('f1', j1);
+  eng._agentTeamJoin(j1);
+  eng._bgJobs.set('f2', j2);
+  eng._agentTeamJoin(j2);
+  const list = eng.agentDmsList();
+  const g = list.groups.find((x) => x.id === 'team:finance');
+  assert.ok(g);
+  assert.equal(g.title, 'Beast Finance EKİP');
+  assert.ok(g.members.includes('f1') && g.members.includes('f2'));
+  /* f2 group VERMEDEN f1'e yazar → mesaj GRUP thread'ine düşer */
+  const dm = JSON.parse(await eng._execTool('agent_dm', { to: 'f1', message: 'risk raporu: SL eksik' }, null, 'f2'));
+  assert.equal(dm.ok, true);
+  assert.equal(dm.group, 'Beast Finance EKİP');
+  const dms = eng.agentDmsList().dms;
+  assert.equal(dms[dms.length - 1].group, 'team:finance');
+  /* temizleme */
+  eng.agentDmsClear();
+});
+
 test('agent_dm: aynı görevdeki paralel ajanlar OTOMATİK ekip grubuna girer (zorunlu)', async () => {
   const eng = makeEngine();
   eng.flushPendingReports = () => {};

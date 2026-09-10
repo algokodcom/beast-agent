@@ -117,6 +117,7 @@ contextBridge.exposeInMainWorld('beast', {
   financeAgentSpawn: (symbol) => ipcRenderer.invoke('finance:agent:spawn', { symbol }),
   financeConnect: () => ipcRenderer.invoke('finance:connect'),
   financeClose: (ticket, volume) => ipcRenderer.invoke('finance:close', { ticket, volume }),
+  financeCancel: (ticket) => ipcRenderer.invoke('finance:cancel', { ticket }),
   financeInstall: () => ipcRenderer.invoke('finance:install'),
   financeSymbolsList: (filter) => ipcRenderer.invoke('finance:symbols:list', filter),
   clipRead: () => ipcRenderer.invoke('clip:read'),

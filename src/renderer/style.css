@@ -4919,16 +4919,36 @@ body.finance-mode #composerWrap { margin-right: var(--finW, 400px); }
   color: #fff; /* kırmızı zeminde beyaz her iki temada da okunur */
 }
 
+/* TRADE AJANI kartı — vurgulu görünüm (accent çerçeve + yumuşak zemin) */
+.fin-card-trader {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent-dim), 0 2px 10px rgba(0, 0, 0, 0.1);
+  background: linear-gradient(180deg, var(--accent-dim), transparent 46%), var(--panel);
+}
+.fin-card-trader .fin-card-title { color: var(--text); }
+.fin-card-trader .fin-row { margin-bottom: 8px; }
+.fin-card-trader .fin-btn-row { margin-top: 2px; }
+.fin-btn-row .fin-start { flex: 1; width: 100%; padding: 7px 14px; }
+
 #finTraderStatus {
-  margin-top: 7px;
-  font-size: 11px;
+  margin-top: 8px;
+  font-size: 10.5px;
   color: var(--muted);
+  background: var(--panel2);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 5px 8px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
+#finTraderStatus::before { content: '● '; font-size: 9px; color: var(--muted); }
+#finTraderStatus.on { color: var(--text); border-color: var(--accent); }
+#finTraderStatus.on::before { color: #22c55e; }
+#finTraderStatus.on.busy { color: var(--accent); }
+#finTraderStatus.on.busy::before { color: #f59e0b; }
 
-#finPosList, #finSymList { display: flex; flex-direction: column; gap: 5px; }
+#finPosList, #finOrdList, #finSymList { display: flex; flex-direction: column; gap: 5px; }
 .fin-empty { font-size: 11px; color: var(--muted); padding: 2px 0 4px; }
 
 .fin-pos {
@@ -4967,6 +4987,8 @@ body.finance-mode #composerWrap { margin-right: var(--finW, 400px); }
   border-radius: 5px;
 }
 .fin-pos .fp-close:hover { background: rgba(239, 68, 68, 0.15); color: #ef4444; }
+/* bekleyen emir satırı: amber sol şerit ile pozisyondan ayrışır */
+.fin-pos.fin-ord { border-left: 2px solid #f59e0b; }
 
 .fin-sym {
   display: flex;

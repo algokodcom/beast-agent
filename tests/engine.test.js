@@ -285,6 +285,36 @@ test('agent_dm: grup sohbeti kurulur, tüm üyelere düşer, iş bitince kapanı
   eng.agentDmsClear();
 });
 
+test('agent_dm: TEK oturum silinir (agentDmDeleteThread), diğer oturumlar korunur', async () => {
+  const eng = makeEngine();
+  eng.flushPendingReports = () => {};
+  eng._bgJobs.set('a1', { id: 'a1', code: 'AAA', title: 'Finance · GOLD', status: 'running', continuous: true });
+  eng._bgJobs.set('a2', { id: 'a2', code: 'BBB', title: 'Kod İşçisi', status: 'running' });
+  /* üç ayrı oturum: genel 1:1, konulu 1:1, grup sohbeti */
+  const r1 = JSON.parse(await eng._execTool('agent_dm', { to: 'a2', message: 'merhaba' }, null, 'a1'));
+  assert.equal(r1.ok, true);
+  const r2 = JSON.parse(await eng._execTool('agent_dm', { to: 'a2', message: 'naber', topic: 'Rapor' }, null, 'a1'));
+  assert.equal(r2.ok, true);
+  const g = JSON.parse(await eng._execTool('agent_dm', { group: 'ALTIN EKİP', to: 'a2', message: 'grup mesajı' }, null, 'a1'));
+  assert.equal(g.ok, true);
+  assert.equal(eng.agentDmsList().dms.length, 3);
+  /* genel oturumu sil → konulu + grup kalır */
+  assert.equal(eng.agentDmDeleteThread('a1|a2|(genel)').removed, 1);
+  assert.equal(eng.agentDmsList().dms.length, 2);
+  assert.equal(eng.agentDmsList().dms[0].topic, 'Rapor');
+  /* konu anahtarı küçük harfe normalize edilir */
+  assert.equal(eng.agentDmDeleteThread('a1|a2|rapor').removed, 1);
+  /* grup oturumu: mesajlar gider, koşan ekip grubunun kaydı KORUNUR */
+  assert.equal(eng.agentDmDeleteThread('G|grp:altin ekip').removed, 1);
+  assert.ok(eng._agentGroups.get('grp:altin ekip'));
+  /* olmayan anahtara dokunulmaz */
+  assert.equal(eng.agentDmDeleteThread('x|y|(genel)').removed, 0);
+  /* boş key zarif hata */
+  assert.equal(eng.agentDmDeleteThread('').ok, false);
+  /* temizleme */
+  eng.agentDmsClear();
+});
+
 test('agent_dm: aynı görevdeki paralel ajanlar OTOMATİK ekip grubuna girer (zorunlu)', async () => {
   const eng = makeEngine();
   eng.flushPendingReports = () => {};

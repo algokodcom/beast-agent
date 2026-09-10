@@ -2156,6 +2156,15 @@ body.browser-open #settingsDialog { width: min(70vw, calc(100vw - var(--bw, 480p
   background: var(--accent-dim); color: var(--accent);
   border-radius: 8px; padding: 1px 7px; font-weight: 700;
 }
+/* oturum kartındaki TEK SİL butonu */
+.dmt-del {
+  flex: none; border: none; background: transparent;
+  color: var(--muted); font-size: 11px; line-height: 1;
+  padding: 2px 4px; border-radius: 5px; cursor: pointer;
+  opacity: 0; transition: opacity 0.12s ease;
+}
+.dmt:hover .dmt-del { opacity: 0.75; }
+.dmt-del:hover { opacity: 1; color: #e5484d; background: var(--panel2); }
 .dmt-last {
   font-size: 11px; margin-top: 4px;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
@@ -2202,6 +2211,16 @@ body.browser-open #settingsDialog { width: min(70vw, calc(100vw - var(--bw, 480p
   color: var(--muted);
   margin-top: 2px;
 }
+/* ajan adının yanındaki KOD rozeti (oturum id) */
+.dm-code {
+  font-size: 9px; font-weight: 700; letter-spacing: 0.5px;
+  color: var(--accent);
+  background: var(--accent-dim);
+  border-radius: 6px; padding: 0 4px; margin-left: 4px;
+  vertical-align: 1px;
+}
+.dmt-title .dm-code { margin-left: 3px; }
+.dmt-members .dm-code { margin-left: 2px; }
 
 /* ---------- AJAN DM modalı (✉) ---------- */
 #dmOverlay {
@@ -4845,6 +4864,26 @@ body.finance-mode #composerWrap { margin-right: var(--finW, 400px); }
   text-overflow: ellipsis;
 }
 .fin-check input { flex: none; width: auto; }
+/* ANALİZ EKİBİ: rol seçim kutuları (Risk / Teknik / Makro) */
+.fin-roles-row label { flex: none; font-size: 10px; color: var(--muted); min-width: 44px; }
+.fin-roles {
+  flex: 1; min-width: 0;
+  display: flex; flex-wrap: wrap; gap: 4px;
+}
+.fin-role {
+  flex: none;
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 10.5px; color: var(--text);
+  background: var(--panel2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 2px 8px 2px 5px;
+  cursor: pointer;
+  user-select: none;
+}
+.fin-role:hover { border-color: var(--accent); }
+.fin-role:has(input:checked) { border-color: var(--accent); color: var(--accent); background: var(--accent-dim); }
+.fin-role input { flex: none; width: auto; margin: 0; }
 .fin-start {
   flex: none;
   background: var(--accent);

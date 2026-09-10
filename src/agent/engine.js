@@ -1180,9 +1180,11 @@ class Engine {
             /* Beast Finance oturumu: kalıcı izolasyon etiketi (finoff kapatır) */
             session.finance = true;
             session.financeTrader = !!rec.trader;
+            if (rec.role) session.financeRole = String(rec.role);
           } else if (rec.t === 'finoff') {
             session.finance = false;
             session.financeTrader = false;
+            delete session.financeRole;
           } else if (rec.t === 'msg') {
             delete rec.t;
             session.messages.push(rec);
@@ -1333,12 +1335,17 @@ class Engine {
 
   /* Beast Finance etiketi: oturumu finance sohbeti olarak KALICI işaretler
      (jsonl'e 'fin' satırı düşer — restart sonrası da hatırlanır) */
-  markFinance(id, trader = false) {
+  markFinance(id, trader = false, role = '') {
     const s = this._load(String(id));
     s.finance = true;
     s.financeTrader = !!trader;
+    if (role) s.financeRole = String(role);
+    else delete s.financeRole;
     try {
-      fs.appendFileSync(this._file(s.id), JSON.stringify({ t: 'fin', trader: !!trader, at: nowIso() }) + '\n');
+      fs.appendFileSync(
+        this._file(s.id),
+        JSON.stringify({ t: 'fin', trader: !!trader, role: String(role || ''), at: nowIso() }) + '\n'
+      );
     } catch {}
     this.cache.set(String(s.id), s);
     return s;
@@ -1349,6 +1356,7 @@ class Engine {
     const s = this._load(String(id));
     s.finance = false;
     s.financeTrader = false;
+    delete s.financeRole;
     try {
       fs.appendFileSync(this._file(s.id), JSON.stringify({ t: 'finoff', at: nowIso() }) + '\n');
     } catch {}
@@ -1848,7 +1856,7 @@ class Engine {
 
   /* Beast Finance: MT5 trading ajanı — chat copilot'ı VEYA otonom trader.
      Oturum alanları (main enjekte eder): financeTrader, financeAuto,
-     financeSymbols, financeStrategy, financeLimits */
+     financeSymbols, financeStrategy, financeLimits, financeRole */
   buildFinanceSystem(session) {
     const nowD = new Date();
     const localDate = nowD.toLocaleDateString('tr-TR');
@@ -1875,6 +1883,17 @@ class Engine {
     const modeBlock2 = isWorker
       ? 'ROL: FİNANS İŞÇİSİ 🔎 — TEK bir görev için piyasa verisi toplar, analiz eder, RAPOR döndürürsün. mt5_trade/mt5_pending/mt5_close KULLANMA — yalnız okuma araçları (mt5_status/account/market/positions/orders/history). İş bitince kısa final raporu yaz.'
       : modeBlock;
+    /* ANALİZ EKİBİ rolü: trader'ın yanında koşan uzman ajanlar (risk/teknik/
+       makro) — hepsi İşlem AÇMAZ, kendi uzmanlık çerçevesinde rapor yazar */
+    const roleBlock =
+      ({
+        risk:
+          'ROL: RİSK AJANI 🛡 — portföyün RİSK GÖZCÜSÜSÜN, İşlem AÇMAZSIN (mt5_trade/mt5_pending/mt5_close KULLANMA). Her turda: hesap + pozisyonlar + marj kullanımı → kaldıraç/exposure değerlendirmesi; SL\u2019siz pozisyon, limit aşımı, tek yönlü birikme, günlük kayıp hızı risklerini raporla; net düzeltme önerisi ver (hangi pozisyon küçültülmeli/kapatılmalı).',
+        technic:
+          'ROL: TEKNİK ANALİZ AJANI 📊 — fiyat yapısı uzmanısın, İşlem AÇMAZSIN (mt5_trade/mt5_pending/mt5_close KULLANMA). Her turda odak semboller için: trend/yapı, destek-direnç bölgeleri, momentum (mt5_market + mt5_history verisiyle); sembol başına AL/SAT/BEKLE + giriş/SL/TP fikri üret — trader bu öneriyi işleme çevirir.',
+        macro:
+          'ROL: MAKRO AJANI 🌍 — büyük resim uzmanısın, İşlem AÇMAZSIN (mt5_trade/mt5_pending/mt5_close KULLANMA). Her turda web_search ile güncel makro manşetleri + ekonomik takvim riskleri (faiz, CPI, jeopolitik); DXY/altın/petrol bağıntılarını odak sembollere çevir; sembol başına yön eğilimi + TEMKİN/BEKLE notu ver.',
+      })[String((session && session.financeRole) || '')] || '';
     return (
       (mem.soul ? mem.soul.trim() + '\n\n' : '') +
       'Sen BEAST FİNANS\u2019sın — bilgisayardaki MetaTrader 5 (MT5) terminaline köprüyle bağlı trading ajanı.\n' +
@@ -1882,6 +1901,7 @@ class Engine {
       'KÖPRÜ: MT5 terminaline Python stdio köprüsüyle bağlısın; panel 3 saniyede bir hesap/pozisyon/piyasa verisini tazeler. mt5_* araç çağrıların ve işlem hareketlerin (açılan/kapanan pozisyonlar) SAĞ paneldeki AKIŞ akışına canlı düşer — panelin orayı izlediğini bil.\n' +
       'GÖREV ALANI: piyasa verisi okuma (fiyat/hesap/pozisyon/geçmiş), teknik değerlendirme, pozisyon yönetimi (aç/kapat/SL/TP), risk disiplini ve kısa karar raporları. Kod yazma işi DEĞİLDİR.\n' +
       modeBlock2 + '\n' +
+      (roleBlock ? roleBlock + '\n' : '') +
       'MT5 ARAÇLARI: mt5_status (bağlantı), mt5_account (hesap), mt5_market (canlı fiyat), mt5_positions (açık pozisyonlar), mt5_orders (bekleyen emirler), mt5_history (kapanan işlemler), mt5_trade (piyasa emri), mt5_close (kapat), mt5_modify (SL/TP), mt5_pending (bekleyen emir), mt5_cancel (emir iptal).\n' +
       'VERİ AKIŞI (her değerlendirmede): mt5_account + mt5_positions + mt5_market çağrılarını AYNI turda PARALEL ver; gerekiyorsa mt5_history ile son işlemleri gör.\n' +
       'PARALEL + KOORDİNASYON: uzun araştırma/işleri run_background ile paralel finance işçisine devret (parent finance olduğu için işçi mt5 okuma araçlarını görür); koşan ajanlarla konuşmak için agent_dm (to: ajan başlığındaki anahtar kelime, örn "GOLD"; ortak karar için group: "İSİM" ile grup sohbeti kur — mesaj tüm üyelere düşer). Görevin bitince DM/grup sohbetleri otomatik KAPANIR (geçmiş panelde kalır).\n' +
@@ -6567,6 +6587,32 @@ Engine.prototype.agentDmsClear = function () {
   this._agentGroups = new Map();
   try { fs.rmSync(this._agentDmsFile, { force: true }); } catch {}
   return { ok: true };
+};
+
+/* TEK OTURUM SİLME — renderer'daki dmThreadOf() ile BİREBİR AYNI anahtar
+   hesabı: verilen key'e düşen TÜM DM'ler silinir. Grup sohbetiyse ve grup
+   KAPALIYSA grup kaydı da kalkar; koşan ekip grubunun kaydı korunur ki
+   süren işin zorunlu grup akışı bozulmasın. */
+Engine.prototype._agentDmKeyOf = function (dm) {
+  if (dm && dm.group) return 'G|' + String(dm.group);
+  const a = String((dm && dm.from) || '');
+  const b = String((dm && dm.to) || '');
+  const pair = a < b ? a + '|' + b : b + '|' + a;
+  return pair + '|' + String((dm && dm.topic) || '(genel)').toLowerCase();
+};
+
+Engine.prototype.agentDmDeleteThread = function (key) {
+  key = String(key || '');
+  if (!key) return { ok: false, error: 'key gerekli' };
+  const before = (this._agentDms || []).length;
+  this._agentDms = (this._agentDms || []).filter((dm) => this._agentDmKeyOf(dm) !== key);
+  const removed = before - this._agentDms.length;
+  if (key.startsWith('G|')) {
+    const g = this._agentGroups && this._agentGroups.get(key.slice(2));
+    if (g && g.closed) this._agentGroups.delete(g.id);
+  }
+  if (removed) this._persistAgentDms();
+  return { ok: true, removed };
 };
 
 module.exports = Engine;

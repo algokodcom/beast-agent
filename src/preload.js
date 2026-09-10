@@ -22,6 +22,7 @@ contextBridge.exposeInMainWorld('beast', {
   agentsCancel: (id) => ipcRenderer.invoke('agents:cancel', id),
   agentDmsList: () => ipcRenderer.invoke('agent-dms:list'),
   agentDmsClear: () => ipcRenderer.invoke('agent-dms:clear'),
+  agentDmDeleteThread: (key) => ipcRenderer.invoke('agent-dms:delete-thread', key),
   toolsList: () => ipcRenderer.invoke('tools:list'),
   toolSave: (t) => ipcRenderer.invoke('tools:save', t),
   toolDelete: (id) => ipcRenderer.invoke('tools:delete', id),

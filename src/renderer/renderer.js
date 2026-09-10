@@ -49,6 +49,7 @@ const els = {
   dmDialogList: $('#dmDialogList'),
   dmModalClose: $('#dmModalClose'),
   dmModalClear: $('#dmModalClear'),
+  dmModalDel: $('#dmModalDel'),
   dmColumnBtn: $('#dmColumnBtn'),
   dmBackBtn: $('#dmBackBtn'),
   watchBtn: $('#watchBtn'),
@@ -172,6 +173,7 @@ const els = {
   finInterval: $('#finInterval'),
   finMaxLot: $('#finMaxLot'),
   finSymBtn: $('#finSymBtn'),
+  finRoles: $('#finRoles'),
   finWatchClear: $('#finWatchClear'),
   finAllow: $('#finAllow'),
   finTraderBtn: $('#finTraderBtn'),
@@ -5058,13 +5060,24 @@ function dmThreadClosed(msgs) {
   return !!last.closed;
 }
 
+/* ajan adının yanına KOD (oturum id) — kimin kim olduğunu netleştirir */
+function dmCode(code) {
+  const c = String(code || '').trim();
+  if (!c) return '';
+  return `<span class="dm-code">${escapeHtml(c.length > 14 ? c.slice(0, 14) + '…' : c)}</span>`;
+}
+
+function dmName(title, code) {
+  return `${escapeHtml(String(title || 'Ajan'))}${dmCode(code)}`;
+}
+
 function dmThreadTitle(dm) {
-  if (dm.group) return '👥 ' + String(dm.groupTitle || 'Grup');
-  const a = String(dm.fromTitle || 'Ajan');
-  const b = String(dm.toTitle || 'Ajan');
-  const pair = a < b ? a + ' ↔ ' + b : b + ' ↔ ' + a;
+  if (dm.group) return '👥 ' + escapeHtml(String(dm.groupTitle || 'Grup'));
+  const a = dmName(dm.fromTitle, dm.from);
+  const b = dmName(dm.toTitle, dm.to);
+  const pair = a + ' ↔ ' + b;
   const topic = String(dm.topic || '(genel)');
-  return topic === '(genel)' ? pair : pair + ' · ' + topic;
+  return topic === '(genel)' ? pair : pair + ' · ' + escapeHtml(topic);
 }
 
 function dmThreads() {
@@ -5087,8 +5100,8 @@ function dmTime(iso) {
 
 function dmMsgHtml(m) {
   const who = m.group
-    ? escapeHtml(String(m.fromTitle || 'Ajan'))
-    : `${escapeHtml(String(m.fromTitle || 'Ajan'))} → ${escapeHtml(String(m.toTitle || 'Ajan'))}`;
+    ? dmName(m.fromTitle, m.from)
+    : `${dmName(m.fromTitle, m.from)} → ${dmName(m.toTitle, m.to)}`;
   return (
     `<div class="dmt-msg"><span class="dm-who">${who}</span>` +
     `${escapeHtml(String(m.text || ''))}<span class="dm-at">${dmTime(m.at)}</span></div>`
@@ -5106,17 +5119,20 @@ function dmThreadCard(key, msgs, onClick) {
   if (last.group) {
     const g = dmGroupOf(last.group);
     if (g && Array.isArray(g.members) && g.members.length) {
-      const names = g.members.map((m) => (g.titles && g.titles[m]) || m).slice(0, 4);
-      membersLine = `<div class="dmt-members">👥 ${escapeHtml(names.join(', '))}</div>`;
+      const names = g.members.slice(0, 4).map((m) => dmName((g.titles && g.titles[m]) || m, m));
+      membersLine = `<div class="dmt-members">👥 ${names.join(', ')}</div>`;
     }
   }
   el.innerHTML =
     '<div class="dmt-head">' +
-    `<span class="dmt-title">${escapeHtml(dmThreadTitle(last))}</span>` +
+    `<span class="dmt-title">${dmThreadTitle(last)}</span>` +
     `<span class="dmt-count">${closed ? 'kapandı' : msgs.length}</span>` +
+    `<button class="dmt-del" title="Bu oturumu sil">&#x2715;&#xFE0E;</button>` +
     '</div>' +
     membersLine +
     `<div class="dmt-last">${escapeHtml(String(last.text || '').replace(/\s+/g, ' ').slice(0, 90))} · ${dmTime(last.at)}</div>`;
+  const del = el.querySelector('.dmt-del');
+  if (del) del.addEventListener('click', (ev) => { ev.stopPropagation(); dmDeleteThread(key); });
   el.addEventListener('click', onClick);
   return el;
 }
@@ -5182,6 +5198,7 @@ function renderDmModal() {
     list.innerHTML = '<div class="dm-empty">Henüz ajan DM\u2019i yok.<br>Ajanlar agent_dm aracıyla birbirine mesaj attıkça oturumlar birikir.</div>';
     if (els.dmDialogTitle) els.dmDialogTitle.textContent = 'AJAN DM — OTURUMLAR';
     if (els.dmBackBtn) els.dmBackBtn.hidden = true;
+    if (els.dmModalDel) els.dmModalDel.hidden = true;
     return;
   }
   if (dmState.modalThread) {
@@ -5191,8 +5208,9 @@ function renderDmModal() {
       dmState.modalThread = null;
       return renderDmModal();
     }
-    if (els.dmDialogTitle) els.dmDialogTitle.textContent = dmThreadTitle(msgs[msgs.length - 1]);
+    if (els.dmDialogTitle) els.dmDialogTitle.innerHTML = dmThreadTitle(msgs[msgs.length - 1]);
     if (els.dmBackBtn) els.dmBackBtn.hidden = false;
+    if (els.dmModalDel) els.dmModalDel.hidden = false;
     list.innerHTML = '<div class="dm-thread-msgs">' + msgs.map(dmMsgHtml).join('') + '</div>';
     const box = list.querySelector('.dm-thread-msgs');
     if (box) box.scrollTop = box.scrollHeight;
@@ -5201,6 +5219,7 @@ function renderDmModal() {
   /* OTURUM LİSTESİ — AKTİF + GEÇMİŞ bölümleri */
   if (els.dmDialogTitle) els.dmDialogTitle.textContent = 'AJAN DM — AKTİF & GEÇMİŞ';
   if (els.dmBackBtn) els.dmBackBtn.hidden = true;
+  if (els.dmModalDel) els.dmModalDel.hidden = true;
   list.innerHTML = '';
   dmAppendThreadSections(list, (key) => {
     dmState.modalThread = key;
@@ -5230,6 +5249,22 @@ async function dmClearAll() {
   toast('Ajan DM geçmişi silindi');
 }
 
+/* TEK OTURUM silme: yalnız bu sohbetin (ajan çifti + konu / grup) DM'leri gider */
+async function dmDeleteThread(key) {
+  const msgs = (dmThreads().find(([k]) => k === key) || [null, []])[1];
+  const last = msgs[msgs.length - 1];
+  const label = last
+    ? last.group
+      ? String(last.groupTitle || 'Grup')
+      : `${last.fromTitle || 'Ajan'} ↔ ${last.toTitle || 'Ajan'}`
+    : 'bu oturum';
+  if (!(await uiConfirm(`"${label}" oturumu silinsin mi?`, 'Sil'))) return;
+  try { await beast.agentDmDeleteThread(key); } catch {}
+  if (dmState.modalThread === key) dmState.modalThread = null;
+  await refreshDmRail();
+  toast('Oturum silindi');
+}
+
 if (els.dmBtn) {
   els.dmBtn.addEventListener('click', () => {
     /* kapalıyken (dm-hidden VAR) aç: toggle 'hide' SEMANTIĞI tersine çevrilir */
@@ -5238,6 +5273,11 @@ if (els.dmBtn) {
 }
 if (els.dmModalClose) els.dmModalClose.addEventListener('click', closeDmModal);
 if (els.dmModalClear) els.dmModalClear.addEventListener('click', dmClearAll);
+if (els.dmModalDel) {
+  els.dmModalDel.addEventListener('click', () => {
+    if (dmState.modalThread) dmDeleteThread(dmState.modalThread); // açık oturumu sil
+  });
+}
 if (els.dmBackBtn) {
   els.dmBackBtn.addEventListener('click', () => {
     dmState.modalThread = null; // oturum listesine dön
@@ -8889,6 +8929,48 @@ function finTraderInputsSet(cfg) {
   if (els.finTraderModel && ae !== els.finTraderModel && cfg.traderSel) els.finTraderModel.value = cfg.traderSel;
 }
 
+/* ANALİZ EKİBİ: trader yanında koşacak uzman ajan rolleri — katalog
+   sunucudan (finance snapshot/state.roles) gelir, yerel yedek listesiyle. */
+let finRolesCatalog = [
+  { id: 'risk', label: 'Risk Ajanı', desc: 'marj/kaldıraç/SL disiplini, exposure ve günlük kayıp hızı denetimi' },
+  { id: 'technic', label: 'Teknik Analiz', desc: 'trend/yapı/destek-direnç/momentum okuma, AL-SAT-BEKLE önerileri' },
+  { id: 'macro', label: 'Makro Ajan', desc: 'haber akışı + ekonomik takvim, DXY/emtia bağıntıları, yön eğilimi' },
+];
+let finRolesDirty = false; /* tık→kaydet arası snapshot ezmesin */
+let finRolesSyncTimer = null;
+
+function finRolesSel() {
+  const box = els.finRoles;
+  return box ? [...box.querySelectorAll('input:checked')].map((cb) => cb.dataset.role) : [];
+}
+
+function finRenderRoles(cfg) {
+  const box = els.finRoles;
+  if (!box) return;
+  if (finRolesDirty) return; /* bekleyen kullanıcı değişikliği korunur */
+  const sel = cfg && Array.isArray(cfg.analysisTeam) ? cfg.analysisTeam : [];
+  box.innerHTML = '';
+  for (const r of finRolesCatalog) {
+    const lab = document.createElement('label');
+    lab.className = 'fin-role';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.dataset.role = r.id;
+    cb.checked = sel.includes(r.id);
+    cb.title = r.desc + ' — tüm skill + mt5 erişimli, işlem açmaz';
+    lab.appendChild(cb);
+    lab.appendChild(document.createTextNode(r.label));
+    cb.addEventListener('change', () => {
+      finRolesDirty = true;
+      finSaveCfg({ analysisTeam: finRolesSel() });
+      toast(r.label + (cb.checked ? ' ekibe eklendi — sonraki başlatışta koşar' : ' ekipten çıkarıldı'));
+      clearTimeout(finRolesSyncTimer);
+      finRolesSyncTimer = setTimeout(() => { finRolesDirty = false; finSnapshot(); }, 900);
+    });
+    box.appendChild(lab);
+  }
+}
+
 function finRenderTrader(trader, cfg) {
   if (!els.finTraderBtn) return;
   const on = !!(trader && trader.on);
@@ -8906,9 +8988,11 @@ function finRenderTrader(trader, cfg) {
       t = ' · son tur ' + String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
     }
     const mode = cfg && cfg.allowTrading ? 'OTOMATİK' : 'analiz modu';
+    const team = cfg && Array.isArray(cfg.analysisTeam) ? cfg.analysisTeam.length : 0;
+    const teamTxt = team ? ' · ekip ' + team + ' ajan' : '';
     els.finTraderStatus.textContent = on
-      ? (trader.busy ? 'Tur çalışıyor…' : 'Beklemede — sıradaki tur ' + (cfg && cfg.intervalSec ? cfg.intervalSec + ' sn' : '')) + ' · tur #' + (trader.rounds || 0) + ' · ' + mode + t
-      : 'Kapalı · ' + mode;
+      ? (trader.busy ? 'Tur çalışıyor…' : 'Beklemede — sıradaki tur ' + (cfg && cfg.intervalSec ? cfg.intervalSec + ' sn' : '')) + ' · tur #' + (trader.rounds || 0) + ' · ' + mode + teamTxt + t
+      : 'Kapalı · ' + mode + teamTxt;
   }
 }
 
@@ -8946,7 +9030,9 @@ async function finSnapshot() {
   finRenderAccount(r.account);
   finRenderPositions(r.positions || []);
   finRenderSymbols(r.symbols || []);
+  if (Array.isArray(r.roles) && r.roles.length) finRolesCatalog = r.roles;
   finTraderInputsSet(r.cfg);
+  finRenderRoles(r.cfg);
   finRenderTrader(r.trader, r.cfg);
 }
 
@@ -9071,7 +9157,10 @@ if (els.finTraderBtn) {
     } else {
       const r = await beast.financeTraderStart().catch((e) => ({ ok: false, error: String((e && e.message) || e) }));
       if (r && !r.ok) toast(r.error || 'Trader başlatılamadı');
-      else if (r && r.ok) toast('Trade ajanı başladı — turlar panelde izlenir');
+      else if (r && r.ok) {
+        const team = finRolesSel().length;
+        toast(team ? 'Trade ajanı + analiz ekibi (' + team + ' uzman) başladı — turlar panelde izlenir' : 'Trade ajanı başladı — turlar panelde izlenir');
+      }
     }
     finSnapshot();
   });

@@ -5890,6 +5890,7 @@ ipcMain.handle('agents:cancel', (_e, id) => {
 /* AJAN DM paneli: ajanlar arası mesaj arşivi */
 ipcMain.handle('agent-dms:list', () => (engine ? engine.agentDmsList() : []));
 ipcMain.handle('agent-dms:clear', () => (engine ? engine.agentDmsClear() : { ok: false }));
+ipcMain.handle('agent-dms:delete-thread', (_e, key) => (engine ? engine.agentDmDeleteThread(key) : { ok: false }));
 
 /* ---------- KİŞİSEL TOOLLAR (%APPDATA%\beast\tools\) ---------- */
 ipcMain.handle('tools:list', () => customtools.list());
@@ -8318,11 +8319,29 @@ function finCfg() {
      (eski davranış EURUSD/XAUUSD/GBPUSD/BTCUSD'yi geri geri getiriyordu) */
   if (!Array.isArray(f.symbols)) f.symbols = [];
   if (typeof f.consultChat !== 'boolean') f.consultChat = true; /* her tur öncesi chat ajanından plan */
+  if (!Array.isArray(f.analysisTeam)) f.analysisTeam = []; /* trader yanında koşacak uzman roller */
   if (!Number(f.intervalSec)) f.intervalSec = 120;
   if (!Number(f.maxLot)) f.maxLot = 0.1;
   if (f.maxPositions == null) f.maxPositions = 3;
   if (typeof f.allowTrading !== 'boolean') f.allowTrading = false;
   return f;
+}
+
+/* ANALİZ EKİBİ: trader'ın yanında koşan uzman ajan rolleri — seçilen her rol
+   AYRI bir sürekli finance ajanı açar. Hepsi tüm SKILL'lere + mt5 okuma
+   araçlarına erişir (finance oturumu oldukları için), İŞLEM AÇMAZLAR. */
+const FIN_ROLES = [
+  { id: 'risk', label: 'Risk Ajanı', desc: 'marj/kaldıraç/SL disiplini, exposure ve günlük kayıp hızı denetimi' },
+  { id: 'technic', label: 'Teknik Analiz', desc: 'trend/yapı/destek-direnç/momentum okuma, AL-SAT-BEKLE önerileri' },
+  { id: 'macro', label: 'Makro Ajan', desc: 'haber akışı + ekonomik takvim, DXY/emtia bağıntıları, yön eğilimi' },
+];
+function finRolesValid(list) {
+  return (Array.isArray(list) ? list : [])
+    .map((r) => String(r || '').trim())
+    .filter((r) => FIN_ROLES.some((d) => d.id === r));
+}
+function finRoleDef(role) {
+  return FIN_ROLES.find((d) => d.id === String(role || '')) || null;
 }
 
 function financeLog(line) {
@@ -8451,7 +8470,8 @@ mt5bridge.on('log', (m) => {
    ajanlar). Döngüyü main yönetir; engine 'done'/'error'da sürekli işi
    KAPATMAZ (_bgFinish continuous dalı), yalnız kullanıcı iptali bitirir. */
 
-function finAgentSession(symbols, isMain) {
+function finAgentSession(symbols, isMain, role) {
+  role = String(role || '');
   if (isMain) {
     const sid = financeState.traderSid;
     if (sid) {
@@ -8465,7 +8485,12 @@ function finAgentSession(symbols, isMain) {
   const s = engine._load(engine.createSession().id);
   s.messages = s.messages || [];
   const symLabel = symbols && symbols.length ? symbols.join(', ').slice(0, 40) : 'tüm liste';
-  const title = isMain ? 'Beast Finance · Trader' : 'Finance · ' + symLabel;
+  const roleDef = finRoleDef(role);
+  const title = isMain
+    ? 'Beast Finance · Trader'
+    : roleDef
+      ? 'Finance · ' + roleDef.label + ' · ' + symLabel
+      : 'Finance · ' + symLabel;
   s.bgTitle = title; /* _view.isBg → sohbet geçmişinde gizli */
   try {
     fs.appendFileSync(
@@ -8474,7 +8499,7 @@ function finAgentSession(symbols, isMain) {
     );
   } catch {}
   engine.cache.set(s.id, s);
-  engine.markFinance(s.id, true); /* kalıcı finance etiketi (mt5_* araçları) */
+  engine.markFinance(s.id, true, role); /* kalıcı finance etiketi + rol (mt5_* araçları) */
   s.workspace = financeDir(); /* ajan kendi klasöründe çalışır */
   if (isMain) financeState.traderSid = s.id;
   return s;
@@ -8487,11 +8512,14 @@ function finAgentRegisterBg(s, symbols) {
     if (!engine || !engine._bgJobs) return;
     const f = finCfg();
     const symLabel = symbols && symbols.length ? symbols.join(', ').slice(0, 40) : 'tüm izleme listesi';
+    const roleDef = finRoleDef(s.financeRole);
     engine._bgJobs.set(String(s.id), {
       id: s.id,
       code: s.code,
       title: s.bgTitle || 'Finance Ajanı',
-      task: `Beast Finance ajanı (${symLabel}) — ${f.allowTrading ? 'otonom tur tur işlem yönetimi' : 'analiz modunda tur tur tarama'}`,
+      task:
+        `Beast Finance ${roleDef ? roleDef.label + ' (İşlem AÇMAZ — analiz ekibi)' : 'ajanı'} (${symLabel}) — ` +
+        `${f.allowTrading && !roleDef ? 'otonom tur tur işlem yönetimi' : 'analiz modunda tur tur tarama'}`,
       agent: null,
       parentId: '',
       groupId: null,
@@ -8510,29 +8538,33 @@ function finAgentRegisterBg(s, symbols) {
   } catch {}
 }
 
-function finApplyTraderFields(s, symbolsOverride) {
+function finApplyTraderFields(s, symbolsOverride, role) {
   const f = finCfg();
+  const r = String(role || s.financeRole || '');
   s.finance = true;
   s.financeTrader = true;
-  s.financeAuto = f.allowTrading === true;
+  s.financeRole = r;
+  /* rol ajanları ASLA işlem açmaz — otomatik işlem açıksa bile yalnız analiz */
+  s.financeAuto = f.allowTrading === true && !r;
   s.financeSymbols = Array.isArray(symbolsOverride) && symbolsOverride.length ? symbolsOverride : f.symbols;
   s.financeStrategy = String(f.strategy || '');
   s.financeLimits = { maxLot: f.maxLot, maxPositions: f.maxPositions };
   engine.cache.set(String(s.id), s);
 }
 
-/* Yeni finance ajanı aç (ana trader YA DA sembol işçisi) */
-function finAgentCreate(symbols, isMain) {
+/* Yeni finance ajanı aç (ana trader YA DA sembol işçisi YA DA analiz ekibi rolü) */
+function finAgentCreate(symbols, isMain, role) {
   const f = finCfg();
-  const s = finAgentSession(symbols, isMain);
+  const s = finAgentSession(symbols, isMain, role);
   const record = {
     symbols: symbols && symbols.length ? symbols.slice(0, 10) : [...(f.symbols || [])],
     main: !!isMain,
+    role: String(role || ''),
     round: 0,
     timer: null,
   };
   financeState.agents.set(String(s.id), record);
-  finApplyTraderFields(s, record.symbols);
+  finApplyTraderFields(s, record.symbols, record.role);
   finAgentRegisterBg(s, record.symbols);
   return { s, agent: record };
 }
@@ -8566,18 +8598,24 @@ function finAgentStop(sid, reason) {
 function finTraderBrief(agent) {
   const f = finCfg();
   const syms = agent && agent.symbols && agent.symbols.length ? agent.symbols.join(', ') : (f.symbols || []).join(', ');
-  const who = agent && agent.main ? 'TRADER' : 'FINANCE AJANI';
+  const roleDef = finRoleDef(agent && agent.role);
+  const who = agent && agent.main ? 'TRADER' : roleDef ? roleDef.label.toUpperCase() : 'FINANCE AJANI';
   return [
     `Beast Finance ${who} başlatıldı — ilk tur: strateji çerçeveni kur ve piyasa taramasını yap.`,
     `Odak semboller: ${syms || '(boş — mt5_status ile terminale bak, mantıklı semboller seç)'}`,
     `Tur aralığı: ${f.intervalSec} sn · Max lot: ${f.maxLot} · Max eşzamanlı pozisyon: ${f.maxPositions}`,
-    f.allowTrading
-      ? 'Otomatik işlem AÇIK: mt5_trade/mt5_close/mt5_modify/mt5_pending kullanabilirsin (limitler sistemce zorlanır).'
-      : 'Otomatik işlem KAPALI: SADECE analiz + net işlem önerileri yaz (sembol, yön, giriş, SL, TP, sebep); işlem açma.',
-    f.strategy ? `Sahibinin strateji notu: ${f.strategy}` : 'Strateji notu yok: trend + destek/direnç + momentum ile temel okuma yap.',
+    roleDef
+      ? `UZMANLIK: ${roleDef.desc} — raporlarını bu çerçevede yaz; İŞLEM AÇMA, yalnız analiz + net öneri üret.`
+      : f.allowTrading
+        ? 'Otomatik işlem AÇIK: mt5_trade/mt5_close/mt5_modify/mt5_pending kullanabilirsin (limitler sistemce zorlanır).'
+        : 'Otomatik işlem KAPALI: SADECE analiz + net işlem önerileri yaz (sembol, yön, giriş, SL, TP, sebep); işlem açma.',
+    roleDef
+      ? 'Bulgularını agent_dm ile ANA TRADER\u2019a bildir (to: "Trader" ya da ajan başlığı anahtarı); teknik/öneri çelişkisi varsa gerekçenle yaz.'
+      : f.strategy ? `Sahibinin strateji notu: ${f.strategy}` : 'Strateji notu yok: trend + destek/direnç + momentum ile temel okuma yap.',
+    !roleDef && f.strategy ? `Sahibinin strateji notu: ${f.strategy}` : '',
     'Bu turda: mt5_status → hesap/pozisyon/fiyat verisi → değerlendirme → kararlar (veya BEKLE: sebep) → kısa rapor.',
     'Diğer finance/paralel ajanlarla koordinasyon için agent_dm aracı var (to: ajan başlığı anahtar kelimesi).',
-  ].join('\n');
+  ].filter(Boolean).join('\n');
 }
 
 /* Her tur öncesi CHAT AJANINDAN plan iste: aynı motorun odaklı alt-ajanı
@@ -8643,15 +8681,18 @@ function finAgentRound(sid) {
   agent.round += 1;
   if (agent.main) financeState.traderRounds = agent.round;
   const f = finCfg();
+  const roleDef = finRoleDef(agent.role);
   try {
     const s = engine.cache.get(String(sid));
-    if (s) finApplyTraderFields(s, agent.symbols);
+    if (s) finApplyTraderFields(s, agent.symbols, agent.role);
   } catch {}
-  const auto = f.allowTrading
-    ? 'İşlem açabilirsin — limitlere uy, SL\u2019siz pozisyon bırakma.'
-    : 'Otomatik işlem KAPALI — sadece analiz + öneri.';
+  const auto = roleDef
+    ? `UZMANLIK: ${roleDef.desc} — İŞLEM AÇMA, yalnız analiz + net öneri.`
+    : f.allowTrading
+      ? 'İşlem açabilirsin — limitlere uy, SL\u2019siz pozisyon bırakma.'
+      : 'Otomatik işlem KAPALI — sadece analiz + öneri.';
   const focus = agent.symbols.length ? `Odak: ${agent.symbols.join(', ')}. ` : '';
-  const round = `FINANCE TUR #${agent.round}: ${focus}hesap + pozisyonlar + fiyatları çek; açık pozisyonları yönet (SL/TP güncelle, hedefe ulaşanı kapat); stratejine göre yeni fırsatları değerlendir. ${auto} Kısa rapor ver.`;
+  const round = `FINANCE TUR #${agent.round}: ${focus}hesap + pozisyonlar + fiyatları çek; ${roleDef ? 'rolüne uygun analiz yap ve öneri ver.' : 'açık pozisyonları yönet (SL/TP güncelle, hedefe ulaşanı kapat); stratejine göre yeni fırsatları değerlendir.'} ${auto} Kısa rapor ver.`;
   const launch = (planBlock) => {
     if (!financeState.agents.has(String(sid))) return;
     const ok = engine.send(sid, planBlock + round, { userAction: false });
@@ -8664,8 +8705,8 @@ function finAgentRound(sid) {
       agent.timer = setTimeout(() => { try { finAgentRound(sid); } catch {} }, 30000);
     }
   };
-  if (f.consultChat === false) {
-    /* danışma kapalı: tur doğrudan başlar */
+  if (f.consultChat === false || roleDef) {
+    /* danışma kapalı ya da rol ajanı (plan trader'a yöneliktir): tur doğrudan başlar */
     launch('');
     return;
   }
@@ -8703,6 +8744,7 @@ ipcMain.handle('finance:state', async () => {
     ok: true,
     mode: financeState.mode,
     cfg: f,
+    roles: FIN_ROLES,
     bridge: mt5bridge.status(),
     trader: { on: financeState.traderOn, busy, rounds: financeState.traderRounds, lastAt: financeState.lastRoundAt, sid: financeState.traderSid },
     models: engine ? engine.publicState().models : [],
@@ -8733,6 +8775,7 @@ ipcMain.handle('finance:snapshot', async () => {
     positions,
     symbols,
     cfg: f,
+    roles: FIN_ROLES,
     trader: { on: financeState.traderOn, busy, rounds: financeState.traderRounds, lastAt: financeState.lastRoundAt },
   };
 });
@@ -8804,6 +8847,7 @@ ipcMain.handle('finance:settings', async (_e, patch) => {
   if (p.maxPositions !== undefined) f.maxPositions = Math.max(1, Math.min(20, Math.round(Number(p.maxPositions) || 3)));
   if (p.allowTrading !== undefined) f.allowTrading = !!p.allowTrading;
   if (p.strategy !== undefined) f.strategy = String(p.strategy || '').slice(0, 2000);
+  if (p.analysisTeam !== undefined) f.analysisTeam = finRolesValid(p.analysisTeam);
   if (p.pythonPath !== undefined) f.pythonPath = String(p.pythonPath || '').trim();
   if (p.terminalPath !== undefined) f.terminalPath = String(p.terminalPath || '').trim();
   if (p.traderSel !== undefined) {
@@ -8860,24 +8904,54 @@ async function financeTraderStart() {
   financeState.lastRoundAt = Date.now();
   financeLog('[trader] başlatıldı (model: ' + (f.traderSel || 'genel aktif model') + ')');
   finPush('trader', { state: 'running', round: mainAgent.round });
+  /* ANALİZ EKİBİ: seçili roller için ayrı sürekli ajanlar (koşmıyorsa) */
+  finTeamStart(f);
   return { ok: true, sid: mainSid };
+}
+
+/* ANALİZ EKİBİ: seçili her rol için AYRI sürekli finance ajanı — hepsi
+   tüm SKILL'lere + mt5 okuma araçlarına erişir, İŞLEM AÇMAZ. */
+function finTeamStart(f) {
+  const roles = finRolesValid((f && f.analysisTeam) || []);
+  if (!roles.length) return;
+  const running = new Set();
+  for (const [, a] of financeState.agents) {
+    if (a.role) running.add(a.role);
+  }
+  for (const roleId of roles) {
+    if (running.has(roleId)) continue;
+    const roleDef = finRoleDef(roleId);
+    try {
+      const created = finAgentCreate([], false, roleId);
+      try { engine.setSessionModel(created.s.id, f.traderSel || null); } catch {}
+      const ok = engine.send(created.s.id, finTraderBrief(created.agent), { userAction: true });
+      if (!ok) {
+        finAgentStop(String(created.s.id), 'oturum meşgul — ekip ajanı başlatılamadı');
+        financeLog('[ekip] ' + roleDef.label + ' başlatılamadı: oturum meşgul');
+      } else {
+        financeLog('[ekip] ' + roleDef.label + ' başladı — analiz turu koşuyor (İşlem AÇMAZ)');
+      }
+    } catch (e) {
+      financeLog('[ekip] ' + roleDef.label + ' hatası: ' + String((e && e.message) || e));
+    }
+  }
 }
 
 ipcMain.handle('finance:trader:start', () => financeTraderStart());
 
 ipcMain.handle('finance:trader:stop', async () => {
   financeState.traderOn = false;
-  /* ANA trader'ı durdur (sembol işçileri rail × ile ayrı durdurulur) */
+  /* ANA trader + ANALİZ EKİBİ durdurulur (sembol işçileri rail × ile ayrı durdurulur) */
   let mainSid = '';
+  const teamSids = [];
   for (const [sid, a] of financeState.agents) {
-    if (a.main) {
-      mainSid = sid;
-      break;
-    }
+    if (a.main) mainSid = sid;
+    else if (a.role) teamSids.push(sid);
   }
   const stopped = mainSid ? finAgentStop(mainSid, 'kullanıcı Beast Finance trader ajanını durdurdu') : false;
+  for (const sid of teamSids) finAgentStop(sid, 'kullanıcı Beast Finance ekip ajanını durdurdu');
   const interrupted = !!stopped;
-  financeLog('[trader] durduruldu');
+  financeLog('[trader] durduruldu' + (teamSids.length ? ' (ekip: ' + teamSids.length + ' ajan)' : ''));
   finPush('trader', { state: 'stopped' });
   return { ok: true, interrupted };
 });

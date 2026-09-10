@@ -120,6 +120,7 @@ contextBridge.exposeInMainWorld('beast', {
   financeCancel: (ticket) => ipcRenderer.invoke('finance:cancel', { ticket }),
   financeInstall: () => ipcRenderer.invoke('finance:install'),
   financeSymbolsList: (filter) => ipcRenderer.invoke('finance:symbols:list', filter),
+  financeReport: () => ipcRenderer.invoke('finance:report'),
   clipRead: () => ipcRenderer.invoke('clip:read'),
   clipWrite: (t) => ipcRenderer.invoke('clip:write', t),
   thinkSet: (v) => ipcRenderer.invoke('think:set', v),

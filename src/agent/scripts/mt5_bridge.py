@@ -291,6 +291,69 @@ def h_cancel(p):
     return {"result": _send_request(req)}
 
 
+def h_rates(p):
+    """OHLC mumlar: symbol + timeframe (M1..MN1) + count (1..1000)."""
+    need()
+    symbol = str(p.get("symbol") or "").strip().upper()
+    if not symbol:
+        raise RuntimeError("symbol zorunlu")
+    tf_name = str(p.get("timeframe") or "M15").strip().upper()
+    tf_map = {
+        "M1": mt5.TIMEFRAME_M1, "M2": mt5.TIMEFRAME_M2, "M3": mt5.TIMEFRAME_M3,
+        "M4": mt5.TIMEFRAME_M4, "M5": mt5.TIMEFRAME_M5, "M6": mt5.TIMEFRAME_M6,
+        "M10": mt5.TIMEFRAME_M10, "M12": mt5.TIMEFRAME_M12, "M15": mt5.TIMEFRAME_M15,
+        "M20": mt5.TIMEFRAME_M20, "M30": mt5.TIMEFRAME_M30,
+        "H1": mt5.TIMEFRAME_H1, "H2": mt5.TIMEFRAME_H2, "H3": mt5.TIMEFRAME_H3,
+        "H4": mt5.TIMEFRAME_H4, "H6": mt5.TIMEFRAME_H6, "H8": mt5.TIMEFRAME_H8,
+        "H12": mt5.TIMEFRAME_H12,
+        "D1": mt5.TIMEFRAME_D1, "W1": mt5.TIMEFRAME_W1, "MN1": mt5.TIMEFRAME_MN1,
+    }
+    if tf_name not in tf_map:
+        raise RuntimeError("timeframe: " + "|".join(tf_map.keys()))
+    try:
+        count = int(p.get("count") or 200)
+    except Exception:
+        count = 200
+    count = max(1, min(count, 1000))
+    mt5.symbol_select(symbol, True)
+    rates = mt5.copy_rates_from_pos(symbol, tf_map[tf_name], 0, count)
+    if rates is None:
+        raise RuntimeError("mum verisi alinamadi: %s %s %s" % (symbol, tf_name, mt5.last_error()))
+    rows = []
+    for r in rates:
+        rows.append({
+            "time": int(r["time"]),
+            "open": float(r["open"]),
+            "high": float(r["high"]),
+            "low": float(r["low"]),
+            "close": float(r["close"]),
+            "tick_volume": int(r["tick_volume"]),
+            "spread": int(r["spread"]),
+            "real_volume": int(r["real_volume"]),
+        })
+    return {"symbol": symbol, "timeframe": tf_name, "count": len(rows), "rates": rows}
+
+
+def h_margin(p):
+    """order_calc_margin: tahmini gerekli marj (islem oncesi kalkan icin)."""
+    need()
+    symbol = str(p.get("symbol") or "").strip().upper()
+    side = str(p.get("side") or "buy").lower()
+    volume = float(p.get("volume") or 0)
+    if not symbol or volume <= 0 or side not in ("buy", "sell"):
+        raise RuntimeError("symbol/side/volume zorunlu")
+    mt5.symbol_select(symbol, True)
+    price = float(p.get("price") or 0)
+    if price <= 0:
+        tick = mt5.symbol_info_tick(symbol)
+        if tick is None:
+            raise RuntimeError("tick alinamadi: " + symbol)
+        price = tick.ask if side == "buy" else tick.bid
+    order_type = mt5.ORDER_TYPE_BUY if side == "buy" else mt5.ORDER_TYPE_SELL
+    m = mt5.order_calc_margin(order_type, symbol, volume, price)
+    return {"margin": (float(m) if m is not None else None), "price": price}
+
+
 def h_all_symbols(p):
     """Terminaldeki tum semboller (sembol secici icin). filter: '*XAU*' gibi."""
     need()
@@ -316,6 +379,7 @@ HANDLERS = {
     "terminal": h_terminal,
     "symbols": h_symbols,
     "all_symbols": h_all_symbols,
+    "rates": h_rates,
     "positions": h_positions,
     "orders": h_orders,
     "deals": h_deals,
@@ -324,6 +388,7 @@ HANDLERS = {
     "modify": h_modify,
     "pending": h_pending,
     "cancel": h_cancel,
+    "margin": h_margin,
 }
 
 

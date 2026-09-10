@@ -5477,7 +5477,7 @@ const skills = require('./skills');
       ) {
         return JSON.stringify({ ok: false, error: `unknown tool ${name}` });
       }
-      return await tools.exec(name, args, { cwd: this._sessionWorkspace(sessionId), signal, wantDiff: true });
+      return await tools.exec(name, args, { cwd: this._sessionWorkspace(sessionId), signal, wantDiff: true, sessionId });
     } catch (e) {
       return JSON.stringify({ ok: false, error: String((e && e.message) || e) });
     }

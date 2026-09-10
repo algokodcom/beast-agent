@@ -3714,6 +3714,7 @@ app.whenReady().then(() => {
 
     app.on('before-quit', () => {
       app.isQuitting = true;
+      try { finWatchStop(); } catch {} // finance watchdog zamanlayıcısını kapat
       flushBrowserStorage(); // x.com/google oturumları (cookies) diske yazılsın
       try { toolsMod.disposeShellSessions(); } catch {} // kalıcı shell oturumlarını kapat
       try { require('./agent/mcp').stopAll(); } catch {} // MCP server süreçlerini kapat
@@ -8417,6 +8418,8 @@ function studioWatchStop() {
 const mt5bridge = require('./mt5bridge');
 const financetools = require('./agent/financetools');
 const customtools = require('./agent/customtools');
+const finwatch = require('./agent/finwatch');
+const finstats = require('./agent/finstats');
 
 const financeState = {
   mode: false, /* chat oturumları finance bayrağı alıyor mu */
@@ -8427,6 +8430,20 @@ const financeState = {
   installing: false,
   installTried: false,
   agents: new Map(), /* sid -> { symbols, main, round, timer } — AYNI ANDA koşan finance ajanları */
+  watch: new Map(), /* ticket -> risk otomasyonu durumu (R, BE, kısmi TP...) */
+  watchTimer: null,
+  watchBusy: false,
+  watchTickAt: 0,
+  alerts: [], /* fiyat alarmları (kalıcı: finance/alerts.json) */
+  stats: null, /* son performans özeti (kalıcı: finance/stats.json) */
+  statsAt: 0,
+  lastStatsAt: 0,
+  equity: [], /* equity örnekleri (kalıcı: finance/equity.jsonl) */
+  account: null,
+  dayStart: null,
+  reportCheckAt: 0,
+  flattening: false,
+  breachBusy: false,
 };
 
 function financeDir() {
@@ -8468,6 +8485,30 @@ function finCfg() {
   if (!Number(f.intervalSec)) f.intervalSec = 120;
   if (!Number(f.maxLot)) f.maxLot = 0.1;
   if (f.maxPositions == null) f.maxPositions = 3;
+  /* RİSK OTOMASYONU (watchdog): +R'da BE, trailing, kısmi TP — main süreç
+     saniyelik döngüyle uygular; ajan turunu BEKLEMEZ. 0 = ilgili kural kapalı. */
+  if (typeof f.watchdog !== 'boolean') f.watchdog = true;
+  if (!Number.isFinite(Number(f.beOnR))) f.beOnR = 1;
+  if (!Number.isFinite(Number(f.beOffsetR))) f.beOffsetR = 0.05;
+  if (!Number.isFinite(Number(f.trailStartR))) f.trailStartR = 1.5;
+  if (!Number.isFinite(Number(f.trailR))) f.trailR = 0.5;
+  if (!Number.isFinite(Number(f.partialR))) f.partialR = 0;
+  if (!Number.isFinite(Number(f.partialPct))) f.partialPct = 50;
+  /* BİLDİRİM: işlem/koruma/alarm olayları bağlı kanallara (TG/WA/Discord)
+     gider; 'auto' = bağlı olanlar, 'off' = yalnız panel/masaüstü */
+  if (typeof f.notifyTarget !== 'string') f.notifyTarget = 'auto';
+  if (typeof f.notifyTrades !== 'boolean') f.notifyTrades = true;
+  if (typeof f.notifyWatchdog !== 'boolean') f.notifyWatchdog = true;
+  if (!Number.isFinite(Number(f.maxDailyLossPct))) f.maxDailyLossPct = 3;
+  /* GÜNLÜK LİMİT AKSİYONU: warn = yalnız uyarı; stop = tüm finance ajanlarını
+     durdur; flatten = durdur + tüm pozisyonları kapat */
+  if (!['warn', 'stop', 'flatten'].includes(String(f.dailyLossAction))) f.dailyLossAction = 'stop';
+  /* İŞLEM ÖNCESİ RİSK KATMANI: %risk lot + yoğunluk + marj kalkanı */
+  if (!Number.isFinite(Number(f.riskPerTradePct))) f.riskPerTradePct = 1;
+  if (!Number.isFinite(Number(f.maxPerSymbol))) f.maxPerSymbol = 2;
+  if (!Number.isFinite(Number(f.maxSameSide))) f.maxSameSide = 3;
+  if (!Number.isFinite(Number(f.minMarginLevel))) f.minMarginLevel = 150;
+  if (f.weeklyReport == null) f.weeklyReport = true;
   return f;
 }
 
@@ -8503,21 +8544,605 @@ function finPush(fn, data) {
   } catch {}
 }
 
-/* financetools ayar + bildirim kancası */
+/* ---------- FINANCE KALICILIK + BİLDİRİM + RİSK OTOMASYONU ---------- */
+
+function finFile(name) {
+  return path.join(financeDir(), String(name || ''));
+}
+
+function finReadJson(file, def) {
+  try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return def; }
+}
+
+function finWriteJson(file, obj) {
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify(obj, null, 2));
+  } catch {}
+}
+
+/* İşlem günlüğü: her karar (gerekçe notu, açılış, koruma, alarm, kapanış)
+   finance/journal.jsonl'a düşer; haftalık rapor buradan beslenir. */
+function finJournal(entry) {
+  const e = { at: Date.now(), ...entry };
+  try {
+    const p = finFile('journal.jsonl');
+    try {
+      if (fs.statSync(p).size > 3 * 1024 * 1024) fs.renameSync(p, finFile('journal-old.jsonl'));
+    } catch {}
+    fs.appendFileSync(p, JSON.stringify(e) + '\n');
+  } catch {}
+  return e;
+}
+
+function finJournalTail(n) {
+  try {
+    const lines = fs.readFileSync(finFile('journal.jsonl'), 'utf8').trim().split('\n');
+    return lines
+      .slice(-Math.max(1, Math.min(500, Number(n) || 20)))
+      .map((l) => { try { return JSON.parse(l); } catch { return null; } })
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+function finAgentInfo(sid) {
+  try {
+    const a = financeState.agents.get(String(sid || ''));
+    if (a) {
+      const role = String(a.role || '');
+      const def = role ? finRoleDef(role) : null;
+      return { main: !!a.main, role: role || (a.main ? 'trader' : 'worker'), label: def ? def.label : a.main ? 'Trader' : 'Sembol Ajanı' };
+    }
+    /* işçi kaydı yoksa (chat copilot'ı vb.) oturumdan başlık/rol oku */
+    if (sid && engine) {
+      const s = engine.cache.get(String(sid)) || engine._load(String(sid));
+      if (s && s.finance) {
+        const def = s.financeRole ? finRoleDef(s.financeRole) : null;
+        return { main: false, role: String(s.financeRole || 'chat'), label: def ? def.label : s.bgTitle ? String(s.bgTitle) : 'Finance Chat' };
+      }
+    }
+  } catch {}
+  return {};
+}
+
+/* Bildirim: panel/masaüstü toast + istenen kanal (Telegram/WhatsApp/Discord).
+   Kanal seçimi finCfg().notifyTarget: auto|whatsapp|telegram|discord|off
+   panel=false → panel toast'ı atla (çağıran zaten finPush('trade') yaptıysa). */
+function financeNotify(text, kind, panel) {
+  const line = String(text || '').trim();
+  if (!line) return;
+  if (panel !== false) finPush('notify', { line, kind: kind || '' });
+  let cfg;
+  try { cfg = finCfg(); } catch { cfg = {}; }
+  const target = String((cfg && cfg.notifyTarget) || 'auto');
+  if (target === 'off') return;
+  const body = '💼 *Beast Finance*\n' + line;
+  const senders = [];
+  try {
+    if ((target === 'whatsapp' || target === 'auto') && wa && wa.connected) {
+      const own = waOwnerNum();
+      if (own) {
+        const jid = own + '@s.whatsapp.net';
+        senders.push(() => sendWaSafe(jid, body));
+      }
+    }
+  } catch {}
+  try {
+    if ((target === 'telegram' || target === 'auto') && tg && tg.connected) {
+      for (const id of tgOwnerIds()) senders.push(() => sendTgSafe(id, body));
+    }
+  } catch {}
+  try {
+    if ((target === 'discord' || target === 'auto') && dc && dc.connected) {
+      for (const id of dcOwnerIds()) senders.push(() => sendDcSafe(id, body));
+    }
+  } catch {}
+  for (const fn of senders) {
+    try { Promise.resolve(fn()).catch(() => {}); } catch {}
+  }
+}
+
+/* ---- fiyat alarmları (kalıcı) ---- */
+function finAlertsLoad() {
+  const raw = finReadJson(finFile('alerts.json'), []);
+  financeState.alerts = (Array.isArray(raw) ? raw : [])
+    .map((a) => ({
+      id: String(a && a.id ? a.id : ''),
+      symbol: String((a && a.symbol) || '').toUpperCase(),
+      price: Number(a && a.price) || 0,
+      direction: String((a && a.direction) || 'above').toLowerCase(),
+      note: String((a && a.note) || '').slice(0, 200),
+      at: Number(a && a.at) || Date.now(),
+    }))
+    .filter((a) => a.id && a.symbol && a.price > 0);
+}
+
+function finAlertsSave() {
+  finWriteJson(finFile('alerts.json'), financeState.alerts);
+}
+
+function finAlertApi() {
+  return {
+    list: () => financeState.alerts.slice(),
+    set: (a) => {
+      const symbol = String((a && a.symbol) || '').toUpperCase();
+      const price = Number(a && a.price);
+      if (!symbol || !(price > 0)) return null;
+      const alarm = {
+        id: 'a' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+        symbol,
+        price,
+        direction: String((a && a.direction) || 'above').toLowerCase() === 'below' ? 'below' : 'above',
+        note: String((a && a.note) || '').slice(0, 200),
+        at: Date.now(),
+      };
+      financeState.alerts.push(alarm);
+      finAlertsSave();
+      financeLog(`[alarm] kuruldu: ${alarm.symbol} ${alarm.direction === 'below' ? '≤' : '≥'} ${alarm.price}`);
+      return alarm;
+    },
+    remove: (id) => {
+      const before = financeState.alerts.length;
+      financeState.alerts = financeState.alerts.filter((a) => a.id !== String(id));
+      if (financeState.alerts.length !== before) {
+        finAlertsSave();
+        financeLog('[alarm] silindi: ' + id);
+        return true;
+      }
+      return false;
+    },
+  };
+}
+
+/* ---- equity serisi + günlük kayıp uyarısı ---- */
+function finEquityLoad() {
+  if (financeState.equity && financeState.equity.length) return financeState.equity;
+  try {
+    const lines = fs.readFileSync(finFile('equity.jsonl'), 'utf8').trim().split('\n');
+    financeState.equity = lines
+      .slice(-4000)
+      .map((l) => { try { return JSON.parse(l); } catch { return null; } })
+      .filter((p) => p && isFinite(Number(p.equity)));
+  } catch {
+    financeState.equity = [];
+  }
+  return financeState.equity;
+}
+
+function finEquitySample(account) {
+  const eq = Number(account && account.equity);
+  if (!isFinite(eq)) return;
+  finEquityLoad();
+  const last = financeState.equity.length ? financeState.equity[financeState.equity.length - 1] : null;
+  const now = Date.now();
+  if (last && now - Number(last.at) < 30000) return;
+  const point = { at: now, equity: eq, balance: Number(account.balance) || 0 };
+  financeState.equity.push(point);
+  try {
+    fs.appendFileSync(finFile('equity.jsonl'), JSON.stringify(point) + '\n');
+    if (financeState.equity.length > 4000) {
+      financeState.equity = financeState.equity.slice(-2500);
+      fs.writeFileSync(finFile('equity.jsonl'), financeState.equity.map((p) => JSON.stringify(p)).join('\n') + '\n');
+    }
+  } catch {}
+  finDailyLossCheck(point);
+}
+
+function finDailyLossCheck(point) {
+  const cfg = finCfg();
+  const day = finstats.dayKey(point.at);
+  let ds = financeState.dayStart;
+  if (!ds || ds.day !== day) {
+    financeState.dayStart = ds = { day, equity: Number(point.balance) > 0 ? Number(point.balance) : point.equity, warned: false, acted: false };
+  }
+  if (ds.warned || !(Number(cfg.maxDailyLossPct) > 0) || !(ds.equity > 0)) return;
+  const dd = ((ds.equity - point.equity) / ds.equity) * 100;
+  if (dd >= Number(cfg.maxDailyLossPct)) {
+    ds.warned = true;
+    const action = String(cfg.dailyLossAction || 'stop');
+    const tail = action === 'flatten' ? ' — ajanlar durduruldu, pozisyonlar kapatılıyor' : action === 'stop' ? ' — ajanlar durduruldu' : '';
+    const line = `⚠️ Günlük kayıp %${dd.toFixed(2)} (limit %${cfg.maxDailyLossPct})${tail}`;
+    financeLog('[risk] ' + line);
+    financeNotify(line, 'drawdown');
+    finJournal({ kind: 'drawdown', pct: Math.round(dd * 100) / 100, action });
+    if (action === 'stop' || action === 'flatten') {
+      finDailyLossBreach(action).catch(() => {});
+    }
+  }
+}
+
+/* Günlük limit aşımı: ajanları durdur (+ istenirse tüm pozisyonları kapat).
+   Ajanlar önce durur ki flatten sırasında yeni işlem açılmasın. */
+async function finDailyLossBreach(action) {
+  if (financeState.breachBusy) return;
+  financeState.breachBusy = true;
+  try {
+    await finStopAllFinanceAgents('günlük kayıp limiti aşıldı — risk katmanı durdurdu');
+    const stopLine = '🛑 Risk limiti: tüm finance ajanları durduruldu';
+    financeLog('[risk] ' + stopLine);
+    financeNotify(stopLine, 'risk');
+    finJournal({ kind: 'risk-stop', action });
+    if (action === 'flatten') await finFlattenAll();
+  } finally {
+    financeState.breachBusy = false;
+  }
+}
+
+async function finStopAllFinanceAgents(reason) {
+  financeState.traderOn = false;
+  const sids = [...financeState.agents.keys()];
+  for (const sid of sids) {
+    try { finAgentStop(String(sid), reason); } catch {}
+  }
+  try { finPush('trader', { state: 'stopped', reason }); } catch {}
+  try { financeLog('[risk] finance ajanları durduruldu: ' + sids.length + ' ajan'); } catch {}
+  return sids.length;
+}
+
+/* Tüm açık pozisyonları kapatır (günlük limit 'flatten' aksiyonu). */
+async function finFlattenAll() {
+  if (financeState.flattening) return 0;
+  if (!mt5bridge.running) return 0;
+  financeState.flattening = true;
+  let closed = 0;
+  try {
+    const r = await mt5bridge.call('positions', {}, 10000);
+    const list = (r && r.ok && r.data && r.data.positions) || [];
+    for (const p of list) {
+      const cr = await mt5bridge.call('close', { ticket: p.ticket, volume: 0 }, 15000).catch(() => null);
+      if (cr && cr.ok) closed++;
+    }
+    const line = `🚨 Günlük limit: ${closed}/${list.length} pozisyon kapatıldı`;
+    financeLog('[risk] ' + line);
+    financeNotify(line, 'risk');
+    finJournal({ kind: 'risk-flatten', closed, total: list.length });
+    finStatsRefresh(true).catch(() => {});
+  } finally {
+    financeState.flattening = false;
+  }
+  return closed;
+}
+
+/* ---- performans istatistikleri (kalıcı) ---- */
+function finStatsLoad() {
+  const s = finReadJson(finFile('stats.json'), null);
+  if (s && typeof s === 'object') financeState.stats = s;
+}
+
+async function finStatsRefresh(force) {
+  if (!mt5bridge.running) return financeState.stats;
+  const now = Date.now();
+  if (!force && financeState.statsAt && now - financeState.statsAt < 60000) return financeState.stats;
+  financeState.statsAt = now;
+  try {
+    const r = await mt5bridge.call('deals', { days: 90 }, 15000);
+    const deals = (r && r.ok && r.data && r.data.deals) || [];
+    const stats = finstats.summarizeDeals(deals);
+    stats.drawdown = finstats.maxDrawdown(finEquityLoad());
+    financeState.stats = stats;
+    finWriteJson(finFile('stats.json'), stats);
+    return stats;
+  } catch {
+    return financeState.stats;
+  }
+}
+
+/* ---- işlem günlüğü (görülen/kapanan pozisyonlar) ---- */
+async function finRecordClose(ticket, st) {
+  let net = null;
+  let symbol = (st && st.symbol) || '';
+  try {
+    const r = await mt5bridge.call('deals', { days: 3 }, 12000);
+    const deals = (r && r.ok && r.data && r.data.deals) || [];
+    const mine = deals.filter((d) => String(d.position_id) === String(ticket));
+    if (mine.length) {
+      net = 0;
+      for (const d of mine) net += (Number(d.profit) || 0) + (Number(d.swap) || 0) + (Number(d.commission) || 0);
+      symbol = String(mine[0].symbol || symbol);
+    }
+  } catch {}
+  const rounded = net == null ? null : Math.round(net * 100) / 100;
+  finJournal({ kind: 'close', ticket, symbol, net: rounded, side: (st && st.side) || '' });
+  const pl = rounded == null ? '' : ` · K/Z ${rounded >= 0 ? '+' : ''}${rounded.toFixed(2)}`;
+  const line = `🏁 Pozisyon kapandı: ${symbol || '?'} #${ticket}${pl}`;
+  financeLog('[watchdog] ' + line);
+  if (finCfg().notifyTrades !== false) financeNotify(line, 'close');
+  if (rounded != null) finStatsRefresh(true);
+}
+
+/* ---- risk otomasyonu (watchdog) ---- */
+const finSymMetaCache = new Map(); /* symbol -> { at, row } */
+
+async function finSymbolMetaGet(symbol) {
+  const sym = String(symbol || '');
+  if (!sym) return null;
+  const hit = finSymMetaCache.get(sym);
+  if (hit && Date.now() - hit.at < 60000) return hit.row;
+  try {
+    const r = await mt5bridge.call('symbols', { symbols: [sym] }, 10000);
+    const row = r && r.ok && r.data && r.data.symbols && r.data.symbols[0];
+    if (row && !row.missing) {
+      finSymMetaCache.set(sym, { at: Date.now(), row });
+      return row;
+    }
+  } catch {}
+  return hit ? hit.row : null;
+}
+
+async function finCheckAlerts() {
+  const alerts = financeState.alerts || [];
+  if (!alerts.length) return;
+  const syms = [...new Set(alerts.map((a) => a.symbol))];
+  let rows = [];
+  try {
+    const r = await mt5bridge.call('symbols', { symbols: syms }, 10000);
+    if (r && r.ok) rows = (r.data && r.data.symbols) || [];
+  } catch {}
+  const prices = {};
+  for (const row of rows) {
+    if (!row || row.missing) continue;
+    prices[String(row.symbol)] = { bid: Number(row.bid), ask: Number(row.ask) };
+  }
+  let changed = false;
+  for (const a of alerts.slice()) {
+    const p = prices[a.symbol];
+    if (!p || !isFinite(p.bid)) continue;
+    const hit = a.direction === 'below' ? p.bid <= a.price : p.bid >= a.price;
+    if (!hit) continue;
+    changed = true;
+    financeState.alerts = financeState.alerts.filter((x) => x.id !== a.id);
+    const line = `🔔 ALARM: ${a.symbol} ${a.direction === 'below' ? '≤' : '≥'} ${a.price} (şimdi ${p.bid})${a.note ? ' — ' + a.note : ''}`;
+    financeLog('[alarm] ' + line);
+    financeNotify(line, 'alert');
+    finJournal({ kind: 'alert', symbol: a.symbol, price: a.price, direction: a.direction, note: a.note || '' });
+  }
+  if (changed) finAlertsSave();
+}
+
+async function finWatchTick() {
+  if (!mt5bridge.running || financeState.watchBusy) return;
+  financeState.watchBusy = true;
+  try {
+    const cfg = finCfg();
+    financeState.watchTickAt = Date.now();
+    const [posR, accR] = await Promise.all([
+      mt5bridge.call('positions', {}, 8000).catch(() => null),
+      mt5bridge.call('account', {}, 8000).catch(() => null),
+    ]);
+    const account = accR && accR.ok ? (accR.data && accR.data.account) : null;
+    const positionsOk = !!(posR && posR.ok);
+    const positions = positionsOk ? ((posR.data && posR.data.positions) || []) : [];
+    if (account) {
+      financeState.account = account;
+      finEquitySample(account);
+    }
+    const live = new Set();
+    for (const p of positions) {
+      const ticket = String(p.ticket);
+      live.add(ticket);
+      let st = financeState.watch.get(ticket);
+      if (!st) {
+        st = {
+          symbol: String(p.symbol || ''),
+          side: Number(p.type) === 0 ? 'buy' : 'sell',
+          entry: Number(p.price_open) || 0,
+          r: 0,
+          be: false,
+          partial: false,
+          warnNoSL: false,
+          warnSL: false,
+          seenAt: Date.now(),
+        };
+        financeState.watch.set(ticket, st);
+        const isBeast = Number(p.magic) === 20260908 || /beast/i.test(String(p.comment || ''));
+        if (isBeast) {
+          finJournal({ kind: 'open', ticket, symbol: st.symbol, side: st.side, volume: Number(p.volume) || 0, entry: st.entry, sl: Number(p.sl) || 0, tp: Number(p.tp) || 0 });
+        }
+        finWatchSave();
+      }
+      if (cfg.watchdog === false) continue;
+      let meta = null;
+      try { meta = await finSymbolMetaGet(p.symbol); } catch {}
+      if (!meta) continue;
+      let decision;
+      try { decision = finwatch.plan(p, meta, st, cfg); } catch { continue; }
+      if (decision.r > 0 && !(st.r > 0)) {
+        st.r = decision.r;
+        finWatchSave();
+      }
+      for (const act of decision.actions) {
+        if (act.kind === 'modify') {
+          const r = await mt5bridge.call('modify', { ticket: p.ticket, sl: act.sl, tp: Number(p.tp) || 0 }, 15000).catch(() => null);
+          if (r && r.ok) {
+            st.be = true;
+            const line = `🛡️ SL taşındı: ${p.symbol} #${ticket} → ${act.sl}`;
+            financeLog('[watchdog] ' + line);
+            if (cfg.notifyWatchdog !== false) financeNotify(line, 'watchdog');
+            finJournal({ kind: 'watchdog', action: 'sl-move', ticket, symbol: p.symbol, sl: act.sl });
+          }
+        } else if (act.kind === 'partial') {
+          const r = await mt5bridge.call('close', { ticket: p.ticket, volume: act.volume }, 15000).catch(() => null);
+          if (r && r.ok) {
+            st.partial = true;
+            const line = `🎯 Kısmi TP: ${p.symbol} #${ticket} ${act.volume} lot kapatıldı`;
+            financeLog('[watchdog] ' + line);
+            if (cfg.notifyWatchdog !== false) financeNotify(line, 'watchdog');
+            finJournal({ kind: 'watchdog', action: 'partial-tp', ticket, symbol: p.symbol, volume: act.volume });
+            finStatsRefresh(true);
+          }
+        } else if (act.kind === 'warnSL') {
+          st.warnSL = true;
+          const line = `⚠️ SL yaklaşıyor: ${p.symbol} #${ticket} (SL ${p.sl}, fiyat ${p.price_current})`;
+          financeLog('[watchdog] ' + line);
+          if (cfg.notifyWatchdog !== false) financeNotify(line, 'watchdog');
+          finJournal({ kind: 'watchdog', action: 'sl-near', ticket, symbol: p.symbol, sl: Number(p.sl) || 0 });
+        } else if (act.kind === 'warnNoSL') {
+          st.warnNoSL = true;
+          const line = `⚠️ SL'siz pozisyon: ${p.symbol} #${ticket} — risk koruması yok`;
+          financeLog('[watchdog] ' + line);
+          if (cfg.notifyWatchdog !== false) financeNotify(line, 'watchdog');
+        }
+      }
+      if (decision.rearmSL && st.warnSL) st.warnSL = false;
+    }
+    /* kapanan pozisyonlar: net K/Z ile günlük + bildirim (yalnız pozisyon
+       listesi GERÇEKTEN alındıysa — köprü kesintisinde yanlış kapanış yok) */
+    if (positionsOk) {
+      for (const [ticket, st] of [...financeState.watch]) {
+        if (live.has(ticket)) continue;
+        financeState.watch.delete(ticket);
+        finWatchSave();
+        try { await finRecordClose(ticket, st); } catch {}
+      }
+    }
+    try { await finCheckAlerts(); } catch {}
+    if (!financeState.lastStatsAt || Date.now() - financeState.lastStatsAt > 120000) {
+      financeState.lastStatsAt = Date.now();
+      finStatsRefresh(true).catch(() => {});
+    }
+    finMaybeWeeklyReport();
+  } catch {
+  } finally {
+    financeState.watchBusy = false;
+  }
+}
+
+function finWatchStart() {
+  if (financeState.watchTimer) return;
+  financeState.watchTimer = setInterval(() => { finWatchTick().catch(() => {}); }, 5000);
+  finWatchTick().catch(() => {});
+}
+
+function finWatchStop() {
+  if (financeState.watchTimer) {
+    clearInterval(financeState.watchTimer);
+    financeState.watchTimer = null;
+  }
+}
+
+function finWatchLoad() {
+  const raw = finReadJson(finFile('watchdog.json'), {});
+  try {
+    for (const [k, v] of Object.entries(raw || {})) {
+      if (!v || typeof v !== 'object') continue;
+      financeState.watch.set(String(k), v);
+    }
+  } catch {}
+}
+
+function finWatchSave() {
+  try { finWriteJson(finFile('watchdog.json'), Object.fromEntries(financeState.watch)); } catch {}
+}
+
+/* ---- haftalık rapor (ajan değerlendirmesi + istatistik + günlük) ---- */
+async function finWeeklyReport(manual) {
+  const cfg = finCfg();
+  const now = Date.now();
+  if (!manual && cfg.weeklyReport === false) return null;
+  if (!manual && Number(cfg.lastReportAt) && now - Number(cfg.lastReportAt) < 7 * 86400000) return null;
+  let stats = financeState.stats;
+  try { stats = (await finStatsRefresh(true)) || stats; } catch {}
+  let account = financeState.account;
+  const [accR, posR] = await Promise.all([
+    account ? Promise.resolve(null) : mt5bridge.call('account', {}, 8000).catch(() => null),
+    mt5bridge.call('positions', {}, 8000).catch(() => null),
+  ]);
+  if (accR && accR.ok) account = accR.data && accR.data.account;
+  const positions = posR && posR.ok ? ((posR.data && posR.data.positions) || []) : [];
+  const fromTs = now - 7 * 86400000;
+  const equity = (financeState.equity || []).filter((p) => Number(p.at) >= fromTs - 86400000);
+  const journal = finJournalTail(40);
+  const drawdown = finstats.maxDrawdown(equity);
+  let review = '';
+  if (engine) {
+    try {
+      const task =
+        'Beast Finance haftalık performans değerlendirmesi: aşağıdaki istatistik ve işlem günlüğünü ELEŞTİREL yorumla. ' +
+        'Ne iyi gitti, hangi hatalar tekrarlandı, gelecek hafta ne değişmeli? En fazla 12 satır, madde madde, Türkçe.';
+      const ctx = JSON.stringify({ stats, drawdown, journal: journal.slice(-20) }).slice(0, 12000);
+      const signal = typeof AbortSignal !== 'undefined' && AbortSignal.timeout ? AbortSignal.timeout(120000) : undefined;
+      const res = await engine._subagent(task, ctx, signal, null, '');
+      review = String(res || '').trim().slice(0, 4000);
+    } catch {}
+  }
+  const md = finstats.buildWeeklyReport({ stats, drawdown, equity, journal, account, positions, fromTs, toTs: now, review });
+  const day = finstats.dayKey(now);
+  const file = path.join(financeDir(), 'reports', 'weekly-' + day + '.md');
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, md);
+  } catch {}
+  cfg.lastReportAt = now;
+  try { saveSettings(); } catch {}
+  const n = stats ? (Number(stats.netProfit) >= 0 ? '+' : '') + stats.netProfit : '?';
+  const line = `📊 Haftalık rapor hazır (net ${n}) — ${path.basename(file)}`;
+  financeLog('[rapor] ' + line);
+  financeNotify(line, 'report');
+  return { ok: true, path: file, text: md, stats };
+}
+
+function finMaybeWeeklyReport() {
+  try {
+    const cfg = finCfg();
+    if (cfg.weeklyReport === false) return;
+    if (!Number(cfg.lastReportAt)) {
+      /* ilk kurulum: temel al — rapor 7 gün sonra üretilir (boş rapor atma) */
+      cfg.lastReportAt = Date.now();
+      try { saveSettings(); } catch {}
+      return;
+    }
+    if (Date.now() - Number(cfg.lastReportAt) < 7 * 86400000) return;
+    if (Date.now() - Number(financeState.reportCheckAt || 0) < 3600000) return;
+    financeState.reportCheckAt = Date.now();
+    finWeeklyReport(false).catch(() => {});
+  } catch {}
+}
+
+try { finAlertsLoad(); } catch {}
+try { finWatchLoad(); } catch {}
+try { finStatsLoad(); } catch {}
+try { finEquityLoad(); } catch {}
+
+/* financetools ayar + bildirim kancası: her olay kalıcı günlüğe + bildirime */
 try {
   financetools.setConfig(() => finCfg());
+  financetools.setAlerts(finAlertApi());
   financetools.setNotify((entry) => {
     const k = String((entry && entry.kind) || '');
     const d = entry && entry.data ? entry.data : {};
+    const ai = finAgentInfo(entry && entry.sid);
+    const who = ai.label || '';
+    const sid = String((entry && entry.sid) || '');
+    if (k === 'note') {
+      finJournal({ kind: 'note', sid, agent: who, symbol: d.symbol, note: d.note, ticket: d.ticket || 0, side: d.side || '' });
+      return;
+    }
+    if (k === 'trade') {
+      finJournal({ kind: 'trade', sid, agent: who, symbol: d.symbol, side: d.side, volume: d.volume, sl: d.sl, tp: d.tp, reason: d.comment || '' });
+    } else if (k === 'close') {
+      finJournal({ kind: 'close-req', sid, agent: who, ticket: d.ticket, volume: d.volume });
+      return; /* kesin kapanış K/Z'si watchdog tarafından yazılır (çift bildirim yok) */
+    } else if (k === 'modify') {
+      finJournal({ kind: 'modify', sid, agent: who, ticket: d.ticket, sl: d.sl, tp: d.tp });
+    } else if (k === 'pending') {
+      finJournal({ kind: 'pending', sid, agent: who, symbol: d.symbol, type: d.type, volume: d.volume });
+    } else if (k === 'cancel') {
+      finJournal({ kind: 'cancel', sid, agent: who, ticket: d.ticket });
+    }
     let line = '';
-    if (k === 'trade') line = `İŞLEM AÇILDI: ${d.side} ${d.volume} ${d.symbol}`;
-    else if (k === 'close') line = `POZİSYON KAPANDI: ticket ${d.ticket}${d.volume ? ' (' + d.volume + ' lot)' : ''}`;
-    else if (k === 'modify') line = `SL/TP GÜNCELLENDİ: ticket ${d.ticket} (SL ${d.sl || 0} / TP ${d.tp || 0})`;
-    else if (k === 'pending') line = `BEKLEYEN EMİR: ${d.type} ${d.volume} ${d.symbol}`;
+    if (k === 'trade') line = `İŞLEM AÇILDI: ${d.side} ${d.volume} ${d.symbol}${who ? ' · ' + who : ''}`;
+    else if (k === 'modify') line = `SL/TP GÜNCELLENDİ: ticket ${d.ticket} (SL ${d.sl || 0} / TP ${d.tp || 0})${who ? ' · ' + who : ''}`;
+    else if (k === 'pending') line = `BEKLEYEN EMİR: ${d.type} ${d.volume} ${d.symbol}${who ? ' · ' + who : ''}`;
     else if (k === 'cancel') line = `EMİR İPTAL: ticket ${d.ticket}`;
     if (line) {
       financeLog('[ajan] ' + line);
       finPush('trade', { line });
+      if (finCfg().notifyTrades !== false && (k === 'trade' || k === 'pending' || k === 'cancel')) {
+        financeNotify(line, k, false); /* panel toast'ı yukarıda — kanallara gönder */
+      }
+      if (k === 'trade') finStatsRefresh(true).catch(() => {});
     }
   });
 } catch {}
@@ -8560,6 +9185,7 @@ function financeEnsureBridge() {
     candidates,
     terminal: String(f.terminalPath || '').trim(),
   });
+  finWatchStart(); /* risk otomasyonu + bildirimler köprü açılırken başlar */
   return mt5bridge.status();
 }
 
@@ -8597,6 +9223,8 @@ mt5bridge.on('bridge', (m) => {
   if (m && m.connected) {
     financeLog('[MT5] terminal bağlı: ' + ((m.terminal && (m.terminal.name + ' @ ' + m.terminal.company)) || 'MT5'));
     if (m.account) financeLog(`[MT5] hesap ${m.account.login} · bakiye ${m.account.balance} ${m.account.currency}`);
+    finWatchStart();
+    finStatsRefresh(true).catch(() => {});
   } else if (m && m.error) {
     financeLog('[MT5] bağlantı yok — ' + m.error);
     if (/paket/i.test(m.error)) financeTryInstall();
@@ -8765,12 +9393,14 @@ function finTraderBrief(agent) {
     `Tur aralığı: ${f.intervalSec} sn · Max lot: ${f.maxLot} · Max eşzamanlı pozisyon: ${f.maxPositions}`,
     roleDef
       ? `UZMANLIK: ${roleDef.desc} — raporlarını bu çerçevede yaz; İŞLEM AÇMA, yalnız analiz + net öneri üret.`
-      : 'Otomatik işlem AÇIK (daima): mt5_trade/mt5_close/mt5_modify/mt5_pending kullanabilirsin (limitler sistemce zorlanır).',
+      : 'Otomatik işlem AÇIK (daima): mt5_trade/mt5_close/mt5_modify/mt5_pending kullanabilirsin (limitler sistemce zorlanır). Lot için mt5_risksize hesapla ya da mt5_trade’e riskPct ver; SL/TP broker stops_level mesafesine uymalı.',
     roleDef
       ? 'Bulgularını agent_dm ile ANA TRADER\u2019a bildir (to: "Trader" ya da ajan başlığı anahtarı); teknik/öneri çelişkisi varsa gerekçenle yaz.'
       : f.strategy ? `Sahibinin strateji notu: ${f.strategy}` : 'Strateji notu yok: trend + destek/direnç + momentum ile temel okuma yap.',
     !roleDef && f.strategy ? `Sahibinin strateji notu: ${f.strategy}` : '',
-    'Bu turda: mt5_status → hesap/pozisyon/fiyat verisi → değerlendirme → kararlar (veya BEKLE: sebep) → kısa rapor.',
+    'Bu turda: mt5_status → hesap/pozisyon/fiyat verisi → mt5_rates/mt5_indicators ile teknik okuma → değerlendirme → kararlar (veya BEKLE: sebep) → kısa rapor.',
+    'Önemli kararların gerekçesini mt5_note ile günlüğe yaz (haftalık performans raporu bu notları kullanır).',
+    'Risk otomasyonu main süreçte 5 sn döngüyle çalışır (+R BE, trailing, kısmi TP) — sen yine de SL/TP seviyelerini aktif yönet.',
     'Diğer finance/paralel ajanlarla koordinasyon için agent_dm aracı var (to: ajan başlığı anahtar kelimesi).',
   ].filter(Boolean).join('\n');
 }
@@ -8847,7 +9477,7 @@ function finAgentRound(sid) {
     ? `UZMANLIK: ${roleDef.desc} — İŞLEM AÇMA, yalnız analiz + net öneri.`
     : 'İşlem açabilirsin — limitlere uy, SL\u2019siz pozisyon bırakma.';
   const focus = agent.symbols.length ? `Odak: ${agent.symbols.join(', ')}. ` : '';
-  const round = `FINANCE TUR #${agent.round}: ${focus}hesap + pozisyonlar + fiyatları çek; ${roleDef ? 'rolüne uygun analiz yap ve öneri ver.' : 'açık pozisyonları yönet (SL/TP güncelle, hedefe ulaşanı kapat); stratejine göre yeni fırsatları değerlendir.'} ${auto} Kısa rapor ver.`;
+  const round = `FINANCE TUR #${agent.round}: ${focus}hesap + pozisyonlar + fiyatları çek; ${roleDef ? 'rolüne uygun analiz yap (mt5_rates/mt5_indicators ile) ve öneri ver.' : 'açık pozisyonları yönet (SL/TP güncelle, hedefe ulaşanı kapat); mt5_rates/mt5_indicators ile yeni fırsatları değerlendir.'} ${auto} Önemli kararların gerekçesini mt5_note ile günlüğe yaz. Kısa rapor ver.`;
   const launch = (planBlock) => {
     if (!financeState.agents.has(String(sid))) return;
     const ok = engine.send(sid, planBlock + round, { userAction: false });
@@ -8940,6 +9570,11 @@ ipcMain.handle('finance:snapshot', async () => {
     roles: FIN_ROLES,
     rolesAuto: FIN_ROLES_AUTO,
     trader: { on: financeState.traderOn, busy, rounds: financeState.traderRounds, lastAt: financeState.lastRoundAt },
+    /* performans + risk otomasyonu görünümü */
+    stats: financeState.stats || null,
+    equity: (financeState.equity || []).slice(-180),
+    alerts: (financeState.alerts || []).slice(0, 50),
+    watch: { on: !!financeState.watchTimer, managed: financeState.watch.size, lastAt: financeState.watchTickAt || 0 },
   };
 });
 
@@ -9017,6 +9652,30 @@ ipcMain.handle('finance:settings', async (_e, patch) => {
   }
   if (p.maxLot !== undefined) f.maxLot = Math.max(0.01, Math.min(100, Number(p.maxLot) || 0.1));
   if (p.maxPositions !== undefined) f.maxPositions = Math.max(1, Math.min(20, Math.round(Number(p.maxPositions) || 3)));
+  /* RİSK OTOMASYONU + BİLDİRİM ayarları */
+  if (p.watchdog !== undefined) f.watchdog = !!p.watchdog;
+  if (p.beOnR !== undefined) f.beOnR = Math.max(0, Math.min(10, Number(p.beOnR) || 0));
+  if (p.beOffsetR !== undefined) f.beOffsetR = Math.max(0, Math.min(1, Number(p.beOffsetR) || 0));
+  if (p.trailStartR !== undefined) f.trailStartR = Math.max(0, Math.min(10, Number(p.trailStartR) || 0));
+  if (p.trailR !== undefined) f.trailR = Math.max(0, Math.min(5, Number(p.trailR) || 0));
+  if (p.partialR !== undefined) f.partialR = Math.max(0, Math.min(10, Number(p.partialR) || 0));
+  if (p.partialPct !== undefined) f.partialPct = Math.max(0, Math.min(90, Number(p.partialPct) || 0));
+  if (p.notifyTarget !== undefined) {
+    const t = String(p.notifyTarget || 'auto').toLowerCase();
+    f.notifyTarget = ['auto', 'whatsapp', 'telegram', 'discord', 'off'].includes(t) ? t : 'auto';
+  }
+  if (p.notifyTrades !== undefined) f.notifyTrades = !!p.notifyTrades;
+  if (p.notifyWatchdog !== undefined) f.notifyWatchdog = !!p.notifyWatchdog;
+  if (p.maxDailyLossPct !== undefined) f.maxDailyLossPct = Math.max(0, Math.min(50, Number(p.maxDailyLossPct) || 0));
+  if (p.dailyLossAction !== undefined) {
+    const v = String(p.dailyLossAction || 'warn').toLowerCase();
+    f.dailyLossAction = ['warn', 'stop', 'flatten'].includes(v) ? v : 'warn';
+  }
+  if (p.riskPerTradePct !== undefined) f.riskPerTradePct = Math.max(0, Math.min(20, Number(p.riskPerTradePct) || 0));
+  if (p.maxPerSymbol !== undefined) f.maxPerSymbol = Math.max(0, Math.min(20, Math.round(Number(p.maxPerSymbol) || 0)));
+  if (p.maxSameSide !== undefined) f.maxSameSide = Math.max(0, Math.min(20, Math.round(Number(p.maxSameSide) || 0)));
+  if (p.minMarginLevel !== undefined) f.minMarginLevel = Math.max(0, Math.min(1000, Number(p.minMarginLevel) || 0));
+  if (p.weeklyReport !== undefined) f.weeklyReport = !!p.weeklyReport;
   /* allowTrading artık AYARLANMAZ — daima true (finCfg zorlar) */
   if (p.strategy !== undefined) f.strategy = String(p.strategy || '').slice(0, 2000);
   if (p.analysisTeam !== undefined) f.analysisTeam = finRolesValid(p.analysisTeam);
@@ -9201,6 +9860,17 @@ ipcMain.handle('finance:install', async () => {
   financeState.installTried = false;
   financeTryInstall();
   return { ok: true, installing: true };
+});
+
+/* Haftalık raporu elle üret (panel butonu) — istatistik + günlük + ajan yorumu */
+ipcMain.handle('finance:report', async () => {
+  try {
+    const r = await finWeeklyReport(true);
+    if (!r) return { ok: false, error: 'rapor üretilemedi' };
+    return { ok: true, path: r.path, stats: r.stats || null };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
 });
 
 

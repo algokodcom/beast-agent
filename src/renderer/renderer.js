@@ -194,6 +194,31 @@ const els = {
   finSymSearch: $('#finSymSearch'),
   finSymPick: $('#finSymPick'),
   finSymCount: $('#finSymCount'),
+  finWatchdogCb: $('#finWatchdog'),
+  finBeOnR: $('#finBeOnR'),
+  finTrailStartR: $('#finTrailStartR'),
+  finTrailR: $('#finTrailR'),
+  finPartialR: $('#finPartialR'),
+  finPartialPct: $('#finPartialPct'),
+  finMaxDailyLoss: $('#finMaxDailyLoss'),
+  finRiskPct: $('#finRiskPct'),
+  finMaxPerSymbol: $('#finMaxPerSymbol'),
+  finMaxSameSide: $('#finMaxSameSide'),
+  finMinMarginLevel: $('#finMinMarginLevel'),
+  finDailyLossAction: $('#finDailyLossAction'),
+  finNotifyTarget: $('#finNotifyTarget'),
+  finWatchDot: $('#finWatchDot'),
+  finWatchInfo: $('#finWatchInfo'),
+  finAlertList: $('#finAlertList'),
+  finReportBtn: $('#finReportBtn'),
+  finStatsInfo: $('#finStatsInfo'),
+  finStatToday: $('#finStatToday'),
+  finStatWeek: $('#finStatWeek'),
+  finStatWin: $('#finStatWin'),
+  finStatPf: $('#finStatPf'),
+  finStatDd: $('#finStatDd'),
+  finStatTrades: $('#finStatTrades'),
+  finEquityBox: $('#finEquity'),
   stVideoEl: $('#stVideoEl'),
   stVideoName: $('#stVideoName'),
   stVideoOpen: $('#stVideoOpen'),
@@ -9356,6 +9381,116 @@ function finRenderTrader(trader, cfg) {
   }
 }
 
+/* ---- RİSK OTOMASYONU + PERFORMANS panosu ---- */
+function finDayKey(ms) {
+  const d = new Date(Number(ms) || 0);
+  const p = (x) => String(x).padStart(2, '0');
+  return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
+}
+
+function finRenderAutomation(cfg, watch) {
+  if (!cfg) return;
+  const ae = document.activeElement;
+  if (els.finWatchdogCb) els.finWatchdogCb.checked = cfg.watchdog !== false;
+  const setNum = (el, v) => {
+    if (el && ae !== el) el.value = v;
+  };
+  setNum(els.finBeOnR, cfg.beOnR != null ? cfg.beOnR : 1);
+  setNum(els.finTrailStartR, cfg.trailStartR != null ? cfg.trailStartR : 1.5);
+  setNum(els.finTrailR, cfg.trailR != null ? cfg.trailR : 0.5);
+  setNum(els.finPartialR, cfg.partialR != null ? cfg.partialR : 0);
+  setNum(els.finPartialPct, cfg.partialPct != null ? cfg.partialPct : 50);
+  setNum(els.finMaxDailyLoss, cfg.maxDailyLossPct != null ? cfg.maxDailyLossPct : 3);
+  setNum(els.finRiskPct, cfg.riskPerTradePct != null ? cfg.riskPerTradePct : 1);
+  setNum(els.finMaxPerSymbol, cfg.maxPerSymbol != null ? cfg.maxPerSymbol : 2);
+  setNum(els.finMaxSameSide, cfg.maxSameSide != null ? cfg.maxSameSide : 3);
+  setNum(els.finMinMarginLevel, cfg.minMarginLevel != null ? cfg.minMarginLevel : 150);
+  if (els.finDailyLossAction && ae !== els.finDailyLossAction) els.finDailyLossAction.value = cfg.dailyLossAction || 'stop';
+  if (els.finNotifyTarget && ae !== els.finNotifyTarget) els.finNotifyTarget.value = cfg.notifyTarget || 'auto';
+  if (els.finWatchDot) {
+    els.finWatchDot.classList.remove('on', 'off', 'busy');
+    els.finWatchDot.classList.add(watch && watch.on ? 'on' : 'off');
+    els.finWatchDot.title = watch && watch.on ? 'Koruma döngüsü çalışıyor (5 sn)' : 'Koruma döngüsü kapalı';
+  }
+  if (els.finWatchInfo) {
+    els.finWatchInfo.textContent = watch && watch.on ? '· izlenen ' + (watch.managed || 0) : '';
+  }
+}
+
+function finSparkline(points) {
+  const list = (Array.isArray(points) ? points : []).filter((p) => p && isFinite(Number(p.equity)));
+  if (list.length < 2) return '<div class="fin-empty">Equity verisi toplanıyor…</div>';
+  const w = 100;
+  const h = 28;
+  const vals = list.map((p) => Number(p.equity));
+  let min = Math.min(...vals);
+  let max = Math.max(...vals);
+  if (max - min < 1e-9) max = min + 1;
+  const step = w / (list.length - 1);
+  const pts = vals
+    .map((v, i) => (i * step).toFixed(2) + ',' + (h - 2 - ((v - min) / (max - min)) * (h - 4)).toFixed(2))
+    .join(' ');
+  const up = vals[vals.length - 1] >= vals[0];
+  return '<svg viewBox="0 0 ' + w + ' ' + h + '" preserveAspectRatio="none" class="' + (up ? 'up' : 'down') + '">' +
+    '<polyline points="' + pts + '" fill="none" stroke="currentColor" stroke-width="1.4" vector-effect="non-scaling-stroke" /></svg>';
+}
+
+function finRenderStats(stats, equity, cur) {
+  const s = stats || null;
+  if (els.finEquityBox) {
+    els.finEquityBox.innerHTML = finSparkline(equity);
+  }
+  if (els.finStatsInfo) {
+    els.finStatsInfo.textContent = s && s.at
+      ? '· son 90 gün · ' + new Date(s.at).toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' })
+      : '';
+  }
+  if (!s) {
+    finKvSet(els.finStatToday, '—');
+    finKvSet(els.finStatWeek, '—');
+    finKvSet(els.finStatWin, '—');
+    finKvSet(els.finStatPf, '—');
+    finKvSet(els.finStatDd, '—');
+    finKvSet(els.finStatTrades, '—');
+    return;
+  }
+  const byDay = s.byDay && typeof s.byDay === 'object' ? s.byDay : {};
+  const today = Number(byDay[finDayKey(Date.now())]) || 0;
+  const week = Object.entries(byDay)
+    .filter(([d]) => Date.now() - new Date(d + 'T00:00:00').getTime() < 7 * 86400000)
+    .reduce((a, [, v]) => a + (Number(v) || 0), 0);
+  const fmt = (n) => (n > 0 ? '+' : '') + fmtMoney(n, cur);
+  finKvSet(els.finStatToday, fmt(today), today !== 0 ? (today > 0 ? 'pos' : 'neg') : null);
+  finKvSet(els.finStatWeek, fmt(week), week !== 0 ? (week > 0 ? 'pos' : 'neg') : null);
+  finKvSet(els.finStatWin, '%' + (Number(s.winRate) || 0) + ' (' + (Number(s.wins) || 0) + '/' + (Number(s.losses) || 0) + ')');
+  finKvSet(els.finStatPf, s.profitFactor == null ? '∞' : String(s.profitFactor));
+  const dd = s.drawdown || {};
+  finKvSet(els.finStatDd, '%' + (Number(dd.maxPct) || 0), (Number(dd.maxPct) || 0) > 0 ? 'neg' : null);
+  finKvSet(els.finStatTrades, String(Number(s.trades) || 0));
+}
+
+function finRenderAlerts(list) {
+  const box = els.finAlertList;
+  if (!box) return;
+  box.textContent = '';
+  if (!list || !list.length) {
+    const d = document.createElement('div');
+    d.className = 'fin-empty';
+    d.textContent = 'Aktif fiyat alarmı yok';
+    box.appendChild(d);
+    return;
+  }
+  for (const a of list) {
+    const row = document.createElement('div');
+    row.className = 'fin-alert';
+    row.innerHTML =
+      '<span class="fa-sym">' + escapeHtml(String(a.symbol || '?')) + '</span>' +
+      '<span class="fa-cond">' + (a.direction === 'below' ? '≤' : '≥') + ' ' + (Number(a.price) || 0) + '</span>' +
+      (a.note ? '<span class="fa-note">' + escapeHtml(String(a.note)) + '</span>' : '');
+    box.appendChild(row);
+  }
+}
+
 async function finFillModels() {
   if (!els.finTraderModel) return;
   let models = [];
@@ -9397,6 +9532,9 @@ async function finSnapshot() {
   finTraderInputsSet(r.cfg);
   finRenderRoles(r.cfg);
   finRenderTrader(r.trader, r.cfg);
+  finRenderAutomation(r.cfg, r.watch);
+  finRenderStats(r.stats, r.equity, r.account && r.account.currency ? r.account.currency : '');
+  finRenderAlerts(r.alerts);
 }
 
 function finLogLine(line) {
@@ -9414,7 +9552,11 @@ function finLogLine(line) {
 function finOnEvent(ev) {
   if (!ev || ev.type !== 'finance') return;
   if (ev.fn === 'log' && ev.line) finLogLine(ev.line);
-  else if (ev.fn === 'trade' && ev.line) {
+  else if (ev.fn === 'notify' && ev.line) {
+    finLogLine(ev.line);
+    toast(ev.line);
+    finSnapshot();
+  } else if (ev.fn === 'trade' && ev.line) {
     finLogLine(ev.line);
     toast(ev.line);
     finSnapshot();
@@ -9501,6 +9643,60 @@ if (els.finMaxLot) els.finMaxLot.addEventListener('change', () => {
   toast('Max lot: ' + v + ' — sonraki turdan itibaren geçerli');
 });
 if (els.finSymBtn) els.finSymBtn.addEventListener('click', finSymPickerOpen);
+
+/* RİSK OTOMASYONU kontrolleri: değişiklik anında kaydedilir (ajan turunu beklemez) */
+if (els.finWatchdogCb) {
+  els.finWatchdogCb.addEventListener('change', () => {
+    finSaveCfg({ watchdog: els.finWatchdogCb.checked });
+    toast('Risk otomasyonu ' + (els.finWatchdogCb.checked ? 'açık — BE/trailing/kısmi TP 5 sn döngüyle uygulanır' : 'kapalı'));
+  });
+}
+const finAutoNum = (el, key, min, max, step) => {
+  if (!el) return;
+  el.addEventListener('change', () => {
+    let v = Number(el.value);
+    if (!isFinite(v)) v = min;
+    v = Math.max(min, Math.min(max, step ? Math.round(v / step) * step : v));
+    el.value = v;
+    finSaveCfg({ [key]: v });
+  });
+};
+finAutoNum(els.finBeOnR, 'beOnR', 0, 10);
+finAutoNum(els.finTrailStartR, 'trailStartR', 0, 10);
+finAutoNum(els.finTrailR, 'trailR', 0, 5);
+finAutoNum(els.finPartialR, 'partialR', 0, 10);
+finAutoNum(els.finPartialPct, 'partialPct', 0, 90, 5);
+finAutoNum(els.finMaxDailyLoss, 'maxDailyLossPct', 0, 50);
+finAutoNum(els.finRiskPct, 'riskPerTradePct', 0, 20, 0.1);
+finAutoNum(els.finMaxPerSymbol, 'maxPerSymbol', 0, 20, 1);
+finAutoNum(els.finMaxSameSide, 'maxSameSide', 0, 20, 1);
+finAutoNum(els.finMinMarginLevel, 'minMarginLevel', 0, 1000, 10);
+if (els.finDailyLossAction) {
+  els.finDailyLossAction.addEventListener('change', () => {
+    finSaveCfg({ dailyLossAction: els.finDailyLossAction.value });
+    const t = els.finDailyLossAction.options[els.finDailyLossAction.selectedIndex].textContent;
+    toast('Günlük limit aksiyonu: ' + t);
+  });
+}
+if (els.finNotifyTarget) {
+  els.finNotifyTarget.addEventListener('change', () => {
+    finSaveCfg({ notifyTarget: els.finNotifyTarget.value });
+    toast('Bildirim kanalı: ' + els.finNotifyTarget.options[els.finNotifyTarget.selectedIndex].textContent);
+  });
+}
+if (els.finReportBtn) {
+  els.finReportBtn.addEventListener('click', async () => {
+    els.finReportBtn.disabled = true;
+    els.finReportBtn.textContent = '⏳ Rapor…';
+    const r = await beast.financeReport().catch((e) => ({ ok: false, error: String((e && e.message) || e) }));
+    els.finReportBtn.disabled = false;
+    els.finReportBtn.textContent = '📄 Rapor';
+    if (r && r.ok) toast('Rapor hazır: ' + String(r.path || '').split(/[\\/]/).pop());
+    else toast('Rapor üretilemedi: ' + ((r && r.error) || '?'));
+    finSnapshot();
+  });
+}
+
 /* OTOMATİK İŞLEM onay kutusu KALDIRILDI — trade ajanı daima işlem açabilir */
 if (els.finTraderModel) {
   els.finTraderModel.addEventListener('change', () => {

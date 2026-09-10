@@ -2088,7 +2088,9 @@ body.browser-open #settingsDialog { width: min(70vw, calc(100vw - var(--bw, 480p
 #dmRail.dm-hidden { display: none; }
 
 #dmRailHead {
-  padding: 12px 12px 10px 16px;
+  /* railHead ile BİREBİR AYNI: sağ 148px = pencere butonları (min/kapat)
+     alanı — çöp ikonu asla pencere butonlarının altına girmez */
+  padding: 12px 148px 10px 16px;
   font-weight: 800;
   letter-spacing: 1px;
   font-size: 13px;
@@ -2097,8 +2099,6 @@ body.browser-open #settingsDialog { width: min(70vw, calc(100vw - var(--bw, 480p
   align-items: center;
   gap: 8px;
 }
-/* rail gizliyken DM sütunu sağ kenara yaslanır — pencere butonları alanı */
-body.rail-hidden #dmRailHead { padding-right: 148px; }
 #dmRailTitle { flex: 1; text-align: left; }
 #dmClear {
   flex: none;

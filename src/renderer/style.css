@@ -4884,19 +4884,40 @@ body.finance-mode #composerWrap { margin-right: var(--finW, 400px); }
 .fin-role:hover { border-color: var(--accent); }
 .fin-role:has(input:checked) { border-color: var(--accent); color: var(--accent); background: var(--accent-dim); }
 .fin-role input { flex: none; width: auto; margin: 0; }
+.fin-role input:disabled { opacity: 0.45; cursor: default; }
+.fin-role-auto { font-weight: 700; }
+/* Otomatik moddaki SAYI girişi */
+.fin-role-count {
+  flex: none; width: 44px;
+  background: var(--panel2); color: var(--text);
+  border: 1px solid var(--border); border-radius: 8px;
+  font-size: 11px; font-weight: 700; text-align: center;
+  padding: 2px 3px;
+}
+.fin-role-count:focus { border-color: var(--accent); outline: none; }
+.fin-role-count:disabled { opacity: 0.45; }
 .fin-start {
   flex: none;
   background: var(--accent);
-  border: none;
-  color: #fff;
+  border: 1px solid var(--accent);
+  /* dark modda accent beyazımsı olur — sabit beyaz yazı butonda kaybolurdu;
+     --accent-contrast iki temada da doğru kontrastı verir (siyah↔beyaz) */
+  color: var(--accent-contrast);
   font-size: 11px;
-  font-weight: 700;
-  padding: 6px 12px;
+  font-weight: 800;
+  letter-spacing: 0.2px;
+  padding: 6px 14px;
   border-radius: 7px;
   cursor: pointer;
+  transition: filter 0.12s ease, box-shadow 0.12s ease, transform 0.06s ease;
 }
-.fin-start:hover { filter: brightness(1.1); }
-.fin-start.stop { background: #ef4444; }
+.fin-start:hover { filter: brightness(1.08); box-shadow: 0 1px 6px rgba(0, 0, 0, 0.22); }
+.fin-start:active { transform: translateY(1px); filter: brightness(0.96); }
+.fin-start.stop {
+  background: #ef4444;
+  border-color: #ef4444;
+  color: #fff; /* kırmızı zeminde beyaz her iki temada da okunur */
+}
 
 #finTraderStatus {
   margin-top: 7px;

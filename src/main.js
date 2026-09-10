@@ -8320,21 +8320,27 @@ function finCfg() {
   if (!Array.isArray(f.symbols)) f.symbols = [];
   if (typeof f.consultChat !== 'boolean') f.consultChat = true; /* her tur öncesi chat ajanından plan */
   if (!Array.isArray(f.analysisTeam)) f.analysisTeam = []; /* trader yanında koşacak uzman roller */
+  /* OTOMATİK İŞLEM hep açık — kullanıcı onay kutusu KALDIRILDI: trade ajanının
+     amacı zaten işlem açmak; onay sorulmaz, limitler (max lot/pozisyon) korur */
+  f.allowTrading = true;
+  if (typeof f.analysisAuto !== 'boolean') f.analysisAuto = true; /* sayıya göre otomatik atama */
+  if (!Number(f.analysisCount)) f.analysisCount = 2; /* varsayılan: 2 uzman ajan */
   if (!Number(f.intervalSec)) f.intervalSec = 120;
   if (!Number(f.maxLot)) f.maxLot = 0.1;
   if (f.maxPositions == null) f.maxPositions = 3;
-  if (typeof f.allowTrading !== 'boolean') f.allowTrading = false;
   return f;
 }
 
 /* ANALİZ EKİBİ: trader'ın yanında koşan uzman ajan rolleri — seçilen her rol
    AYRI bir sürekli finance ajanı açar. Hepsi tüm SKILL'lere + mt5 okuma
-   araçlarına erişir (finance oturumu oldukları için), İŞLEM AÇMAZLAR. */
+   araçlarına erişir (finance oturumu oldukları için), İŞLEM AÇMAZLAR.
+   AUTO_ORDER: "sadece sayı seç" modunda gereklı ajanlar bu sırayla atanır. */
 const FIN_ROLES = [
   { id: 'risk', label: 'Risk Ajanı', desc: 'marj/kaldıraç/SL disiplini, exposure ve günlük kayıp hızı denetimi' },
   { id: 'technic', label: 'Teknik Analiz', desc: 'trend/yapı/destek-direnç/momentum okuma, AL-SAT-BEKLE önerileri' },
-  { id: 'macro', label: 'Makro Ajan', desc: 'haber akışı + ekonomik takvim, DXY/emtia bağıntıları, yön eğilimi' },
+  { id: 'macro', label: 'Haber / Makro', desc: 'haber akışı + ekonomik takvim, DXY/emtia bağıntıları, yön eğilimi' },
 ];
+const FIN_ROLES_AUTO = ['technic', 'risk', 'macro'];
 function finRolesValid(list) {
   return (Array.isArray(list) ? list : [])
     .map((r) => String(r || '').trim())
@@ -8519,7 +8525,7 @@ function finAgentRegisterBg(s, symbols) {
       title: s.bgTitle || 'Finance Ajanı',
       task:
         `Beast Finance ${roleDef ? roleDef.label + ' (İşlem AÇMAZ — analiz ekibi)' : 'ajanı'} (${symLabel}) — ` +
-        `${f.allowTrading && !roleDef ? 'otonom tur tur işlem yönetimi' : 'analiz modunda tur tur tarama'}`,
+        `${roleDef ? 'analiz modunda tur tur tarama' : 'otonom tur tur işlem yönetimi'}`,
       agent: null,
       parentId: '',
       groupId: null,
@@ -8544,8 +8550,8 @@ function finApplyTraderFields(s, symbolsOverride, role) {
   s.finance = true;
   s.financeTrader = true;
   s.financeRole = r;
-  /* rol ajanları ASLA işlem açmaz — otomatik işlem açıksa bile yalnız analiz */
-  s.financeAuto = f.allowTrading === true && !r;
+  /* rol ajanları ASLA işlem açmaz — trade ajanı ve işçileri DAIMA açabilir */
+  s.financeAuto = !r;
   s.financeSymbols = Array.isArray(symbolsOverride) && symbolsOverride.length ? symbolsOverride : f.symbols;
   s.financeStrategy = String(f.strategy || '');
   s.financeLimits = { maxLot: f.maxLot, maxPositions: f.maxPositions };
@@ -8606,9 +8612,7 @@ function finTraderBrief(agent) {
     `Tur aralığı: ${f.intervalSec} sn · Max lot: ${f.maxLot} · Max eşzamanlı pozisyon: ${f.maxPositions}`,
     roleDef
       ? `UZMANLIK: ${roleDef.desc} — raporlarını bu çerçevede yaz; İŞLEM AÇMA, yalnız analiz + net öneri üret.`
-      : f.allowTrading
-        ? 'Otomatik işlem AÇIK: mt5_trade/mt5_close/mt5_modify/mt5_pending kullanabilirsin (limitler sistemce zorlanır).'
-        : 'Otomatik işlem KAPALI: SADECE analiz + net işlem önerileri yaz (sembol, yön, giriş, SL, TP, sebep); işlem açma.',
+      : 'Otomatik işlem AÇIK (daima): mt5_trade/mt5_close/mt5_modify/mt5_pending kullanabilirsin (limitler sistemce zorlanır).',
     roleDef
       ? 'Bulgularını agent_dm ile ANA TRADER\u2019a bildir (to: "Trader" ya da ajan başlığı anahtarı); teknik/öneri çelişkisi varsa gerekçenle yaz.'
       : f.strategy ? `Sahibinin strateji notu: ${f.strategy}` : 'Strateji notu yok: trend + destek/direnç + momentum ile temel okuma yap.',
@@ -8635,7 +8639,7 @@ async function finConsultPlan(f, agent, sid) {
       if (ps && ps.ok) positions = (ps.data && ps.data.positions) || [];
     }
   } catch {}
-  const auto = f.allowTrading ? 'AÇIK (işlem açabilir)' : 'KAPALI (yalnız öneri)';
+  const auto = 'AÇIK (işlem açabilir — limitler zorlanır)';
   const task =
     'Beast Finance ajanı yeni tura giriyor. SEN mt5_* araçlarını KULLANMA, işlem AÇMA — ' +
     'sana düşen iş: semboller için bu turun kısa işlem PLANINI üretmek ' +
@@ -8688,9 +8692,7 @@ function finAgentRound(sid) {
   } catch {}
   const auto = roleDef
     ? `UZMANLIK: ${roleDef.desc} — İŞLEM AÇMA, yalnız analiz + net öneri.`
-    : f.allowTrading
-      ? 'İşlem açabilirsin — limitlere uy, SL\u2019siz pozisyon bırakma.'
-      : 'Otomatik işlem KAPALI — sadece analiz + öneri.';
+    : 'İşlem açabilirsin — limitlere uy, SL\u2019siz pozisyon bırakma.';
   const focus = agent.symbols.length ? `Odak: ${agent.symbols.join(', ')}. ` : '';
   const round = `FINANCE TUR #${agent.round}: ${focus}hesap + pozisyonlar + fiyatları çek; ${roleDef ? 'rolüne uygun analiz yap ve öneri ver.' : 'açık pozisyonları yönet (SL/TP güncelle, hedefe ulaşanı kapat); stratejine göre yeni fırsatları değerlendir.'} ${auto} Kısa rapor ver.`;
   const launch = (planBlock) => {
@@ -8807,15 +8809,8 @@ ipcMain.handle('finance:mode', async (_e, payload) => {
       }
     } catch {}
   }
-  if (financeState.mode) {
-    /* OTOMATİK TRADER: finance modu açılır açılmaz trader botu devreye girer
-       (best-effort — model/köprü yoksa sessizce atlanır, log'a düşer) */
-    financeTraderStart()
-      .then((r) => {
-        if (!r || !r.ok) financeLog('[trader] otomatik başlatılamadı: ' + ((r && r.error) || 'bilinmeyen'));
-      })
-      .catch(() => {});
-  }
+  /* OTOMATİK TRADER KAPALI: finance moduna geçmek trader'ı KENDİLİĞİNDEN
+     başlatmaz — kullanıcı TRADE AJANI kartındaki ▶ ile elle başlatır */
   return { ok: true, mode: financeState.mode, needNew };
 });
 
@@ -8845,9 +8840,11 @@ ipcMain.handle('finance:settings', async (_e, patch) => {
   if (p.intervalSec !== undefined) f.intervalSec = Math.max(30, Math.min(3600, Math.round(Number(p.intervalSec) || 120)));
   if (p.maxLot !== undefined) f.maxLot = Math.max(0.01, Math.min(100, Number(p.maxLot) || 0.1));
   if (p.maxPositions !== undefined) f.maxPositions = Math.max(1, Math.min(20, Math.round(Number(p.maxPositions) || 3)));
-  if (p.allowTrading !== undefined) f.allowTrading = !!p.allowTrading;
+  /* allowTrading artık AYARLANMAZ — daima true (finCfg zorlar) */
   if (p.strategy !== undefined) f.strategy = String(p.strategy || '').slice(0, 2000);
   if (p.analysisTeam !== undefined) f.analysisTeam = finRolesValid(p.analysisTeam);
+  if (p.analysisAuto !== undefined) f.analysisAuto = !!p.analysisAuto;
+  if (p.analysisCount !== undefined) f.analysisCount = Math.max(0, Math.min(FIN_ROLES_AUTO.length, Math.round(Number(p.analysisCount) || 0)));
   if (p.pythonPath !== undefined) f.pythonPath = String(p.pythonPath || '').trim();
   if (p.terminalPath !== undefined) f.terminalPath = String(p.terminalPath || '').trim();
   if (p.traderSel !== undefined) {
@@ -8910,9 +8907,13 @@ async function financeTraderStart() {
 }
 
 /* ANALİZ EKİBİ: seçili her rol için AYRI sürekli finance ajanı — hepsi
-   tüm SKILL'lere + mt5 okuma araçlarına erişir, İŞLEM AÇMAZ. */
+   tüm SKILL'lere + mt5 okuma araçlarına erişir, İŞLEM AÇMAZ.
+   Otomatik mod: kullanıcı sadece SAYI girer → gereklı ajanlar atanır. */
 function finTeamStart(f) {
-  const roles = finRolesValid((f && f.analysisTeam) || []);
+  const n = Math.max(0, Math.min(FIN_ROLES_AUTO.length, Math.round(Number(f && f.analysisCount) || 0)));
+  const roles = f && f.analysisAuto
+    ? FIN_ROLES_AUTO.slice(0, n)
+    : finRolesValid((f && f.analysisTeam) || []);
   if (!roles.length) return;
   const running = new Set();
   for (const [, a] of financeState.agents) {

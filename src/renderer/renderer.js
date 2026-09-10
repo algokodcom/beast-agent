@@ -175,7 +175,6 @@ const els = {
   finSymBtn: $('#finSymBtn'),
   finRoles: $('#finRoles'),
   finWatchClear: $('#finWatchClear'),
-  finAllow: $('#finAllow'),
   finTraderBtn: $('#finTraderBtn'),
   finTraderDot: $('#finTraderDot'),
   finTraderStatus: $('#finTraderStatus'),
@@ -5037,6 +5036,7 @@ const dmState = {
   groups: [], // { id, title, members, titles, createdAt, closed, closedAt }
   modalThread: null, // modalde açık oturum key'i (null = oturum listesi)
 };
+let dmGroupSyncTimer = null;
 
 function dmGroupOf(id) {
   return (dmState.groups || []).find((g) => String(g.id) === String(id)) || null;
@@ -5652,6 +5652,20 @@ function onEvent(ev) {
     if (!dup) {
       dmState.dms.push(rec);
       if (dmState.dms.length > 400) dmState.dms.splice(0, dmState.dms.length - 400);
+    }
+    /* GRUP mesajı canlı geldi: grup kaydını (üyeler/başlık/kapandı) sunucudan
+       tazele — kart İLK mesajla birlikte tam grup görünümünde düşer, "önce
+       ayrı ayrı görünür sonra gruba geçer" durumu olmaz */
+    if (rec.group) {
+      clearTimeout(dmGroupSyncTimer);
+      dmGroupSyncTimer = setTimeout(() => {
+        beast
+          .agentDmsList()
+          .then((res) => {
+            if (res && !Array.isArray(res)) dmState.groups = res.groups || [];
+          })
+          .catch(() => {});
+      }, 200);
     }
     if (els.dmOverlay && !els.dmOverlay.hidden) renderDmModal();
     if ($('#dmRail') && !$('#dmRail').classList.contains('dm-hidden')) renderDmRail();
@@ -8925,31 +8939,72 @@ function finTraderInputsSet(cfg) {
   if (els.finInterval && ae !== els.finInterval) els.finInterval.value = cfg.intervalSec || 120;
   if (els.finMaxLot && ae !== els.finMaxLot) els.finMaxLot.value = cfg.maxLot || 0.1;
   finSymBtnUpdate();
-  if (els.finAllow && ae !== els.finAllow) els.finAllow.checked = cfg.allowTrading === true;
   if (els.finTraderModel && ae !== els.finTraderModel && cfg.traderSel) els.finTraderModel.value = cfg.traderSel;
 }
 
-/* ANALİZ EKİBİ: trader yanında koşacak uzman ajan rolleri — katalog
-   sunucudan (finance snapshot/state.roles) gelir, yerel yedek listesiyle. */
+/* ANALİZ EKİBİ: trader yanında koşacak uzman ajan rolleri — İKİ MOD:
+   (1) OTOMATİK: sadece SAYI gir → gereklı ajanları sistem kendisi ata;
+   (2) ELLE SEÇ: rol kutucukları (Risk / Teknik / Haber-Makro) çoklu seçilir.
+   Katalog sunucudan (finance snapshot/state.roles) gelir, yerel yedek var. */
 let finRolesCatalog = [
   { id: 'risk', label: 'Risk Ajanı', desc: 'marj/kaldıraç/SL disiplini, exposure ve günlük kayıp hızı denetimi' },
   { id: 'technic', label: 'Teknik Analiz', desc: 'trend/yapı/destek-direnç/momentum okuma, AL-SAT-BEKLE önerileri' },
-  { id: 'macro', label: 'Makro Ajan', desc: 'haber akışı + ekonomik takvim, DXY/emtia bağıntıları, yön eğilimi' },
+  { id: 'macro', label: 'Haber / Makro', desc: 'haber akışı + ekonomik takvim, DXY/emtia bağıntıları, yön eğilimi' },
 ];
 let finRolesDirty = false; /* tık→kaydet arası snapshot ezmesin */
 let finRolesSyncTimer = null;
 
 function finRolesSel() {
   const box = els.finRoles;
-  return box ? [...box.querySelectorAll('input:checked')].map((cb) => cb.dataset.role) : [];
+  return box ? [...box.querySelectorAll('input[data-role]:checked')].map((cb) => cb.dataset.role) : [];
 }
 
 function finRenderRoles(cfg) {
   const box = els.finRoles;
   if (!box) return;
   if (finRolesDirty) return; /* bekleyen kullanıcı değişikliği korunur */
+  const auto = !!(cfg && cfg.analysisAuto);
+  const count = Math.max(0, Math.round(Number(cfg && cfg.analysisCount) || 0));
   const sel = cfg && Array.isArray(cfg.analysisTeam) ? cfg.analysisTeam : [];
   box.innerHTML = '';
+
+  /* OTOMATİK çipi + sayı girişi */
+  const autoLab = document.createElement('label');
+  autoLab.className = 'fin-role fin-role-auto';
+  autoLab.title = 'Rol seçmeden SAYI gir — gereklı ajanları sistem otomatik atar (teknik → risk → haber sırası)';
+  const autoCb = document.createElement('input');
+  autoCb.type = 'checkbox';
+  autoCb.checked = auto;
+  autoLab.appendChild(autoCb);
+  autoLab.appendChild(document.createTextNode('⚙ Otomatik'));
+  autoCb.addEventListener('change', () => {
+    finRolesDirty = true;
+    finSaveCfg({ analysisAuto: autoCb.checked });
+    toast(autoCb.checked ? 'Analiz ekibi OTOMATİK — sayı kadar gereklı ajan atanır' : 'Analiz ekibi ELLE SEÇİM moduna geçti');
+    clearTimeout(finRolesSyncTimer);
+    finRolesSyncTimer = setTimeout(() => { finRolesDirty = false; finSnapshot(); }, 900);
+  });
+  box.appendChild(autoLab);
+
+  const cnt = document.createElement('input');
+  cnt.type = 'number';
+  cnt.className = 'fin-role-count';
+  cnt.min = '0';
+  cnt.max = String(finRolesCatalog.length);
+  cnt.step = '1';
+  cnt.value = String(count || 0);
+  cnt.title = 'Otomatik mod: kaç uzman ajan koşacak (0 = ekip yok)';
+  cnt.disabled = !auto;
+  cnt.addEventListener('change', () => {
+    finRolesDirty = true;
+    finSaveCfg({ analysisCount: Math.max(0, Math.round(Number(cnt.value) || 0)) });
+    toast('Analiz ekibi: ' + (Math.round(Number(cnt.value) || 0) || 'kapalı') + ' uzman ajan (otomatik)');
+    clearTimeout(finRolesSyncTimer);
+    finRolesSyncTimer = setTimeout(() => { finRolesDirty = false; finSnapshot(); }, 900);
+  });
+  box.appendChild(cnt);
+
+  /* rol kutucukları — otomatik moddayken pasif */
   for (const r of finRolesCatalog) {
     const lab = document.createElement('label');
     lab.className = 'fin-role';
@@ -8957,6 +9012,7 @@ function finRenderRoles(cfg) {
     cb.type = 'checkbox';
     cb.dataset.role = r.id;
     cb.checked = sel.includes(r.id);
+    cb.disabled = auto;
     cb.title = r.desc + ' — tüm skill + mt5 erişimli, işlem açmaz';
     lab.appendChild(cb);
     lab.appendChild(document.createTextNode(r.label));
@@ -8987,12 +9043,14 @@ function finRenderTrader(trader, cfg) {
       const d = new Date(trader.lastAt);
       t = ' · son tur ' + String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
     }
-    const mode = cfg && cfg.allowTrading ? 'OTOMATİK' : 'analiz modu';
-    const team = cfg && Array.isArray(cfg.analysisTeam) ? cfg.analysisTeam.length : 0;
-    const teamTxt = team ? ' · ekip ' + team + ' ajan' : '';
+    /* ekip bilgisi: otomatik modda sayı, elle seçimde seçili rol sayısı */
+    const team = cfg && cfg.analysisAuto
+      ? Math.round(Number(cfg.analysisCount) || 0)
+      : (cfg && Array.isArray(cfg.analysisTeam) ? cfg.analysisTeam.length : 0);
+    const teamTxt = team ? ' · ekip ' + team + ' ajan' + (cfg && cfg.analysisAuto ? ' (oto)' : '') : '';
     els.finTraderStatus.textContent = on
-      ? (trader.busy ? 'Tur çalışıyor…' : 'Beklemede — sıradaki tur ' + (cfg && cfg.intervalSec ? cfg.intervalSec + ' sn' : '')) + ' · tur #' + (trader.rounds || 0) + ' · ' + mode + teamTxt + t
-      : 'Kapalı · ' + mode + teamTxt;
+      ? (trader.busy ? 'Tur çalışıyor…' : 'Beklemede — sıradaki tur ' + (cfg && cfg.intervalSec ? cfg.intervalSec + ' sn' : '')) + ' · tur #' + (trader.rounds || 0) + ' · OTONOM' + teamTxt + t
+      : 'Kapalı · OTONOM' + teamTxt;
   }
 }
 
@@ -9128,22 +9186,7 @@ function finSaveCfg(patch) {
 if (els.finInterval) els.finInterval.addEventListener('change', () => finSaveCfg({ intervalSec: Number(els.finInterval.value) || 120 }));
 if (els.finMaxLot) els.finMaxLot.addEventListener('change', () => finSaveCfg({ maxLot: Number(els.finMaxLot.value) || 0.1 }));
 if (els.finSymBtn) els.finSymBtn.addEventListener('click', finSymPickerOpen);
-if (els.finAllow) {
-  els.finAllow.addEventListener('change', async () => {
-    if (els.finAllow.checked) {
-      const ok = await uiConfirm(
-        'OTOMATİK İŞLEM açılıyor: trade ajanı GERÇEK hesapta emir açabilir/kapatabilir (max lot + pozisyon limitleriyle). Onaylıyor musun?',
-        'Aç',
-        'Vazgeç'
-      );
-      if (!ok) {
-        els.finAllow.checked = false;
-        return;
-      }
-    }
-    finSaveCfg({ allowTrading: els.finAllow.checked });
-  });
-}
+/* OTOMATİK İŞLEM onay kutusu KALDIRILDI — trade ajanı daima işlem açabilir */
 if (els.finTraderModel) {
   els.finTraderModel.addEventListener('change', () => {
     finSaveCfg({ traderSel: els.finTraderModel.value });
@@ -9158,7 +9201,11 @@ if (els.finTraderBtn) {
       const r = await beast.financeTraderStart().catch((e) => ({ ok: false, error: String((e && e.message) || e) }));
       if (r && !r.ok) toast(r.error || 'Trader başlatılamadı');
       else if (r && r.ok) {
-        const team = finRolesSel().length;
+        const cfg = (await beast.financeState().catch(() => null));
+        const c = (cfg && cfg.cfg) || {};
+        const team = c.analysisAuto
+          ? Math.round(Number(c.analysisCount) || 0)
+          : finRolesSel().length;
         toast(team ? 'Trade ajanı + analiz ekibi (' + team + ' uzman) başladı — turlar panelde izlenir' : 'Trade ajanı başladı — turlar panelde izlenir');
       }
     }

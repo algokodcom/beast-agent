@@ -315,6 +315,32 @@ test('agent_dm: TEK oturum silinir (agentDmDeleteThread), diğer oturumlar korun
   eng.agentDmsClear();
 });
 
+test('agent_dm: aynı gruptaki üyelerin 1:1 DM\u2019leri GRUP İÇİNE düşer (ayrı thread\u2019e dağılmaz)', async () => {
+  const eng = makeEngine();
+  eng.flushPendingReports = () => {};
+  eng._bgJobs.set('a1', { id: 'a1', code: 'AAA', title: 'Trader', status: 'running', continuous: true });
+  eng._bgJobs.set('a2', { id: 'a2', code: 'BBB', title: 'Risk Ajanı', status: 'running' });
+  /* grup kur: a1 mesaj atar, a2 üye olur */
+  const g = JSON.parse(await eng._execTool('agent_dm', { group: 'ALTIN EKİP', to: 'a2', message: 'grup kuruldu' }, null, 'a1'));
+  assert.equal(g.ok, true);
+  /* a2, group VERMEDEN a1'e yazar → mesaj GRUP İÇİNE düşmeli */
+  const dm = JSON.parse(await eng._execTool('agent_dm', { to: 'a1', message: 'anlaştık, destek 2400' }, null, 'a2'));
+  assert.equal(dm.ok, true);
+  assert.equal(dm.group, 'ALTIN EKİP');
+  const list = eng.agentDmsList();
+  assert.equal(list.dms.length, 2);
+  assert.equal(list.dms[1].group, 'grp:altin ekip');
+  /* grupta olmayan çift 1:1 kalmaya devam eder */
+  eng._bgJobs.set('a3', { id: 'a3', code: 'CCC', title: 'Serbest', status: 'running' });
+  const solo = JSON.parse(await eng._execTool('agent_dm', { to: 'a3', message: 'bireysel' }, null, 'a1'));
+  assert.equal(solo.ok, true);
+  assert.equal(solo.group, undefined);
+  const list2 = eng.agentDmsList();
+  assert.equal(list2.dms[2].group, undefined);
+  /* temizleme */
+  eng.agentDmsClear();
+});
+
 test('agent_dm: aynı görevdeki paralel ajanlar OTOMATİK ekip grubuna girer (zorunlu)', async () => {
   const eng = makeEngine();
   eng.flushPendingReports = () => {};

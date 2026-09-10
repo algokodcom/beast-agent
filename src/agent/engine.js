@@ -6328,25 +6328,36 @@ Engine.prototype._agentDmSend = function (fromSid, args) {
     const at = new Date().toISOString();
 
     /* GRUP SOHBETİ: kur/yeniden kullan, hedefi üye yap, mesaj HER ÜYEYE düşer.
-       Ajanlar ortak kararları burada tartışır; iş bitince sohbet kapanır. */
-    if (groupName) {
-      /* gid Türkçe-kararsız normalize: ALTIN/Altın/altın aynı grup */
-      const gid =
-        'grp:' +
-        groupName
-          .toLowerCase()
-          .replace(/\u0307/g, '')
-          .replace(/ı/g, 'i')
-          .replace(/ğ/g, 'g')
-          .replace(/ü/g, 'u')
-          .replace(/ş/g, 's')
-          .replace(/ö/g, 'o')
-          .replace(/ç/g, 'c');
-      let g = this._agentGroups.get(gid);
-      if (!g) {
-        if (!target) return { ok: false, error: 'yeni grup için to ile en az bir ajan belirt' };
-        g = { id: gid, title: groupName, members: [], titles: {}, createdAt: at, closed: false };
-        this._agentGroups.set(gid, g);
+       Ajanlar ortak kararları burada tartışır; iş bitince sohbet kapanır.
+       groupName verilmemişse ama iki taraf da AYNI AÇIK grubun üyesiyse mesaj
+       YİNE GRUBA düşer — üye üyeye 1:1 thread'lere ayrı ayrı dağılmaz; ekibin
+       tüm iç trafiği TEK grup sohbetinde canlı toplanır. */
+    const shared = groupName || !target ? null : this._agentDmSharedGroup(fromSid, target);
+    let gid = '';
+    if (groupName || shared) {
+      let g;
+      if (groupName) {
+        /* gid Türkçe-kararsız normalize: ALTIN/Altın/altın aynı grup */
+        gid =
+          'grp:' +
+          groupName
+            .toLowerCase()
+            .replace(/\u0307/g, '')
+            .replace(/ı/g, 'i')
+            .replace(/ğ/g, 'g')
+            .replace(/ü/g, 'u')
+            .replace(/ş/g, 's')
+            .replace(/ö/g, 'o')
+            .replace(/ç/g, 'c');
+        g = this._agentGroups.get(gid);
+        if (!g) {
+          if (!target) return { ok: false, error: 'yeni grup için to ile en az bir ajan belirt' };
+          g = { id: gid, title: groupName, members: [], titles: {}, createdAt: at, closed: false };
+          this._agentGroups.set(gid, g);
+        }
+      } else {
+        g = shared;
+        gid = String(g.id || '');
       }
       g.titles = g.titles || {};
       const addMember = (sid, title) => {
@@ -6411,6 +6422,20 @@ Engine.prototype._agentDmSend = function (fromSid, args) {
   } catch (e) {
     return { ok: false, error: String((e && e.message) || e) };
   }
+};
+
+/* İki ajanın ORTAK üyesi olduğu AÇIK grup var mı — 1:1 DM'leri grup içine
+   yönlendirirken kullanılır (ekip içi trafik tek thread'de toplanır). */
+Engine.prototype._agentDmSharedGroup = function (a, b) {
+  a = String(a || '');
+  b = String(b || '');
+  if (!a || !b) return null;
+  for (const [, g] of this._agentGroups || new Map()) {
+    if (g.closed) continue;
+    const mem = g.members || [];
+    if (mem.includes(a) && mem.includes(b)) return g;
+  }
+  return null;
 };
 
 Engine.prototype._pushAgentDm = function (dm) {

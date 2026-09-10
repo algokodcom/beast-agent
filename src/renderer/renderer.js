@@ -175,10 +175,11 @@ const els = {
   finPerfCard: $('#finPerfCard'),
   finFlowCard: $('#finFlowCard'),
   finBalance: $('#finBalance'),
-  finEquity: $('#finEquity'),
+  finEquity: $('#finEquityValue'),
   finProfit: $('#finProfit'),
   finFree: $('#finFree'),
   finTraderModel: $('#finTraderModel'),
+  finModelRefreshBtn: $('#finModelRefreshBtn'),
   finInterval: $('#finInterval'),
   finMaxLot: $('#finMaxLot'),
   finSymBtn: $('#finSymBtn'),
@@ -227,7 +228,7 @@ const els = {
   finStatPf: $('#finStatPf'),
   finStatDd: $('#finStatDd'),
   finStatTrades: $('#finStatTrades'),
-  finEquityBox: $('#finEquity'),
+  finEquityBox: $('#finEquityChart'),
   stVideoEl: $('#stVideoEl'),
   stVideoName: $('#stVideoName'),
   stVideoOpen: $('#stVideoOpen'),
@@ -7178,6 +7179,8 @@ async function init() {
       try {
         state = await beast.refreshModels();
         applyState();
+        /* finance modu açıksa TRADE AJANI model listesini de tazele */
+        if (financeModeOn()) await finFillModels();
         toast(_t('mr_done'));
       } catch {
         toast(_t('ws_fail_toast'));
@@ -9502,6 +9505,8 @@ function finRenderAlerts(list) {
 
 async function finFillModels() {
   if (!els.finTraderModel) return;
+  /* mevcut seçim korunur — yenilemede model kaybolursa "Genel aktif model"e düşer */
+  const cur = els.finTraderModel.value || (finCfgCache && finCfgCache.traderSel) || '';
   let models = [];
   try {
     const st = await beast.getState();
@@ -9511,11 +9516,13 @@ async function finFillModels() {
   const optAuto = document.createElement('option');
   optAuto.value = '';
   optAuto.textContent = 'Genel aktif model';
+  if (!cur) optAuto.selected = true;
   els.finTraderModel.appendChild(optAuto);
   for (const m of models) {
     const o = document.createElement('option');
     o.value = m.sel;
     o.textContent = (m.providerName || m.sel) + ' · ' + m.model;
+    if (m.sel === cur) o.selected = true;
     els.finTraderModel.appendChild(o);
   }
   finModelsFilled = true;
@@ -9594,8 +9601,11 @@ async function setFinanceMode(on) {
   try { localStorage.setItem('beast.financeMode', on ? '1' : '0'); } catch {}
   const fm = await beast.financeMode(!!on, activeId).catch(() => ({}));
   /* finance modu açıldı ama aktif oturum NORMAL (örn. WhatsApp sohbeti) ise
-     ASLA o oturumu finance'e çevirme — kendine ÖZEL finance oturumu aç */
-  if (on && fm && fm.needNew) {
+     ASLA o oturumu finance'e çevirme — önce EN SON finance sohbetinden devam
+     et (resumeSid); hiç finance sohbeti yoksa kendine ÖZEL yeni oturum aç */
+  if (on && fm && fm.resumeSid) {
+    try { await openSession(fm.resumeSid); } catch {}
+  } else if (on && fm && fm.needNew) {
     try {
       const created = await beast.createSession();
       if (created && created.id) await openSession(created.id);
@@ -9785,6 +9795,23 @@ if (els.finTraderModel) {
   els.finTraderModel.addEventListener('change', () => {
     finSaveCfg({ traderSel: els.finTraderModel.value });
     toast('Trade ajanı modeli: ' + (els.finTraderModel.value || 'genel aktif model'));
+  });
+}
+/* TRADE AJANI: modelleri yeniden çek — üstteki ⟳ ile aynı mantık
+   (models:refresh). Eksik/yeni modeller listeye girer, seçim korunur. */
+if (els.finModelRefreshBtn) {
+  els.finModelRefreshBtn.addEventListener('click', async () => {
+    els.finModelRefreshBtn.classList.add('spin');
+    try {
+      state = await beast.refreshModels();
+      applyState();
+      await finFillModels();
+      toast(_t('mr_done'));
+    } catch {
+      toast(_t('ws_fail_toast'));
+    } finally {
+      els.finModelRefreshBtn.classList.remove('spin');
+    }
   });
 }
 if (els.finTraderBtn) {

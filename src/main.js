@@ -9582,6 +9582,7 @@ ipcMain.handle('finance:mode', async (_e, payload) => {
   financeState.mode = !!(payload && payload.on);
   const sid = String((payload && payload.sessionId) || '');
   let needNew = false;
+  let resumeSid = '';
   if (sid && engine) {
     try {
       let s = engine.cache.get(sid);
@@ -9605,9 +9606,21 @@ ipcMain.handle('finance:mode', async (_e, payload) => {
       }
     } catch {}
   }
+  /* ESKİ SOHBETTEN DEVAM: finance moduna girerken aktif oturum finance değilse
+     (örn. normal sohbet) yeni oturum AÇMAK yerine en son kullanılan finance
+     sohbet oturumu önerilir; hiç yoksa yeni oturum açılır. */
+  if (financeState.mode && needNew && engine) {
+    try {
+      const prev = (engine.listSessions() || []).find((v) => v && v.finance && !v.isBg && v.id);
+      if (prev) {
+        resumeSid = String(prev.id);
+        needNew = false;
+      }
+    } catch {}
+  }
   /* OTOMATİK TRADER KAPALI: finance moduna geçmek trader'ı KENDİLİĞİNDEN
      başlatmaz — kullanıcı TRADE AJANI kartındaki ▶ ile elle başlatır */
-  return { ok: true, mode: financeState.mode, needNew };
+  return { ok: true, mode: financeState.mode, needNew, resumeSid };
 });
 
 /* MT5 sembol seçici: terminaldeki tüm semboller (isteğe bağlı *filter*) */

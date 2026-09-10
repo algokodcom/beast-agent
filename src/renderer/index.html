@@ -157,13 +157,13 @@
             <div class="fin-card-title">HESAP</div>
             <div class="fin-grid">
               <div class="fin-kv"><span>Bakiye</span><b id="finBalance">—</b></div>
-              <div class="fin-kv"><span>Özkaynak</span><b id="finEquity">—</b></div>
+              <div class="fin-kv"><span>Varlık</span><b id="finEquityValue">—</b></div>
               <div class="fin-kv"><span>Kâr/Zarar</span><b id="finProfit">—</b></div>
               <div class="fin-kv"><span>Serbest Marj</span><b id="finFree">—</b></div>
             </div>
           </div>
           <div class="fin-card fin-card-trader">
-            <div class="fin-card-title">TRADE AJANI <span id="finTraderDot" class="fin-dot off" title="Trader durumu"></span><span class="file-spacer"></span><button id="finSkillsBtn" title="Rol → skill eşleştirmesi — hangi rol hangi skill'i okur">&#9881;</button></div>
+            <div class="fin-card-title">TRADE AJANI <span id="finTraderDot" class="fin-dot off" title="Trader durumu"></span><span class="file-spacer"></span><button id="finModelRefreshBtn" title="Modelleri yeniden çek — eksik/güncel modelleri tazeler">&#x27F3;</button><button id="finSkillsBtn" title="Rol → skill eşleştirmesi — hangi rol hangi skill'i okur">&#9881;</button></div>
             <div class="fin-field">
               <span>Model</span>
               <select id="finTraderModel" title="Trader ajanının modeli — farklı API/model seçilebilir"></select>
@@ -234,7 +234,7 @@
           </div>
           <div class="fin-card" id="finPerfCard" hidden>
             <div class="fin-card-title">PERFORMANS <span id="finStatsInfo" class="fin-hint"></span><span class="file-spacer"></span><button id="finReportBtn" title="Haftalık rapor üret — istatistik + işlem günlüğü + ajan değerlendirmesi">&#128196; Rapor</button></div>
-            <div id="finEquity" class="fin-equity"></div>
+            <div id="finEquityChart" class="fin-equity"></div>
             <div class="fin-grid">
               <div class="fin-kv"><span>Bugün</span><b id="finStatToday">—</b></div>
               <div class="fin-kv"><span>Hafta</span><b id="finStatWeek">—</b></div>

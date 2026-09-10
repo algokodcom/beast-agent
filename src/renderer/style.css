@@ -287,9 +287,9 @@ body:not(.ide-mode):not(.studio-mode):not(.sandbox-mode) #watchPane { display: f
 /* Studio tuşu artık topbar'da (dd-btn dd-icon-btn) — aktif rozet diğer topbar ikonlarıyla aynı */
 #studioBtn.on { background: var(--accent-dim); color: var(--accent); }
 
-/* model refresh butonu — çekerken döner */
-#modelRefreshBtn.spin { opacity: .7; pointer-events: none; }
-#modelRefreshBtn.spin { animation: beast-spin 0.9s linear infinite; }
+/* model refresh butonları — çekerken döner */
+#modelRefreshBtn.spin, #finModelRefreshBtn.spin { opacity: .7; pointer-events: none; }
+#modelRefreshBtn.spin, #finModelRefreshBtn.spin { animation: beast-spin 0.9s linear infinite; }
 @keyframes beast-spin { to { transform: rotate(360deg); } }
 
 /* ---------- cron modülü (ayarlar sekmesi) ---------- */

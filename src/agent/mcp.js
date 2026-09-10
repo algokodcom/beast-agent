@@ -42,6 +42,23 @@ function configPath() {
 
 let cfgCache = { mtime: -1, cfg: { servers: {} } };
 
+/* Sunucu kaydını normalize eder + token güvenliğini doğrular.
+   Komut yoksa null döner; satır sonu/NUL varsa fırlatır (kayıt atlanır/reddedilir). */
+function normalizeServer(s) {
+  if (!s || typeof s !== 'object' || !s.command) return null;
+  const command = String(s.command);
+  assertSafeToken(command, 'MCP komutu');
+  const args = (Array.isArray(s.args) ? s.args : []).map((a) => assertSafeToken(a, 'MCP argümanı'));
+  return {
+    command,
+    args,
+    env: s.env && typeof s.env === 'object' ? Object.fromEntries(Object.entries(s.env).map(([k, v]) => [String(k), String(v)])) : {},
+    enabled: s.enabled !== false,
+    tools: Array.isArray(s.tools) ? s.tools.map(String) : null,
+    timeoutMs: Number(s.timeoutMs) > 1000 ? Math.min(Number(s.timeoutMs), 600000) : CALL_TIMEOUT_MS,
+  };
+}
+
 function readConfig(force) {
   try {
     const p = configPath();
@@ -51,15 +68,12 @@ function readConfig(force) {
     const cfg = { servers: {} };
     if (parsed && typeof parsed.servers === 'object') {
       for (const [name, s] of Object.entries(parsed.servers)) {
-        if (!s || typeof s !== 'object' || !s.command) continue;
-        cfg.servers[sanitizeName(name)] = {
-          command: String(s.command),
-          args: Array.isArray(s.args) ? s.args.map(String) : [],
-          env: s.env && typeof s.env === 'object' ? Object.fromEntries(Object.entries(s.env).map(([k, v]) => [String(k), String(v)])) : {},
-          enabled: s.enabled !== false,
-          tools: Array.isArray(s.tools) ? s.tools.map(String) : null,
-          timeoutMs: Number(s.timeoutMs) > 1000 ? Math.min(Number(s.timeoutMs), 600000) : CALL_TIMEOUT_MS,
-        };
+        try {
+          const srv = normalizeServer(s);
+          if (srv) cfg.servers[sanitizeName(name)] = srv;
+        } catch (e) {
+          log.warn(`[mcp] '${name}' geçersiz, atlandı: ${String((e && e.message) || e)}`);
+        }
       }
     }
     cfgCache = { mtime: st.mtimeMs, cfg };
@@ -76,9 +90,15 @@ function readConfig(force) {
 
 function saveConfig(cfg) {
   const p = configPath();
+  /* DİSKE YAZMADAN doğrula: güvensiz/yapıbozuk kayıt asla mcp.json'a düşmez */
+  const clean = { servers: {} };
+  for (const [name, s] of Object.entries((cfg && cfg.servers) || {})) {
+    const srv = normalizeServer(s);
+    if (srv) clean.servers[sanitizeName(name)] = srv;
+  }
   fs.mkdirSync(path.dirname(p), { recursive: true });
-  fs.writeFileSync(p, JSON.stringify(cfg, null, 2) + '\n');
-  cfgCache = { mtime: -1, cfg }; /* sonraki okuma diskten gelsin */
+  fs.writeFileSync(p, JSON.stringify(clean, null, 2) + '\n');
+  cfgCache = { mtime: -1, cfg: clean }; /* sonraki okuma diskten gelsin */
 }
 
 function sanitizeName(name) {
@@ -89,20 +109,77 @@ function sanitizeName(name) {
     .slice(0, 32) || 'server';
 }
 
+/* UI'a maskeli ('***') giden env sırlarını diskteki mevcut değerlerle geri koyar.
+   Böylece kullanıcı formu kaydedince sırlar '***' ile ezilmez. */
+function restoreMaskedSecrets(cfg) {
+  let cur;
+  try { cur = readConfig(true); } catch { return cfg; }
+  for (const [name, s] of Object.entries((cfg && cfg.servers) || {})) {
+    if (!s || typeof s !== 'object' || !s.env || typeof s.env !== 'object') continue;
+    const old = cur.servers[sanitizeName(name)];
+    if (!old || !old.env) continue;
+    for (const [k, v] of Object.entries(s.env)) {
+      if (String(v) === '***' && old.env[k] !== undefined) s.env[k] = old.env[k];
+    }
+  }
+  return cfg;
+}
+
 /* ---------- süreç yaşam döngüsü ---------- */
 
+/* Token doğrulama: satır sonu/NUL her platformda enjeksiyon vektörüdür */
+function assertSafeToken(t, what) {
+  const s = String(t == null ? '' : t);
+  if (/[\0\r\n]/.test(s)) throw new Error(what + ' içinde satır sonu/NUL karakteri olamaz');
+  return s;
+}
+
+const CMD_META_RE = /[\s"&|<>^()]/;
+
+/* KOMUT token'ı: yalnız gerekiyorsa tırnaklanır — aksi halde npm/npx gibi
+   .cmd sarmalayıcılarının %~dp0 çözümü bozulur. %/! reddedilir. */
+function quoteCmdCommand(t) {
+  const s = assertSafeToken(t, 'MCP komutu');
+  if (/[%!]/.test(s)) throw new Error('MCP komutunda % veya ! kullanılamaz (güvenlik)');
+  if (!CMD_META_RE.test(s)) return s;
+  return '"' + s.replace(/"/g, '""') + '"';
+}
+
+/* ARGÜMAN token'ı: HER ZAMAN tırnak içinde → & | < > gibi metakarakterler
+   komut ayıramaz. %/! genişletilebildiği için reddedilir; kapanış tırnağı
+   öncesi ters bölü CRT kuralı gereği çiftlenir. */
+function quoteCmdArg(t) {
+  const s = assertSafeToken(t, 'MCP argümanı');
+  if (/[%!]/.test(s)) throw new Error('MCP argümanında % veya ! kullanılamaz (güvenlik)');
+  const out = s.replace(/"/g, '""').replace(/(\\+)$/, '$1$1');
+  return '"' + out + '"';
+}
+
 function spawnServer(cfg) {
-  /* Windows: npx/uvx gibi .cmd sarmalayıcıları düz spawn ile başlamaz —
-     cmd /d /s /c üzerinden, argümanlar elle tırnaklanarak geç. */
-  const quote = (t) => (/[\s"]/u.test(t) ? '"' + t.replace(/"/g, '\\"') + '"' : t);
-  const line = [cfg.command, ...cfg.args].map(quote).join(' ');
-  const child = spawn(line, {
-    shell: true,
+  const cmd = assertSafeToken(cfg.command, 'MCP komutu');
+  if (!cmd.trim()) throw new Error('MCP komutu boş');
+  const args = (Array.isArray(cfg.args) ? cfg.args : []).map((a) => assertSafeToken(a, 'MCP argümanı'));
+  const opts = {
     windowsHide: true,
     stdio: ['pipe', 'pipe', 'pipe'],
     env: { ...process.env, ...(cfg.env || {}) },
+  };
+  if (process.platform !== 'win32') {
+    /* POSIX: shell YOK — & | ; $() gibi metakarakterler enjekte edilemez */
+    return spawn(cmd, args, { ...opts, shell: false });
+  }
+  /* Windows: npx/uvx .cmd sarmalayıcıları düz spawn edilemez — cmd.exe'ye
+     tırnaklı/tırnaksız DOĞRU komut satırı elle kurulur; shell KAPALI,
+     windowsVerbatimArguments ile libuv müdahalesi kapatılır. */
+  const first = quoteCmdCommand(cmd);
+  const line = [first, ...args.map(quoteCmdArg)].join(' ');
+  /* İlk token tırnaklıysa cmd /s ilk ve son tırnağı KIRPAR — dış sarmal şart */
+  const full = first.startsWith('"') ? '"' + line + '"' : line;
+  return spawn(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', full], {
+    ...opts,
+    shell: false,
+    windowsVerbatimArguments: true,
   });
-  return child;
 }
 
 function connFor(name) {
@@ -414,6 +491,9 @@ module.exports = {
   configPath,
   readConfig,
   saveConfig,
+  restoreMaskedSecrets,
+  normalizeServer,
+  _spawnServer: spawnServer,
   mergeTools,
   toolSchemas,
   call,

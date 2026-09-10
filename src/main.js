@@ -26,9 +26,14 @@ const watchers = require('./agent/watchers');
 const usageMod = require('./agent/usage');
 const bus = require('./agent/bus');
 const computeruse = require('./agent/computeruse');
+const fsguard = require('./agent/fsguard');
 const log = require('./agent/logger');
 const headroom = require('./agent/headroom');
 const QRCode = require('qrcode'); /* Expo Go QR (bc-expurl) — whatsapp ile aynı paket */
+
+/* Renderer'a sır gönderirken kullanılan maske; kaydederken aynen geri gelirse
+   gerçek değer korunur (anahtarlar UI'da düz metin dolaşmaz). */
+const SECRET_MASK = '***';
 
 /* #3 otomatik updater: sessiz — indirir, kapanışta kurar, kullanıcıya soru sormaz.
    Paketlenmemiş (npm start) modda devre dışı; Update sekmesi ve /update komutu kontrol eder. */
@@ -2337,20 +2342,34 @@ async function handleWaIncoming(jid, payload, senderNum) {
     if (!engine) return;
     if (typeof payload === 'string') payload = { text: payload };
     const isGroup = !!payload.isGroup || jid.endsWith('@g.us');
+    /* İzin listesi kaydı — grup kapıları ve doğal dil komutları bunu kullanır:
+       izinli değilse yalnız sohbet; agentic iş yaptıramaz. */
+    const senderHit = waFind(senderNum);
 
-    /* slash komutları: DM'de her zaman; grupta sadece bot mention edildiyse */
+    /* slash komutları: DM'de her zaman; grupta sadece bot mention edildiyse.
+       GRUP KAPISI: izin listesinde olmayan üye slash (agentic) komut kullanamaz —
+       herkes sohbet eder ama işi yalnız izinli kişiler yaptırır. */
     const txt0 = String(payload.text || '').trim();
     if (txt0.startsWith('/') && !txt0.includes('\n') && (!isGroup || payload.mentioned)) {
+      if (isGroup && !senderHit && !/^\/(help|version)\b/i.test(txt0)) {
+        await sendWaSafe(
+          jid,
+          'Bu komutu yalnız izinli kişiler kullanabilir. Sohbet için beni @mention ile çağırabilirsin.'
+        ).catch(() => {});
+        return;
+      }
       if (await tryWaSlash(jid, txt0, senderNum, payload)) return;
     }
 
     /* "hepsini sil" / "tüm cron" / "cronları temizle" gibi doğal dil → cron temizle.
+       Yalnız İZİNLİ gönderen: misafir grup üyesi cron silemez.
        clearAll() bellekteki job'ları VE diski boşaltır, zamanlayıcıyı durdurur
        (sadece dosya silmek yetmezdi: çalışan proses belleği geri yazıyordu). */
     const lc = txt0.toLowerCase();
     if (
-      (lc.includes('cron') && /(sil|temizle|kaldır|hepsi|tüm|sıfırla)/.test(lc)) ||
-      /^(hepsini|hepsını|tümünü|tümünü|hepsnı|hepsnı)\b.*(sil|sıl|temizle|kaldır)/.test(lc)
+      senderHit &&
+      ((lc.includes('cron') && /(sil|temizle|kaldır|hepsi|tüm|sıfırla)/.test(lc)) ||
+        /^(hepsini|hepsını|tümünü|tümünü|hepsnı|hepsnı)\b.*(sil|sıl|temizle|kaldır)/.test(lc))
     ) {
       const r = cron.clearAll();
       cronEmit();
@@ -2364,8 +2383,10 @@ async function handleWaIncoming(jid, payload, senderNum) {
     }
 
     /* "hatırlatmaları sil" / "alarm temizle" / "reminders kaldır" → yalnızca
-       otomatik hatırlatmalar silinir (cron görevlerine dokunulmaz). */
+       otomatik hatırlatmalar silinir (cron görevlerine dokunulmaz).
+       Yalnız İZİNLİ gönderen tetikleyebilir. */
     if (
+      senderHit &&
       /hat[iı]rlat|alarm|remind/.test(lc) &&
       /(sil|sıl|temizle|kaldır|iptal|sıfırla|kapat)/.test(lc)
     ) {
@@ -2505,7 +2526,10 @@ async function mqueueTick() {
 
 async function processWaMessage(jid, payload, senderNum, requeues = 0) {
   const isGroup = !!payload.isGroup;
-  const hit = isGroup ? null : waFind(senderNum);
+  /* GRUP: gönderen izin listesinde mi? İzinli → kendi yetki seviyesi;
+     değilse 'chat' (sohbet serbest, araç YOK — agentic işi yalnız izinliler
+     yaptırabilir). DM'de izinsiz gönderen buraya gelemez. */
+  const hit = waFind(senderNum);
   if (!isGroup && !hit) {
     waLog(`skip flush: izinli eşleşme yok (sender=+${senderNum || '?'})`);
     return;
@@ -2522,8 +2546,8 @@ async function processWaMessage(jid, payload, senderNum, requeues = 0) {
   waLastActiveJid = String(jid); // cevap/dosya hedefi: en son yazan sohbet
   // Cevap verilecek — karşı telefonda "yazıyor…" göstergesi (medya işlenene dek sürer)
   wa.setComposing(jid, true);
-  // Kişi bazlı granül izin: all/web/read/chat
-  let perm = isGroup ? 'all' : hit.perm || (hit.lockdown ? 'chat' : 'all');
+  // Kişi bazlı granül izin: all/web/read/chat — grup misafiri varsayılan 'chat'
+  let perm = hit ? hit.perm || (hit.lockdown ? 'chat' : 'all') : 'chat';
   engine.setSessionPerm(sid, perm);
 
   /* BOT SİSTEMİ: numara → bot eşleştirme (izinli kayıtta bot_id yoksa beast'e düşer) */
@@ -6111,12 +6135,35 @@ ipcMain.handle('wa:groups:set', (_e, cfg) => {
 ipcMain.handle('settings:get', () => {
   const out = JSON.parse(JSON.stringify(settings));
   /* Sırların renderera düz metin gitmesini engelle */
-  if (out.email && out.email.pass) out.email.pass = '***';
-  if (out.waTts && out.waTts.key) out.waTts.key = '***';
+  if (out.email && out.email.pass) out.email.pass = SECRET_MASK;
+  if (out.waTts && out.waTts.key) out.waTts.key = SECRET_MASK;
+  if (out.supermemory && out.supermemory.apiKey) out.supermemory.apiKey = SECRET_MASK;
+  if (out.fallout && Array.isArray(out.fallout.slots)) {
+    for (const s of out.fallout.slots) if (s && s.key) s.key = SECRET_MASK;
+  }
+  if (Array.isArray(out.customProviders)) {
+    for (const p of out.customProviders) if (p && p.key) p.key = SECRET_MASK;
+  }
   return out;
 });
 
 /* ---------------- MCP IPC ---------------- */
+
+/* UI'a giden raw JSON'da env sırlarını maskeler (düz metin anahtar sızmasın) */
+function maskMcpRaw(raw) {
+  try {
+    const obj = JSON.parse(String(raw || ''));
+    if (!obj || typeof obj !== 'object' || !obj.servers || typeof obj.servers !== 'object') return raw;
+    for (const s of Object.values(obj.servers)) {
+      if (s && typeof s === 'object' && s.env && typeof s.env === 'object') {
+        for (const k of Object.keys(s.env)) if (String(s.env[k] || '')) s.env[k] = SECRET_MASK;
+      }
+    }
+    return JSON.stringify(obj, null, 2);
+  } catch {
+    return raw;
+  }
+}
 
 ipcMain.handle('mcp:status', () => {
   try { return mcpMod.status(); } catch { return { path: '', servers: [] }; }
@@ -6127,15 +6174,17 @@ ipcMain.handle('mcp:config:get', () => {
     const p = mcpMod.configPath();
     let raw = '';
     try { raw = require('fs').readFileSync(p, 'utf8'); } catch {}
-    return { path: p, raw };
+    return { path: p, raw: maskMcpRaw(raw) };
   } catch { return { path: '', raw: '' }; }
 });
 
 ipcMain.handle('mcp:config:set', (_e, raw) => {
   try {
     const text = String(raw || '');
-    if (text.trim()) JSON.parse(text); /* bozuk JSON diske yazılmaz */
-    mcpMod.saveConfig(text.trim() ? JSON.parse(text) : { servers: {} });
+    const cfg = text.trim() ? JSON.parse(text) : { servers: {} };
+    /* maskeli env sırlarını mevcut diskteki değerlerle geri koy */
+    try { mcpMod.restoreMaskedSecrets(cfg); } catch {}
+    mcpMod.saveConfig(cfg);
     return { ok: true };
   } catch (e) {
     return { ok: false, error: String((e && e.message) || e) };
@@ -6163,31 +6212,45 @@ ipcMain.handle('fallout:get', () => {
   out.enabled = !!f.enabled;
   out.autoResume = f.autoResume !== false;
   if (Array.isArray(f.slots)) {
-    for (let i = 0; i < Math.min(10, f.slots.length); i++) out.slots[i] = f.slots[i] || null;
+    for (let i = 0; i < Math.min(10, f.slots.length); i++) {
+      const s = f.slots[i];
+      /* kayıtlı anahtarlar UI'a maskeli gider */
+      out.slots[i] = s && s.key ? { ...s, key: SECRET_MASK } : s || null;
+    }
   }
   return out;
 });
 
 ipcMain.handle('fallout:set', (_e, cfg) => {
   const cur = settings.fallout || defaultFallout();
+  const prevSlots = Array.isArray(cur.slots) ? cur.slots : [];
   const next = defaultFallout();
   next.enabled = !!(cfg && cfg.enabled);
   next.autoResume = !cfg || cfg.autoResume !== false;
   const slots = Array.isArray(cfg && cfg.slots) ? cfg.slots : [];
   for (let i = 0; i < Math.min(10, slots.length); i++) {
     const s = slots[i];
-    if (!s || typeof s !== 'object' || !s.providerId || !s.model || !s.key) continue;
+    if (!s || typeof s !== 'object' || !s.providerId || !s.model) continue;
+    let key = String(s.key || '');
+    /* maskeli/boş anahtar: aynı provider'ın önceki kayıtlı anahtarı korunur */
+    if (key === SECRET_MASK || !key) {
+      const prev = prevSlots[i];
+      key = prev && prev.providerId === String(s.providerId) && prev.key ? String(prev.key) : '';
+    }
+    if (!key) continue;
     next.slots[i] = {
       providerId: String(s.providerId),
       providerName: String(s.providerName || s.providerId),
       model: String(s.model),
-      key: String(s.key),
+      key,
     };
   }
   settings.fallout = next;
   saveSettings();
   if (engine) engine.setFallout(next);
-  return JSON.parse(JSON.stringify(next));
+  const out = JSON.parse(JSON.stringify(next));
+  for (const s of out.slots) if (s && s.key) s.key = SECRET_MASK;
+  return out;
 });
 
 /* #Limit: provider bazlı max input token limiti + bağlam sıkıştırma */
@@ -6217,10 +6280,13 @@ ipcMain.handle('sec:set', (_e, cfg) => {
 ipcMain.handle('supermemory:set', (_e, cfg) => {
   try {
     const base = String((cfg && cfg.baseUrl) || '').trim() || 'http://localhost:6767';
+    const incomingKey = String((cfg && cfg.apiKey) || '').trim();
+    const prevKey = settings.supermemory && settings.supermemory.apiKey ? String(settings.supermemory.apiKey) : '';
     settings.supermemory = {
       enabled: !!(cfg && cfg.enabled),
       baseUrl: base.replace(/\/+$/, ''),
-      apiKey: String((cfg && cfg.apiKey) || '').trim(),
+      /* maskeli anahtar geri gelirse mevcut korunur */
+      apiKey: incomingKey === SECRET_MASK ? prevKey : incomingKey,
       containerTag: String((cfg && cfg.containerTag) || 'beast').trim() || 'beast',
     };
     saveSettings();
@@ -6230,7 +6296,7 @@ ipcMain.handle('supermemory:set', (_e, cfg) => {
       engine._smCheckedAt = 0;
       engine._smWarned = false;
     }
-    return { ok: true, supermemory: settings.supermemory };
+    return { ok: true, supermemory: { ...settings.supermemory, apiKey: settings.supermemory.apiKey ? SECRET_MASK : '' } };
   } catch (e) {
     return { ok: false, error: String((e && e.message) || e) };
   }
@@ -6240,7 +6306,7 @@ ipcMain.handle('supermemory:get', () => {
   return {
     enabled: sm.enabled !== false,
     baseUrl: sm.baseUrl || 'http://localhost:6767',
-    apiKey: sm.apiKey || '',
+    apiKey: sm.apiKey ? SECRET_MASK : '',
     containerTag: sm.containerTag || 'beast',
     up: engine ? !!engine._smUp : null,
   };
@@ -7317,7 +7383,10 @@ ipcMain.handle('providers:keys', () => {
       }
     } catch {}
   }
-  return map;
+  /* UI'a anahtarlar DÜZ METİN gitmez — yalnız "kayıtlı var mı" bilgisi taşınır */
+  const out = {};
+  for (const [k, v] of Object.entries(map)) out[k] = String(v || '') ? SECRET_MASK : '';
+  return out;
 });
 /* #22 izleyici paneli IPC */
 ipcMain.handle('watchers:list', () => watchers.list());
@@ -10266,7 +10335,17 @@ ipcMain.handle('ide:previewUrl', async (_e, url) => {
 });
 
 ipcMain.handle('custom:set', (_e, list) => {
-  settings.customProviders = Array.isArray(list) ? list : [];
+  const prev = Array.isArray(settings.customProviders) ? settings.customProviders : [];
+  const byId = new Map(prev.filter((p) => p && p.id).map((p) => [p.id, p]));
+  settings.customProviders = (Array.isArray(list) ? list : []).map((p) => {
+    if (!p || typeof p !== 'object') return p;
+    const item = { ...p };
+    const old = byId.get(item.id);
+    const k = String(item.key == null ? '' : item.key).trim();
+    /* UI'dan maskeli/boş anahtar geldiyse aynı id'nin kayıtlı anahtarı korunur */
+    if ((k === SECRET_MASK || !k) && old && old.key) item.key = String(old.key);
+    return item;
+  });
   saveSettings();
   engine.setCustomProviders(settings.customProviders);
   headroom.syncProviders(); /* headroom açıksa proxy setini yeni listeye uydur */
@@ -10895,6 +10974,12 @@ async function deliverFile(sessionId, filePath, caption) {
   try {
     const abs = path.isAbsolute(filePath) ? filePath : path.join(engine.workspace || process.cwd(), filePath);
     if (!fs.existsSync(abs)) return { ok: false, error: 'dosya bulunamadı: ' + abs };
+    /* GÜVENLİK: sır/anahtar dosyaları dışa gönderilmez (settings.json,
+       wa-auth, .ssh, .env, *.pem...). Ajan bunu kullanıcıya söylesin. */
+    if (fsguard.isSensitiveSendPath(abs)) {
+      log.warn('sec', `send_file engellendi (hassas yol): ${abs}`);
+      return { ok: false, error: 'güvenlik: hassas dosya (sır/anahtar) dışa gönderilmedi: ' + path.basename(abs) };
+    }
     const name = path.basename(abs);
     const ext = path.extname(abs).toLowerCase();
     let sid = String(sessionId || '');

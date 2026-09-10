@@ -4,6 +4,8 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const https = require('https');
+const dns = require('dns');
+const net = require('net');
 const { execFile } = require('child_process');
 const { spawn } = require('child_process');
 const research = require('./research');
@@ -877,6 +879,111 @@ function assertPublicHttpUrl(raw) {
   return u.toString();
 }
 
+/* Özel/ayrılmış IP aralığı mı? (IPv4 + IPv6 + v4-mapped) */
+function isPrivateIp(ip) {
+  const v = String(ip || '').toLowerCase().replace(/^\[|\]$/g, '');
+  if (v.includes(':')) {
+    if (v === '::1' || v === '::') return true;
+    if (/^f[cd]/.test(v)) return true; /* fc00::/7 unique-local */
+    if (/^fe[89ab]/.test(v)) return true; /* fe80::/10 link-local */
+    if (/^ff/.test(v)) return true; /* multicast */
+    if (v.startsWith('2001:db8')) return true; /* dokümantasyon */
+    const m = v.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/); /* v4-mapped */
+    if (m) return isPrivateIp(m[1]);
+    return false;
+  }
+  const p = v.split('.').map(Number);
+  if (p.length !== 4 || p.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return true; /* çözümlenemeyen → güvensiz */
+  if (p[0] === 0 || p[0] === 10 || p[0] === 127 || p[0] >= 224) return true;
+  if (p[0] === 100 && p[1] >= 64 && p[1] <= 127) return true; /* CGNAT */
+  if (p[0] === 169 && p[1] === 254) return true; /* link-local */
+  if (p[0] === 172 && p[1] >= 16 && p[1] <= 31) return true;
+  if (p[0] === 192 && (p[1] === 168 || (p[1] === 0 && (p[2] === 0 || p[2] === 2)) || (p[1] === 88 && p[2] === 99))) return true;
+  if (p[0] === 198 && (p[1] === 18 || p[1] === 19 || (p[1] === 51 && p[2] === 100))) return true;
+  if (p[0] === 203 && p[1] === 0 && p[2] === 113) return true;
+  return false;
+}
+
+/* DNS çözümlemesi: alan adı ÖZEL bir IP'ye çözülüyorsa (localtest.me vb.) engelle.
+   TOCTOU/DNS-rebinding için tam çözüm connection pinning gerektirir; bu katman
+   metin kontrolü + gerçek çözümleme + redirect doğrulamasıyla açığı kapatır. */
+async function assertPublicHostResolved(hostname) {
+  const h = String(hostname || '').replace(/^\[|\]$/g, '');
+  if (!h) throw new Error('geçersiz adres');
+  if (net.isIP(h)) {
+    if (isPrivateIp(h)) throw new Error('yerel/ağ içi adreslere erişim engellendi');
+    return;
+  }
+  let addrs;
+  try {
+    addrs = await dns.promises.lookup(h, { all: true, verbatim: true });
+  } catch {
+    throw new Error('alan adı çözümlenemedi: ' + h);
+  }
+  if (!addrs || !addrs.length) throw new Error('alan adı çözümlenemedi: ' + h);
+  for (const a of addrs) {
+    if (isPrivateIp(a.address)) throw new Error('yerel/ağ içi adreslere erişim engellendi (' + h + ')');
+  }
+}
+
+/* http_fetch için: yönlendirmeleri ELLE takip eder ve HER adımı doğrular
+   (302 → 127.0.0.1 gibi bypass'ları kapatır). Döner: { res, url } */
+async function fetchPublicFollow(rawUrl, opts = {}, timeoutMs = 30000, signal) {
+  let current = assertPublicHttpUrl(rawUrl);
+  for (let hop = 0; hop <= 5; hop++) {
+    const u = new URL(current);
+    await assertPublicHostResolved(u.hostname);
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(new Error('zaman aşımı')), timeoutMs);
+    const onAbort = () => ctrl.abort(new Error('iptal'));
+    if (signal) {
+      if (signal.aborted) throw new Error('iptal');
+      signal.addEventListener('abort', onAbort, { once: true });
+    }
+    let res;
+    try {
+      res = await fetch(current, { ...opts, signal: ctrl.signal, redirect: 'manual' });
+    } finally {
+      clearTimeout(timer);
+      if (signal) signal.removeEventListener('abort', onAbort);
+    }
+    const loc = res.headers.get('location');
+    if (res.status >= 300 && res.status < 400 && loc) {
+      if (hop === 5) throw new Error('çok fazla yönlendirme');
+      current = assertPublicHttpUrl(new URL(loc, current).toString());
+      continue;
+    }
+    return { res, url: current };
+  }
+  throw new Error('çok fazla yönlendirme');
+}
+
+/* Gövdeyi SINIRLI oku — kötü niyetli sunucu sınırsız veri akıtıp belleği şişirmesin */
+async function readTextCapped(res, byteCap = 1024 * 1024) {
+  if (!res.body || typeof res.body.getReader !== 'function') {
+    const t = await res.text();
+    return t.length > byteCap ? t.slice(0, byteCap) : t;
+  }
+  const reader = res.body.getReader();
+  const chunks = [];
+  let size = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value || !value.length) continue;
+      const room = byteCap - size;
+      if (room <= 0) break;
+      chunks.push(value.length > room ? value.slice(0, room) : value);
+      size += Math.min(value.length, room);
+      if (size >= byteCap) break;
+    }
+  } finally {
+    try { await reader.cancel(); } catch {}
+  }
+  return Buffer.concat(chunks.map((c) => Buffer.from(c))).toString('utf8');
+}
+
 const ENTITIES = {
   amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ', mdash: '—', ndash: '–',
   hellip: '…', rsquo: '\u2019', lsquo: '\u2018', ldquo: '\u201c', rdquo: '\u201d',
@@ -1004,10 +1111,10 @@ async function webSearch(query, { maxResults = 8, signal } = {}) {
 const MAX_FETCH_CHARS = 9000;
 
 async function httpFetch(url, { maxChars = MAX_FETCH_CHARS, format = 'text', timeoutMs = 30000, signal } = {}) {
-  const safe = assertPublicHttpUrl(url);
   const t = Math.min(Math.max(Number(timeoutMs) || 30000, 1000), 120000); // opencode: default 30s, max 120s
-  const res = await fetchWithTimeout(
-    safe,
+  /* SSRF: metin + DNS çözümlemesi + her redirect adımı ayrı doğrulanır */
+  const { res, url: safe } = await fetchPublicFollow(
+    url,
     { headers: { 'User-Agent': UA, Accept: 'text/html,text/plain,application/json;q=0.9,*/*;q=0.5' } },
     t,
     signal
@@ -1020,7 +1127,7 @@ async function httpFetch(url, { maxChars = MAX_FETCH_CHARS, format = 'text', tim
     return { ok: true, url: safe, status: res.status, contentType: ctype, note: 'ikili/metin olmayan içerik indirilmedi' };
   }
   const cap = 400000;
-  let body = await res.text();
+  let body = await readTextCapped(res, 1024 * 1024);
   if (body.length > cap) body = body.slice(0, cap);
   let content;
   if (/html/i.test(ctype)) {
@@ -2357,6 +2464,9 @@ module.exports = {
   globToRegExp,
   walkFiles,
   assertPublicHttpUrl,
+  isPrivateIp,
+  assertPublicHostResolved,
+  fetchPublicFollow,
   parseDdgResults,
   htmlToText,
   webSearch,

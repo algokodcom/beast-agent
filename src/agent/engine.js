@@ -6348,9 +6348,10 @@ Engine.prototype._agentDmSend = function (fromSid, args) {
         text,
       };
       this._pushAgentDm(dm);
+      /* canlı event TEK SEFER — üye başına emit edilirse panelde çoğalır */
+      emitSafe(this, target || g.members[0], { type: 'agent-dm', ...dm });
       for (const m of g.members) {
         if (m === String(fromSid) || !jobs.has(m)) continue;
-        emitSafe(this, m, { type: 'agent-dm', ...dm });
         (this._pendingReports = this._pendingReports || []).push({
           parentId: m,
           text:
@@ -6467,12 +6468,12 @@ Engine.prototype._agentTeamPost = function (gid, fromSid, fromTitle, text) {
        enjekte EDİLMEZ (mid-task müdahale + kuyruk/konkürans bozulmasın).
        Üyeler ekibi her turda sistem promptundaki ZORUNLU satırdan bilir;
        gerçek ajan mesajları (agent_dm) normal teslim akışıyla düşer. */
-    for (const m of g.members || []) {
-      if (m === String(fromSid)) continue;
+    /* canlı event TEK SEFER (ilk koşan üyeye) — üye başına emit edilmez */
+    const firstRunning = (g.members || []).find((m) => {
       const j = this._bgJobs && this._bgJobs.get(m);
-      if (!j || j.status !== 'running') continue;
-      emitSafe(this, m, { type: 'agent-dm', ...dm });
-    }
+      return j && j.status === 'running';
+    });
+    if (firstRunning) emitSafe(this, firstRunning, { type: 'agent-dm', ...dm });
     this._persistAgentDms();
   } catch {}
 };

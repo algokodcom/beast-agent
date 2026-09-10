@@ -5590,9 +5590,11 @@ function onEvent(ev) {
     scheduleAgentsRender();
     return;
   }
-  /* AJAN DM: ajanlar arası mesaj — açık görünümde canlı düşer (modal/sütun) */
+  /* AJAN DM: ajanlar arası mesaj — açık görünümde canlı düşer (modal/sütun).
+     group alanı MUTLAKA taşınır — yoksa grup mesajı 1:1 DM gibi görünür ve
+     refresh'te "silinir" (server doğrusu gruba koyar, yerel kopya uçuşur). */
   if (ev.type === 'agent-dm') {
-    dmState.dms.push({
+    const rec = {
       at: ev.at,
       from: ev.from,
       fromTitle: ev.fromTitle,
@@ -5600,8 +5602,17 @@ function onEvent(ev) {
       toTitle: ev.toTitle,
       topic: ev.topic,
       text: ev.text,
-    });
-    if (dmState.dms.length > 400) dmState.dms.splice(0, dmState.dms.length - 400);
+      ...(ev.group ? { group: ev.group, groupTitle: ev.groupTitle } : {}),
+      ...(ev.closed ? { closed: true, closedAt: ev.closedAt } : {}),
+    };
+    /* aynı mesaj birden çok üyeye emit edilmiş olabilir — TEK kopya */
+    const dup = dmState.dms.find(
+      (d) => d.at === rec.at && d.from === rec.from && d.text === rec.text && dmThreadOf(d) === dmThreadOf(rec)
+    );
+    if (!dup) {
+      dmState.dms.push(rec);
+      if (dmState.dms.length > 400) dmState.dms.splice(0, dmState.dms.length - 400);
+    }
     if (els.dmOverlay && !els.dmOverlay.hidden) renderDmModal();
     if ($('#dmRail') && !$('#dmRail').classList.contains('dm-hidden')) renderDmRail();
     return;

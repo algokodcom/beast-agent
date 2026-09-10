@@ -5122,3 +5122,47 @@ body.finance-mode #composerWrap { margin-right: var(--finW, 400px); }
   color: var(--muted);
   text-align: center;
 }
+
+/* ROL → SKILL eşleştirme modalı (TRADE AJANI ⚙) */
+.fin-skills-dialog { width: 540px; max-width: calc(100vw - 40px); }
+.fin-skills-dialog .mini-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+#finSkillsList {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.fin-skill-role {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 9px;
+  background: var(--panel2);
+}
+.fin-skill-role-head { display: flex; flex-direction: column; gap: 1px; margin-bottom: 7px; }
+.fin-skill-role-head b { font-size: 11.5px; color: var(--text); }
+.fin-skill-role-head span { font-size: 10px; color: var(--muted); }
+.fin-skill-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.fin-skill-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10.5px;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 2px 8px 2px 5px;
+  cursor: pointer;
+  user-select: none;
+}
+.fin-skill-chip:hover { border-color: var(--accent); }
+.fin-skill-chip.on { border-color: var(--accent); color: var(--accent); background: var(--accent-dim); }
+.fin-skill-chip input { flex: none; width: auto; margin: 0; }

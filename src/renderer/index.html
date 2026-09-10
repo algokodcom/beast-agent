@@ -162,7 +162,7 @@
             </div>
           </div>
           <div class="fin-card fin-card-trader">
-            <div class="fin-card-title">TRADE AJANI <span id="finTraderDot" class="fin-dot off" title="Trader durumu"></span></div>
+            <div class="fin-card-title">TRADE AJANI <span id="finTraderDot" class="fin-dot off" title="Trader durumu"></span><span class="file-spacer"></span><button id="finSkillsBtn" title="Rol → skill eşleştirmesi — hangi rol hangi skill'i okur">&#9881;</button></div>
             <div class="fin-field">
               <span>Model</span>
               <select id="finTraderModel" title="Trader ajanının modeli — farklı API/model seçilebilir"></select>
@@ -644,6 +644,19 @@
         <input id="finSymSearch" placeholder="Sembol ara… (örn: XAU, BTC, EUR, US500)" spellcheck="false" autocomplete="off" />
         <div id="finSymPick" class="mini-list"></div>
         <div class="fin-sym-hint">Tıkla: izleme listesine ekle/çıkar — PİYASA kartına anında düşer</div>
+      </div>
+    </div>
+  </div>
+
+  <div id="finSkillsOverlay" class="mini-overlay" hidden>
+    <div class="mini-dialog fin-skills-dialog">
+      <div class="mini-head">
+        <span class="mini-title">ROL → SKILL EŞLEŞTİRME</span>
+        <button class="mini-close" id="finSkillsClose" title="Kapat">&#x00D7;</button>
+      </div>
+      <div class="mini-body">
+        <div id="finSkillsList" class="mini-list"></div>
+        <div class="fin-sym-hint">Her rolün okuması gereken skill'leri seç — liste kurulu katalogdan gelir; yeni skill eklersen burada otomatik görünür.</div>
       </div>
     </div>
   </div>

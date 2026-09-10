@@ -84,6 +84,22 @@ test('finance: sistem promptu SKILLS kataloğunu içerir', () => {
   const list = require('../src/agent/skills').scan();
   assert.ok(list.length > 0);
   assert.ok(sys.includes('- ' + list[0].name));
+  /* tool yazma + MQL5 yetkileri promptta açıkça verilir */
+  assert.ok(sys.includes('YETKİLERİN'));
+  assert.ok(sys.includes('skill("tool-yazma")'));
+  assert.ok(sys.includes('skill("mql5")'));
+  const names = list.map((x) => x.name);
+  assert.ok(names.includes('tool-yazma'), 'tool-yazma skill varsayılan tohum olmalı');
+  assert.ok(names.includes('mql5'), 'mql5 skill varsayılan tohum olmalı');
+  assert.ok(names.includes('price-action') && names.includes('risk-yonetimi') && names.includes('haber-duygu'), 'finans skill tohumları kurulu olmalı');
+  /* rol → skill eşleştirmesi prompta gömülür (ayarlar modalından değiştirilebilir) */
+  const s2 = eng._load(eng.createSession().id);
+  s2.finance = true;
+  s2.financeRole = 'technic';
+  s2.financeRoleSkills = ['price-action', 'ozel-skill'];
+  const sys2 = eng.buildFinanceSystem(s2);
+  assert.ok(sys2.includes('skill("price-action")'));
+  assert.ok(sys2.includes('skill("ozel-skill")'));
 });
 
 /* ---------- payload tool-çifti hizalama (HTTP 400 emniyeti) ---------- */

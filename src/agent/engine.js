@@ -1894,6 +1894,18 @@ class Engine {
         macro:
           'ROL: MAKRO AJANI 🌍 — büyük resim uzmanısın, İşlem AÇMAZSIN (mt5_trade/mt5_pending/mt5_close KULLANMA). Her turda web_search ile güncel makro manşetleri + ekonomik takvim riskleri (faiz, CPI, jeopolitik); DXY/altın/petrol bağıntılarını odak sembollere çevir; sembol başına yön eğilimi + TEMKİN/BEKLE notu ver.',
       })[String((session && session.financeRole) || '')] || '';
+    /* ROL → SKILL eşleştirmesi (ayarlar modalı): rolün okuması gereken skill'ler
+       prompta gömülür; ayar boşsa satır eklenmez. Skill adları kurulu katalogdan
+       seçilir — yeni skill eklendiğinde modalda görünür ve buraya yansır. */
+    const roleSkills = Array.isArray(session && session.financeRoleSkills)
+      ? session.financeRoleSkills.map((s) => String(s || '').trim()).filter(Boolean).slice(0, 8)
+      : [];
+    const roleBlockFull = roleBlock
+      ? roleBlock +
+        (roleSkills.length
+          ? ` ÖNCE şu skill'leri skill aracıyla oku ve prosedürüne göre uygula: ${roleSkills.map((n) => `skill("${n}")`).join(', ')}.`
+          : '')
+      : '';
     /* FİNANS EKİBİ: tüm finance ajanları tek DM grubundadır — sohbet grup
        thread'inde toplanır (ayrı ayrı 1:1 thread'lere dağılmaz) */
     const finJob = this._bgJobs && this._bgJobs.get(String(session && session.id));
@@ -1903,11 +1915,16 @@ class Engine {
       'Sen BEAST FİNANS\u2019sın — bilgisayardaki MetaTrader 5 (MT5) terminaline köprüyle bağlı trading ajanı.\n' +
       'ORTAM: Beast Finance uygulamasındasın — solda sohbet geçmişi + izleyiciler, ortada bu sohbet, SAĞ panelde MT5 işlem panosu (hesap, pozisyonlar, piyasa, AKIŞ) var.\n' +
       'KÖPRÜ: MT5 terminaline Python stdio köprüsüyle bağlısın; panel 3 saniyede bir hesap/pozisyon/piyasa verisini tazeler. mt5_* araç çağrıların ve işlem hareketlerin (açılan/kapanan pozisyonlar) SAĞ paneldeki AKIŞ akışına canlı düşer — panelin orayı izlediğini bil.\n' +
-      'GÖREV ALANI: piyasa verisi okuma (fiyat/hesap/pozisyon/geçmiş), teknik değerlendirme, pozisyon yönetimi (aç/kapat/SL/TP), risk disiplini ve kısa karar raporları. Kod yazma işi DEĞİLDİR.\n' +
+      'GÖREV ALANI: piyasa verisi okuma (fiyat/hesap/pozisyon/geçmiş), teknik değerlendirme, pozisyon yönetimi (aç/kapat/SL/TP), risk disiplini ve kısa karar raporları. GEREKTİĞİNDE kendi araçlarını üretirsin — kişisel tool yazımı ve MQL5 script/EA geliştirme bu görev alanının parçasıdır.\n' +
       modeBlock2 + '\n' +
-      (roleBlock ? roleBlock + '\n' : '') +
+      (roleBlockFull ? roleBlockFull + '\n' : '') +
       (teamLine || '') +
       'MT5 ARAÇLARI: mt5_status (bağlantı), mt5_account (hesap), mt5_market (canlı fiyat), mt5_positions (açık pozisyonlar), mt5_orders (bekleyen emirler), mt5_history (kapanan işlemler), mt5_trade (piyasa emri), mt5_close (kapat), mt5_modify (SL/TP), mt5_pending (bekleyen emir), mt5_cancel (emir iptal).\n' +
+      'YETKİLERİN (AÇIK — çekinmeden kullan):\n' +
+      '- skill: kurulu SKILL.md kataloğunu oku ve uygula — tool yazmadan ÖNCE skill("tool-yazma"), MT5 tarafı işlerden ÖNCE skill("mql5") oku ve prosedürüne birebir uy.\n' +
+      '- Kişisel tool yazma: %APPDATA%\\beast\\tools\\<slug>\\ içine tool.json + run.js yaz (write_file/edit_file); run_command ile çıktısını (JSON, ok alanlı) doğrula → tool__<slug> ANINDA tüm finance ajanlarında çağrılabilir olur.\n' +
+      '- MQL5: MT5 tarafında script/gösterge/EA yaz (write_file), metaeditor64.exe /compile ile derle, MQL5\\Files dosya köprüsüyle veriyi Beast\'e taşı; kullanıcıya çalıştırma adımını açıkça söyle.\n' +
+      '- Yerleşik araçlar: run_command, python_run, read_file/write_file/edit_file, web_search/deep_search, browser_* — hepsi açık.\n' +
       'VERİ AKIŞI (her değerlendirmede): mt5_account + mt5_positions + mt5_market çağrılarını AYNI turda PARALEL ver; gerekiyorsa mt5_history ile son işlemleri gör.\n' +
       'PARALEL + KOORDİNASYON: uzun araştırma/işleri run_background ile paralel finance işçisine devret (parent finance olduğu için işçi mt5 okuma araçlarını görür); koşan ajanlarla konuşmak için agent_dm (to: ajan başlığındaki anahtar kelime, örn "GOLD"; ortak karar için group: "İSİM" ile grup sohbeti kur — mesaj tüm üyelere düşer). Görevin bitince DM/grup sohbetleri otomatik KAPANIR (geçmiş panelde kalır).\n' +
       (symbols ? `İZLEME LİSTESİ: ${symbols}\n` : '') +
@@ -1921,7 +1938,7 @@ class Engine {
       (mem.user ? `# USER\n${mem.user}\n` : '') +
       (rules.length ? `# KURALLAR (sahibinin kalıcı talimatları — daima uy)\n${rules.map((r) => '- ' + r).join('\n')}\n` : '') +
       (skList.length
-        ? '# SKILLS\nKurulu skill kataloğu: görev bir skill\u2019in tanımına uyarsa skill aracıyla gövdesini (SKILL.md) yükleyip uygula — tekerleği yeniden icat etme. Analysis/rapor/PDF gibi işlerde skill\u2019in prosedürüne uy.\n' +
+        ? '# SKILLS\nKurulu skill kataloğu: görev bir skill\u2019in tanımına uyarsa skill aracıyla gövdesini (SKILL.md) yükleyip uygula — tekerleği yeniden icat etme. Analysis/rapor/PDF gibi işlerde skill\u2019in prosedürüne uy. Tool yazımı → "tool-yazma", MT5 tarafı geliştirme → "mql5" skill\u2019i önceliklidir.\n' +
           skList.map((s) => `- ${s.name}: ${s.description} [${s.path}]`).join('\n') + '\n'
         : '') +
       'RAPOR DİSİPLİNİ: kısa ve sayısal — sembol, yön, lot, giriş, SL/TP, sebep tek satırda. Uzun fal açma; tablo/liste kullanabilirsin.\n' +

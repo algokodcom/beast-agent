@@ -187,6 +187,10 @@ const els = {
   finSymAdd: $('#finSymAdd'),
   finSymOverlay: $('#finSymOverlay'),
   finSymClose: $('#finSymClose'),
+  finSkillsBtn: $('#finSkillsBtn'),
+  finSkillsOverlay: $('#finSkillsOverlay'),
+  finSkillsClose: $('#finSkillsClose'),
+  finSkillsList: $('#finSkillsList'),
   finSymSearch: $('#finSymSearch'),
   finSymPick: $('#finSymPick'),
   finSymCount: $('#finSymCount'),
@@ -8792,6 +8796,7 @@ function financeModeOn() {
 let finPollTimer = null;
 let finModelsFilled = false;
 let finLastPrices = new Map(); /* sembol → son bid (renk için) */
+let finCfgCache = null; /* son snapshot cfg — rol→skill modalı bundan okur */
 const FIN_COLOR_UP = 'fs-up';
 const FIN_COLOR_DOWN = 'fs-down';
 
@@ -9099,6 +9104,7 @@ async function finSnapshot() {
     return;
   }
   const b = r.bridge || {};
+  finCfgCache = r.cfg || null;
   finSetDot(b.connected ? true : b.running ? 'busy' : false, b);
   finRenderAccount(r.account);
   finRenderPositions(r.positions || []);
@@ -9370,6 +9376,97 @@ function finSymPickerOpen() {
 
 function finSymPickerClose() {
   if (els.finSymOverlay) els.finSymOverlay.hidden = true;
+}
+
+/* ---------- ROL → SKILL eşleştirme modalı ----------
+   Roller sunucudan (snapshot.roles), skill listesi KURULU katalogdan gelir —
+   yeni skill eklendiğinde modalda otomatik görünür. Seçim finance ayarına
+   (roleSkills) yazılır; rol ajanı her turda o skill'leri okumakla yükümlüdür. */
+let finSkillNames = [];
+
+async function finSkillsOpen() {
+  if (!els.finSkillsOverlay) return;
+  els.finSkillsOverlay.hidden = false;
+  if (els.finSkillsList) els.finSkillsList.innerHTML = '<div class="fin-empty">Skill kataloğu yükleniyor…</div>';
+  let list = [];
+  try { list = (await beast.listSkills()) || []; } catch {}
+  finSkillNames = (Array.isArray(list) ? list : [])
+    .map((s) => ({ name: String((s && s.name) || ''), description: String((s && s.description) || '') }))
+    .filter((s) => s.name);
+  try { await finSnapshot(); } catch {}
+  finRenderSkills();
+}
+
+function finRenderSkills() {
+  const box = els.finSkillsList;
+  if (!box) return;
+  const cfg = finCfgCache || {};
+  const map = cfg.roleSkills && typeof cfg.roleSkills === 'object' ? cfg.roleSkills : {};
+  const roles = Array.isArray(finRolesCatalog) ? finRolesCatalog : [];
+  box.innerHTML = '';
+  if (!roles.length) {
+    box.innerHTML = '<div class="fin-empty">Rol kataloğu yok</div>';
+    return;
+  }
+  if (!finSkillNames.length) {
+    box.innerHTML = '<div class="fin-empty">Kurulu skill bulunamadı — %APPDATA%\\beast\\skills klasörüne SKILL.md ekle</div>';
+    return;
+  }
+  for (const r of roles) {
+    const row = document.createElement('div');
+    row.className = 'fin-skill-role';
+    const head = document.createElement('div');
+    head.className = 'fin-skill-role-head';
+    head.innerHTML =
+      '<b>' + escapeHtml(String(r.label || r.id)) + '</b>' +
+      '<span>' + escapeHtml(String(r.desc || '').slice(0, 110)) + '</span>';
+    row.appendChild(head);
+    const chips = document.createElement('div');
+    chips.className = 'fin-skill-chips';
+    for (const s of finSkillNames) {
+      const cur = Array.isArray(map[r.id]) ? map[r.id] : [];
+      const chip = document.createElement('label');
+      chip.className = 'fin-skill-chip' + (cur.includes(s.name) ? ' on' : '');
+      chip.title = s.description || s.name;
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.checked = cur.includes(s.name);
+      cb.addEventListener('change', () => {
+        const liveBase = finCfgCache && finCfgCache.roleSkills && Array.isArray(finCfgCache.roleSkills[r.id])
+          ? finCfgCache.roleSkills[r.id]
+          : [];
+        const set = new Set(liveBase);
+        if (cb.checked) set.add(s.name); else set.delete(s.name);
+        const next = [...set];
+        /* yerel önbelleğe anında yaz — 3 sn'lik snapshot eski değeri geri getirmesin */
+        finCfgCache = finCfgCache || {};
+        finCfgCache.roleSkills = finCfgCache.roleSkills || {};
+        finCfgCache.roleSkills[r.id] = next;
+        chip.classList.toggle('on', cb.checked);
+        finSaveCfg({ roleSkills: { [r.id]: next } });
+        toast((r.label || r.id) + ' → ' + (next.length ? next.join(', ') : 'skill kapalı'));
+      });
+      chip.appendChild(cb);
+      chip.appendChild(document.createTextNode(s.name));
+      chips.appendChild(chip);
+    }
+    row.appendChild(chips);
+    box.appendChild(row);
+  }
+}
+
+function finSkillsCloseModal() {
+  if (els.finSkillsOverlay) els.finSkillsOverlay.hidden = true;
+}
+if (els.finSkillsBtn) els.finSkillsBtn.addEventListener('click', () => { finSkillsOpen(); });
+if (els.finSkillsClose) els.finSkillsClose.addEventListener('click', finSkillsCloseModal);
+if (els.finSkillsOverlay) {
+  els.finSkillsOverlay.addEventListener('click', (e) => {
+    if (e.target === els.finSkillsOverlay) finSkillsCloseModal();
+  });
+  els.finSkillsOverlay.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') { e.stopPropagation(); finSkillsCloseModal(); }
+  });
 }
 
 if (els.finSymAdd) els.finSymAdd.addEventListener('click', finSymPickerOpen);

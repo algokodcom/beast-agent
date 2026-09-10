@@ -8329,6 +8329,12 @@ function finCfg() {
   f.analysisAuto = true;
   if (!Number.isFinite(Number(f.analysisCount))) f.analysisCount = 2;
   f.analysisCount = Math.max(0, Math.min(FIN_ROLES_AUTO.length, Math.round(Number(f.analysisCount) || 0)));
+  /* ROL → SKILL eşleştirmesi: rol başına en fazla 8 skill adı */
+  if (!f.roleSkills || typeof f.roleSkills !== 'object') f.roleSkills = {};
+  for (const d of FIN_ROLES) {
+    const cur = Array.isArray(f.roleSkills[d.id]) ? f.roleSkills[d.id] : ROLE_SKILL_DEFAULTS[d.id] || [];
+    f.roleSkills[d.id] = cur.map((s) => String(s || '').trim()).filter(Boolean).slice(0, 8);
+  }
   if (!Number(f.intervalSec)) f.intervalSec = 120;
   if (!Number(f.maxLot)) f.maxLot = 0.1;
   if (f.maxPositions == null) f.maxPositions = 3;
@@ -8345,6 +8351,14 @@ const FIN_ROLES = [
   { id: 'macro', label: 'Haber / Makro', desc: 'haber akışı + ekonomik takvim, DXY/emtia bağıntıları, yön eğilimi' },
 ];
 const FIN_ROLES_AUTO = ['technic', 'risk', 'macro'];
+/* ROL → SKILL varsayılanları: her rolün tur başında okuması gereken skill'ler.
+   TRADE AJANI kartındaki ⚙ modalından değiştirilebilir; liste kurulu skill
+   kataloğundan beslenir, yeni skill eklenince modalda otomatik görünür. */
+const ROLE_SKILL_DEFAULTS = {
+  technic: ['price-action'],
+  risk: ['risk-yonetimi'],
+  macro: ['haber-duygu'],
+};
 function finRolesValid(list) {
   return (Array.isArray(list) ? list : [])
     .map((r) => String(r || '').trim())
@@ -8567,6 +8581,8 @@ function finApplyTraderFields(s, symbolsOverride, role) {
   s.financeSymbols = Array.isArray(symbolsOverride) && symbolsOverride.length ? symbolsOverride : f.symbols;
   s.financeStrategy = String(f.strategy || '');
   s.financeLimits = { maxLot: f.maxLot, maxPositions: f.maxPositions };
+  /* rolün okuması gereken skill'ler (modal eşleştirmesi) — promptta role eklenir */
+  s.financeRoleSkills = (f.roleSkills && f.roleSkills[r]) || [];
   engine.cache.set(String(s.id), s);
 }
 
@@ -8884,6 +8900,14 @@ ipcMain.handle('finance:settings', async (_e, patch) => {
   if (p.analysisTeam !== undefined) f.analysisTeam = finRolesValid(p.analysisTeam);
   if (p.analysisAuto !== undefined) f.analysisAuto = !!p.analysisAuto;
   if (p.analysisCount !== undefined) f.analysisCount = Math.max(0, Math.min(FIN_ROLES_AUTO.length, Math.round(Number(p.analysisCount) || 0)));
+  /* ROL → SKILL eşleştirmesi güncellemesi (modal) */
+  if (p.roleSkills !== undefined && p.roleSkills && typeof p.roleSkills === 'object') {
+    for (const d of FIN_ROLES) {
+      if (p.roleSkills[d.id] === undefined) continue;
+      f.roleSkills[d.id] = (Array.isArray(p.roleSkills[d.id]) ? p.roleSkills[d.id] : [])
+        .map((s) => String(s || '').trim()).filter(Boolean).slice(0, 8);
+    }
+  }
   if (p.pythonPath !== undefined) f.pythonPath = String(p.pythonPath || '').trim();
   if (p.terminalPath !== undefined) f.terminalPath = String(p.terminalPath || '').trim();
   if (p.traderSel !== undefined) {

@@ -180,6 +180,46 @@ test('_bgFinish: sürekli iş done/error ile KAPANMAZ, aborted ile kapanır', ()
   assert.equal(eng._bgJobs.get('c1').status, 'aborted');
 });
 
+test('DM teslimi: sürekli ajanı UYANDIRMAZ — inbox\'a yazılır (sonsuz DM ping-pong önlenir)', () => {
+  const eng = makeEngine();
+  const sent = [];
+  eng.send = (sid) => { sent.push(String(sid)); return true; };
+  eng._bgJobs.set('c1', {
+    id: 'c1', status: 'running', continuous: true,
+    startedAt: new Date().toISOString(), lastActivityAt: new Date().toISOString(),
+  });
+  eng._bgJobs.set('n1', { id: 'n1', status: 'running', code: 'N1', title: 'Normal' });
+  eng._pendingReports = [
+    { parentId: 'c1', text: '[AJAN DM] sürekli ajana' },
+    { parentId: 'n1', text: '[AJAN DM] normal ajana' },
+  ];
+  eng.flushPendingReports('c1');
+  assert.deepEqual(sent, [], 'sürekli ajan DM ile yeni tur AÇMAMALI');
+  assert.deepEqual(eng._bgJobs.get('c1').dmInbox, ['[AJAN DM] sürekli ajana']);
+  assert.equal(eng._pendingReports.length, 1, 'normal ajanın raporu kuyrukta kalır');
+  eng.flushPendingReports('n1');
+  assert.deepEqual(sent, ['n1'], 'normal ajan DM ile uyanır');
+});
+
+test('send: sürekli ajan inbox DM\'lerini sıradaki planlı tura enjekte eder', async () => {
+  const eng = makeEngine();
+  eng._run = async () => {};
+  const s = eng._load(eng.createSession().id);
+  eng._bgJobs.set(s.id, {
+    id: s.id, status: 'running', continuous: true,
+    dmInbox: ['[AJAN DM] altın 2400 üstü — dikkat'],
+  });
+  const ok = eng.send(s.id, { text: 'FINANCE TUR #7: tarama yap.' });
+  assert.equal(ok, true);
+  assert.deepEqual(eng._bgJobs.get(s.id).dmInbox, [], 'inbox tüketilir');
+  const msgs = eng.openSession(s.id).messages;
+  const last = msgs[msgs.length - 1];
+  assert.equal(last.role, 'user');
+  assert.ok(String(last.content).includes('BEKLEYEN AJAN DM'));
+  assert.ok(String(last.content).includes('altın 2400 üstü'));
+  assert.ok(String(last.content).includes('FINANCE TUR #7'));
+});
+
 test('execTool: mt5_* araçları dispatch edilir (unknown tool DEĞİL)', async () => {
   const eng = makeEngine();
   const s = eng._load(eng.createSession().id);

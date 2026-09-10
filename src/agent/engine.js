@@ -2494,7 +2494,6 @@ class Engine {
      korunur — sadece içerik temizlenir, önek cache bozulmaz. Döndürür: kazanılan token */
   _pruneSession(session) {
     try {
-      if (this.ctrls.has(session.id)) return 0;
       const msgs = session.messages;
       let total = 0, pruned = 0, turns = 0;
       const targets = [];
@@ -2585,7 +2584,10 @@ class Engine {
         `- kullanıcının hedefleri ve net talepleri\n` +
         `- alınan kararlar, önemli bilgi parçaları (isim, sayı, dosya/klasör yolu, hata ve çözümü)\n` +
         `- tamamlanan işler ve sonuçları\n` +
-        `Madde madde yaz, en fazla 120 kelime, başlık/selamlama yok. Alakasız ayrıntıyı at.\n\n` +
+        (session.finance
+          ? `- FİNANS İŞLEMLERİ (KRİTİK, atlama): açılan/kapatılan/güncellenen pozisyonlar — sembol, yön (AL/SAT), lot, giriş/SL/TP, kâr/zarar ve gerekçe; sonraki turlarda birebir hatırlanmalı\n`
+          : '') +
+        `Madde madde yaz, en fazla ${session.finance ? 180 : 120} kelime, başlık/selamlama yok. Alakasız ayrıntıyı at.\n\n` +
         `# SOHBET PARÇASI\n${transcript}`;
       const res = await chatOnce(
         this.sel,
@@ -2686,6 +2688,25 @@ class Engine {
         if (media) msg.media = media;
       }
     }
+
+    /* SÜREKLİ ajan DM INBOX (bkz. flushPendingReports): tur aralığında biriken
+       DM'ler yeni tur AÇMAZ; sıradaki planlı turun mesajına tek blok olarak
+       eklenir — ajan-ajan sonsuz DM ping-pong'u ve bağlam şişmesi engellenir. */
+    try {
+      const jobRec = this._bgJobs && this._bgJobs.get(String(sessionId));
+      if (jobRec && Array.isArray(jobRec.dmInbox) && jobRec.dmInbox.length) {
+        const inbox = jobRec.dmInbox.splice(0);
+        const boxText = inbox.join('\n\n').slice(0, 6000);
+        const prefix =
+          `[BEKLEYEN AJAN DM'LERİ — ${inbox.length} mesaj]\n${boxText}\n` +
+          `(Tur aralığında biriken DM'ler. Bu turda değerlendir; yalnızca aksiyon/cevap GEREKİYORSA agent_dm ile TEK kısa cevap ver — teşekkür/onay/ack mesajı YAZMA.)\n\n`;
+        if (typeof msg.content === 'string') {
+          msg.content = prefix + msg.content;
+        } else if (Array.isArray(msg.content) && msg.content[0] && typeof msg.content[0].text === 'string') {
+          msg.content[0] = { ...msg.content[0], text: prefix + msg.content[0].text };
+        }
+      }
+    } catch {}
 
     if (!String(typeof msg.content === 'string' ? msg.content : msg.content[0].text || '').trim()) return false;
     /* #12 kişilik kalibrasyonu: kullanıcı cümlelerini örnek havuzuna düşür (Beast Code hariç — hız) */
@@ -3514,10 +3535,22 @@ class Engine {
       this._pendingReports = [];
       return;
     }
+    const job = this._bgJobs && this._bgJobs.get(String(sessionId));
+    /* SÜREKLİ ajan (Beast Finance): DM/rapor teslimi YENİ TUR AÇMAZ — aksi
+       halde ajanlar birbirine DM attıkça sonsuz tur döngüsü doğar (bağlam
+       şişer, ajan hiç dinlenmez). Mesaj inbox'a yazılır; bir sonraki PLANLI
+       turda send() tarafından tek blok halinde enjekte edilir. */
+    const continuous = !!(job && job.continuous);
     const rest = [];
     for (const r of this._pendingReports) {
       if (r.parentId !== sessionId) { rest.push(r); continue; }
       if (this._deletedSessions && this._deletedSessions.has(sessionId)) continue;
+      if (continuous) {
+        job.dmInbox = job.dmInbox || [];
+        job.dmInbox.push(String(r.text || '').slice(0, 4000));
+        if (job.dmInbox.length > 20) job.dmInbox.splice(0, job.dmInbox.length - 20);
+        continue;
+      }
       if (this.isBusy(sessionId)) { rest.push(r); continue; }
       let sent = false;
       try { sent = !!this.send(sessionId, { text: r.text }); } catch {}
@@ -3558,8 +3591,10 @@ class Engine {
   _bgTrim(session) {
     const max = Engine.BG_KEEP_MSGS;
     const msgs = session.messages;
-    /* bg işleri + Beast Code: uzun geçmiş payload'ı şişirip yavaşlatır */
-    if ((!session.bgJob && !session.bcCode) || msgs.length <= max) return;
+    /* bg işleri + Beast Code + SÜREKLİ finance ajanları: uzun geçmiş payload'ı
+       şişirip yavaşlatır — finance ajanları binlerce tur döndüğü için bağlam
+       tavanı onlara da şart */
+    if ((!session.bgJob && !session.bcCode && !session.finance) || msgs.length <= max) return;
     let keep = msgs.slice(-max);
     /* GÜVENLİ SINIR: kesim bir assistant(tool_calls) + tool sonuç çiftini BÖLMESİN.
        Yetim 'tool' mesajı ya da sonuçları pencere dışında kalan tool_calls'lı
@@ -6394,7 +6429,7 @@ Engine.prototype._agentDmSend = function (fromSid, args) {
           parentId: m,
           text:
             `[AJAN DM (grup: "${g.title}") — ${dm.fromTitle} · konu: "${topic}"]\n${text}\n` +
-            `(Cevabını agent_dm aracıyla ver — group: "${g.title}", to: "${dm.fromTitle}", topic: "${topic}")`,
+            `(Cevap yalnızca aksiyon/karar GEREKİYORSA ver — agent_dm group: "${g.title}", to: "${dm.fromTitle}", topic: "${topic}"; teşekkür/onay yazma.)`,
         });
         this.flushPendingReports(m);
       }
@@ -6419,7 +6454,7 @@ Engine.prototype._agentDmSend = function (fromSid, args) {
         parentId: target,
         text:
           `[AJAN DM — ${dm.fromTitle} · konu: "${topic}"]\n${text}\n` +
-          `(Cevabını agent_dm aracıyla ver — to: "${dm.fromTitle}", topic: "${topic}")`,
+          `(Cevap yalnızca aksiyon/karar GEREKİYORSA ver — agent_dm to: "${dm.fromTitle}", topic: "${topic}"; teşekkür/onay yazma.)`,
       });
       this.flushPendingReports(target);
     }

@@ -28,6 +28,9 @@ class AskService {
     this.emit = typeof emitFn === 'function' ? emitFn : () => {};
     this.pending = new Map(); // id -> { info, resolve, reject }
     this.approved = []; // oturumlar arası paylaşılan kural listesi (engine'e aşılanır)
+    /* Güvenlik ayarı KAPALI: 'ask' kuralı yine de sorulmaz — deny korunur,
+       ask otomatik serbesttir (tüm yetki ajanda). Engine ayarlar ile günceller. */
+    this.autoAllow = false;
   }
 
   /* opencode Permission.ask — throws: { kind:'denied'|'rejected'|'corrected', feedback? } */
@@ -40,6 +43,7 @@ class AskService {
         throw { kind: 'denied', permission, pattern };
       }
       if (rule.action === 'allow') continue;
+      if (this.autoAllow) continue; /* güvenlik kapalı: sorma, geç */
       needsAsk = true;
     }
     if (!needsAsk) return Promise.resolve();
@@ -60,12 +64,14 @@ class AskService {
         this.emit({ type: 'permission.asked', sessionId: info.sessionID, request: info });
       } catch {}
       /* güvenlik: emit kanalı koptuysa pending asılı kalmasın */
-      setTimeout(() => {
+      const timer = setTimeout(() => {
         if (this.pending.has(id)) {
           this.pending.delete(id);
           reject({ kind: 'rejected' });
         }
       }, 5 * 60 * 1000);
+      /* bekleyen onay süreci/prosesi canlı tutmasın (özellikle test/çıkış) */
+      if (timer && typeof timer.unref === 'function') timer.unref();
     });
   }
 

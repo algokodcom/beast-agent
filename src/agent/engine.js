@@ -327,6 +327,7 @@ class Engine {
        boyunca "always" desenlerini kural olarak taşır (opencode birebir). */
     this._perm = new AskService((ev) => this.emit(ev));
     this.bcAskApprovals = opts.approvals ? true : false; // onay ayarı → opencode user konfigi gibi "ask" üretir
+    this._perm.autoAllow = !this.bcAskApprovals; // güvenlik kapalı: BeastCode/Sandbox izin SORMAZ (deny yine geçerli)
     /* opencode reminders.ts: bu oturumda daha önce plan ajanı koştu mu?
        plan→build geçişinde build-switch.txt synthetic part'ı buna bağlanır */
     this._bcWasPlan = new Map(); // sessionId -> bool
@@ -1608,11 +1609,13 @@ class Engine {
           ? 'plan'
           : 'build';
     const ws = (session && session.workspace) || this.workspace;
-    const user = this.bcAskApprovals ? { bash: 'ask', edit: { '*': 'ask' } } : {};
-    const info = opencode.agents.get(name, { worktree: ws, promptExplore: opencode.PROMPT_EXPLORE, user });
+    /* BeastCode/Sandbox onayı ARIZİ değil: güvenlik açıkken yalnız SİLME
+       işlemleri _perm.ask ile sorulur (aşağıda _isDeleteOp) — bash/edit'in
+       tamamına asks koymak "her işlemde sor" demekti, kaldırıldı. */
+    const info = opencode.agents.get(name, { worktree: ws, promptExplore: opencode.PROMPT_EXPLORE });
     if (info) return info;
     const fallbackName = session.sbSandbox ? 'sandbox' : 'build';
-    return opencode.agents.get(fallbackName, { worktree: ws, promptExplore: opencode.PROMPT_EXPLORE, user });
+    return opencode.agents.get(fallbackName, { worktree: ws, promptExplore: opencode.PROMPT_EXPLORE });
   }
 
   /* opencode opencode ajan değişimi: /plan /build — oturumun ajanı döner,
@@ -1636,6 +1639,21 @@ class Engine {
     } catch (e) {
       return { ok: false, error: String((e && e.message) || e) };
     }
+  }
+
+  /* Güvenlik ayarı canlı değişimi (Ayarlar → Güvenlik):
+     - kapalı → BeastCode/Sandbox dahil açık izin akışı hiç sormaz (autoAllow)
+     - açık  → riskli araçlarda onay ister (approvals köprüsü + bash/edit user kuralı)
+     Bekleyen istekler serbest bırakılır (kapı kalktı; araç devam eder). */
+  setApprovals(on) {
+    this.bcAskApprovals = !!on;
+    this._perm.autoAllow = !this.bcAskApprovals;
+    if (!this.bcAskApprovals) {
+      try {
+        for (const req of this._perm.list()) this._perm.reply(req.id, 'once');
+      } catch {}
+    }
+    return { bcAskApprovals: this.bcAskApprovals, autoAllow: this._perm.autoAllow };
   }
 
   /* ---------- Supermemory (lokal) bellek köprüsü ---------- */
@@ -4126,15 +4144,23 @@ class Engine {
             if (dups >= DOOM_LOOP_THRESHOLD) {
               if (bcAgent) {
                 try {
-                  await this._perm.ask({
-                    sessionId: sid,
-                    ruleset: bcAgent.permission,
-                    permission: 'doom_loop',
-                    patterns: [name],
-                    always: [name],
-                    metadata: { callCount: DOOM_LOOP_THRESHOLD, arguments: (tc.function && tc.function.arguments) || '' },
-                    tool: { name, args },
-                  });
+                  /* doom_loop bir SİLME değil: onay kartıyla kullanıcıyı yorma —
+                     kural değerlendirmesi (deny) işler, ask otomatik geçer */
+                  const prevAuto = this._perm.autoAllow;
+                  this._perm.autoAllow = true;
+                  try {
+                    await this._perm.ask({
+                      sessionId: sid,
+                      ruleset: bcAgent.permission,
+                      permission: 'doom_loop',
+                      patterns: [name],
+                      always: [name],
+                      metadata: { callCount: DOOM_LOOP_THRESHOLD, arguments: (tc.function && tc.function.arguments) || '' },
+                      tool: { name, args },
+                    });
+                  } finally {
+                    this._perm.autoAllow = prevAuto;
+                  }
                   out = await this._execTool(name, args, ctrl.signal, sid);
                 } catch (permErr) {
                   out = JSON.stringify({
@@ -4883,6 +4909,33 @@ const skills = require('./skills');
      opencode'da edit+write aynı "edit" iznine takılır — burada da ikisi birlikte */
   static RISKY_TOOLS = new Set(['run_command', 'write_file', 'edit_file', 'python_run', 'email_send', 'watcher_add', 'git_commit', 'git_pr_create', 'xlsx_write', 'xlsx_edit']);
 
+  /* SİLME desenleri — güvenlik AÇIKken onay kapısı YALNIZCA silmelerde sorar
+     (kullanıcı isteği: her işlem değil, sadece silmeler). */
+  static DELETE_RE =
+    /(remove-item|\bri\s|\bdel\s|\bdel\b|\brd\b|\brmdir\b|\berase\b|\brm\s|\bunlink|shutil\s*\.\s*rmtree|os\s*\.\s*(remove|unlink|rmdir)|\brmtree\b|\.unlink\s*\(|fs\s*\.\s*(rm|unlink|rmdir)|rimraf|clear-content|\breg\s+delete|git\s+clean)/i;
+
+  /* Bu araç çağrısı bir SİLME mi? (komut/betik içeriği + araç adı deseni) */
+  _isDeleteOp(name, args) {
+    const n = String(name || '');
+    const a = args || {};
+    if (n === 'run_command' || n === 'panel_run') return Engine.DELETE_RE.test(String(a.command || ''));
+    if (n === 'python_run') return Engine.DELETE_RE.test(String(a.code || ''));
+    return /(delete|remove|unlink|rmdir|rmtree)/i.test(n);
+  }
+
+  /* "Bir daha sorma" anahtarı: aynı silme işlemi için tekrar sorulmaz */
+  _deleteKey(name, args) {
+    const a = args || {};
+    const raw =
+      name === 'run_command' || name === 'panel_run'
+        ? String(a.command || '')
+        : name === 'python_run'
+          ? String(a.code || '')
+          : String(name || '');
+    const s = raw.replace(/\s+/g, ' ').trim();
+    return (s.length > 200 ? s.slice(0, 200) + '…' : s) || '*';
+  }
+
   /* ANA KOD KİLİDİ: yıkıcı işlem desenleri (korumalı yol + bu desen = engel) */
   static DESTRUCTIVE_RE =
     /(remove-item|\bri\s|\bdel\s|\bdel\b|\brd\b|\brmdir\b|\berase\b|set-content|out-file|add-content|new-item|clear-content|move-item|rename-item|\bren\s|\bcopy-item|\bmove\b|\bmv\s|\bcp\s|>>|[^|]>\s|\bicacls|\btakeown|\bformat\b|\bfsutil|\breg\s+(add|delete)|schtasks|stop-process|\btaskkill|\bkill\b|\brm\s|\bunlink|shutil|os\.remove|os\.unlink|open\([^)]*['"][wa]['"]\)|write_text|to_csv\(|savefig\(|\.write\()/i;
@@ -4975,13 +5028,18 @@ const skills = require('./skills');
       }
       if (isBc) {
         /* opencode permission akışı (tool/external-directory.ts + her aracın
-           ctx.ask'ı): önce workspace DIŞI erişim izni, sonra araç izni.
-           deny anında hata döner (asla sorulmaz), allow sessiz geçer,
-           ask UI'ya 'permission.asked' eventi ile sorulur */
+           ctx.ask'ı): deny anında hata döner (asla sorulmaz), allow sessiz geçer.
+           GÜVENLİK AÇIKken yalnız SİLME işlemleri 'permission.asked' ile sorulur;
+           diğer ask kuralları otomatik serbesttir (deny yine geçerlidir). */
         const ws = this._sessionWorkspace(sessionId);
         const bcAgent = this._bcAgentInfo(bcSess);
         const ruleset = bcAgent ? bcAgent.permission : [];
+        const isDel = this.bcAskApprovals && this._isDeleteOp(name, args);
+        const prevAuto = this._perm.autoAllow;
         try {
+          /* 1) deny kuralları her durumda işler; ask'ler silme dışında otomatik
+             geçer (güvenlik açıkken kullanıcıyı yormama) */
+          this._perm.autoAllow = true;
           const ext = this._bcExternalCheck(name, args, ws);
           if (ext) {
             await this._perm.ask({ sessionId, ruleset, ...ext, metadata: { tool: name, args: args || {} } });
@@ -4996,19 +5054,34 @@ const skills = require('./skills');
             metadata: { args: args || {} },
             tool: { name, args: args || {} },
           });
+          /* 2) güvenlik AÇIK + SİLME → onay sorusu (tek gerçek ask) */
+          if (isDel) {
+            this._perm.autoAllow = false;
+            const key = this._deleteKey(name, args);
+            await this._perm.ask({
+              sessionId,
+              ruleset: [{ permission: 'delete', pattern: '*', action: 'ask' }],
+              permission: 'delete',
+              patterns: [key],
+              always: [key],
+              metadata: { tool: name, args: args || {} },
+              tool: { name, args: args || {} },
+            });
+          }
         } catch (permErr) {
           return JSON.stringify({ ok: false, error: AskService.errorText(permErr) });
+        } finally {
+          this._perm.autoAllow = prevAuto;
         }
       } else {
-        /* onay kapısı: riskli araçta dış onay bekle; reddedilirse araç çalışmaz.
-           "always" onaylı araçlar doğrudan geçer. (BC dışı oturumlar — opencode
-           izin sistemi yalnız Beast Code oturumlarında koşar) */
+        /* onay kapısı: güvenlik açıkken YALNIZCA SİLME işlemlerinde dış onay
+           beklenir; reddedilirse araç çalışmaz. "always" onaylılar doğrudan
+           geçer. (BC dışı oturumlar — opencode izin sistemi Beast Code'da koşar) */
         if (
-          (Engine.RISKY_TOOLS.has(name) ||
-            String(name).startsWith('mcp__') ||
-            String(name).startsWith('tool__')) && /* kişisel tool = kullanıcı kodu koşturur */
+          this.approvals &&
+          typeof this.approvals.request === 'function' &&
           !this.alwaysAllowTools.has(name) &&
-          this.approvals && typeof this.approvals.request === 'function'
+          this._isDeleteOp(name, args)
         ) {
           emitSafe(this, sessionId, { type: 'status', status: `onay bekleniyor: ${name}` });
           let ok = false;

@@ -6206,6 +6206,8 @@ ipcMain.handle('sec:set', (_e, cfg) => {
   if (engine) {
     engine.approvals = settings.security.approvals ? approvalsBridge : null;
     engine.alwaysAllowTools = new Set(settings.security.alwaysAllow);
+    /* BeastCode + Sandbox izin akışı CANLI güncellenir: kapalıyken hiç sorulmaz */
+    if (typeof engine.setApprovals === 'function') engine.setApprovals(settings.security.approvals);
   }
   log.info('sec', `güvenlik: onay kapısı ${settings.security.approvals ? 'AÇIK' : 'KAPALI (her şey serbest)'}`);
   return { approvals: settings.security.approvals, alwaysAllow: settings.security.alwaysAllow };

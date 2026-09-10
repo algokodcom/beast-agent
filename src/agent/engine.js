@@ -2934,6 +2934,8 @@ class Engine {
     this._bgMeta = this._bgMeta || new Map();
     this._bgMeta.set(bg.id, { parentId: parent, title: ttl });
     this._bgEmit();
+    /* EKİP GRUBU: aynı görevde koşan paralel ajanlar otomatik ortak DM grubuna girer */
+    try { this._agentTeamJoin(this._bgJobs.get(bg.id)); } catch {}
     setTimeout(() => this._bgAdmit(bg.id, t), 60);
     return { ok: true, backgroundId: bg.id, code: bg.code };
   }
@@ -3208,6 +3210,12 @@ class Engine {
       }
       /* #17 öz-kurtarma hakları tükendi → owner'a anlık altyapı uyarısı */
       this._notifyOwnerTaskFailed(job, msg);
+      /* EKİP GRUBU: kapanış postu — ekibe hata bildirilir */
+      if (job.teamGid) {
+        try {
+          this._agentTeamPost(job.teamGid, sid, job.title, '[EKİP] ' + job.title + ' HATA ile bitti: ' + String(msg || '').slice(0, 150));
+        } catch {}
+      }
       /* AJAN DM: işi kesin bitti — ajanın DM/grup sohbetleri kapanır */
       try { this._agentDmClose(sid); } catch {}
       if (grouped) {
@@ -3233,9 +3241,21 @@ class Engine {
         this._pendingReports.push({ parentId: job.parentId, text });
         this.flushPendingReports(job.parentId);
       }
+      /* EKİP GRUBU: kapanış postu — iptal ekipçe bilinir */
+      if (job.teamGid) {
+        try {
+          this._agentTeamPost(job.teamGid, sid, job.title, '[EKİP] ' + job.title + ' İPTAL edildi — sebep: ' + String(why || '').slice(0, 120));
+        } catch {}
+      }
       /* AJAN DM: işi bitti (kullanıcı iptali dahil) — sohbetler kapanır */
       try { this._agentDmClose(sid); } catch {}
     } else if (status === 'done') {
+      /* EKİP GRUBU: kapanış postu */
+      if (job.teamGid) {
+        try {
+          this._agentTeamPost(job.teamGid, sid, job.title, '[EKİP] ' + job.title + ' görevini TAMAMLADI.');
+        } catch {}
+      }
       /* AJAN DM: görev tamamlandı — ajanın DM/grup sohbetleri kapanır */
       try { this._agentDmClose(sid); } catch {}
     }
@@ -3499,6 +3519,7 @@ class Engine {
       `- PDF gerekirse pip\u2019ten paket kurma (Türkçe bozar); Node\u2019un kurulu \`pdf-lib\`+fontkit\u2019iyle .js script yazıp \`node\` ile çalıştır. md→pdf çevirme: belge çıktısını doğrudan PDF olarak üret.\n` +
       `- ARAŞTIRMA SINIRI: 3-5 kaynak yeter; süre hedefi ~3 dakika. 2-3 denemede bulunamayan bilgiyi BIRAK — bulabildiğin kısmi sonucu raporla ve neyi bulamadığını yaz. Kapalı/gizli içerik peşinde koşma.\n` +
       `AJAN KOORDİNASYONU: diğer koşan ajanlarla (paralel işler, finance ajanları) konuşman gerekiyorsa agent_dm aracını kullan — to: hedefin başlığındaki anahtar kelime (örn "GOLD", "Trader"), message: 1-3 cümlelik net mesaj. Senden istenen görevde başka bir ajanın zaten yaptığın işe ihtiyacı varsa DM ile haber ver. Birden fazla ajanla ORTAK KARAR almanız gerekiyorsa group: "İSİM" vererek grup sohbeti kur — mesajın tüm üyelere düşer, cevaplar aynı gruba gelir. Görevin bitince DM/grup sohbetleri otomatik KAPANIR (geçmiş panelde kalır).\n` +
+      (job.teamGid ? this._agentTeamPromptLine(job.teamGid) : '') +
       FORMAT_RULES + '\n' +
       `SON ÇIKTI: 3-5 satırlık net sonuç raporu, madde madde. Soru sorma, sohbet etme.`
     );
@@ -6373,6 +6394,98 @@ Engine.prototype._pushAgentDm = function (dm) {
   this._agentDms = this._agentDms || [];
   this._agentDms.push(dm);
   if (this._agentDms.length > 600) this._agentDms.splice(0, this._agentDms.length - 600);
+};
+
+/* ---------- EKİP GRUBU: aynı görevde koşan paralel ajanlar otomatik
+   ortak DM grubuna girer — tartışma ZORUNLU (sistem promptuyla). ---------- */
+
+/* İş başlarken çağrılır: aynı parent / bg-gruptan başka ajan varsa (varsa
+   önceden kurulmuştur) hepsini TEK ekip grubuna katar + katılım postu düşer. */
+Engine.prototype._agentTeamJoin = function (job) {
+  try {
+    if (!job || !job.id) return;
+    const parent = String(job.parentId || '');
+    if (!parent) return;
+    const gid = 'team:' + (job.groupId || parent);
+    const base =
+      String(job.task || job.title || 'ortak görev').replace(/\s+/g, ' ').trim().slice(0, 28) || 'ortak görev';
+    let g = this._agentGroups.get(gid);
+    if (!g) {
+      g = { id: gid, title: base + ' EKİP', members: [], titles: {}, createdAt: nowIso(), closed: false, team: true };
+      this._agentGroups.set(gid, g);
+    }
+    g.closed = false;
+    delete g.closedAt;
+    g.titles = g.titles || {};
+    const add = (id, title) => {
+      id = String(id);
+      if (!g.members.includes(id)) g.members.push(id);
+      if (title) g.titles[id] = String(title);
+    };
+    /* aynı ortak görevdeki DİĞER ajanlar (aborted olanlar hariç) */
+    const mates = [...this._bgJobs.values()].filter(
+      (j) => j && String(j.id) !== String(job.id) && String(j.parentId) === parent && j.status !== 'aborted'
+    );
+    add(job.id, job.title);
+    for (const m of mates) add(m.id, m.title);
+    job.teamGid = gid;
+    for (const m of mates) m.teamGid = gid;
+    this._persistAgentDms();
+    this._bgEmit();
+    /* katılım postu: gruptaki DİĞER koşan ajanlara bildirim olarak düşer */
+    const names = mates.map((m) => m.title).filter(Boolean);
+    this._agentTeamPost(
+      gid,
+      job.id,
+      job.title,
+      names.length
+        ? '[EKİP] ' + job.title + ' ortak göreve katıldı — ekip: ' + names.join(', ') + '. Planı ve kararları grupta paylaş.'
+        : '[EKİP] ' + job.title + ' göreve başladı.'
+    );
+  } catch {}
+};
+
+/* Ekip grubuna sistem postu: panelde görünür + koşan üye ajanlara bildirim */
+Engine.prototype._agentTeamPost = function (gid, fromSid, fromTitle, text) {
+  try {
+    const g = this._agentGroups.get(String(gid));
+    if (!g) return;
+    const dm = {
+      at: nowIso(),
+      from: String(fromSid || ''),
+      fromTitle: String(fromTitle || 'EKİP'),
+      to: '',
+      toTitle: 'ekip',
+      group: gid,
+      groupTitle: g.title,
+      topic: 'ortak görev',
+      text: String(text || '').slice(0, 600),
+      system: true,
+    };
+    this._pushAgentDm(dm);
+    /* Sistem postları YALNIZ panelde görünür — modele pendingReports ile
+       enjekte EDİLMEZ (mid-task müdahale + kuyruk/konkürans bozulmasın).
+       Üyeler ekibi her turda sistem promptundaki ZORUNLU satırdan bilir;
+       gerçek ajan mesajları (agent_dm) normal teslim akışıyla düşer. */
+    for (const m of g.members || []) {
+      if (m === String(fromSid)) continue;
+      const j = this._bgJobs && this._bgJobs.get(m);
+      if (!j || j.status !== 'running') continue;
+      emitSafe(this, m, { type: 'agent-dm', ...dm });
+    }
+    this._persistAgentDms();
+  } catch {}
+};
+
+/* Sistem promptuna ekip zorunluluğu */
+Engine.prototype._agentTeamPromptLine = function (gid) {
+  const g = this._agentGroups && this._agentGroups.get(String(gid));
+  if (!g) return '';
+  return (
+    `EKİP GRUBU (ZORUNLU): bu ortak görevde birlikte çalışan ajanlarla "${g.title}" DM grubundasın — ` +
+    `her önemli bulgu/karar/durum değişiminde agent_dm aracıyla GRUBA yaz (group: "${g.title}", topic: "ortak görev"); ` +
+    `işin SONUNDA 1-2 cümlelik kapanış raporunu da gruba bırak. Gruba düşen mesajlar sana da gelir — ekiple çelişen hareket etme.\n`
+  );
 };
 
 Engine.prototype._persistAgentDms = function () {

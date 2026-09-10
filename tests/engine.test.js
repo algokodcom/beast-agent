@@ -285,7 +285,38 @@ test('agent_dm: grup sohbeti kurulur, tüm üyelere düşer, iş bitince kapanı
   eng.agentDmsClear();
 });
 
-/* ---------- payload builder ---------- */
+test('agent_dm: aynı görevdeki paralel ajanlar OTOMATİK ekip grubuna girer (zorunlu)', async () => {
+  const eng = makeEngine();
+  eng.flushPendingReports = () => {};
+  eng._bgJobs.set('a1', { id: 'a1', code: 'AAA', title: 'Site Taşıma #1', task: 'site taşıma', parentId: 'p1', status: 'running' });
+  eng._bgJobs.set('a2', { id: 'a2', code: 'BBB', title: 'Site Taşıma #2', task: 'site taşıma', parentId: 'p1', status: 'running' });
+  /* a2 başlarken otomatik katılım: a1 + a2 tek grupta */
+  eng._agentTeamJoin(eng._bgJobs.get('a2'));
+  let list = eng.agentDmsList();
+  assert.equal(list.groups.length, 1);
+  assert.equal(list.groups[0].title, 'site taşıma EKİP');
+  assert.ok(list.groups[0].members.includes('a1') && list.groups[0].members.includes('a2'));
+  assert.equal(eng._bgJobs.get('a1').teamGid, 'team:p1');
+  assert.equal(eng._bgJobs.get('a2').teamGid, 'team:p1');
+  /* katılım postu panelde görünür */
+  assert.ok(list.dms.length >= 1);
+  assert.equal(list.dms[list.dms.length - 1].group, 'team:p1');
+  /* ZORUNLU tartışma: sistem promptu satırı */
+  const line = eng._agentTeamPromptLine('team:p1');
+  assert.match(line, /ZORUNLU/);
+  assert.match(line, /site taşıma EKİP/);
+  /* a1 bitirir → kapanış postu; a2 hâlâ koşuyor → grup AÇIK kalır */
+  eng._agentTeamPost('team:p1', 'a1', 'Site Taşıma #1', '[EKİP] Site Taşıma #1 görevini TAMAMLADI.');
+  eng._bgJobs.get('a1').status = 'done';
+  eng._agentDmClose('a1');
+  list = eng.agentDmsList();
+  assert.equal(list.groups[0].closed, false);
+  eng._bgJobs.get('a2').status = 'done';
+  eng._agentDmClose('a2');
+  list = eng.agentDmsList();
+  assert.equal(list.groups[0].closed, true);
+  eng.agentDmsClear();
+});
 
 test('tool_call/tool mesajları birlikte tutulur', () => {
   const eng = makeEngine();

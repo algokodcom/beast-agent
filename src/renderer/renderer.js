@@ -165,6 +165,15 @@ const els = {
   finDot: $('#finDot'),
   finTerm: $('#finTerm'),
   finReconnect: $('#finReconnect'),
+  finSettings: $('#finSettings'),
+  finSettingsOverlay: $('#finSettingsOverlay'),
+  finSettingsClose: $('#finSettingsClose'),
+  finShowRisk: $('#finShowRisk'),
+  finShowPerf: $('#finShowPerf'),
+  finShowFlow: $('#finShowFlow'),
+  finRiskCard: $('#finRiskCard'),
+  finPerfCard: $('#finPerfCard'),
+  finFlowCard: $('#finFlowCard'),
   finBalance: $('#finBalance'),
   finEquity: $('#finEquity'),
   finProfit: $('#finProfit'),
@@ -9391,7 +9400,7 @@ function finDayKey(ms) {
 function finRenderAutomation(cfg, watch) {
   if (!cfg) return;
   const ae = document.activeElement;
-  if (els.finWatchdogCb) els.finWatchdogCb.checked = cfg.watchdog !== false;
+  if (els.finWatchdogCb) els.finWatchdogCb.checked = finView.risk && cfg.watchdog !== false;
   const setNum = (el, v) => {
     if (el && ae !== el) el.value = v;
   };
@@ -9533,6 +9542,8 @@ async function finSnapshot() {
   finRenderRoles(r.cfg);
   finRenderTrader(r.trader, r.cfg);
   finRenderAutomation(r.cfg, r.watch);
+  /* GİZLİ RİSK OTOMASYONU AKTİF OLAMAZ: sunucu hâlâ açık diyorsa kapat */
+  if (!finView.risk && r.cfg && r.cfg.watchdog !== false) finSaveCfg({ watchdog: false });
   finRenderStats(r.stats, r.equity, r.account && r.account.currency ? r.account.currency : '');
   finRenderAlerts(r.alerts);
 }
@@ -9630,6 +9641,78 @@ function finSaveCfg(patch) {
     beast.financeSettings(patch).then(() => { finWatchDirty = false; }).catch(() => { finWatchDirty = false; });
   }, 400);
 }
+
+/* ---------- GÖRÜNÜM AYARLARI (isteğe bağlı bölümler) ----------
+   RİSK OTOMASYONU + PERFORMANS + AKIŞ varsayılan GİZLİ; açmak isteğe bağlı.
+   Seçim localStorage'da hatırlanır. Risk otomasyonu gizliyken watchdog
+   AKTİF OLMAZ — kart yeniden gösterilince kutucuktan açılabilir. */
+const finViewKey = 'beast.financeView';
+const finView = { risk: false, perf: false, flow: false };
+try {
+  const v = JSON.parse(localStorage.getItem(finViewKey) || 'null');
+  if (v && typeof v === 'object') {
+    finView.risk = v.risk === true;
+    finView.perf = v.perf === true;
+    finView.flow = v.flow === true;
+  }
+} catch {}
+
+function finViewPaint() {
+  if (els.finRiskCard) els.finRiskCard.hidden = !finView.risk;
+  if (els.finPerfCard) els.finPerfCard.hidden = !finView.perf;
+  if (els.finFlowCard) els.finFlowCard.hidden = !finView.flow;
+  if (els.finShowRisk) els.finShowRisk.checked = finView.risk;
+  if (els.finShowPerf) els.finShowPerf.checked = finView.perf;
+  if (els.finShowFlow) els.finShowFlow.checked = finView.flow;
+  const row = (cb) => cb && cb.closest('.fin-set-row');
+  const r1 = row(els.finShowRisk); if (r1) r1.classList.toggle('on', finView.risk);
+  const r2 = row(els.finShowPerf); if (r2) r2.classList.toggle('on', finView.perf);
+  const r3 = row(els.finShowFlow); if (r3) r3.classList.toggle('on', finView.flow);
+}
+
+function finViewApply() {
+  finViewPaint();
+  /* gizli risk otomasyonu aktif kalmaz */
+  if (!finView.risk && els.finWatchdogCb) els.finWatchdogCb.checked = false;
+  try { localStorage.setItem(finViewKey, JSON.stringify(finView)); } catch {}
+  if (!finView.risk) finSaveCfg({ watchdog: false });
+}
+
+function finSettingsOpen() {
+  if (els.finSettingsOverlay) els.finSettingsOverlay.hidden = false;
+}
+function finSettingsCloseModal() {
+  if (els.finSettingsOverlay) els.finSettingsOverlay.hidden = true;
+}
+
+function finViewToggle(key, on) {
+  finView[key] = !!on;
+  finViewApply();
+  if (key === 'risk') {
+    toast(on
+      ? 'RİSK OTOMASYONU gösteriliyor — aktif etmek için karttaki kutucuğu işaretle'
+      : 'RİSK OTOMASYONU gizlendi ve kapatıldı');
+  } else {
+    toast((key === 'perf' ? 'PERFORMANS' : 'AKIŞ') + (on ? ' bölümü gösteriliyor' : ' bölümü gizlendi'));
+  }
+  if (financeModeOn()) finSnapshot();
+}
+
+if (els.finSettings) els.finSettings.addEventListener('click', finSettingsOpen);
+if (els.finSettingsClose) els.finSettingsClose.addEventListener('click', finSettingsCloseModal);
+if (els.finSettingsOverlay) {
+  els.finSettingsOverlay.addEventListener('click', (e) => {
+    if (e.target === els.finSettingsOverlay) finSettingsCloseModal();
+  });
+  els.finSettingsOverlay.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') { e.stopPropagation(); finSettingsCloseModal(); }
+  });
+}
+if (els.finShowRisk) els.finShowRisk.addEventListener('change', () => finViewToggle('risk', els.finShowRisk.checked));
+if (els.finShowPerf) els.finShowPerf.addEventListener('change', () => finViewToggle('perf', els.finShowPerf.checked));
+if (els.finShowFlow) els.finShowFlow.addEventListener('change', () => finViewToggle('flow', els.finShowFlow.checked));
+finViewApply();
+
 if (els.finInterval) els.finInterval.addEventListener('change', () => {
   const v = Math.max(30, Math.min(3600, Math.round(Number(els.finInterval.value) || 120)));
   els.finInterval.value = v;

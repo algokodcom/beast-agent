@@ -1422,6 +1422,9 @@ body.term-dragging * { cursor: row-resize !important; }
   z-index: 55;
 }
 .mini-overlay[hidden] { display: none; }
+/* onay diyalogu HER overlay'ın ÜSTÜNDE (DM modal 300, tool konsolu 300,
+   finStudio 110 — bunların hepsinden silme onayı görünür olmalı) */
+#confirmOverlay { z-index: 400; }
 body.browser-open .mini-overlay { right: var(--bw, 480px); }
 .mini-dialog {
   width: min(560px, 90vw);

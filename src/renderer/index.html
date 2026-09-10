@@ -163,15 +163,27 @@
           </div>
           <div class="fin-card fin-card-trader">
             <div class="fin-card-title">TRADE AJANI <span id="finTraderDot" class="fin-dot off" title="Trader durumu"></span></div>
-            <div class="fin-row"><select id="finTraderModel" title="Trader ajanının modeli — farklı API/model seçilebilir"></select></div>
-            <div class="fin-row fin-mini">
-              <label>Tur (sn)</label><input id="finInterval" type="number" min="30" max="3600" step="10" />
-              <label>Max lot</label><input id="finMaxLot" type="number" min="0.01" max="100" step="0.01" />
+            <div class="fin-field">
+              <span>Model</span>
+              <select id="finTraderModel" title="Trader ajanının modeli — farklı API/model seçilebilir"></select>
             </div>
-            <div class="fin-row fin-mini"><label>Semboller</label><button id="finSymBtn" class="fin-sym-select" title="MT5 sembol listesinden seç — tıkla">&#8230;</button></div>
-            <div class="fin-row fin-roles-row">
-              <label>Analiz ekibi</label>
-              <div id="finRoles" class="fin-roles" title="Trader&#39;ın yanında koşacak uzman ajanlar — tüm skill + mt5 erişimli, işlem açmazlar"></div>
+            <div class="fin-grid2">
+              <div class="fin-field">
+                <span>Tur (sn)</span>
+                <input id="finInterval" type="number" min="30" max="3600" step="10" />
+              </div>
+              <div class="fin-field">
+                <span>Max lot</span>
+                <input id="finMaxLot" type="number" min="0.01" max="100" step="0.01" />
+              </div>
+            </div>
+            <div class="fin-field">
+              <span>Semboller</span>
+              <button id="finSymBtn" class="fin-sym-select" title="MT5 sembol listesinden seç — tıkla">&#8230;</button>
+            </div>
+            <div class="fin-field">
+              <span>Analiz ekibi <i class="fin-hint">— sadece sayı seç, rolleri sistem otomatik atar</i></span>
+              <div id="finRoles" class="fin-roles" title="Trader&#39;ın yanında koşacak uzman ajan SAYISI — roller otomatik atanır (Teknik → Risk → Haber); işlem açmazlar"></div>
             </div>
             <div class="fin-row fin-btn-row">
               <button id="finTraderBtn" class="fin-start">&#9654;&#xFE0E; Ajanı Başlat</button>
@@ -181,9 +193,7 @@
           <div class="fin-card">
             <div class="fin-card-title">POZİSYONLAR <span id="finPosCount"></span></div>
             <div id="finPosList"><div class="fin-empty">Açık pozisyon yok</div></div>
-          </div>
-          <div class="fin-card">
-            <div class="fin-card-title">BEKLEYEN EMİRLER <span id="finOrdCount"></span></div>
+            <div class="fin-sect-title">BEKLEYEN EMİRLER <span id="finOrdCount"></span></div>
             <div id="finOrdList"><div class="fin-empty">Bekleyen emir yok</div></div>
           </div>
           <div class="fin-card">

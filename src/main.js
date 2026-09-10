@@ -8323,8 +8323,12 @@ function finCfg() {
   /* OTOMATİK İŞLEM hep açık — kullanıcı onay kutusu KALDIRILDI: trade ajanının
      amacı zaten işlem açmak; onay sorulmaz, limitler (max lot/pozisyon) korur */
   f.allowTrading = true;
-  if (typeof f.analysisAuto !== 'boolean') f.analysisAuto = true; /* sayıya göre otomatik atama */
-  if (!Number(f.analysisCount)) f.analysisCount = 2; /* varsayılan: 2 uzman ajan */
+  /* ANALİZ EKİBİ ARTIK SADECE SAYI: elle rol seçimi kaldırıldı — atama daima
+     otomatik (Teknik → Risk → Haber). 0 = ekip kapalı GEÇERLİ değerdir;
+     yalnız eksik/bozuk değerde varsayılan 2'ye düşülür. */
+  f.analysisAuto = true;
+  if (!Number.isFinite(Number(f.analysisCount))) f.analysisCount = 2;
+  f.analysisCount = Math.max(0, Math.min(FIN_ROLES_AUTO.length, Math.round(Number(f.analysisCount) || 0)));
   if (!Number(f.intervalSec)) f.intervalSec = 120;
   if (!Number(f.maxLot)) f.maxLot = 0.1;
   if (f.maxPositions == null) f.maxPositions = 3;
@@ -8767,6 +8771,7 @@ ipcMain.handle('finance:snapshot', async () => {
   let account = st.account || null;
   let positions = [];
   let orders = [];
+  let ordersError = '';
   let symbols = [];
   if (st.running) {
     const [a, p, o, sy] = await Promise.all([
@@ -8778,6 +8783,7 @@ ipcMain.handle('finance:snapshot', async () => {
     if (a && a.ok) account = a.data && a.data.account;
     if (p && p.ok) positions = (p.data && p.data.positions) || [];
     if (o && o.ok) orders = (o.data && o.data.orders) || [];
+    else if (o && o.error) ordersError = String(o.error).slice(0, 200);
     if (sy && sy.ok) symbols = (sy.data && sy.data.symbols) || [];
   }
   const busy = financeState.traderSid && engine ? engine.isBusy(financeState.traderSid) : false;
@@ -8787,9 +8793,11 @@ ipcMain.handle('finance:snapshot', async () => {
     account,
     positions,
     orders,
+    ordersError,
     symbols,
     cfg: f,
     roles: FIN_ROLES,
+    rolesAuto: FIN_ROLES_AUTO,
     trader: { on: financeState.traderOn, busy, rounds: financeState.traderRounds, lastAt: financeState.lastRoundAt },
   };
 });

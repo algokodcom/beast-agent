@@ -8888,14 +8888,14 @@ const FIN_ORDER_TYPES = {
   7: { t: 'SELL STP-LMT', c: 'sell' },
 };
 
-function finRenderOrders(list) {
+function finRenderOrders(list, err) {
   if (!els.finOrdList) return;
   els.finOrdList.textContent = '';
   if (els.finOrdCount) els.finOrdCount.textContent = list && list.length ? '(' + list.length + ')' : '';
   if (!list || !list.length) {
     const d = document.createElement('div');
     d.className = 'fin-empty';
-    d.textContent = 'Bekleyen emir yok';
+    d.textContent = err ? 'Emir listesi alınamadı: ' + err : 'Bekleyen emir yok';
     els.finOrdList.appendChild(d);
     return;
   }
@@ -8994,89 +8994,60 @@ function finTraderInputsSet(cfg) {
   if (els.finTraderModel && ae !== els.finTraderModel && cfg.traderSel) els.finTraderModel.value = cfg.traderSel;
 }
 
-/* ANALİZ EKİBİ: trader yanında koşacak uzman ajan rolleri — İKİ MOD:
-   (1) OTOMATİK: sadece SAYI gir → gereklı ajanları sistem kendisi ata;
-   (2) ELLE SEÇ: rol kutucukları (Risk / Teknik / Haber-Makro) çoklu seçilir.
-   Katalog sunucudan (finance snapshot/state.roles) gelir, yerel yedek var. */
+/* ANALİZ EKİBİ: SADECE SAYI seçilir — rolleri sistem otomatik atar
+   (FIN_ROLES_AUTO sırası: Teknik → Risk → Haber). Elle rol kutucukları
+   kaldırıldı; analysisAuto sunucuda daima açık. Katalog sunucudan gelir. */
 let finRolesCatalog = [
   { id: 'risk', label: 'Risk Ajanı', desc: 'marj/kaldıraç/SL disiplini, exposure ve günlük kayıp hızı denetimi' },
   { id: 'technic', label: 'Teknik Analiz', desc: 'trend/yapı/destek-direnç/momentum okuma, AL-SAT-BEKLE önerileri' },
   { id: 'macro', label: 'Haber / Makro', desc: 'haber akışı + ekonomik takvim, DXY/emtia bağıntıları, yön eğilimi' },
 ];
+let finRolesAuto = ['technic', 'risk', 'macro'];
 let finRolesDirty = false; /* tık→kaydet arası snapshot ezmesin */
 let finRolesSyncTimer = null;
 
-function finRolesSel() {
-  const box = els.finRoles;
-  return box ? [...box.querySelectorAll('input[data-role]:checked')].map((cb) => cb.dataset.role) : [];
+function finRoleLabel(id) {
+  const d = (finRolesCatalog || []).find((x) => x.id === String(id || ''));
+  return d ? d.label : String(id || '');
 }
 
 function finRenderRoles(cfg) {
   const box = els.finRoles;
   if (!box) return;
   if (finRolesDirty) return; /* bekleyen kullanıcı değişikliği korunur */
-  const auto = !!(cfg && cfg.analysisAuto);
-  const count = Math.max(0, Math.round(Number(cfg && cfg.analysisCount) || 0));
-  const sel = cfg && Array.isArray(cfg.analysisTeam) ? cfg.analysisTeam : [];
+  const max = Math.max(1, (finRolesAuto || []).length || 3);
+  const count = Math.max(0, Math.min(max, Math.round(Number(cfg && cfg.analysisCount) || 0)));
   box.innerHTML = '';
-
-  /* OTOMATİK çipi + sayı girişi */
-  const autoLab = document.createElement('label');
-  autoLab.className = 'fin-role fin-role-auto';
-  autoLab.title = 'Rol seçmeden SAYI gir — gereklı ajanları sistem otomatik atar (teknik → risk → haber sırası)';
-  const autoCb = document.createElement('input');
-  autoCb.type = 'checkbox';
-  autoCb.checked = auto;
-  autoLab.appendChild(autoCb);
-  autoLab.appendChild(document.createTextNode('⚙ Otomatik'));
-  autoCb.addEventListener('change', () => {
-    finRolesDirty = true;
-    finSaveCfg({ analysisAuto: autoCb.checked });
-    toast(autoCb.checked ? 'Analiz ekibi OTOMATİK — sayı kadar gereklı ajan atanır' : 'Analiz ekibi ELLE SEÇİM moduna geçti');
-    clearTimeout(finRolesSyncTimer);
-    finRolesSyncTimer = setTimeout(() => { finRolesDirty = false; finSnapshot(); }, 900);
-  });
-  box.appendChild(autoLab);
-
+  const wrap = document.createElement('div');
+  wrap.className = 'fin-team';
   const cnt = document.createElement('input');
   cnt.type = 'number';
   cnt.className = 'fin-role-count';
   cnt.min = '0';
-  cnt.max = String(finRolesCatalog.length);
+  cnt.max = String(max);
   cnt.step = '1';
-  cnt.value = String(count || 0);
-  cnt.title = 'Otomatik mod: kaç uzman ajan koşacak (0 = ekip yok)';
-  cnt.disabled = !auto;
+  cnt.value = String(count);
+  cnt.title = 'Kaç uzman ajan koşacak (0 = ekip yok, en fazla ' + max + '). Roller otomatik atanır.';
+  const hint = document.createElement('span');
+  hint.className = 'fin-team-hint';
+  const names = (n) => finRolesAuto.slice(0, n).map(finRoleLabel);
+  const paint = (n) => {
+    hint.textContent = n > 0 ? 'otomatik: ' + names(n).join(' · ') : 'ekip kapalı — sadece trader koşar';
+  };
   cnt.addEventListener('change', () => {
+    const n = Math.max(0, Math.min(max, Math.round(Number(cnt.value) || 0)));
+    cnt.value = String(n);
     finRolesDirty = true;
-    finSaveCfg({ analysisCount: Math.max(0, Math.round(Number(cnt.value) || 0)) });
-    toast('Analiz ekibi: ' + (Math.round(Number(cnt.value) || 0) || 'kapalı') + ' uzman ajan (otomatik)');
+    finSaveCfg({ analysisAuto: true, analysisCount: n });
+    paint(n);
+    toast(n ? 'Analiz ekibi: ' + n + ' ajan — ' + names(n).join(', ') : 'Analiz ekibi kapatıldı');
     clearTimeout(finRolesSyncTimer);
     finRolesSyncTimer = setTimeout(() => { finRolesDirty = false; finSnapshot(); }, 900);
   });
-  box.appendChild(cnt);
-
-  /* rol kutucukları — otomatik moddayken pasif */
-  for (const r of finRolesCatalog) {
-    const lab = document.createElement('label');
-    lab.className = 'fin-role';
-    const cb = document.createElement('input');
-    cb.type = 'checkbox';
-    cb.dataset.role = r.id;
-    cb.checked = sel.includes(r.id);
-    cb.disabled = auto;
-    cb.title = r.desc + ' — tüm skill + mt5 erişimli, işlem açmaz';
-    lab.appendChild(cb);
-    lab.appendChild(document.createTextNode(r.label));
-    cb.addEventListener('change', () => {
-      finRolesDirty = true;
-      finSaveCfg({ analysisTeam: finRolesSel() });
-      toast(r.label + (cb.checked ? ' ekibe eklendi — sonraki başlatışta koşar' : ' ekipten çıkarıldı'));
-      clearTimeout(finRolesSyncTimer);
-      finRolesSyncTimer = setTimeout(() => { finRolesDirty = false; finSnapshot(); }, 900);
-    });
-    box.appendChild(lab);
-  }
+  paint(count);
+  wrap.appendChild(cnt);
+  wrap.appendChild(hint);
+  box.appendChild(wrap);
 }
 
 function finRenderTrader(trader, cfg) {
@@ -9141,9 +9112,10 @@ async function finSnapshot() {
   finSetDot(b.connected ? true : b.running ? 'busy' : false, b);
   finRenderAccount(r.account);
   finRenderPositions(r.positions || []);
-  finRenderOrders(r.orders || []);
+  finRenderOrders(r.orders || [], r.ordersError || '');
   finRenderSymbols(r.symbols || []);
   if (Array.isArray(r.roles) && r.roles.length) finRolesCatalog = r.roles;
+  if (Array.isArray(r.rolesAuto) && r.rolesAuto.length) finRolesAuto = r.rolesAuto;
   finTraderInputsSet(r.cfg);
   finRenderRoles(r.cfg);
   finRenderTrader(r.trader, r.cfg);
@@ -9258,9 +9230,7 @@ if (els.finTraderBtn) {
       else if (r && r.ok) {
         const cfg = (await beast.financeState().catch(() => null));
         const c = (cfg && cfg.cfg) || {};
-        const team = c.analysisAuto
-          ? Math.round(Number(c.analysisCount) || 0)
-          : finRolesSel().length;
+        const team = Math.round(Number(c.analysisCount) || 0);
         toast(team ? 'Trade ajanı + analiz ekibi (' + team + ' uzman) başladı — turlar panelde izlenir' : 'Trade ajanı başladı — turlar panelde izlenir');
       }
     }

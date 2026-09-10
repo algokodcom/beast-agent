@@ -4833,6 +4833,49 @@ body.finance-mode #composerWrap { margin-right: var(--finW, 400px); }
 }
 .fin-row input:focus, .fin-row select:focus { border-color: var(--accent); outline: none; }
 
+/* TRADE AJANI formu — etiket üstte, kontrol altta; tur/max lot 2 kolon */
+.fin-field { display: flex; flex-direction: column; gap: 3px; min-width: 0; margin-bottom: 8px; }
+.fin-field > span { font-size: 10px; color: var(--muted); }
+.fin-field input, .fin-field select {
+  width: 100%;
+  min-width: 0;
+  background: var(--panel2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-size: 12px;
+  padding: 4px 7px;
+  border-radius: 6px;
+}
+.fin-field input:focus, .fin-field select:focus { border-color: var(--accent); outline: none; }
+.fin-field .fin-sym-select { width: 100%; }
+.fin-grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.fin-grid2 .fin-field { margin-bottom: 8px; }
+.fin-hint { font-style: normal; opacity: 0.75; }
+/* ekib sayısı + otomatik atama özeti */
+.fin-team { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.fin-team-hint {
+  flex: 1;
+  min-width: 0;
+  font-size: 10.5px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* POZİSYONLAR kartı içi bölüm başlığı (bekleyen emirler) */
+.fin-sect-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 9px 0 6px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 1px;
+  color: var(--muted);
+}
+
 /* TRADE AJANI sembol seçme düğmesi — tıklayınca MT5 sembol seçici açılır */
 .fin-sym-select {
   flex: 1;
@@ -4887,15 +4930,15 @@ body.finance-mode #composerWrap { margin-right: var(--finW, 400px); }
 .fin-role input:disabled { opacity: 0.45; cursor: default; }
 .fin-role-auto { font-weight: 700; }
 /* Otomatik moddaki SAYI girişi */
-.fin-role-count {
-  flex: none; width: 44px;
+.fin-field .fin-role-count {
+  flex: none; width: 52px;
   background: var(--panel2); color: var(--text);
   border: 1px solid var(--border); border-radius: 8px;
-  font-size: 11px; font-weight: 700; text-align: center;
-  padding: 2px 3px;
+  font-size: 12px; font-weight: 700; text-align: center;
+  padding: 3px 3px;
 }
-.fin-role-count:focus { border-color: var(--accent); outline: none; }
-.fin-role-count:disabled { opacity: 0.45; }
+.fin-field .fin-role-count:focus { border-color: var(--accent); outline: none; }
+.fin-field .fin-role-count:disabled { opacity: 0.45; }
 .fin-start {
   flex: none;
   background: var(--accent);

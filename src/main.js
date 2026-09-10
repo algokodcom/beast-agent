@@ -8329,10 +8329,17 @@ function finCfg() {
   f.analysisAuto = true;
   if (!Number.isFinite(Number(f.analysisCount))) f.analysisCount = 2;
   f.analysisCount = Math.max(0, Math.min(FIN_ROLES_AUTO.length, Math.round(Number(f.analysisCount) || 0)));
-  /* ROL → SKILL eşleştirmesi: rol başına en fazla 8 skill adı */
+  /* ROL → SKILL eşleştirmesi: VARSAYILAN BOŞ — ajan göreve göre skill'i kendi
+     seçer (SKILLS kataloğu promptta). İstenirse ⚙ modalından rol başına
+     sabitlenir; skill adları kurulu katalogdan gelir. Eski sürümün otomatik
+     doldurduğu varsayılanlar bir kez temizlenir. */
+  if (f.roleSkillsDefaultsCleared !== true) {
+    f.roleSkills = {};
+    f.roleSkillsDefaultsCleared = true;
+  }
   if (!f.roleSkills || typeof f.roleSkills !== 'object') f.roleSkills = {};
   for (const d of FIN_ROLES) {
-    const cur = Array.isArray(f.roleSkills[d.id]) ? f.roleSkills[d.id] : ROLE_SKILL_DEFAULTS[d.id] || [];
+    const cur = Array.isArray(f.roleSkills[d.id]) ? f.roleSkills[d.id] : [];
     f.roleSkills[d.id] = cur.map((s) => String(s || '').trim()).filter(Boolean).slice(0, 8);
   }
   if (!Number(f.intervalSec)) f.intervalSec = 120;
@@ -8351,14 +8358,6 @@ const FIN_ROLES = [
   { id: 'macro', label: 'Haber / Makro', desc: 'haber akışı + ekonomik takvim, DXY/emtia bağıntıları, yön eğilimi' },
 ];
 const FIN_ROLES_AUTO = ['technic', 'risk', 'macro'];
-/* ROL → SKILL varsayılanları: her rolün tur başında okuması gereken skill'ler.
-   TRADE AJANI kartındaki ⚙ modalından değiştirilebilir; liste kurulu skill
-   kataloğundan beslenir, yeni skill eklenince modalda otomatik görünür. */
-const ROLE_SKILL_DEFAULTS = {
-  technic: ['price-action'],
-  risk: ['risk-yonetimi'],
-  macro: ['haber-duygu'],
-};
 function finRolesValid(list) {
   return (Array.isArray(list) ? list : [])
     .map((r) => String(r || '').trim())

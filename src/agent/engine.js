@@ -1894,16 +1894,16 @@ class Engine {
         macro:
           'ROL: MAKRO AJANI 🌍 — büyük resim uzmanısın, İşlem AÇMAZSIN (mt5_trade/mt5_pending/mt5_close KULLANMA). Her turda web_search ile güncel makro manşetleri + ekonomik takvim riskleri (faiz, CPI, jeopolitik); DXY/altın/petrol bağıntılarını odak sembollere çevir; sembol başına yön eğilimi + TEMKİN/BEKLE notu ver.',
       })[String((session && session.financeRole) || '')] || '';
-    /* ROL → SKILL eşleştirmesi (ayarlar modalı): rolün okuması gereken skill'ler
-       prompta gömülür; ayar boşsa satır eklenmez. Skill adları kurulu katalogdan
-       seçilir — yeni skill eklendiğinde modalda görünür ve buraya yansır. */
+    /* ROL → SKILL eşleştirmesi (ayarlar modalı): TAMAMEN İSTEĞE BAĞLI — boşsa
+       satır eklenmez ve ajan skill'i göreve göre kendi seçer (SKILLS kataloğu).
+       Doluysa rol için öncelikli skill'ler hatırlatılır. */
     const roleSkills = Array.isArray(session && session.financeRoleSkills)
       ? session.financeRoleSkills.map((s) => String(s || '').trim()).filter(Boolean).slice(0, 8)
       : [];
     const roleBlockFull = roleBlock
       ? roleBlock +
         (roleSkills.length
-          ? ` ÖNCE şu skill'leri skill aracıyla oku ve prosedürüne göre uygula: ${roleSkills.map((n) => `skill("${n}")`).join(', ')}.`
+          ? ` Bu rol için isteğe bağlı öncelikli skill'ler: ${roleSkills.map((n) => `skill("${n}")`).join(', ')} — görev gerektiriyorsa skill aracıyla oku ve prosedürüne göre uygula.`
           : '')
       : '';
     /* FİNANS EKİBİ: tüm finance ajanları tek DM grubundadır — sohbet grup

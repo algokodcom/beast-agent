@@ -8949,17 +8949,7 @@ function finRenderSymbols(list) {
     row.innerHTML =
       '<span class="fs-name">' + (s.symbol || '?') + '</span>' +
       '<span class="fs-price ' + cls + '">' + bid.toFixed(digits) + '</span>' +
-      '<span class="fs-spread">sp ' + (s.spread != null ? s.spread : '—') + '</span>' +
-      '<button class="fs-agent" title="' + escapeHtml(s.symbol || '') + ' için AYRI finance ajanı başlat (paralel koşar)">&#9654;&#xFE0E;</button>';
-    const spawnBtn = row.querySelector('.fs-agent');
-    if (spawnBtn) {
-      spawnBtn.addEventListener('click', async (e) => {
-        e.stopPropagation();
-        const r = await beast.financeAgentSpawn(s.symbol).catch((err) => ({ ok: false, error: String((err && err.message) || err) }));
-        if (r && r.ok) toast(s.symbol + ' için ajan başladı — Paralel Ajanlar panelinde izle');
-        else toast((r && r.error) || 'Ajan başlatılamadı');
-      });
-    }
+      '<span class="fs-spread">sp ' + (s.spread != null ? s.spread : '—') + '</span>';
     els.finSymList.appendChild(row);
   }
 }
@@ -9210,8 +9200,18 @@ function finSaveCfg(patch) {
     beast.financeSettings(patch).then(() => { finWatchDirty = false; }).catch(() => { finWatchDirty = false; });
   }, 400);
 }
-if (els.finInterval) els.finInterval.addEventListener('change', () => finSaveCfg({ intervalSec: Number(els.finInterval.value) || 120 }));
-if (els.finMaxLot) els.finMaxLot.addEventListener('change', () => finSaveCfg({ maxLot: Number(els.finMaxLot.value) || 0.1 }));
+if (els.finInterval) els.finInterval.addEventListener('change', () => {
+  const v = Math.max(30, Math.min(3600, Math.round(Number(els.finInterval.value) || 120)));
+  els.finInterval.value = v;
+  finSaveCfg({ intervalSec: v });
+  toast('Tur aralığı: ' + v + ' sn — durdurmadan sonraki tura uygulanır');
+});
+if (els.finMaxLot) els.finMaxLot.addEventListener('change', () => {
+  const v = Math.max(0.01, Math.min(100, Number(els.finMaxLot.value) || 0.1));
+  els.finMaxLot.value = v;
+  finSaveCfg({ maxLot: v });
+  toast('Max lot: ' + v + ' — sonraki turdan itibaren geçerli');
+});
 if (els.finSymBtn) els.finSymBtn.addEventListener('click', finSymPickerOpen);
 /* OTOMATİK İŞLEM onay kutusu KALDIRILDI — trade ajanı daima işlem açabilir */
 if (els.finTraderModel) {
@@ -9256,11 +9256,18 @@ function finToggleWatch(sym) {
   const i = finWatch.indexOf(s);
   if (i >= 0) finWatch.splice(i, 1);
   else finWatch.push(s);
+  const added = i < 0; /* true = eklendi */
   finSaveCfg({ symbols: [...finWatch] });
   finSymBtnUpdate(); /* TRADE AJANI düğmesi anında güncellensin */
   clearTimeout(finSymRefreshTimer);
   finSymRefreshTimer = setTimeout(() => finSnapshot(), 700); /* PİYASA kartı tazelensin */
-  return i < 0; /* true = eklendi */
+  /* canlı geri bildirim: değişiklik koşan ajanı DURDURMADAN sonraki tura girer */
+  toast(
+    added
+      ? s + ' izleme listesine eklendi — koşan ajan sonraki turda kullanır'
+      : s + ' izleme listesinden çıkarıldı — koşan ajan sonraki turda görmez'
+  );
+  return added;
 }
 
 function finRenderPickRows(rows, q) {

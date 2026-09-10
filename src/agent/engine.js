@@ -6372,34 +6372,37 @@ Engine.prototype._agentDmSend = function (fromSid, args) {
        groupName verilmemişse ama iki taraf da AYNI AÇIK grubun üyesiyse mesaj
        YİNE GRUBA düşer — üye üyeye 1:1 thread'lere ayrı ayrı dağılmaz; ekibin
        tüm iç trafiği TEK grup sohbetinde canlı toplanır. */
-    const shared = groupName || !target ? null : this._agentDmSharedGroup(fromSid, target);
+    /* TEK İŞ = TEK GRUP: taraflar AÇIK bir ekip/grup üyesiyse mesaj HER ZAMAN o
+       gruba düşer — group: verilse bile yeni grup AÇILMAZ. Ayrıca group adı
+       mevcut bir grubun başlığıyla eşleşiyorsa (ör. "Beast Finance EKİP" →
+       team:finance) o grup kullanılır; aynı iş için ikinci grup oluşmaz. */
+    const shared = target ? this._agentDmSharedGroup(fromSid, target) : null;
     let gid = '';
-    if (groupName || shared) {
-      let g;
-      if (groupName) {
-        /* gid Türkçe-kararsız normalize: ALTIN/Altın/altın aynı grup */
-        gid =
-          'grp:' +
-          groupName
-            .toLowerCase()
-            .replace(/\u0307/g, '')
-            .replace(/ı/g, 'i')
-            .replace(/ğ/g, 'g')
-            .replace(/ü/g, 'u')
-            .replace(/ş/g, 's')
-            .replace(/ö/g, 'o')
-            .replace(/ç/g, 'c');
-        g = this._agentGroups.get(gid);
-        if (!g) {
-          if (!target) return { ok: false, error: 'yeni grup için to ile en az bir ajan belirt' };
-          g = { id: gid, title: groupName, members: [], titles: {}, createdAt: at, closed: false };
-          this._agentGroups.set(gid, g);
+    let g = null;
+    if (shared) {
+      g = shared;
+      gid = String(g.id || '');
+    } else if (groupName) {
+      gid = 'grp:' + this._agentGroupKey(groupName);
+      g = this._agentGroups.get(gid) || null;
+      if (!g) {
+        const want = this._agentGroupKey(groupName);
+        for (const [, cand] of this._agentGroups || new Map()) {
+          if (!cand || cand.closed) continue;
+          if (this._agentGroupKey(cand.title) === want) {
+            g = cand;
+            gid = String(cand.id || '');
+            break;
+          }
         }
-      } else {
-        g = shared;
-        gid = String(g.id || '');
       }
-      g.titles = g.titles || {};
+      if (!g) {
+        if (!target) return { ok: false, error: 'yeni grup için to ile en az bir ajan belirt' };
+        g = { id: gid, title: groupName, members: [], titles: {}, createdAt: at, closed: false };
+        this._agentGroups.set(gid, g);
+      }
+    }
+    if (g) {      g.titles = g.titles || {};
       const addMember = (sid, title) => {
         sid = String(sid);
         if (!g.members.includes(sid)) g.members.push(sid);
@@ -6478,6 +6481,20 @@ Engine.prototype._agentDmSharedGroup = function (a, b) {
   return null;
 };
 
+/* Grup adı anahtarı: Türkçe-kararsız normalize — ALTIN/Altın/altın aynı gruba
+   iner; başlık eşleştirmede de kullanılır (ör. "Beast Finance EKİP"). */
+Engine.prototype._agentGroupKey = function (name) {
+  return String(name || '')
+    .toLowerCase()
+    .replace(/\u0307/g, '')
+    .replace(/ı/g, 'i')
+    .replace(/ğ/g, 'g')
+    .replace(/ü/g, 'u')
+    .replace(/ş/g, 's')
+    .replace(/ö/g, 'o')
+    .replace(/ç/g, 'c');
+};
+
 Engine.prototype._pushAgentDm = function (dm) {
   this._agentDms = this._agentDms || [];
   this._agentDms.push(dm);
@@ -6517,6 +6534,12 @@ Engine.prototype._agentTeamJoin = function (job) {
     g.closed = false;
     delete g.closedAt;
     g.titles = g.titles || {};
+    /* durdurulmuş eski üyeler aktif kadrodan düşer — yeniden başlayan ekipte
+       kapanmış ajanlar üye listesinde görünmez (geçmiş mesajlar korunur) */
+    g.members = (g.members || []).filter((m) => {
+      const j = this._bgJobs && this._bgJobs.get(String(m));
+      return !j || j.status === 'running';
+    });
     const add = (id, title) => {
       id = String(id);
       if (!g.members.includes(id)) g.members.push(id);

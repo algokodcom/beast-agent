@@ -8609,6 +8609,9 @@ function finAgentStop(sid, reason) {
       engine._bgEmit();
     }
   } catch {}
+  /* AJAN DM: duran ajanın birebir sohbetleri kapanır; grupta KOŞAN üye
+     kalmadıysa ekip sohbeti de GEÇMİŞE düşer (aktif listede kalmaz) */
+  try { if (engine && engine._agentDmClose) engine._agentDmClose(sid); } catch {}
   finPush('trader', { state: 'idle', rounds: financeState.traderRounds });
   return true;
 }
@@ -8856,8 +8859,24 @@ ipcMain.handle('finance:settings', async (_e, patch) => {
     }
     f.symbolHistory = hist.slice(-40);
     f.symbols = next;
+    /* KOŞAN ajanlar DURDURULMADAN yeni listeyi alır: ana trader + analiz ekibi
+       sonraki turda güncel sembollere odaklanır (sembol işçileri kendi
+       sembolünde kalır — onlar tek sembole özeldir). */
+    for (const [, a] of financeState.agents) {
+      if (a && (a.main || a.role)) a.symbols = next.slice(0, 20);
+    }
   }
   if (p.intervalSec !== undefined) f.intervalSec = Math.max(30, Math.min(3600, Math.round(Number(p.intervalSec) || 120)));
+  /* TUR ARALIĞI CANLI: bekleyen zamanlayıcılar yeni aralıkla yeniden kurulur —
+     koşan tur bitince zaten finFlushOnDone yeni aralığı okur. */
+  if (p.intervalSec !== undefined && financeState.agents) {
+    const iv = Math.max(30, Math.round(Number(f.intervalSec) || 120)) * 1000;
+    for (const [sid, a] of financeState.agents) {
+      if (!a || !engine || engine.isBusy(sid)) continue;
+      clearTimeout(a.timer);
+      a.timer = setTimeout(() => { try { finAgentRound(String(sid)); } catch {} }, iv);
+    }
+  }
   if (p.maxLot !== undefined) f.maxLot = Math.max(0.01, Math.min(100, Number(p.maxLot) || 0.1));
   if (p.maxPositions !== undefined) f.maxPositions = Math.max(1, Math.min(20, Math.round(Number(p.maxPositions) || 3)));
   /* allowTrading artık AYARLANMAZ — daima true (finCfg zorlar) */

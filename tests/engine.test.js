@@ -416,6 +416,90 @@ test('finance ekibi: tüm finance ajanları TEK DM grubuna girer, mesajlar grup 
   eng.agentDmsClear();
 });
 
+test('agent_dm: grup adı ekip başlığıyla eşleşirse AYNI grup kullanılır — aynı iş için ikinci grup AÇILMAZ', async () => {
+  const eng = makeEngine();
+  eng.flushPendingReports = () => {};
+  const mk = (id, title) => ({
+    id,
+    code: id.toUpperCase(),
+    title,
+    status: 'running',
+    continuous: true,
+    parentId: '',
+    groupId: null,
+    dmGroupId: 'team:finance',
+    dmGroupTitle: 'Beast Finance EKİP',
+  });
+  const j1 = mk('f1', 'Beast Finance · Trader');
+  const j2 = mk('f2', 'Finance · Risk Ajanı');
+  eng._bgJobs.set('f1', j1);
+  eng._agentTeamJoin(j1);
+  eng._bgJobs.set('f2', j2);
+  eng._agentTeamJoin(j2);
+  /* f3 henüz gruba katılmadı; başlığı grup adı vererek yazar */
+  eng._bgJobs.set('f3', mk('f3', 'Finance · Makro'));
+  const r = JSON.parse(
+    await eng._execTool('agent_dm', { to: 'Trader', group: 'Beast Finance EKİP', message: 'makro: faiz kararı bekleniyor' }, null, 'f3')
+  );
+  assert.equal(r.ok, true);
+  assert.equal(r.group, 'Beast Finance EKİP');
+  const list = eng.agentDmsList();
+  assert.equal(list.groups.length, 1, 'aynı iş için ikinci grup açılmamalı');
+  assert.equal(list.groups[0].id, 'team:finance');
+  assert.ok(list.groups[0].members.includes('f3'), 'yeni ajan aynı gruba katılmalı');
+  assert.equal(list.dms[list.dms.length - 1].group, 'team:finance');
+  /* ekip dışı iki ajan kendi grubunu kurabilir */
+  eng._bgJobs.set('a3', { id: 'a3', code: 'A3', title: 'Serbest A', status: 'running' });
+  eng._bgJobs.set('a4', { id: 'a4', code: 'A4', title: 'Serbest B', status: 'running' });
+  const r2 = JSON.parse(
+    await eng._execTool('agent_dm', { to: 'Serbest B', group: 'ÖZEL GRUP', message: 'ayrı iş' }, null, 'a3')
+  );
+  assert.equal(r2.ok, true);
+  assert.equal(eng.agentDmsList().groups.length, 2);
+  /* temizleme */
+  eng.agentDmsClear();
+});
+
+test('ekip grubu: durdurulmuş üye aktif kadrodan düşer, yeni ajan aynı gruba katılır', () => {
+  const eng = makeEngine();
+  eng.flushPendingReports = () => {};
+  const mk = (id, title) => ({
+    id,
+    code: id.toUpperCase(),
+    title,
+    status: 'running',
+    continuous: true,
+    parentId: '',
+    groupId: null,
+    dmGroupId: 'team:finance',
+    dmGroupTitle: 'Beast Finance EKİP',
+  });
+  const j1 = mk('f1', 'Beast Finance · Trader');
+  const j2 = mk('f2', 'Finance · Risk Ajanı');
+  eng._bgJobs.set('f1', j1);
+  eng._agentTeamJoin(j1);
+  eng._bgJobs.set('f2', j2);
+  eng._agentTeamJoin(j2);
+  /* f2 durduruldu: job aborted + DM kapanışı → f1 koştuğu için grup açık kalır */
+  eng._bgJobs.get('f2').status = 'aborted';
+  eng._agentDmClose('f2');
+  let g = eng._agentGroups.get('team:finance');
+  assert.equal(g.closed, false, 'koşan üye varken grup kapanmaz');
+  /* yeni ajan aynı gruba girince durmuş eski üye aktif kadrodan düşer */
+  const j3 = mk('f3', 'Finance · Makro');
+  eng._bgJobs.set('f3', j3);
+  eng._agentTeamJoin(j3);
+  g = eng._agentGroups.get('team:finance');
+  assert.ok(g.members.includes('f1') && g.members.includes('f3'));
+  assert.ok(!g.members.includes('f2'), 'durdurulmuş üye üye listesinde kalmamalı');
+  /* son üyeler de durunca grup GEÇMİŞE düşer */
+  eng._bgJobs.get('f1').status = 'aborted';
+  eng._agentDmClose('f1');
+  eng._bgJobs.get('f3').status = 'aborted';
+  eng._agentDmClose('f3');
+  assert.equal(eng._agentGroups.get('team:finance').closed, true);
+});
+
 test('agent_dm: aynı görevdeki paralel ajanlar OTOMATİK ekip grubuna girer (zorunlu)', async () => {
   const eng = makeEngine();
   eng.flushPendingReports = () => {};

@@ -2290,25 +2290,6 @@ body.browser-open #settingsDialog { width: min(70vw, calc(100vw - var(--bw, 480p
   letter-spacing: 0.4px;
 }
 
-/* PİYASA satırındaki ▶ ajan butonu */
-.fin-sym { position: relative; }
-.fin-sym .fs-agent {
-  position: absolute;
-  right: 4px;
-  top: 50%;
-  transform: translateY(-50%);
-  border: none;
-  background: none;
-  color: var(--muted);
-  cursor: pointer;
-  font-size: 11px;
-  padding: 2px 4px;
-  border-radius: 4px;
-  visibility: hidden;
-}
-.fin-sym:hover .fs-agent { visibility: visible; color: var(--accent); }
-.fin-sym .fs-agent:hover { background: var(--accent-dim); }
-
 /* sembol seçicide bölüm başlıkları (geçmiş / tüm semboller) */
 .fin-sym-sec {
   font-size: 10px;

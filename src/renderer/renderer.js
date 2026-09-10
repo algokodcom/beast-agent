@@ -5617,6 +5617,11 @@ function onEvent(ev) {
     if ($('#dmRail') && !$('#dmRail').classList.contains('dm-hidden')) renderDmRail();
     return;
   }
+  /* AJAN DM sohbeti kapandı (ajan işi bitti) — AKTİF/GEÇMİŞ tazele */
+  if (ev.type === 'agent-dm-closed') {
+    refreshDmRail().catch(() => {});
+    return;
+  }
   /* KİŞİSEL TOOL çalışma kaydı — TOOLS konsolunun nokta göstergeleri */
   if (ev.type === 'tool-log') {
     toolUi.logRows.push({

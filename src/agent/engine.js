@@ -378,6 +378,8 @@ class Engine {
     } catch {
       this._agentDms = [];
     }
+    /* restart barışı: koşan üyesi kalmayan ekip/DM gruplarını kapat */
+    try { this._agentDmReconcile(); } catch {}
     /* superyorizyon döngüsü: takılan/uzun süren ajanı CEO'ya bildirir */
     this._supTimer = setInterval(() => {
       try { this._supervise(); } catch {}
@@ -6525,13 +6527,39 @@ Engine.prototype._agentDmClose = function (sid) {
       changed = true;
     }
   }
-  if (changed) this._persistAgentDms();
+  if (changed) {
+    this._persistAgentDms();
+    /* panele CANLI haber: sohbet(ler) kapandı — AKTİF'ten GEÇMİŞ'e düşsün */
+    try { this.emit({ type: 'agent-dm-closed', sessionId: sid }); } catch {}
+  }
 };
 
 Engine.prototype.agentDmsList = function () {
   const groups = [];
   for (const [, g] of this._agentGroups || new Map()) groups.push(g);
   return { dms: [...(this._agentDms || [])].slice(-600), groups };
+};
+
+/* RESTART BARİŞİ: açılışta grupları denetle — hiçbir üye ajan koşmuyorsa
+   grup sohbeti KAPANIR (uygulama kapanırken yarım kalan ekip sohbetleri
+   sonsuza dek "aktif" görünmesin; geçmiş panelde korunur). */
+Engine.prototype._agentDmReconcile = function () {
+  const running = new Set();
+  for (const [sid, j] of this._bgJobs || new Map()) {
+    if (j && j.status === 'running') running.add(String(sid));
+  }
+  let changed = false;
+  const now = new Date().toISOString();
+  for (const [, g] of this._agentGroups || new Map()) {
+    if (g.closed) continue;
+    const anyRunning = (g.members || []).some((m) => running.has(String(m)));
+    if (!anyRunning) {
+      g.closed = true;
+      g.closedAt = now;
+      changed = true;
+    }
+  }
+  if (changed) this._persistAgentDms();
 };
 
 Engine.prototype.agentDmsClear = function () {

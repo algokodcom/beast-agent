@@ -315,6 +315,11 @@ test('agent_dm: aynı görevdeki paralel ajanlar OTOMATİK ekip grubuna girer (z
   eng._agentDmClose('a2');
   list = eng.agentDmsList();
   assert.equal(list.groups[0].closed, true);
+  /* restart barışı: açılışta koşan üyesi olmayan gruplar kapatılır */
+  eng._agentGroups.forEach((g) => { g.closed = false; delete g.closedAt; });
+  eng._agentDmReconcile();
+  list = eng.agentDmsList();
+  assert.equal(list.groups[0].closed, true);
   eng.agentDmsClear();
 });
 

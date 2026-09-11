@@ -5144,11 +5144,17 @@ ipcMain.handle('agent:send', (_e, { sessionId, text }) => {
       const fsid = String(sessionId);
       let fsess = engine.cache.get(fsid);
       if (!fsess) { try { fsess = engine._load(fsid); } catch {} }
-      if (fsess && !fsess.botId && !fsess.bgJob && financeState.mode && !fsess.finance) {
-        engine.markFinance(fsid, false);
-        finApplyTraderFields(fsess);
-        fsess.financeTrader = false; /* chat copilot'ı — trader değil */
-        engine.cache.set(fsid, fsess);
+      if (fsess && !fsess.botId && !fsess.bgJob && financeState.mode) {
+        if (!fsess.finance) {
+          engine.markFinance(fsid, false);
+          finApplyTraderFields(fsess);
+          fsess.financeTrader = false; /* chat copilot'ı — trader değil */
+          engine.cache.set(fsid, fsess);
+        } else if (!financeState.agents.has(fsid)) {
+          /* finance SOHBET botu: ajan talimatı/ayarlar HER MESAJDA tazelenir —
+             asıl bot paralel ajanlardan geri kalmaz */
+          finApplyChatFields(fsess);
+        }
       }
     }
   } catch {}
@@ -9353,6 +9359,19 @@ function finApplyTraderFields(s, symbolsOverride, role) {
   engine.cache.set(String(s.id), s);
 }
 
+/* Finance SOHBET oturumu (chat copilot) alanlarını tazele — trader bayrağı
+   KORUNUR. Strateji/sembol/limit/rol-skill değişiklikleri "asıl bot"a da
+   ulaşsın; paralel ajanlar tur başında zaten tazeleniyor. */
+function finApplyChatFields(s) {
+  if (!s) return;
+  const wasTrader = !!s.financeTrader;
+  finApplyTraderFields(s);
+  s.financeTrader = wasTrader;
+  if (!wasTrader) s.financeAuto = false; /* sohbet copilot'ı — otonom trader değil */
+  engine.cache.set(String(s.id), s);
+  return s;
+}
+
 /* Yeni finance ajanı aç (ana trader YA DA sembol işçisi YA DA analiz ekibi rolü) */
 function finAgentCreate(symbols, isMain, role) {
   const f = finCfg();
@@ -9744,6 +9763,18 @@ ipcMain.handle('finance:settings', async (_e, patch) => {
     try {
       const ts = engine.cache.get(financeState.traderSid);
       if (ts) finApplyTraderFields(ts);
+    } catch {}
+  }
+  /* finance SOHBET oturumları: strateji/sembol/limit/rol-skill değişince ANINDA
+     tazelenir — "asıl bot" (Beast Finance sohbeti) de aynı ajan talimatını görür */
+  if (engine) {
+    try {
+      for (const [ssid, ss] of engine.cache) {
+        if (!ss || !ss.finance || ss.botId || ss.bgJob) continue;
+        if (financeState.agents.has(String(ssid))) continue; /* ajanlar tur başında tazelenir */
+        if (ssid === String(financeState.traderSid || '')) continue;
+        finApplyChatFields(ss);
+      }
     } catch {}
   }
   return { ok: true, cfg: f };

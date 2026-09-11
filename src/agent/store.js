@@ -15,9 +15,10 @@ const crypto = require('crypto');
 const { beastRoot } = require('./memory');
 const skills = require('./skills');
 
-const SITE_URL = 'https://beastagent-skills.web.app';
-const SITE_COMMUNITY_URL = SITE_URL + '/community.json';
-const SITE_BUILTINS_URL = SITE_URL + '/builtins.json';
+const SITE_URL = 'https://skills.algokod.com';
+const SITE_FALLBACK_URL = 'https://beastagent-skills.web.app';
+const SITE_COMMUNITY_URLS = [SITE_URL + '/community.json', SITE_FALLBACK_URL + '/community.json'];
+const SITE_BUILTINS_URLS = [SITE_URL + '/builtins.json', SITE_FALLBACK_URL + '/builtins.json'];
 const COMMUNITY_URL = 'https://raw.githubusercontent.com/algokodcom/beast-agent/main/store/skills.json';
 const MAX_FILES = 20;
 const MAX_FILE_BYTES = 200 * 1024;
@@ -111,10 +112,10 @@ async function fetchJson(url, timeoutMs = 6000) {
   }
 }
 
-/* Topluluk indeksi: önce SİTE (beastagent-skills.web.app), sonra GitHub raw */
+/* Topluluk indeksi: önce SİTE (skills.algokod.com), sonra web.app yedeği, sonra GitHub raw */
 async function fetchCommunity(timeoutMs = 6000) {
   if (memo.community && Date.now() - memo.communityAt < MEMO_MS) return memo.community;
-  for (const url of [SITE_COMMUNITY_URL, COMMUNITY_URL]) {
+  for (const url of [...SITE_COMMUNITY_URLS, COMMUNITY_URL]) {
     try {
       const j = await fetchJson(url, timeoutMs);
       if (j && Array.isArray(j.skills)) {
@@ -135,17 +136,19 @@ async function fetchCommunity(timeoutMs = 6000) {
 /* Yerleşik skill vitrini: sitedeki builtins.json (offline'da diske cache) */
 async function fetchBuiltins(timeoutMs = 6000) {
   if (memo.builtins && Date.now() - memo.builtinsAt < MEMO_MS) return memo.builtins;
-  try {
-    const j = await fetchJson(SITE_BUILTINS_URL, timeoutMs);
-    if (j && Array.isArray(j.skills)) {
-      try {
-        writeJson(builtinsCacheFile(), j);
-      } catch {}
-      memo.builtins = j.skills;
-      memo.builtinsAt = Date.now();
-      return j.skills;
-    }
-  } catch {}
+  for (const url of SITE_BUILTINS_URLS) {
+    try {
+      const j = await fetchJson(url, timeoutMs);
+      if (j && Array.isArray(j.skills)) {
+        try {
+          writeJson(builtinsCacheFile(), j);
+        } catch {}
+        memo.builtins = j.skills;
+        memo.builtinsAt = Date.now();
+        return j.skills;
+      }
+    } catch {}
+  }
   const cached = readJson(builtinsCacheFile(), { skills: [] });
   return Array.isArray(cached.skills) ? cached.skills : [];
 }

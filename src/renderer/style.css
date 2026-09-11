@@ -4875,6 +4875,20 @@ body.finance-mode #composerWrap { margin-right: var(--finW, 400px); }
 .fin-field input:focus, .fin-field select:focus, .fin-field textarea:focus { border-color: var(--accent); outline: none; }
 .fin-time-row { display: flex; gap: 6px; }
 .fin-time-row input { flex: 1; min-width: 0; }
+.fin-adv-toggle {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.6px;
+  padding: 2px 0 8px;
+  cursor: pointer;
+}
+.fin-adv-toggle:hover { color: var(--accent); }
 /* Ajan talimatı: çok satırlı not alanı (dikey büyütülebilir) */
 .fin-field textarea {
   resize: vertical;

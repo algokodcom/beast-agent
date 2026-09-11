@@ -194,6 +194,8 @@ const els = {
   finPlanTime: $('#finPlanTime'),
   finReviewTime: $('#finReviewTime'),
   finShadow: $('#finShadow'),
+  finAdvWrap: $('#finAdvWrap'),
+  finAdvToggle: $('#finAdvToggle'),
   finSymBtn: $('#finSymBtn'),
   finRoles: $('#finRoles'),
   finWatchClear: $('#finWatchClear'),
@@ -9958,6 +9960,24 @@ if (els.finShadow) {
       : 'Shadow mod kapalı — gerçek emirler aktif');
   });
 }
+/* GELİŞMİŞ SEÇENEKLER: disiplin + shadow bloğu varsayılan KAPALI; durum hatırlanır */
+const finAdvKey = 'beast.financeAdvanced';
+function finAdvPaint() {
+  const on = (() => { try { return localStorage.getItem(finAdvKey) === '1'; } catch { return false; } })();
+  if (els.finAdvWrap) els.finAdvWrap.hidden = !on;
+  if (els.finAdvToggle) {
+    els.finAdvToggle.textContent = (on ? '\u25BE' : '\u25B8') + ' Gelişmiş';
+    els.finAdvToggle.setAttribute('aria-expanded', on ? 'true' : 'false');
+  }
+}
+if (els.finAdvToggle) {
+  els.finAdvToggle.addEventListener('click', () => {
+    const on = (() => { try { return localStorage.getItem(finAdvKey) === '1'; } catch { return false; } })();
+    try { localStorage.setItem(finAdvKey, on ? '0' : '1'); } catch {}
+    finAdvPaint();
+  });
+}
+finAdvPaint();
 if (els.finDailyLossAction) {
   els.finDailyLossAction.addEventListener('change', () => {
     finSaveCfg({ dailyLossAction: els.finDailyLossAction.value });

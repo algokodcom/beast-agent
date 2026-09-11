@@ -190,6 +190,8 @@
               <span>Ajan talimatı <i class="fin-hint">— 1-2 cümle; trader + tüm paralel ajanlara iletilir</i></span>
               <textarea id="finStrategy" rows="2" maxlength="2000" placeholder="örn. Her türde scalp yap — M1/M5 hızlı gir-çık, günlük kâr hedefine ulaşınca dur" title="Buraya yazdığın talimat trade ajanına ve koşan tüm paralel ajanlara (ekip + sembol işçileri) sistem promptunda öncelikli strateji notu olarak gider; kaydetmek için alandan çık"></textarea>
             </div>
+            <button id="finAdvToggle" class="fin-adv-toggle" type="button" aria-expanded="false" title="Disiplin kuralları + shadow mod — gelişmiş seçenekler">&#x25B8; Gelişmiş</button>
+            <div id="finAdvWrap" hidden>
             <div class="fin-field">
               <span>Disiplin <i class="fin-hint">— kodla zorlanır; 0 = kural kapalı</i></span>
               <div class="fin-grid2">
@@ -205,6 +207,7 @@
               <label title="SHADOW MOD: emir gönderilmez — kararlar teziyle günlüğe yazılır, gerçek işlem açılmaz. Ajanı para riske atmadan canlı test etmek için.">
                 <input id="finShadow" type="checkbox" /> Shadow mod — emir açmadan karar kaydı (canlı test)
               </label>
+            </div>
             </div>
             <div class="fin-row fin-btn-row">
               <button id="finTraderBtn" class="fin-start">&#9654;&#xFE0E; Ajanı Başlat</button>

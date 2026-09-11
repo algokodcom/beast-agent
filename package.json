@@ -1,7 +1,7 @@
 {
     "name": "beast-agent",
     "productName": "Beast Agent",
-    "version": "2.35.1",
+    "version": "2.36.0",
     "description": "Ultra-fast local agent shell for Windows.",
     "author": "algokodcom (AlgoKod)",
     "license": "MIT",
@@ -40,6 +40,8 @@
         "dist": "electron-builder --win nsis portable",
         "test": "node --test \"tests/**/*.test.js\"",
         "release": "node scripts/release.js",
+        "skillsweb:sync": "node skillsweb/sync-builtins.js",
+        "skillsweb:deploy": "node skillsweb/sync-builtins.js && cd skillsweb && firebase deploy --only hosting:skills",
         "postinstall": "node scripts/fix-electron.js --soft",
         "prepublishOnly": "node scripts/swap-electron.js deps",
         "postpublish": "node scripts/swap-electron.js devdeps"

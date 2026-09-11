@@ -3,7 +3,8 @@
 /* SKILLS STORE: topluluk skill mağazası.
    - Yerel DB        : %APPDATA%\beast\store\skills.json   (yüklenen skill'ler, dosyalar gömülü)
    - İstatistik DB   : %APPDATA%\beast\store\stats.json    (installs/likes — makine başına)
-   - Topluluk indeksi: GitHub repo /store/skills.json      (raw fetch + offline cache)
+   - Veri kaynağı    : beastagent-skills.web.app (builtins.json + community.json)
+                       erişilemezse GitHub raw /store/skills.json, o da yoksa offline cache
    - Kurulum hedefi  : %APPDATA%\beast\skills\<id>\        (skills.scan() otomatik görür)
    Trending/Stars sıralaması renderer'da skorla yapılır; burada ham veri döner.
    Beast Kodu ASLA paylaşılmaz — yalnız sha256 türevi parmak izi (beastId) kullanılır. */
@@ -14,6 +15,9 @@ const crypto = require('crypto');
 const { beastRoot } = require('./memory');
 const skills = require('./skills');
 
+const SITE_URL = 'https://beastagent-skills.web.app';
+const SITE_COMMUNITY_URL = SITE_URL + '/community.json';
+const SITE_BUILTINS_URL = SITE_URL + '/builtins.json';
 const COMMUNITY_URL = 'https://raw.githubusercontent.com/algokodcom/beast-agent/main/store/skills.json';
 const MAX_FILES = 20;
 const MAX_FILE_BYTES = 200 * 1024;
@@ -32,6 +36,9 @@ function statsFile() {
 }
 function communityCacheFile() {
   return path.join(storeDir(), 'community.json');
+}
+function builtinsCacheFile() {
+  return path.join(storeDir(), 'builtins.json');
 }
 
 function readJson(p, fallback) {
@@ -83,32 +90,64 @@ function slugify(s) {
   );
 }
 
-/* ---------- topluluk indeksi ---------- */
+/* ---------- veri kaynağı (site → GitHub → cache) ---------- */
 
-async function fetchCommunity(timeoutMs = 6000) {
+const MEMO_MS = 5 * 60 * 1000;
+const memo = { community: null, communityAt: 0, builtins: null, builtinsAt: 0 };
+
+async function fetchJson(url, timeoutMs = 6000) {
+  const ctl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  const t = setTimeout(() => {
+    try {
+      ctl && ctl.abort();
+    } catch {}
+  }, timeoutMs);
   try {
-    const ctl = typeof AbortController !== 'undefined' ? new AbortController() : null;
-    const t = setTimeout(() => {
-      try {
-        ctl && ctl.abort();
-      } catch {}
-    }, timeoutMs);
-    const r = await fetch(COMMUNITY_URL, { signal: ctl ? ctl.signal : undefined });
-    clearTimeout(t);
+    const r = await fetch(url, { signal: ctl ? ctl.signal : undefined });
     if (!r.ok) throw new Error('HTTP ' + r.status);
-    const j = await r.json();
+    return await r.json();
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+/* Topluluk indeksi: önce SİTE (beastagent-skills.web.app), sonra GitHub raw */
+async function fetchCommunity(timeoutMs = 6000) {
+  if (memo.community && Date.now() - memo.communityAt < MEMO_MS) return memo.community;
+  for (const url of [SITE_COMMUNITY_URL, COMMUNITY_URL]) {
+    try {
+      const j = await fetchJson(url, timeoutMs);
+      if (j && Array.isArray(j.skills)) {
+        try {
+          writeJson(communityCacheFile(), j);
+        } catch {}
+        memo.community = j.skills;
+        memo.communityAt = Date.now();
+        return j.skills;
+      }
+    } catch {}
+  }
+  /* offline: son iyi kopyadan devam */
+  const cached = readJson(communityCacheFile(), { skills: [] });
+  return Array.isArray(cached.skills) ? cached.skills : [];
+}
+
+/* Yerleşik skill vitrini: sitedeki builtins.json (offline'da diske cache) */
+async function fetchBuiltins(timeoutMs = 6000) {
+  if (memo.builtins && Date.now() - memo.builtinsAt < MEMO_MS) return memo.builtins;
+  try {
+    const j = await fetchJson(SITE_BUILTINS_URL, timeoutMs);
     if (j && Array.isArray(j.skills)) {
       try {
-        writeJson(communityCacheFile(), j);
+        writeJson(builtinsCacheFile(), j);
       } catch {}
+      memo.builtins = j.skills;
+      memo.builtinsAt = Date.now();
       return j.skills;
     }
-    return [];
-  } catch {
-    /* offline: son iyi kopyadan devam */
-    const cached = readJson(communityCacheFile(), { skills: [] });
-    return Array.isArray(cached.skills) ? cached.skills : [];
-  }
+  } catch {}
+  const cached = readJson(builtinsCacheFile(), { skills: [] });
+  return Array.isArray(cached.skills) ? cached.skills : [];
 }
 
 function mergeStats(entry, stats) {
@@ -122,18 +161,24 @@ function mergeStats(entry, stats) {
   };
 }
 
-/* Birleşik liste: topluluk + yerel (aynı id'de yerel kazanır) */
+/* Birleşik liste: site (yerleşikler + topluluk) + yerel; aynı id'de yerel kazanır.
+   Yerleşikler `builtin:true` taşır — kart "Kurulu" gösterir, Trending/Stars'ta görünür. */
 async function list(beastCode) {
-  const [community] = await Promise.all([fetchCommunity()]);
+  const [community, builtins] = await Promise.all([fetchCommunity(), fetchBuiltins()]);
   const db = loadLocal();
   const stats = loadStats();
   const byId = new Map();
   for (const e of community) {
     if (e && e.id && e.files && e.files['SKILL.md']) byId.set(e.id, e);
   }
+  for (const b of builtins) {
+    if (!b || !b.id || !b.files || !b.files['SKILL.md']) continue;
+    byId.set(b.id, { ...b, builtin: true });
+  }
   for (const e of db.skills) if (e && e.id) byId.set(e.id, e);
   const entries = [...byId.values()].map((e) => mergeStats(e, stats));
   const installed = new Set(skills.scan().map((s) => path.basename(path.dirname(s.path))));
+  for (const e of entries) if (e.builtin) installed.add(e.id);
   return {
     ok: true,
     beastId: beastFingerprint(beastCode),

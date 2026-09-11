@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="description" content="Beast Agent resmî Skills Store — yerleşik yetenekler ve topluluk skill'leri. Ara, incele, Beast Agent içindeki Skills Store'dan tek tıkla kur." />
+<meta name="theme-color" content="#0d0d0f" />
+<title>BEAST Skills — Beast Agent Yetenek Mağazası</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%23e8e8ea'%3E%3Ccircle cx='7' cy='9' r='2.2'/%3E%3Ccircle cx='12' cy='7' r='2.2'/%3E%3Ccircle cx='17' cy='9' r='2.2'/%3E%3Cpath d='M12 12c-3.2 0-5.5 2.4-5.5 4.6 0 1.6 1.3 2.4 2.9 2.4 1 0 1.8-.4 2.6-.4s1.6.4 2.6.4c1.6 0 2.9-.8 2.9-2.4C17.5 14.4 15.2 12 12 12Z'/%3E%3C/svg%3E" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' https://raw.githubusercontent.com; font-src 'self' data:; base-uri 'none'; form-action 'none'" />
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+
+<!-- SVG ikon sprite — tüm arayüz ikonları buradan gelir -->
+<svg class="sprite" aria-hidden="true" focusable="false">
+  <symbol id="i-paw" viewBox="0 0 24 24" fill="currentColor" stroke="none"><circle cx="7" cy="9" r="2.2"/><circle cx="12" cy="7" r="2.2"/><circle cx="17" cy="9" r="2.2"/><path d="M12 12c-3.2 0-5.5 2.4-5.5 4.6 0 1.6 1.3 2.4 2.9 2.4 1 0 1.8-.4 2.6-.4s1.6.4 2.6.4c1.6 0 2.9-.8 2.9-2.4C17.5 14.4 15.2 12 12 12Z"/></symbol>
+  <symbol id="i-github" viewBox="0 0 16 16" fill="currentColor" stroke="none"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></symbol>
+  <symbol id="i-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></symbol>
+  <symbol id="i-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"/><path d="m16.2 16.2 4.3 4.3"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></symbol>
+  <symbol id="i-star" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M12 3.6l2.5 5.2 5.7.8-4.1 4 1 5.7-5.1-2.7-5.1 2.7 1-5.7-4.1-4 5.7-.8z"/></symbol>
+  <symbol id="i-star-fill" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M12 3.6l2.5 5.2 5.7.8-4.1 4 1 5.7-5.1-2.7-5.1 2.7 1-5.7-4.1-4 5.7-.8z"/></symbol>
+  <symbol id="i-arrow-right" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12h15M13 6l6 6-6 6"/></symbol>
+  <symbol id="i-arrow-up" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></symbol>
+  <symbol id="i-external" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4h6v6M20 4l-9 9"/><path d="M18 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h5"/></symbol>
+  <symbol id="i-download" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v11M7.5 10.5 12 15l4.5-4.5"/><path d="M4 18v1.5A1.5 1.5 0 0 0 5.5 21h13A1.5 1.5 0 0 0 20 19.5V18"/></symbol>
+  <symbol id="i-heart" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20s-7-4.4-7-9.4A4.1 4.1 0 0 1 12 7.6a4.1 4.1 0 0 1 7 3c0 5-7 9.4-7 9.4z"/></symbol>
+  <symbol id="i-user" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="8" r="3.6"/><path d="M5 20c.6-3.4 3.5-5.4 7-5.4s6.4 2 7 5.4"/></symbol>
+  <symbol id="i-users" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="9" cy="8.5" r="3.2"/><path d="M2.8 19.5c.5-3 3-4.8 6.2-4.8s5.7 1.8 6.2 4.8"/><path d="M16 5.6a3.2 3.2 0 0 1 0 5.8M18.5 14.9c1.7.6 3 1.9 3.4 4.1"/></symbol>
+  <symbol id="i-tag" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m3.5 12.5 8-8H20V13l-7.5 7.5a1.8 1.8 0 0 1-2.5 0l-6.5-6.5a1.4 1.4 0 0 1 0-1.5z"/><circle cx="15.5" cy="7.5" r="1.3" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="i-file" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M13 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V9z"/><path d="M13 3v6h6"/></symbol>
+  <symbol id="i-file-text" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M13 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V9z"/><path d="M13 3v6h6M9 13h6M9 17h4"/></symbol>
+  <symbol id="i-box" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 7.5 12 3l8.5 4.5v9L12 21l-8.5-4.5z"/><path d="M3.5 7.5 12 12l8.5-4.5M12 12v9"/></symbol>
+  <symbol id="i-grid" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.5"/></symbol>
+  <symbol id="i-compass" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><path d="m15.5 8.5-2 5-5 2 2-5z"/></symbol>
+  <symbol id="i-mail" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5.5" width="18" height="13" rx="2"/><path d="m3.5 7 8.5 6 8.5-6"/></symbol>
+  <symbol id="i-trending" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="m3.5 17 5.5-5.5 3.5 3.5 7-7"/><path d="M15 8h5v5"/></symbol>
+  <symbol id="i-bar" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M5 20V11M12 20V5M19 20v-6"/></symbol>
+  <symbol id="i-activity" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l2.5-6 4 12L16 12h5"/></symbol>
+  <symbol id="i-wrench" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M15.5 3.5a5.5 5.5 0 0 0-4.6 8.5L4 18.9a2 2 0 0 0 2.8 2.8l6.9-6.9a5.5 5.5 0 0 0 6.9-7.3l-3.2 3.2-2.8-.7-.7-2.8z"/></symbol>
+  <symbol id="i-shield" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7.5 3v5.5c0 4.6-3.1 7.9-7.5 9.5-4.4-1.6-7.5-4.9-7.5-9.5V6z"/><path d="m9 12 2 2 4-4"/></symbol>
+  <symbol id="i-news" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h13a2 2 0 0 1 2 2v11a2 2 0 0 0 2 2H6a2 2 0 0 1-2-2z"/><path d="M7 9h7M7 13h7M7 17h4"/></symbol>
+  <symbol id="i-bulb" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 21h4"/><path d="M12 3a6 6 0 0 1 3.5 10.9c-.6.5-1 1.3-1 2.1h-5c0-.8-.4-1.6-1-2.1A6 6 0 0 1 12 3z"/></symbol>
+  <symbol id="i-clipboard" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="4.5" width="14" height="16" rx="2"/><path d="M9 4.5V3.8A1.8 1.8 0 0 1 10.8 2h2.4A1.8 1.8 0 0 1 15 3.8v.7M9 10h6M9 14h6M9 18h3"/></symbol>
+  <symbol id="i-play" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7 4.5v15l12-7.5z"/></symbol>
+  <symbol id="i-flask" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 3h5M10.5 3v6.2L5 18.5A2 2 0 0 0 6.8 21h10.4a2 2 0 0 0 1.8-2.5L13.5 9.2V3"/><path d="M7.5 15h9"/></symbol>
+  <symbol id="i-cpu" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="6.5" y="6.5" width="11" height="11" rx="2"/><rect x="10" y="10" width="4" height="4" rx="1"/><path d="M9 3v2.5M15 3v2.5M9 18.5V21M15 18.5V21M3 9h2.5M3 15h2.5M18.5 9H21M18.5 15H21"/></symbol>
+  <symbol id="i-zap" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 4.5 13.5H11L10 22l8.5-11.5H12z"/></symbol>
+  <symbol id="i-bug" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="7" width="8" height="11" rx="4"/><path d="M9.5 7a2.5 2.5 0 0 1 5 0M3.5 11H8M16 11h4.5M4.5 17H8M16 17h3.5M6 6.5 8 9M18 6.5 16 9"/></symbol>
+  <symbol id="i-check-circle" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><path d="m8.5 12.2 2.4 2.4 4.6-4.8"/></symbol>
+  <symbol id="i-book" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4.5A2.5 2.5 0 0 1 6.5 2H20v16H6.5A2.5 2.5 0 0 0 4 20.5z"/><path d="M4 20.5A2.5 2.5 0 0 1 6.5 18H20v4H6.5A2.5 2.5 0 0 1 4 19.5z"/></symbol>
+  <symbol id="i-upload" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V4M7.5 8.5 12 4l4.5 4.5"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></symbol>
+  <symbol id="i-link" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M10 14a4.5 4.5 0 0 0 6.4 0l2.6-2.6a4.5 4.5 0 0 0-6.4-6.4L11.5 6"/><path d="M14 10a4.5 4.5 0 0 0-6.4 0L5 12.6a4.5 4.5 0 0 0 6.4 6.4L12.5 18"/></symbol>
+</svg>
+
+<header class="nav">
+  <div class="wrap nav-inner">
+    <a class="brand" href="#top">
+      <svg class="ic ic-18 brand-paw" aria-hidden="true"><use href="#i-paw"/></svg>
+      <span class="b1">BEAST</span><span class="b2">Skills</span>
+    </a>
+    <nav class="links">
+      <a href="#catalog" data-i18n="nav_store">Mağaza</a>
+      <a href="#how" data-i18n="nav_how">Nasıl kurulur</a>
+      <a href="https://github.com/algokodcom/beast-agent" target="_blank" rel="noopener">GitHub</a>
+      <a href="https://www.npmjs.com/package/beast-agent" target="_blank" rel="noopener">npm</a>
+    </nav>
+    <div class="nav-actions">
+      <a class="chip-btn icon-btn" href="https://github.com/algokodcom/beast-agent" target="_blank" rel="noopener" aria-label="GitHub" title="GitHub">
+        <svg class="ic" aria-hidden="true"><use href="#i-github"/></svg>
+      </a>
+      <button id="langBtn" class="chip-btn" title="Türkçe / English">TR / EN</button>
+      <button id="themeBtn" class="chip-btn icon-btn" aria-label="Tema değiştir" title="Tema">
+        <svg class="ic icon-moon" aria-hidden="true"><use href="#i-moon"/></svg>
+        <svg class="ic icon-sun" aria-hidden="true"><use href="#i-sun"/></svg>
+      </button>
+    </div>
+  </div>
+</header>
+
+<main id="top">
+
+  <!-- HERO -->
+  <section class="hero wrap">
+    <p class="kicker">BEAST AGENT &nbsp;·&nbsp; <span data-i18n="kicker">Resmî Yetenek Mağazası</span></p>
+    <h1><span class="b1">BEAST</span> <span class="b2">Skills</span></h1>
+    <p class="lead" data-i18n="hero_sub">Beast Agent'ın resmî yetenek mağazası. Yerleşik skill'ler ve topluluk paylaşımları — ara, içeriğini incele, Beast Agent içindeki Skills Store'dan tek tıkla kur.</p>
+    <div class="hero-cta">
+      <a class="btn solid" href="#catalog" data-i18n="browse">Mağazaya göz at</a>
+      <a class="btn ghost" href="#how" data-i18n="nav_how">Nasıl kurulur</a>
+    </div>
+    <div class="codeblock npm">
+      <pre><span class="cmt" data-i18n="cmd_comment"># Beast Agent kurulumu</span>
+npm install -g beast-agent</pre>
+      <button id="copyCmd" class="code-copy" data-i18n-title="copy" title="Kopyala">
+        <svg class="ic" aria-hidden="true"><use href="#i-copy"/></svg><span data-i18n="copy">Kopyala</span>
+      </button>
+    </div>
+  </section>
+
+  <!-- İSTATİSTİK -->
+  <section class="wrap stats-section">
+    <div class="stats">
+      <div class="stat">
+        <svg class="ic ic-20" aria-hidden="true"><use href="#i-grid"/></svg>
+        <b id="statSkills">—</b>
+        <span data-i18n="stat_skills">yetenek</span>
+      </div>
+      <div class="stat">
+        <svg class="ic ic-20" aria-hidden="true"><use href="#i-box"/></svg>
+        <b id="statBuiltin">—</b>
+        <span data-i18n="stat_builtin">yerleşik</span>
+      </div>
+      <div class="stat">
+        <svg class="ic ic-20" aria-hidden="true"><use href="#i-download"/></svg>
+        <b id="statInstalls">—</b>
+        <span data-i18n="stat_installs">kurulum</span>
+      </div>
+      <div class="stat">
+        <svg class="ic ic-20" aria-hidden="true"><use href="#i-users"/></svg>
+        <b id="statAuthors">—</b>
+        <span data-i18n="stat_authors">yayıncı</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- MAĞAZA -->
+  <section id="catalog" class="wrap section alt">
+    <h2 data-i18n="catalog_title">Yetenek Mağazası</h2>
+    <p class="sub" style="text-align:center" data-i18n="catalog_sub">Her skill kendi SKILL.md rehberiyle gelir — ajan gerektiğinde okuyup uygular.</p>
+
+    <div class="toolbar">
+      <label class="search">
+        <svg class="ic" aria-hidden="true"><use href="#i-search"/></svg>
+        <input id="q" type="search" autocomplete="off" data-i18n-placeholder="search_ph" placeholder="Skill ara… (örn: pdf, finans, test)" />
+        <kbd>Ctrl K</kbd>
+      </label>
+      <div class="chips" id="sourceChips">
+        <button class="chip-btn active" data-src="all" data-i18n="src_all">Tümü</button>
+        <button class="chip-btn" data-src="community" data-i18n="src_community">Topluluk</button>
+        <button class="chip-btn" data-src="builtin" data-i18n="src_builtin">Yerleşik</button>
+        <button class="chip-btn" data-src="saved"><svg class="ic" aria-hidden="true"><use href="#i-star"/></svg><span data-i18n="src_saved">Kaydedilenler</span></button>
+      </div>
+      <label class="select">
+        <span data-i18n="sort">Sırala</span>
+        <select id="sort">
+          <option value="featured" data-i18n="sort_featured">Öne çıkanlar</option>
+          <option value="trending" data-i18n="sort_trending">Trending</option>
+          <option value="stars" data-i18n="sort_stars">Stars</option>
+          <option value="new" data-i18n="sort_new">Yeni</option>
+          <option value="name" data-i18n="sort_name">A → Z</option>
+        </select>
+      </label>
+    </div>
+
+    <div class="tagbar" id="tagbar"></div>
+    <p class="result-line" id="resultLine"></p>
+    <div class="grid" id="grid"></div>
+    <div class="empty" id="empty" hidden>
+      <svg class="ic ic-34" aria-hidden="true"><use href="#i-grid"/></svg>
+      <h3 id="emptyTitle" data-i18n="empty_title">Eşleşen skill yok</h3>
+      <p id="emptySub" data-i18n="empty_sub">Aramayı temizleyip tekrar dene ya da tüm listeye dön.</p>
+      <button class="btn ghost" id="emptyReset" data-i18n="empty_reset">Filtreleri temizle</button>
+    </div>
+  </section>
+
+  <!-- NASIL KURULUR -->
+  <section id="how" class="wrap section">
+    <h2 data-i18n="how_title">Beast Agent'a nasıl kurulur?</h2>
+    <p class="sub" style="text-align:center" data-i18n="how_sub">Bu mağaza, uygulamanın içindeki Skills Store ile aynı indeksi kullanır — burada bulduğun skill'i saniyeler içinde kur.</p>
+    <div class="steps">
+      <div class="step">
+        <span class="n">1</span>
+        <div>
+          <h3 data-i18n="how_1_t">Beast Agent'ı kur</h3>
+          <p data-i18n="how_1_b">Terminalde tek komut: npm i -g beast-agent. Windows için Node.js yeterli — ek kurulum yok.</p>
+        </div>
+      </div>
+      <div class="step">
+        <span class="n">2</span>
+        <div>
+          <h3 data-i18n="how_2_t">Skills Store'u aç</h3>
+          <p data-i18n="how_2_b">Uygulamada üst bardaki mağaza düğmesine bas — Trending / Stars / Upload sekmeleri seni bekliyor.</p>
+        </div>
+      </div>
+      <div class="step">
+        <span class="n">3</span>
+        <div>
+          <h3 data-i18n="how_3_t">Bul ve “İste Kur”</h3>
+          <p data-i18n="how_3_b">Skill'i ara, İste Kur'a bas. Ajan o yeteneği anında kullanmaya başlar — restart gerekmez.</p>
+        </div>
+      </div>
+    </div>
+    <div class="publish">
+      <svg class="ic ic-24" aria-hidden="true"><use href="#i-upload"/></svg>
+      <div class="publish-text">
+        <b data-i18n="publish_t">Kendi skill'ini yayınla</b>
+        <p data-i18n="publish_b">Beast Agent → Skills Store → Upload sekmesinden klasörünü (SKILL.md zorunlu) yükle; JSON'unu GitHub issue/PR ile store/skills.json dosyasına ekle. Topluluk burada ve uygulama içinde görür.</p>
+      </div>
+      <a class="btn ghost" href="https://github.com/algokodcom/beast-agent/issues" target="_blank" rel="noopener">
+        <svg class="ic" aria-hidden="true"><use href="#i-external"/></svg><span data-i18n="publish_cta">GitHub'da paylaş</span>
+      </a>
+    </div>
+  </section>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap foot-inner">
+    <span>© 2026 AlgoKod</span>
+    <a class="chip-btn icon-btn" href="https://github.com/algokodcom/beast-agent" target="_blank" rel="noopener" aria-label="GitHub" title="GitHub">
+      <svg class="ic" aria-hidden="true"><use href="#i-github"/></svg>
+    </a>
+    <span class="foot-brand"><svg class="ic" aria-hidden="true"><use href="#i-paw"/></svg> BEAST Agent · Skills</span>
+    <button id="topBtn" class="chip-btn icon-btn" aria-label="Başa dön" title="Başa dön">
+      <svg class="ic" aria-hidden="true"><use href="#i-arrow-up"/></svg>
+    </button>
+  </div>
+</footer>
+
+<!-- DETAY MODALI -->
+<div class="modal" id="modal" hidden>
+  <div class="modal-back" data-close></div>
+  <article class="modal-card" role="dialog" aria-modal="true" aria-labelledby="mTitle">
+    <button class="chip-btn icon-btn modal-x" data-close aria-label="Kapat" title="Kapat">
+      <svg class="ic" aria-hidden="true"><use href="#i-x"/></svg>
+    </button>
+    <div class="modal-head" id="mHead"></div>
+    <div class="modal-body">
+      <aside class="modal-side" id="mSide"></aside>
+      <div class="modal-main">
+        <div class="md" id="mBody"></div>
+      </div>
+    </div>
+  </article>
+</div>
+
+<div class="toast" id="toast" hidden></div>
+<script src="app.js"></script>
+</body>
+</html>

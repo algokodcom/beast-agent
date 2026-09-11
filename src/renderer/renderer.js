@@ -7676,33 +7676,73 @@ function closeStore() {
   $('#storeOverlay').hidden = true;
 }
 
+/* Mağaza kart ikonları — kapağı olmayan skill'lere otomatik SVG ikon atanır
+   (site builtins.json / community kayıtlarındaki `icon` alanı kullanılır). */
+const STORE_ICONS = {
+  grid: '<rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.5"/>',
+  'file-text': '<path d="M13 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V9z"/><path d="M13 3v6h6M9 13h6M9 17h4"/>',
+  wrench: '<path d="M15.5 3.5a5.5 5.5 0 0 0-4.6 8.5L4 18.9a2 2 0 0 0 2.8 2.8l6.9-6.9a5.5 5.5 0 0 0 6.9-7.3l-3.2 3.2-2.8-.7-.7-2.8z"/>',
+  zap: '<path d="M13 2 4.5 13.5H11L10 22l8.5-11.5H12z"/>',
+  bar: '<path d="M5 20V11M12 20V5M19 20v-6"/>',
+  shield: '<path d="M12 3l7.5 3v5.5c0 4.6-3.1 7.9-7.5 9.5-4.4-1.6-7.5-4.9-7.5-9.5V6z"/><path d="m9 12 2 2 4-4"/>',
+  book: '<path d="M4 4.5A2.5 2.5 0 0 1 6.5 2H20v16H6.5A2.5 2.5 0 0 0 4 20.5z"/><path d="M4 20.5A2.5 2.5 0 0 1 6.5 18H20v4H6.5A2.5 2.5 0 0 1 4 19.5z"/>',
+  cpu: '<rect x="6.5" y="6.5" width="11" height="11" rx="2"/><rect x="10" y="10" width="4" height="4" rx="1"/><path d="M9 3v2.5M15 3v2.5M9 18.5V21M15 18.5V21M3 9h2.5M3 15h2.5M18.5 9H21M18.5 15H21"/>',
+  flask: '<path d="M9.5 3h5M10.5 3v6.2L5 18.5A2 2 0 0 0 6.8 21h10.4a2 2 0 0 0 1.8-2.5L13.5 9.2V3"/><path d="M7.5 15h9"/>',
+  news: '<path d="M4 5h13a2 2 0 0 1 2 2v11a2 2 0 0 0 2 2H6a2 2 0 0 1-2-2z"/><path d="M7 9h7M7 13h7M7 17h4"/>',
+  compass: '<circle cx="12" cy="12" r="8.5"/><path d="m15.5 8.5-2 5-5 2 2-5z"/>',
+  mail: '<rect x="3" y="5.5" width="18" height="13" rx="2"/><path d="m3.5 7 8.5 6 8.5-6"/>',
+  activity: '<path d="M3 12h4l2.5-6 4 12L16 12h5"/>',
+  bulb: '<path d="M9 18h6M10 21h4"/><path d="M12 3a6 6 0 0 1 3.5 10.9c-.6.5-1 1.3-1 2.1h-5c0-.8-.4-1.6-1-2.1A6 6 0 0 1 12 3z"/>',
+  clipboard: '<rect x="5" y="4.5" width="14" height="16" rx="2"/><path d="M9 4.5V3.8A1.8 1.8 0 0 1 10.8 2h2.4A1.8 1.8 0 0 1 15 3.8v.7M9 10h6M9 14h6M9 18h3"/>',
+  play: '<path d="M7 4.5v15l12-7.5z"/>',
+  bug: '<rect x="8" y="7" width="8" height="11" rx="4"/><path d="M9.5 7a2.5 2.5 0 0 1 5 0M3.5 11H8M16 11h4.5M4.5 17H8M16 17h3.5M6 6.5 8 9M18 6.5 16 9"/>',
+  'check-circle': '<circle cx="12" cy="12" r="8.5"/><path d="m8.5 12.2 2.4 2.4 4.6-4.8"/>',
+  search: '<circle cx="11" cy="11" r="6.5"/><path d="m16.2 16.2 4.3 4.3"/>',
+  trending: '<path d="m3.5 17 5.5-5.5 3.5 3.5 7-7"/><path d="M15 8h5v5"/>',
+  download: '<path d="M12 3v11M7.5 10.5 12 15l4.5-4.5"/><path d="M4 18v1.5A1.5 1.5 0 0 0 5.5 21h13A1.5 1.5 0 0 0 20 19.5V18"/>',
+  heart: '<path d="M12 20s-7-4.4-7-9.4A4.1 4.1 0 0 1 12 7.6a4.1 4.1 0 0 1 7 3c0 5-7 9.4-7 9.4z"/>',
+  box: '<path d="M3.5 7.5 12 3l8.5 4.5v9L12 21l-8.5-4.5z"/><path d="M3.5 7.5 12 12l8.5-4.5M12 12v9"/>',
+  user: '<circle cx="12" cy="8" r="3.6"/><path d="M5 20c.6-3.4 3.5-5.4 7-5.4s6.4 2 7 5.4"/>',
+  paw: '<circle cx="7" cy="9" r="2.2"/><circle cx="12" cy="7" r="2.2"/><circle cx="17" cy="9" r="2.2"/><path d="M12 12c-3.2 0-5.5 2.4-5.5 4.6 0 1.6 1.3 2.4 2.9 2.4 1 0 1.8-.4 2.6-.4s1.6.4 2.6.4c1.6 0 2.9-.8 2.9-2.4C17.5 14.4 15.2 12 12 12Z"/>',
+};
+
+function storeIconSvg(name, size) {
+  const s = Number(size) || 20;
+  const body = STORE_ICONS[name] || STORE_ICONS.grid;
+  const filled = name === 'paw';
+  return `<svg viewBox="0 0 24 24" width="${s}" height="${s}" fill="${filled ? 'currentColor' : 'none'}" stroke="${filled ? 'none' : 'currentColor'}" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${body}</svg>`;
+}
+
 function storeCard(e, opts = {}) {
-  const installed = storeState.installed.has(e.id);
-  const hasUpdate = installed && e.updatedAt && e.installedAt && String(e.updatedAt) > String(e.installedAt);
+  const builtin = !!e.builtin;
+  const installed = builtin || storeState.installed.has(e.id);
+  const hasUpdate = !builtin && installed && e.updatedAt && e.installedAt && String(e.updatedAt) > String(e.installedAt);
   const img = e.image
     ? `<span class="store-avatar"><img src="${e.image}" alt="" style="width:100%;height:100%;object-fit:cover;border-radius:8px"/></span>`
-    : `<span class="store-avatar">${e.author && e.author.avatar ? escapeHtml(e.author.avatar) : '🧩'}</span>`;
+    : `<span class="store-avatar store-avatar-ic">${storeIconSvg(e.icon, 20)}</span>`;
   const author = e.author || {};
-  const btnLabel = !installed ? _t('store_install') : hasUpdate ? _t('store_update') : _t('store_installed');
+  const btnLabel = builtin ? _t('store_installed') : !installed ? _t('store_install') : hasUpdate ? _t('store_update') : _t('store_installed');
   const btnDone = installed && !hasUpdate;
   return `
     <div class="store-card" data-id="${escapeHtml(e.id)}">
       <div class="store-card-top">
         ${img}
         <div style="min-width:0;flex:1">
-          <div class="store-name" title="${escapeHtml(e.name)}">${escapeHtml(e.name)} <span class="store-ver">v${escapeHtml(e.version || '1.0.0')}</span></div>
+          <div class="store-name" title="${escapeHtml(e.name)}">${escapeHtml(e.name)} <span class="store-ver">v${escapeHtml(e.version || '1.0.0')}</span>${builtin ? ` <span class="store-builtin">${_t('store_builtin')}</span>` : ''}</div>
           <div class="store-author">
-            <span class="sa-avatar">${author.avatar ? escapeHtml(author.avatar) : '👤'}</span>
-            <span class="sa-name">${escapeHtml(author.username || '—')}</span>
-            ${author.beastId ? `<span class="sa-beast">${escapeHtml(author.beastId)}</span>` : ''}
+            <span class="sa-avatar">${builtin ? storeIconSvg('paw', 13) : (author.avatar ? escapeHtml(author.avatar) : storeIconSvg('user', 13))}</span>
+            <span class="sa-name">${escapeHtml(builtin ? 'beast' : (author.username || '—'))}</span>
+            ${!builtin && author.beastId ? `<span class="sa-beast">${escapeHtml(author.beastId)}</span>` : ''}
           </div>
         </div>
       </div>
       <div class="store-desc">${escapeHtml(e.description || '')}</div>
       ${(e.tags || []).length ? `<div class="store-tags">${e.tags.map((t) => `<span class="store-tag">${escapeHtml(t)}</span>`).join('')}</div>` : ''}
       <div class="store-card-foot">
-        <span class="store-stats"><span>⬇ ${e.installs || 0} ${_t('store_installs')}</span><span>♥ ${e.likes || 0} ${_t('store_likes')}</span></span>
-        <button class="store-like ${e.liked ? 'liked' : ''}" data-like="${escapeHtml(e.id)}">♥</button>
+        ${builtin
+          ? `<span class="store-stats"><span>${storeIconSvg('box', 13)} ${_t('store_builtin_note')}</span></span>`
+          : `<span class="store-stats"><span>${storeIconSvg('download', 13)} ${e.installs || 0} ${_t('store_installs')}</span><span>${storeIconSvg('heart', 13)} ${e.likes || 0} ${_t('store_likes')}</span></span>
+        <button class="store-like ${e.liked ? 'liked' : ''}" data-like="${escapeHtml(e.id)}">${storeIconSvg('heart', 14)}</button>`}
         <button class="store-install ${btnDone ? 'done' : ''}" data-install="${escapeHtml(e.id)}">${btnLabel}</button>
       </div>
     </div>`;
@@ -7711,6 +7751,7 @@ function storeCard(e, opts = {}) {
 function bindStoreCardActions(pane) {
   pane.querySelectorAll('[data-install]').forEach((btn) =>
     btn.addEventListener('click', async () => {
+      if (btn.classList.contains('done')) return; /* kurulu/yerleşik — tıklama yok */
       const id = btn.dataset.install;
       btn.disabled = true;
       const r = await beast.storeInstall(id).catch(() => null);
@@ -7739,7 +7780,7 @@ function bindStoreCardActions(pane) {
 function renderStoreList(mode) {
   const pane = $('#storePane');
   const list = storeState.entries
-    .filter((e) => (mode === 'stars' ? storeAgeDays(e.createdAt) >= 14 && storeStarsScore(e) > 0 : true))
+    .filter((e) => (mode === 'stars' ? (e.builtin || (storeAgeDays(e.createdAt) >= 14 && storeStarsScore(e) > 0)) : true))
     .sort((a, b) => (mode === 'stars' ? storeStarsScore(b) - storeStarsScore(a) : storeTrendingScore(b) - storeTrendingScore(a)))
     .slice(0, 30);
   pane.innerHTML =
@@ -7957,8 +7998,7 @@ function renderStoreUpload() {
 }
 
 function renderStorePane() {
-  if (storeState.tab === 'upload') renderStoreUpload();
-  else renderStoreList(storeState.tab);
+  renderStoreList(storeState.tab);
   const bid = $('#storeBeastId');
   if (bid) bid.textContent = storeState.beastId || '';
 }

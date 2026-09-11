@@ -1096,8 +1096,8 @@ function waSlashHelp() {
     '• */beastcode* [görev] – ⚡ UZAKTAN KODLAMA: masaüstünde Beast Code paneli açılır, WhatsApp\u2019tan uygulama yazdır (örn: /beastcode hava durumu uygulaması yaz)',
     '• */beastagent* – kodlama modunu kapat, masaüstünde chat ekranına dön',
     '• */plan* · */build* · */auto* – BeastCode modunda çalışma modu (planla · uygula · otomatik)',
-    '• */stop* – koşan işleri durdur (ajanlar+turlar; cron/izleyici/olay sürer)',
-    '• */start* – durdurulan servisleri devam ettir',
+    '• */stop* – koşan her şeyi ANINDA durdur + kilitle (kilit yalnız */start* ile açılır; yeni mesaj durdurulan işi devam ettirmez)',
+    '• */start* – kilidi aç; yeni istekler normal işlenir',
     '• */restart* – uygulamayı yeniden başlat',
     '• */change* – modelleri listele (*/change 5* ile 5.modele geç)',
     '• */notes* – bu oturumun notlarını göster',
@@ -1258,6 +1258,9 @@ let servicesPaused = false;
 function stopEverything() {
   let n = 0;
   try { n = engine.stopAll(); } catch {}
+  /* BEAST FINANCE: trader + ekip + sembol işçileri de GERÇEKTEN durur
+     (timer'ları kapanır, panel durumu kapanır; panelden ▶ ile yeniden başlar) */
+  try { Promise.resolve(finStopAllFinanceAgents('/stop: kullanıcı tüm ajanları durdurdu')).catch(() => {}); } catch {}
   /* bekleyen masaüstü/WA birleştirme kuyrukları temizlenir */
   try { for (const [, q] of desktopQueue) clearTimeout(q.timer); } catch {}
   desktopQueue.clear();
@@ -1268,9 +1271,10 @@ function stopEverything() {
   return n;
 }
 
+/* /stop kilidini aç (YALNIZ /start ve açık "başlat" eylemleri çağırır;
+   normal mesajlar kilidi AÇMAZ — durdurulan iş kendiliğinden devam etmez) */
 function resumeServices() {
   if (!servicesPaused) {
-    /* /stop kapısı burada da kalkar — /start VE kullanıcının kendi mesajı canlandırır */
     try { engine.clearStop(); } catch {}
     return;
   }
@@ -1535,19 +1539,18 @@ async function tryWaSlash(jid, rawText, senderNum, payload0) {
       const r = arg ? applyThinkLevel(arg) : null;
       out = r && r.error ? r.error : r ? r.text : thinkStatusText();
     } else if (cmd === 'stop') {
-      /* /stop: koşan paralel ajanlar + turlar + kuyruklar; cron/izleyici/olay SÜRER */
+      /* /stop: koşan her şey + KİLİT; kilit yalnız /start ile açılır */
       const stopped = stopEverything();
       out =
         `*Durdu* — ${stopped} koşan iş kesildi.\n` +
         `Sürüyen sorgular, akıştaki cevaplar ve ajan faaliyetleri ANINDA kesildi; ajan yeni sorgu da açamaz.\n` +
-        `Devam için bir şeyler yaz ya da /start`;
+        `Bu kilit yalnız /start ile açılır — yeni mesaj yazmak durdurulan işi devam ettirmez.`;
     } else if (cmd === 'start') {
-      if (servicesPaused) {
-        resumeServices();
-        out = '*Devam* — tüm servisler ve zamanlayıcılar yeniden başladı.';
-      } else {
-        out = 'Zaten çalışıyor — durdurulmuş bir şey yok.';
-      }
+      const wasStopped = !!(engine && engine._stopped);
+      resumeServices();
+      out = wasStopped
+        ? '*Devam* — kilit açıldı; yeni istekler normal işlenir. Finans trader durduysa panelden ▶ ile yeniden başlat.'
+        : 'Zaten çalışıyor — durdurulmuş bir şey yok.';
     } else if (cmd === 'restart') {
       out = '*\u21BB Yeniden başlatılıyor…* Uygulama birkaç saniye içinde kapanıp açılacak.';
       setTimeout(() => {
@@ -2437,7 +2440,8 @@ async function handleWaIncoming(jid, payload, senderNum) {
       if (senderNum) waJidPn.set(jid, String(senderNum));
     }
     waLog(`gate: kuyruğa geçiliyor jid=${waPrettyJid(jid)} sender=+${senderNum || '?'}`);
-    resumeServices(); // pause durumunda gelen mesaj servisleri canlandırır
+    /* /stop kilidi normal mesajla AÇILMAZ — mesaj yine işlenir (engine userAction),
+       ama durdurulan iş/kuyruk kendiliğinden devam etmez */
     waQueuePush(jid, { ...payload, isGroup }, senderNum);
   } catch (e) {
     waLog(`handleWaIncoming KRASİ: ${String((e && e.stack) || e)}`);
@@ -2833,7 +2837,8 @@ async function handleTgIncoming(chatId, payload) {
       tgLog(`skip: isimsiz kayıt (${hit.id}) — cevap verilmedi, Entegrasyonlar'da isim ekle`);
       return;
     }
-    resumeServices(); // pause durumunda gelen mesaj servisleri canlandırır
+    /* /stop kilidi normal mesajla AÇILMAZ — mesaj yine işlenir (engine userAction),
+       ama durdurulan iş/kuyruk kendiliğinden devam etmez */
     tgQueuePush(String(chatId), payload);
   } catch (e) {
     tgLog(`handleTgIncoming KRASİ: ${String((e && e.stack) || e)}`);
@@ -3052,7 +3057,8 @@ async function handleDcIncoming(channelId, payload) {
       dcLog(`skip: isimsiz kayıt (${hit.id}) — cevap verilmedi, Entegrasyonlar'da isim ekle`);
       return;
     }
-    resumeServices(); // pause durumunda gelen mesaj servisleri canlandırır
+    /* /stop kilidi normal mesajla AÇILMAZ — mesaj yine işlenir (engine userAction),
+       ama durdurulan iş/kuyruk kendiliğinden devam etmez */
     dcQueuePush(String(channelId), payload);
   } catch (e) {
     dcLog(`handleDcIncoming KRASİ: ${String((e && e.stack) || e)}`);
@@ -5380,7 +5386,8 @@ ipcMain.handle('agent:send', (_e, { sessionId, text }) => {
     }
     return true;
   }
-  resumeServices(); // pause durumunda gerçek mesaj her şeyi canlandırır
+  /* /stop kilidi normal mesajla AÇILMAZ — mesaj yine işlenir (engine userAction),
+     ama durdurulan iş/kuyruk kendiliğinden devam etmez */
   queueDesktopMessage(sessionId, text);
   return true;
 });
@@ -5404,7 +5411,7 @@ function desktopSlashHelp() {
     '**/help** – bu liste',
     '**/version** – Beast Agent sürümünü göster',
     '**/restart** – uygulamayı yeniden başlat',
-    '**/stop** – koşan işleri durdur · **/start** – devam ettir',
+    '**/stop** – koşan her şeyi durdur + kilitle · **/start** – kilidi aç',
     '**/change [n]** – modelleri listele · n. modele geç',
     '**/model [isim]** – aktif modeli göster / değiştir · **/model refresh** – tüm provider modellerini yeniden çek',
     '**/think 0-5** – düşünme seviyesi (0 kapalı · 5 max)',
@@ -5538,11 +5545,13 @@ function handleGlobalStopStart(sessionId, cmd) {
     reply =
       `\u25A0 **Durdu** — ${n} koşan iş kesildi.\n` +
       'Sürüyen sorgular, akıştaki cevaplar ve ajan faaliyetleri ANINDA kesildi; ajan yeni sorgu da açamaz.\n' +
-      'Devam için bir şeyler yaz ya da `/start`';
+      'Bu kilit yalnız `/start` ile açılır — yeni mesaj yazmak durdurulan işi devam ettirmez.';
   } else {
-    const wasPaused = servicesPaused;
+    const wasStopped = !!(engine && engine._stopped);
     resumeServices();
-    reply = wasPaused ? '\u25B6 **Devam** — tüm servisler yeniden başladı.' : 'Zaten çalışıyor — durdurulmuş bir şey yok.';
+    reply = wasStopped
+      ? '\u25B6 **Devam** — kilit açıldı; yeni istekler normal işlenir. Finans trader durduysa panelden \u25B6 ile yeniden başlat.'
+      : 'Zaten çalışıyor — durdurulmuş bir şey yok.';
   }
   if (win && !win.isDestroyed()) {
     win.webContents.send('agent:event', { sessionId: sid, type: 'message', message: { role: 'user', content: cmd } });

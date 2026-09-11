@@ -2687,10 +2687,11 @@ class Engine {
 
   send(sessionId, payload, opts = {}) {
     const userAction = !!(opts && opts.userAction);
-    /* /stop kapısı: sistem tetikli gönderim durdurulur; kullanıcının kendi
-       mesajı (userAction) kapıyı kaldırır — "devam için bir şeyler yaz" */
+    /* /stop KİLİDİ: sistem tetikli gönderimler (rapor, kick, cron, izleyici,
+       arka plan) kilit açılana dek bloklanır. Kullanıcının yazdığı YENİ mesaj
+       cevaplanır ama kilidi AÇMAZ — durdurulan iş kendiliğinden devam etmez;
+       kilit yalnız /start (clearStop) ya da açık bir "başlat" eylemiyle açılır. */
     if (this._stopped && !userAction) return false;
-    if (userAction) this._stopped = false;
     const s = this._load(String(sessionId));
     if (!s) return false;
 

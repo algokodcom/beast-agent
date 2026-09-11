@@ -96,7 +96,7 @@ test('stopAll: akan ana oturum turunu keser — token akışı durur', async () 
   }
 });
 
-test('stopAll: stop kapısı sistem gönderimlerini bloklar, kullanıcı mesajı açar', async () => {
+test('stopAll: kilit yalnız /start ile açılır — kullanıcı mesajı kilidi açmaz', async () => {
   const { eng, events } = tmpEngine();
   eng.sel = { providerId: 'pA', providerName: 'ProvA', model: 'm1', sel: 'pA::m1', url: 'http://t/v1', key: 'k' };
   const sess = eng.createSession();
@@ -115,16 +115,21 @@ test('stopAll: stop kapısı sistem gönderimlerini bloklar, kullanıcı mesajı
   assert.strictEqual(eng._pendingReports.length, 0, 'raporlar düşürülmeli');
   assert.ok(!eng.ctrls.has(sess.id), 'yeni tur açılmamalı');
 
-  /* 3) gerçek kullanıcı mesajı kapıyı açar ve tur başlar */
+  /* 3) gerçek kullanıcı mesajı İŞLENİR ama kilidi AÇMAZ — durdurulan iş
+     kendiliğinden devam etmez */
   const fetchMock = slowSseFetch(['ok'], 50);
   try {
     const resumed = eng.send(sess.id, 'devam et', { userAction: true });
-    assert.ok(resumed, 'kullanıcı mesajı turu başlatmalı');
-    assert.ok(!eng._stopped, 'kapı açılmalı');
+    assert.ok(resumed, 'kullanıcı mesajı yeni tur başlatmalı');
+    assert.ok(eng._stopped, 'kilit kullanıcı mesajıyla AÇILMAMALI');
     await sleep(300);
   } finally {
     fetchMock.restore();
   }
+
+  /* 4) /start (clearStop) kilidi açar */
+  eng.clearStop();
+  assert.ok(!eng._stopped, '/start kilidi açmalı');
 });
 
 test('stopAll: arka plan işi bitince ebeveyne İPTAL raporu sorgusu başlatmaz', async () => {

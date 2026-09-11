@@ -4875,20 +4875,6 @@ body.finance-mode #composerWrap { margin-right: var(--finW, 400px); }
 .fin-field input:focus, .fin-field select:focus, .fin-field textarea:focus { border-color: var(--accent); outline: none; }
 .fin-time-row { display: flex; gap: 6px; }
 .fin-time-row input { flex: 1; min-width: 0; }
-.fin-adv-toggle {
-  display: block;
-  width: 100%;
-  text-align: left;
-  background: none;
-  border: none;
-  color: var(--muted);
-  font-size: 10px;
-  font-weight: 800;
-  letter-spacing: 0.6px;
-  padding: 2px 0 8px;
-  cursor: pointer;
-}
-.fin-adv-toggle:hover { color: var(--accent); }
 /* Ajan talimatı: çok satırlı not alanı (dikey büyütülebilir) */
 .fin-field textarea {
   resize: vertical;
@@ -4926,6 +4912,17 @@ body.finance-mode #composerWrap { margin-right: var(--finW, 400px); }
 .fin-alert .fa-note { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* ekib sayısı + otomatik atama özeti */
 .fin-team { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.fin-team-btn { font-weight: 600; display: inline-flex; align-items: center; gap: 5px; }
+.fin-team-item {
+  display: flex; align-items: flex-start; gap: 8px;
+  padding: 6px 8px; border-radius: 6px;
+  cursor: pointer;
+}
+.fin-team-item:hover { background: var(--panel2); }
+.fin-team-item input { flex: none; width: auto; margin: 2px 0 0 0; }
+.fin-team-txt { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.fin-team-txt b { font-size: 12px; color: var(--text); }
+.fin-team-txt i { font-size: 10.5px; font-style: normal; color: var(--muted); }
 .fin-team-hint {
   flex: 1;
   min-width: 0;
@@ -5030,10 +5027,11 @@ body.finance-mode #composerWrap { margin-right: var(--finW, 400px); }
 .fin-start:hover { filter: brightness(1.08); box-shadow: 0 1px 6px rgba(0, 0, 0, 0.22); }
 .fin-start:active { transform: translateY(1px); filter: brightness(0.96); }
 .fin-start.stop {
-  background: #ef4444;
-  border-color: #ef4444;
+  background: #b91c1c;
+  border-color: #b91c1c;
   color: #fff; /* kırmızı zeminde beyaz her iki temada da okunur */
 }
+.fin-start.stop:hover { background: #991b1b; border-color: #991b1b; }
 
 /* TRADE AJANI kartı — vurgulu görünüm (accent çerçeve + yumuşak zemin) */
 .fin-card-trader {
@@ -5148,6 +5146,7 @@ body.finance-mode #composerWrap { margin-right: var(--finW, 400px); }
   border-radius: 5px;
 }
 .fin-card-title button:hover { background: var(--accent-dim); color: var(--accent); }
+.fin-card-title button.on { background: var(--accent-dim); color: var(--accent); }
 
 /* MT5 sembol seçici modalı */
 .fin-sym-dialog { width: 460px; max-width: calc(100vw - 40px); }
@@ -5233,6 +5232,7 @@ body.finance-mode #composerWrap { margin-right: var(--finW, 400px); }
   gap: 10px;
 }
 .fin-skill-role {
+  position: relative;
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 8px 9px;
@@ -5241,13 +5241,26 @@ body.finance-mode #composerWrap { margin-right: var(--finW, 400px); }
 .fin-skill-role-head { display: flex; flex-direction: column; gap: 1px; margin-bottom: 7px; }
 .fin-skill-role-head b { font-size: 11.5px; color: var(--text); }
 .fin-skill-role-head span { font-size: 10px; color: var(--muted); }
+.fin-skill-clear {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  background: none;
+  border: none;
+  color: var(--muted);
+  line-height: 0;
+  padding: 3px 5px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.fin-skill-clear:hover { color: #ef4444; background: var(--accent-dim); }
 .fin-skill-req {
   align-self: flex-start;
   margin-top: 2px;
   font-size: 9.5px;
   font-weight: 800;
   letter-spacing: 0.5px;
-  color: #ef4444;
+  color: var(--muted);
 }
 .fin-skill-chips { display: flex; flex-wrap: wrap; gap: 4px; }
 .fin-skill-chip {

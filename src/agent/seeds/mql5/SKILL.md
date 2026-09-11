@@ -1,7 +1,7 @@
 ---
 name: mql5
-description: MetaTrader 5 tarafında MQL5 (script / indicator / Expert Advisor) yazma-derleme rehberi — mt5_* araçlarının yapamadığı işleri (özel hesap, olay yakalama, EA ile otomatik yürütme, dosya köprüsü) MQL5 ile çözmek gerektiğinde ÖNCE bu skill'i oku. Veri klasörünü bulma, MetaEditor ile derleme, MQL5\Files köprüsü ve hazır kod iskeletleri burada.
-version: 1.0.0
+description: MetaTrader 5 tarafında MQL5 (script / indicator / Expert Advisor) yazma-derleme rehberi — mt5_* araçlarının yapamadığı işleri (özel hesap, olay yakalama, EA ile otomatik yürütme, dosya köprüsü) MQL5 ile çözmek gerektiğinde ÖNCE bu skill'i oku. BeastFinance EA (varsayılan, otomatik kurulur) + dosya köprüsü, veri klasörünü bulma, MetaEditor ile derleme ve hazır kod iskeletleri burada.
+version: 1.1.0
 ---
 
 # MQL5 Tool Yazma (MetaTrader 5)
@@ -49,6 +49,29 @@ version: 1.0.0
 - Terminalin açık olması derleme için gerekmez; metaeditor yolunu bulamazsan `Get-Command metaeditor64.exe` veya `Get-ChildItem "C:\Program Files" -Recurse -Filter metaeditor64.exe` ile ara.
 
 ## 4) ÇALIŞTIRMA + BEAST KÖPRÜSÜ
+
+### 4.0) BEASTFINANCE EA — VARSAYILAN, OTOMATİK KURULUR (ÖNCE BUNU KULLAN)
+
+Beast Finance MT5'e bağlandığında sistem bunları otomatik yapar:
+- `BeastFinance.mq5`'i `MQL5\Experts\Beast\` altına yazar ve MetaEditor ile derler,
+- ilk grafiğe EA'yı ekler (gerçek MT5 formatı: `<expert>` bloğu `<window>` öncesi, `path=Experts\Beast\BeastFinance.ex5`, `expertmode=5`),
+- `config\common.ini [Experts]` üzerinden AutoTrading iznini açar.
+
+Yani MT5 entegrasyonu yazarken EA'yı SIFIRDAN YAZMA, elle iliştirme varsayma — köprü ZATEN kurulu:
+
+| Dosya (MQL5\Files) | Yön | İçerik |
+|---|---|---|
+| `beast_ea.json` | EA → Beast | heartbeat: version, symbol, period, equity/balance, `terminal_trade_allowed`, `mql_trade_allowed`, positions, note |
+| `beast_cmd.json` | Beast → EA | komut: `{id, cmd, params}` — desteklenen: ping / chart / status / note |
+| `beast_cmd_ack.json` | EA → Beast | komut sonucu: `{ok, id, cmd, result|error}` |
+| `beast_note.json` | Beast → EA | grafik panosu: `{symbol?, text, levels:[{price,label}]}` — pano + yatay çizgiler; screenshot'ta görünür |
+
+- Finance oturumlarındaki ajan aracı: `mt5_ea` (action: status|ping|chart|note).
+- Yeni MT5 entegrasyonu gerekiyorsa ÖNCE bu köprüyü GENİŞLET: EA'da `ProcessCommands()` içine yeni komut + Beast tarafında `mt5_ea` / python `ea_cmd`. Sıfırdan EA yazma.
+- EA kaynağı Beast uygulamasında `src/agent/mt5/BeastFinance.mq5`; güncelleme oradan yapılır, setup yeniden derler.
+- Derleme hatalarında dosya kodlaması UTF-16 (`FILE_UNICODE`) kullanılır; MQL5'te `FILE_UTF8` yoktur.
+
+### 4.1) Elle script/EA çalıştırma
 
 - **Script**: MT5 → Navigator → Scripts → çift tık (kullanıcı) — Python API'den MQL5 tetiklenemez.
 - **EA**: chart'a iliştirilir; AutoTrading düğmesi açık olmalıdır.

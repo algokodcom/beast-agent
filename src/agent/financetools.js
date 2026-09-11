@@ -22,6 +22,7 @@ const NAMES = [
   'mt5_history',
   'mt5_alerts',
   'mt5_note',
+  'mt5_ea',
   'mt5_trade',
   'mt5_close',
   'mt5_modify',
@@ -226,6 +227,29 @@ const definitions = NAMES.map((name) => {
         required: ['symbol', 'note'],
       },
     },
+    mt5_ea: {
+      description:
+        'BEASTFINANCE EA KÖPRÜSÜ (grafikte çalışan uzman danışman): action:"status" → EA heartbeat (yüklü mü, AutoTrading/EA izni, equity, pozisyon, son ack); "ping" → EA canlı yanıt; "chart" → aktif grafiğin sembol/periyot/fiyat/spread bilgisi; "note" → {symbol?, text, levels:[{price,label}]} grafik panosuna not + yatay seviye çizgileri yazar. NOT: yazdığın pano ve çizgiler görsel ajanın computer_look screenshot\'ında GÖRÜNÜR — grafik analizini/planını panoya yazıp screenshot ile doğrula; entegrasyon bildirimleriyle birlikte kullan.',
+      parameters: {
+        type: 'object',
+        properties: {
+          action: { type: 'string', enum: ['status', 'ping', 'chart', 'note'] },
+          symbol: { type: 'string', description: 'note: yalnız bu sembolün grafiğine uygulanır (boş = tüm grafikler)' },
+          text: { type: 'string', description: 'note: grafik panosuna yazılacak kısa analiz/plan metni' },
+          levels: {
+            type: 'array',
+            description: 'note: yatay seviye çizgileri (destek/direnç/SL/TP)',
+            items: {
+              type: 'object',
+              properties: { price: { type: 'number' }, label: { type: 'string' } },
+              required: ['price'],
+            },
+          },
+          timeoutSec: { type: 'number', description: 'ping/chart: EA yanıt bekleme süresi sn (varsayılan 8)' },
+        },
+        required: ['action'],
+      },
+    },
     mt5_trade: {
       description:
         'PİYASA EMRİ AÇAR: mt5_trade {symbol, side:"buy"|"sell", volume, sl?, tp?, comment?, reason?}. Lot limiti ve max pozisyon sayısı sistem tarafından zorlanır. Otomatik işlem anahtarı kapalıysa reddedilir. SL/TP vermek ŞIDDETLİ önerilir. reason: kararın tek cümlelik tezi (günlüğe yazılır, performans değerlendirmesinde kullanılır).',
@@ -409,6 +433,34 @@ const handlers = {
       side: String(args.side || '').toLowerCase(),
     }, ctx || {});
     return { ok: true, saved: true };
+  },
+  async mt5_ea(args) {
+    if (!mt5.running) return notConnected();
+    const action = String(args.action || 'status').toLowerCase();
+    if (action === 'status') {
+      const data = await bcall('ea_status', {}, 10000);
+      return { ok: true, ...data };
+    }
+    if (action === 'note') {
+      const levels = Array.isArray(args.levels)
+        ? args.levels
+            .slice(0, 20)
+            .map((x) => ({ price: Number(x && x.price) || 0, label: String((x && x.label) || '').slice(0, 40) }))
+            .filter((x) => x.price > 0)
+        : [];
+      const data = await bcall('ea_note', {
+        symbol: String(args.symbol || '').trim().toUpperCase(),
+        text: String(args.text || '').slice(0, 4000),
+        levels,
+      }, 10000);
+      return { ok: true, ...data, note: 'Grafik panosu güncellendi — computer_look screenshot\'ında görünür' };
+    }
+    if (action === 'ping' || action === 'chart') {
+      const timeoutSec = Math.max(2, Math.min(20, Number(args.timeoutSec) || 8));
+      const data = await bcall('ea_cmd', { cmd: action, timeoutSec }, (timeoutSec + 6) * 1000);
+      return { ok: true, ...data };
+    }
+    return { ok: false, error: 'action: status|ping|chart|note' };
   },
   async mt5_risksize(args) {
     if (!mt5.running) return notConnected();

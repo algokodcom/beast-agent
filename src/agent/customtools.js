@@ -149,7 +149,7 @@ function call(name, args) {
       finish({ ok: false, error: 'tool zaman aşımı (' + Math.round(TOOL_TIMEOUT_MS / 1000) + ' sn)' });
     }, TOOL_TIMEOUT_MS);
     try {
-      child = spawn(process.execPath, [t.script], { cwd: t.path, stdio: ['pipe', 'pipe', 'pipe'] });
+      child = spawn(process.execPath, [t.script], { cwd: path.dirname(t.script), stdio: ['pipe', 'pipe', 'pipe'] });
     } catch (e) {
       return finish({ ok: false, error: String((e && e.message) || e) });
     }

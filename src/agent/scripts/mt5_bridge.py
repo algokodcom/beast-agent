@@ -12,6 +12,7 @@ Gereksinim: pip install MetaTrader5  (yalnizca Windows + MT5 terminal kurulu)
 import sys
 import json
 import time
+import os
 import argparse
 
 try:
@@ -389,6 +390,114 @@ def h_all_symbols(p):
     return {"symbols": out, "count": len(rows), "truncated": len(rows) > cap}
 
 
+# ---------------- BeastFinance EA kopru dosyalari ----------------
+
+def _files_dir():
+    """MQL5\\Files sandbox klasoru (EA ile ortak). Terminal baglantisi sart."""
+    need()
+    dp = ""
+    try:
+        ti = mt5.terminal_info()
+        dp = getattr(ti, "data_path", "") if ti is not None else ""
+    except Exception:
+        dp = ""
+    if not dp:
+        raise RuntimeError("terminal data_path alinamadi")
+    d = os.path.join(dp, "MQL5", "Files")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def _read_json_file(p):
+    """EA dosyalari UTF-16 (FILE_UNICODE) ya da UTF-8 olabilir — BOM'a gore coz."""
+    try:
+        with open(p, "rb") as f:
+            buf = f.read()
+        if not buf:
+            return None
+        if buf[:2] in (b"\xff\xfe", b"\xfe\xff"):
+            raw = buf.decode("utf-16")
+        elif buf[:3] == b"\xef\xbb\xbf":
+            raw = buf.decode("utf-8-sig")
+        else:
+            try:
+                raw = buf.decode("utf-8")
+            except UnicodeDecodeError:
+                raw = buf.decode("utf-16")
+            if "\x00" in raw:  # BOM'suz UTF-16 (ASCII icerik)
+                raw = buf.decode("utf-16")
+        raw = raw.strip()
+        return json.loads(raw) if raw else None
+    except Exception:
+        return None
+
+
+def _write_json_file(p, obj):
+    """EA tarafi FILE_UNICODE okudugu icin UTF-16 (BOM'lu) yaz."""
+    with open(p, "wb") as f:
+        f.write(json.dumps(obj, ensure_ascii=False).encode("utf-16"))
+
+
+def h_ea_status(p):
+    """Grafikteki BeastFinance EA'nin heartbeat durumu (yuklu mu + izinler)."""
+    d = _files_dir()
+    beat = _read_json_file(os.path.join(d, "beast_ea.json"))
+    ack = _read_json_file(os.path.join(d, "beast_cmd_ack.json"))
+    note = _read_json_file(os.path.join(d, "beast_note.json"))
+    if beat is None:
+        return {"installed": False, "files_dir": d}
+    return {"installed": True, "files_dir": d, "ea": beat, "last_ack": ack, "note": note}
+
+
+def h_ea_note(p):
+    """Grafik panosu + seviye cizgileri: beast_note.json yazar (EA bir sonraki
+    timer turunda okur; screenshot/entegrasyon icin)."""
+    d = _files_dir()
+    note = {
+        "symbol": str(p.get("symbol") or ""),
+        "text": str(p.get("text") or "")[:4000],
+        "levels": [],
+        "at": int(time.time()),
+    }
+    lv = p.get("levels")
+    if isinstance(lv, list):
+        for x in lv[:20]:
+            try:
+                price = float(x.get("price"))
+            except Exception:
+                continue
+            if price > 0:
+                note["levels"].append({"price": price, "label": str(x.get("label") or "")[:40]})
+    path = os.path.join(d, "beast_note.json")
+    _write_json_file(path, note)
+    return {"ok": True, "path": path, "levels": len(note["levels"])}
+
+
+def h_ea_cmd(p):
+    """EA'ya komut yaz (ping|chart|status|note) ve ack bekle."""
+    d = _files_dir()
+    cmd = str(p.get("cmd") or "").strip()
+    if not cmd:
+        raise RuntimeError("cmd gerekli (ping|chart|status|note)")
+    rid = str(p.get("id") or ("c" + str(int(time.time() * 1000) % 100000000)))
+    payload = {"id": rid, "cmd": cmd, "params": p.get("params") or {}}
+    ack_path = os.path.join(d, "beast_cmd_ack.json")
+    try:
+        os.remove(ack_path)
+    except Exception:
+        pass
+    with open(os.path.join(d, "beast_cmd.json"), "wb") as f:
+        f.write(json.dumps(payload, ensure_ascii=False).encode("utf-16"))
+    timeout = float(p.get("timeoutSec") or 8)
+    t0 = time.time()
+    while time.time() - t0 < max(1.0, min(timeout, 30.0)):
+        time.sleep(0.25)
+        ack = _read_json_file(ack_path)
+        if ack and str(ack.get("id") or "") == rid:
+            return {"ok": True, "ack": ack, "waited": round(time.time() - t0, 2)}
+    return {"ok": False, "error": "EA yanit vermedi (grafikte BeastFinance yuklu mu?)", "sent": payload}
+
+
 HANDLERS = {
     "ping": h_ping,
     "policy": h_policy,
@@ -406,6 +515,9 @@ HANDLERS = {
     "pending": h_pending,
     "cancel": h_cancel,
     "margin": h_margin,
+    "ea_status": h_ea_status,
+    "ea_cmd": h_ea_cmd,
+    "ea_note": h_ea_note,
 }
 
 

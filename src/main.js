@@ -2257,10 +2257,11 @@ function botToolSet(cfg) {
     'run_background', 'run_background_many', 'delegate_task',
     'event_list', 'event_subscribe', 'event_unsubscribe',
     'watcher_add', 'watcher_list', 'watcher_remove',
+    'tool_request', /* CEPHANE: eksik aracı TOOL botuna yazdırma hakkı HER botta */
   ]);
   if (s.web_search) { set.add('web_search'); set.add('http_fetch'); set.add('webfetch'); set.add('deep_search'); }
   if (s.browser) {
-    for (const t of ['browser_open', 'browser_read', 'browser_screenshot', 'browser_snapshot', 'browser_click', 'browser_type', 'browser_press', 'browser_scroll', 'browser_select', 'ocr_read']) set.add(t);
+    for (const t of ['browser_open', 'browser_read', 'browser_screenshot', 'browser_snapshot', 'browser_click', 'browser_type', 'browser_press', 'browser_scroll', 'browser_select', 'ocr_read', 'computer_look']) set.add(t);
   }
   if (s.email) { set.add('email_list'); set.add('email_read'); set.add('email_send'); }
   if (s.run_command) {
@@ -3210,6 +3211,8 @@ function reloadBackend() {
     supermemory: settings.supermemory || { enabled: true, baseUrl: 'http://localhost:6767', apiKey: '', containerTag: 'beast' },
     crashFile: FALLOUT_CRASH_FILE,
     notifyOwnerFail: settings.notifyOwnerFail !== false,
+    /* tool yazım/doğrulama adımları → bağlı entegrasyonlara (WA/TG/Discord) */
+    integrationNotify: integrationBroadcast,
     fileSend: deliverFile,
     reminders: { add: scheduleReminder },
     watchers: {
@@ -5976,7 +5979,18 @@ ipcMain.handle('agent-dms:delete-thread', (_e, key) => (engine ? engine.agentDmD
 
 /* ---------- KİŞİSEL TOOLLAR (%APPDATA%\beast\tools\) ---------- */
 ipcMain.handle('tools:list', () => customtools.list());
-ipcMain.handle('tools:save', (_e, tool) => customtools.save(tool || {}));
+ipcMain.handle('tools:save', (_e, tool) => {
+  const r = customtools.save(tool || {});
+  /* panelden yayınlanan araç da entegrasyonlara duyurulur */
+  if (r && r.ok) {
+    try {
+      integrationBroadcast(
+        '🛠️ Araç yayında: tool__' + r.id + ' — ' + String((tool && tool.name) || r.id).slice(0, 60) + '\n(Beast TOOLS panelinden kaydedildi)'
+      );
+    } catch {}
+  }
+  return r;
+});
 ipcMain.handle('tools:delete', (_e, id) => customtools.remove(id));
 ipcMain.handle('tools:run', async (_e, payload) => {
   const id = String((payload && payload.id) || '');
@@ -8436,6 +8450,7 @@ function studioWatchStop() {
    sohbet finance bayrağıyla mt5_* araçlarını görür; (2) TRADER — gizli engine
    oturumu, tur tur piyasa tarayıp (farklı API/model seçilebilir) işlem kovalar. */
 const mt5bridge = require('./mt5bridge');
+const mt5setup = require('./agent/mt5setup');
 const financetools = require('./agent/financetools');
 const finrisk = require('./agent/finrisk');
 const customtools = require('./agent/customtools');
@@ -8487,12 +8502,13 @@ function finCfg() {
   /* OTOMATİK İŞLEM hep açık — kullanıcı onay kutusu KALDIRILDI: trade ajanının
      amacı zaten işlem açmak; onay sorulmaz, limitler (max lot/pozisyon) korur */
   f.allowTrading = true;
-  /* ANALİZ EKİBİ ARTIK SADECE SAYI: elle rol seçimi kaldırıldı — atama daima
-     otomatik (Teknik → Risk → Haber). 0 = ekip kapalı GEÇERLİ değerdir;
-     yalnız eksik/bozuk değerde varsayılan 2'ye düşülür. */
-  f.analysisAuto = true;
+  /* ANALİZ EKİBİ: çoklu seçim (analysisTeam) VEYA sayı modu (analysisAuto).
+     Varsayılan: oto sayı 2 (Teknik → Risk → Haber → Görsel). Kullanıcı
+     picker'dan rol seçince analysisAuto=false + analysisTeam yazılır. */
+  if (typeof f.analysisAuto !== 'boolean') f.analysisAuto = true;
   if (!Number.isFinite(Number(f.analysisCount))) f.analysisCount = 2;
   f.analysisCount = Math.max(0, Math.min(FIN_ROLES_AUTO.length, Math.round(Number(f.analysisCount) || 0)));
+  if (!f.analysisAuto) f.analysisTeam = finRolesValid(f.analysisTeam);
   /* ROL → SKILL eşleştirmesi: rol başına TEK skill — modalda zorunlu tek
      seçim yapılır. Eski çoklu seçimlerden yalnız İLKİ korunur (göç). Skill
      adları kurulu katalogdan gelir. */
@@ -8552,6 +8568,12 @@ function finCfg() {
   if (!Number.isFinite(Number(f.maxPerSymbol))) f.maxPerSymbol = 2;
   if (!Number.isFinite(Number(f.maxSameSide))) f.maxSameSide = 3;
   if (!Number.isFinite(Number(f.minMarginLevel))) f.minMarginLevel = 150;
+  /* MT5 İLK KURULUM: bağlantı kurulunca EA derlenir + AutoTrading izni + grafik
+     enjeksiyonu otomatik uygulanır (false = yalnız elle "🛠 Kurulum" ile) */
+  if (typeof f.autoSetup !== 'boolean') f.autoSetup = true;
+  /* Kurulum ilk kez uygulanınca MT5'i bir kez otomatik yeniden başlat
+     (EA + AutoTrading + grafik ancak yeniden başlatmada etkinleşir) */
+  if (typeof f.autoRestart !== 'boolean') f.autoRestart = true;
   if (f.weeklyReport == null) f.weeklyReport = true;
   return f;
 }
@@ -8564,8 +8586,9 @@ const FIN_ROLES = [
   { id: 'risk', label: 'Risk Ajanı', desc: 'marj/kaldıraç/SL disiplini, exposure ve günlük kayıp hızı denetimi' },
   { id: 'technic', label: 'Teknik Analiz', desc: 'trend/yapı/destek-direnç/momentum okuma, AL-SAT-BEKLE önerileri' },
   { id: 'macro', label: 'Haber / Makro', desc: 'haber akışı + ekonomik takvim, DXY/emtia bağıntıları, yön eğilimi' },
+  { id: 'visual', label: 'Görsel Ajan', desc: 'MT5 grafiği/ekran görüntüsü — trend, formasyon, seviye ve mum yapısını görsel doğrulama' },
 ];
-const FIN_ROLES_AUTO = ['technic', 'risk', 'macro'];
+const FIN_ROLES_AUTO = ['technic', 'risk', 'macro', 'visual'];
 function finRolesValid(list) {
   return (Array.isArray(list) ? list : [])
     .map((r) => String(r || '').trim())
@@ -8806,6 +8829,26 @@ function financeNotify(text, kind, panel) {
   for (const fn of senders) {
     try { Promise.resolve(fn()).catch(() => {}); } catch {}
   }
+}
+
+/* ENTEGRASYON BİLDİRİMİ (tool adımları): bağlı TÜM kanallara (WhatsApp/
+   Telegram/Discord) düşer — finance trade filtresine takılmaz. Tool botu
+   yazım/doğrulama raporları ve araç yayın duyuruları buradan gider. */
+function integrationBroadcast(text) {
+  const body = String(text || '').trim();
+  if (!body) return;
+  try {
+    if (wa && wa.connected) {
+      const own = waOwnerNum();
+      if (own) Promise.resolve(sendWaSafe(own + '@s.whatsapp.net', body)).catch(() => {});
+    }
+  } catch {}
+  try {
+    if (tg && tg.connected) for (const id of tgOwnerIds()) Promise.resolve(sendTgSafe(id, body)).catch(() => {});
+  } catch {}
+  try {
+    if (dc && dc.connected) for (const id of dcOwnerIds()) Promise.resolve(sendDcSafe(id, body)).catch(() => {});
+  } catch {}
 }
 
 /* ---- fiyat alarmları (kalıcı) ---- */
@@ -9378,12 +9421,31 @@ try {
   });
 } catch {}
 
-function financeEnsureBridge() {
+async function financeEnsureBridge() {
   /* BEAST FINANCE = MT5 KAPISI: mod KAPALIYKEN köprü HİÇ başlatılmaz —
      Beast, kullanıcı finance açmadıkça MT5 terminalini açmaz/yeniden
      başlatmaz. Mod açılınca finance:mode handler'ı burayı çağırır. */
   if (!financeState.mode) return mt5bridge.status();
   const f = finCfg();
+  /* MT5 KAPALIYSA AÇILMADAN ÖNCE KUR: terminal ilk açılışta BeastFinance EA
+     yüklü + AutoTrading açık + grafikte pano hazır başlar. */
+  try {
+    if (f.autoSetup !== false && !mt5setup.terminalRunning()) {
+      const det = mt5setup.detectTerminal();
+      const dataPath = det.dataPath || '';
+      if (dataPath) {
+        const r = await mt5setup.runSetup({
+          dataPath,
+          terminalExe: String(f.terminalPath || '').trim() || det.exe || '',
+          force: false,
+        });
+        for (const s of (r && r.steps) || []) financeLog('[kurulum] ' + s);
+        if (r && r.ok) {
+          finPush('setup', { ok: true, changed: !!r.changed, compiled: !!r.compiled, chartAttached: !!r.chartAttached, restartRequired: false, steps: r.steps || [] });
+        }
+      }
+    }
+  } catch {}
   const candidates = [String(f.pythonPath || '').trim(), 'python', 'py -3'].filter(Boolean);
   /* Beast gömülü Python runtime kuruluysa en başa ekle (makinede Python olmasa da köprü çalışır) */
   try {
@@ -9421,12 +9483,161 @@ function financeTryInstall() {
     if (code === 0) {
       financeLog('[MT5] MetaTrader5 paketi kuruldu — köprü yeniden başlatılıyor');
       mt5bridge.stop();
-      financeEnsureBridge();
+      financeEnsureBridge().catch(() => {});
     } else {
       financeLog('[MT5] kurulum başarısız (kod ' + code + ') ' + tail.slice(-300));
     }
     finPush('install', { installing: false, code });
   });
+}
+
+/* MT5 İLK KURULUM (otomatik + elle): EA yaz/derle, AutoTrading izni ve grafik
+   enjeksiyonunu uygular. İdempotent — her bağlantıda zararsız çalışır. */
+let finSetupBusy = false;
+let finSetupDoneAt = 0;
+let finSetupRestarted = false; /* kurulum etkinleşmesi için MT5'i BİR KEZ restart ettik mi */
+async function finMt5SetupEnsure(force) {
+  if (finSetupBusy) return { ok: false, error: 'kurulum zaten çalışıyor' };
+  if (!force && finCfg().autoSetup === false) return { ok: false, error: 'otomatik kurulum kapalı' };
+  if (!force && finSetupDoneAt && Date.now() - finSetupDoneAt < 10 * 60 * 1000) return { ok: true, cached: true, steps: [] };
+  const st = mt5bridge.status();
+  const term = (st && st.terminal) || {};
+  const dataPath = String((term && (term.data_path || term.dataPath)) || '').trim();
+  if (!dataPath) return { ok: false, error: 'MT5 veri klasörü henüz bilinmiyor — bağlantı bekleniyor' };
+  finSetupBusy = true;
+  try {
+    const r = await mt5setup.runSetup({
+      dataPath,
+      terminalExe: String((term && term.path) || '').trim(),
+      force: !!force,
+    });
+    finSetupDoneAt = Date.now();
+    const steps = (r && r.steps) || [];
+    for (const s of steps) financeLog('[kurulum] ' + s);
+    if (r && r.ok) {
+      finPush('setup', { ok: true, changed: !!r.changed, compiled: !!r.compiled, chartAttached: !!r.chartAttached, restartRequired: !!r.restartRequired, steps });
+      if (r.changed) {
+        try {
+          integrationBroadcast(
+            '🛠️ MT5 kurulumu — BeastFinance.mq5 ' + (r.compiled ? 'derlendi' : 'hazır') +
+            (r.autoTrading ? ' · AutoTrading izni açıldı' : '') +
+            (r.chartAttached ? ' · grafik profiline eklendi' : '') +
+            (r.restartRequired ? '\nMT5 yeniden başlatılınca etkin olur.' : '')
+          );
+        } catch {}
+      }
+      if (term && term.trade_allowed === false) {
+        financeLog('[kurulum] dikkat: AutoTrading kapalı — MT5 yeniden başlatılmalı (common.ini yazıldı)');
+      }
+      /* İLK KURULUM etkinleşmesi: terminal açıksa BİR KEZ otomatik restart
+         (EA + AutoTrading + grafik ancak yeniden başlatmada devreye girer) */
+      if (r.restartRequired && !finSetupRestarted && finCfg().autoRestart !== false) {
+        finMt5RestartForSetup(String((term && term.path) || '').trim(), dataPath).catch(() => {});
+      }
+    } else if (r && r.error) {
+      financeLog('[kurulum] hata: ' + r.error);
+      finPush('setup', { ok: false, error: r.error, steps });
+    }
+    return r || { ok: false, error: 'kurulum yanıtı yok' };
+  } finally {
+    finSetupBusy = false;
+  }
+}
+
+/* Kurulumu etkinleştirmek için MT5'i YENİDEN BAŞLAT (tek sefer):
+   kapat → ayarları tazele (kapanışta profil üzerine yazılmış olabilir) →
+   terminali aç → köprüyü tazele. */
+async function finMt5RestartForSetup(terminalExe, dataPath) {
+  if (finSetupRestarted) return;
+  finSetupRestarted = true;
+  const exe = String(terminalExe || '').trim();
+  financeLog('[kurulum] MT5 yeniden başlatılıyor (EA + AutoTrading etkinleşmesi)…');
+  /* ÖNCE NAZİK KAPAT (WM_CLOSE): MT5 profilini/config'ini KAYDEDER — /F
+     kullanırsak kaydetmez ve enjeksiyon/manuel eklenen EA kaybolur */
+  try { spawn('taskkill', ['/IM', 'terminal64.exe'], { windowsHide: true, stdio: 'ignore' }); } catch {}
+  await new Promise((r) => setTimeout(r, 4500));
+  if (mt5setup.terminalRunning()) {
+    try { spawn('taskkill', ['/IM', 'terminal64.exe', '/F'], { windowsHide: true, stdio: 'ignore' }); } catch {}
+    await new Promise((r) => setTimeout(r, 2000));
+  }
+  /* terminal kapalıyken profil/ini TAZELE — kapanış kaydı enjeksiyonu ezmiş olabilir */
+  try {
+    const r2 = await mt5setup.runSetup({ dataPath, terminalExe: exe, force: false });
+    for (const s of (r2 && r2.steps) || []) financeLog('[kurulum] ' + s);
+  } catch {}
+  if (exe) {
+    try {
+      const p = spawn(exe, [], { detached: true, stdio: 'ignore' });
+      p.unref();
+      financeLog('[kurulum] MT5 açıldı: ' + exe);
+    } catch (e) {
+      financeLog('[kurulum] terminal başlatılamadı: ' + String((e && e.message) || e));
+      return;
+    }
+  } else {
+    financeLog('[kurulum] terminal yolu yok — MT5 elle açılmalı');
+  }
+  await new Promise((r) => setTimeout(r, 6000));
+  mt5bridge.stop();
+  financeEnsureBridge().catch(() => {});
+}
+
+/* EA heartbeat kontrolü: BeastFinance grafikte mi + izinler açık mı.
+   Yoksa OTOMATİK onarım: kurulumu zorla + gerekiyorsa terminali yeniden başlat.
+   Sonuç entegrasyonlara ve panele bildirilir. */
+let finEaCheckDone = false;
+let finEaCheckAt = 0;
+let finEaRepairTried = false;
+async function finEaStatusCheck() {
+  if (finEaCheckDone || !mt5bridge.running) return;
+  if (Date.now() - finEaCheckAt < 20000) return; /* spam koruması */
+  finEaCheckAt = Date.now();
+  try {
+    const r = await mt5bridge.call('ea_status', {}, 10000);
+    if (!r || !r.ok) return;
+    const d = r.data || {};
+    if (!d.installed) {
+      financeLog('[EA] BeastFinance grafikte yüklü değil — otomatik kurulum deneniyor');
+      finPush('setup', { ok: false, error: 'BeastFinance EA grafikte yüklü değil', ea: false, filesDir: d.files_dir || '' });
+      if (!finEaRepairTried && finCfg().autoSetup !== false) {
+        finEaRepairTried = true;
+        try {
+          const rr = await finMt5SetupEnsure(true);
+          if (rr && rr.ok && rr.restartRequired && !finSetupRestarted && finCfg().autoRestart !== false) {
+            const dataPath = d.files_dir ? path.dirname(path.dirname(String(d.files_dir))) : '';
+            const termPath = String(((mt5bridge.status() || {}).terminal || {}).path || '');
+            finMt5RestartForSetup(termPath, dataPath).catch(() => {});
+          }
+        } catch {}
+      }
+      return;
+    }
+    finEaCheckDone = true;
+    const ea = d.ea || {};
+    const tradeOk = ea.terminal_trade_allowed !== false && ea.mql_trade_allowed !== false;
+    financeLog(
+      '[EA] BeastFinance v' + String(ea.version || '?') + ' · ' + String(ea.symbol || '') +
+      ' · AutoTrading=' + (ea.terminal_trade_allowed ? 'açık' : 'KAPALI') +
+      ' · EA izni=' + (ea.mql_trade_allowed ? 'açık' : 'KAPALI')
+    );
+    finPush('setup', { ok: true, ea: true, eaInfo: ea });
+    if (!tradeOk) {
+      try {
+        integrationBroadcast(
+          '⚠️ BeastFinance EA izin uyarısı: AutoTrading=' + (ea.terminal_trade_allowed ? 'açık' : 'KAPALI') +
+          ' · EA izni=' + (ea.mql_trade_allowed ? 'açık' : 'KAPALI') +
+          '\nMT5 → Ctrl+E (AutoTrading) ve EA özellikleri → Canlı işlem izni.'
+        );
+      } catch {}
+    } else {
+      try {
+        integrationBroadcast(
+          '✅ BeastFinance EA grafikte aktif: ' + String(ea.symbol || '') + ' ' + String(ea.period || '') +
+          ' · AutoTrading açık · equity ' + String(ea.equity != null ? ea.equity : '?')
+        );
+      } catch {}
+    }
+  } catch {}
 }
 
 mt5bridge.on('bridge', (m) => {
@@ -9435,6 +9646,13 @@ mt5bridge.on('bridge', (m) => {
     if (m.account) financeLog(`[MT5] hesap ${m.account.login} · bakiye ${m.account.balance} ${m.account.currency}`);
     finWatchStart();
     finStatsRefresh(true).catch(() => {});
+    /* İLK ENTEGRASYON: EA + AutoTrading + grafik kurulumu otomatik */
+    finMt5SetupEnsure(false)
+      .then(() => setTimeout(() => { finEaStatusCheck().catch(() => {}); }, 7000))
+      .catch(() => {});
+    if (m.terminal && m.terminal.trade_allowed === false) {
+      financeLog('[MT5] AutoTrading KAPALI görünüyor — kurulum yazıldıysa terminali yeniden başlat');
+    }
   } else if (m && m.error) {
     financeLog('[MT5] bağlantı yok — ' + m.error);
     if (/paket/i.test(m.error)) financeTryInstall();
@@ -9835,7 +10053,7 @@ ipcMain.handle('finance:state', async () => {
 
 ipcMain.handle('finance:snapshot', async () => {
   const f = finCfg();
-  const st = financeEnsureBridge();
+  const st = await financeEnsureBridge();
   let account = st.account || null;
   let positions = [];
   let orders = [];
@@ -9886,7 +10104,7 @@ ipcMain.handle('finance:mode', async (_e, payload) => {
        açık pozisyonlara dokunulmaz); finance tekrar açılınca MT5 gerekirse
        yeniden otomatik başlar. */
   if (financeState.mode) {
-    try { financeEnsureBridge(); } catch {}
+    try { await financeEnsureBridge(); } catch {}
     try { await mt5bridge.call('policy', { launch: true }, 4000); } catch {}
   } else {
     try { await mt5bridge.call('policy', { launch: false }, 4000); } catch {}
@@ -10142,6 +10360,8 @@ function finTeamStart(f) {
   }
 }
 
+ipcMain.handle('finance:mt5:setup', () => finMt5SetupEnsure(true));
+
 ipcMain.handle('finance:trader:start', () => financeTraderStart());
 
 ipcMain.handle('finance:trader:stop', async () => {
@@ -10187,7 +10407,7 @@ ipcMain.handle('finance:agent:spawn', async (_e, payload) => {
 
 ipcMain.handle('finance:connect', async () => {
   mt5bridge.stop();
-  const st = financeEnsureBridge();
+  const st = await financeEnsureBridge();
   return { ok: true, bridge: st };
 });
 

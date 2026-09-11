@@ -282,3 +282,15 @@ test('rapor: haftalık metin istatistik ve günlüğü içerir', () => {
   assert.ok(md.includes('trend kırılımı'));
   assert.ok(md.includes('Disiplin iyiydi.'));
 });
+
+/* ---------------- financetools: mt5_ea (BeastFinance EA köprüsü) ---------------- */
+
+test('financetools: mt5_ea tanımı ve handler kayıtlı (EA entegrasyon kanalı)', () => {
+  const ftools = require('../src/agent/financetools');
+  assert.ok(ftools.NAMES.includes('mt5_ea'), 'mt5_ea NAMES listesinde olmalı');
+  const def = ftools.definitions.find((d) => d.function.name === 'mt5_ea');
+  assert.ok(def, 'mt5_ea tanımı üretilmeli');
+  assert.match(def.function.description, /BEASTFINANCE EA/i);
+  assert.equal(def.function.parameters.properties.action.type, 'string');
+  assert.equal(typeof ftools.handlers.mt5_ea, 'function');
+});

@@ -163,7 +163,7 @@
             </div>
           </div>
           <div class="fin-card fin-card-trader" data-fin-card="trader">
-            <div class="fin-card-title">TRADE AJANI <span id="finTraderDot" class="fin-dot off" title="Trader durumu"></span><span class="file-spacer"></span><button id="finModelRefreshBtn" title="Modelleri yeniden çek — eksik/güncel modelleri tazeler">&#x27F3;</button><button id="finSkillsBtn" title="Rol → skill eşleştirmesi — her role ZORUNLU tek skill (ajan her turda onu okur)">&#9881;</button></div>
+            <div class="fin-card-title">TRADE AJANI <span id="finTraderDot" class="fin-dot off" title="Trader durumu"></span><span class="file-spacer"></span><button id="finSetupBtn" title="MT5 kurulumunu uygula — BeastFinance.mq5 derle + AutoTrading izni + grafiğe ekle">&#x1F6E0;</button><button id="finModelRefreshBtn" title="Modelleri yeniden çek — eksik/güncel modelleri tazeler">&#x27F3;</button><button id="finSkillsBtn" title="Rol → skill eşleştirmesi — rol başına tek skill (çöp ikonuyla kaldırılır; boş = ajan kendi seçer)">&#9881;</button><button id="finAdvToggle" type="button" aria-expanded="false" title="Gelişmiş — disiplin kuralları + shadow mod"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px"><path d="M4 6h9"/><circle cx="16.5" cy="6" r="2.5"/><path d="M20 6h0.01"/><path d="M4 12h3"/><circle cx="10.5" cy="12" r="2.5"/><path d="M15 12h5"/><path d="M4 18h11"/><circle cx="18.5" cy="18" r="2.5"/></svg></button></div>
             <div class="fin-field">
               <span>Model</span>
               <select id="finTraderModel" title="Trader ajanının modeli — farklı API/model seçilebilir"></select>
@@ -183,14 +183,13 @@
               <button id="finSymBtn" class="fin-sym-select" title="MT5 sembol listesinden seç — tıkla">&#8230;</button>
             </div>
             <div class="fin-field">
-              <span>Analiz ekibi <i class="fin-hint">— sadece sayı seç, rolleri sistem otomatik atar</i></span>
-              <div id="finRoles" class="fin-roles" title="Trader&#39;ın yanında koşacak uzman ajan SAYISI — roller otomatik atanır (Teknik → Risk → Haber); işlem açmazlar"></div>
+              <span>Analiz ekibi <i class="fin-hint">— çoklu seç: hangi uzman ajanlar koşacak (işlem açmaz)</i></span>
+              <div id="finRoles" class="fin-roles" title="Trader&#39;ın yanında koşacak uzman ajanları seç — Risk / Teknik / Haber / Görsel; seçilen her rol AYRI sürekli ajan olarak koşar (işlem açmaz)"></div>
             </div>
             <div class="fin-field">
               <span>Ajan talimatı <i class="fin-hint">— 1-2 cümle; trader + tüm paralel ajanlara iletilir</i></span>
               <textarea id="finStrategy" rows="2" maxlength="2000" placeholder="örn. Her türde scalp yap — M1/M5 hızlı gir-çık, günlük kâr hedefine ulaşınca dur" title="Buraya yazdığın talimat trade ajanına ve koşan tüm paralel ajanlara (ekip + sembol işçileri) sistem promptunda öncelikli strateji notu olarak gider; kaydetmek için alandan çık"></textarea>
             </div>
-            <button id="finAdvToggle" class="fin-adv-toggle" type="button" aria-expanded="false" title="Disiplin kuralları + shadow mod — gelişmiş seçenekler">&#x25B8; Gelişmiş</button>
             <div id="finAdvWrap" hidden>
             <div class="fin-field">
               <span>Disiplin <i class="fin-hint">— kodla zorlanır; 0 = kural kapalı</i></span>
@@ -780,7 +779,21 @@
       </div>
       <div class="mini-body">
         <div id="finSkillsList" class="mini-list"></div>
-        <div class="fin-sym-hint">Her rol için TEK skill ZORUNLUDUR — aynı role birden fazla skill seçilemez. Seçili skill kaldırılamaz; değiştirmek için başka bir skill'e tıkla. Seçim, koşan ajanlar dahil sonraki turdan itibaren rol ajanının sistem promptuna zorunlu skill olarak girer.</div>
+        <div class="fin-sym-hint">Her rol için TEK skill seçilir — aynı role birden fazla skill seçilemez. Seçili skill'i satırın sağ üstündeki çöp ikonuyla kaldırabilirsin; boş bırakırsan ajan skill'i göreve göre SKILLS kataloğundan kendi seçer. Seçim, koşan ajanlar dahil sonraki turdan itibaren sistem promptuna girer.</div>
+      </div>
+    </div>
+  </div>
+
+  <div id="finTeamOverlay" class="mini-overlay" hidden>
+    <div class="mini-dialog fin-sym-dialog">
+      <div class="mini-head">
+        <span class="mini-title">ANALİZ EKİBİ — AJAN SEÇ</span>
+        <span id="finTeamCount" class="fin-sym-count"></span>
+        <button class="mini-close" id="finTeamClose" title="Kapat">&#x00D7;</button>
+      </div>
+      <div class="mini-body">
+        <div id="finTeamPick" class="mini-list"></div>
+        <div class="fin-sym-hint">Tıkla: ajanı ekibe ekle/çıkar — seçilen her rol AYRI sürekli ajan olarak koşar (işlem açmaz). Değişiklik anında kaydedilir; ajanı başlatınca seçili roller başlar.</div>
       </div>
     </div>
   </div>

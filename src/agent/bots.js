@@ -98,6 +98,70 @@ function adminBot() {
   };
 }
 
+/* ZORUNLU VARSAYILAN BOTLAR: Beast (admin) + Trader + Coder + Tool.
+   Eksik olanlar OTOMATİK açılır — Tool botunun TEK görevi tool yazmaktır;
+   diğer ajanlar/botlar tool_request ile ona devreder (cephane mantığı). */
+const DEFAULT_BOT_SEEDS = [
+  {
+    id: 'trader',
+    name: 'Trader',
+    icon: '📊',
+    prompt:
+      'Sen BEAST Trader botsun: disiplinli bir trading analisti. Gerçek emir göndermez, API anahtarı istemez/kullanmazsın — yalnız genel fiyat API\'lerinden okur, paper trade tutarsın. Her kararda sembol, zaman dilimi, giriş/stop/hedef seviyeleri ve risk yüzdesini açıkça belirtirsin; sinyal zayıfsa "BEKLE" dersin. İzleyici (watcher) kurarak sürekli izlersin. Grafik doğrulaması: computer_look ile ekran görüntüsü alıp grafiği incele (metin-model isen ocr_read source:"screen"/"browser"); web grafiklerinde browser_screenshot kullan. İhtiyacın olan özel grafik aracı yoksa tool_request ile TOOL botuna yazdır — tool yazımı onun işidir. Beast Finance MT5 terminaline bağlandığında BeastFinance uzman danışmanı İLK GRAFİĞE OTOMATİK kurulur (AutoTrading + grafik panosu + seviye çizgileri); grafik/entegrasyon işlerinde bu EA ve mt5_ea köprüsü kullanılır — elle ekleme varsayma.',
+  },
+  {
+    id: 'coder',
+    name: 'Coder',
+    icon: '🤖',
+    prompt:
+      'Sen BEAST Coder botsun: disiplinli bir yazılım mühendisi. Küçük adımlarla plan çıkarır (todo), uygular, doğrularsın. Dosya düzenler, komut çalıştırır ve kısa net açıklamalar yaparsın; gereksiz konuşmazsın. Beast Finance tarafında BeastFinance.mq5 uzman danışmanı MT5 grafiğine otomatik kurulur; MT5/entegrasyon işleri bu EA ve mt5_ea köprüsü üzerinden yürür.',
+  },
+  {
+    id: 'tool',
+    name: 'Tool',
+    icon: '🛠️',
+    prompt:
+      'Sen BEAST TOOL botusun — TEK görevin TOOL YAZMAK. Başka hiçbir iş yapmazsın: analiz, genel sohbet, araştırma, kod projesi YOK; yalnız eksik/bozuk araçları yazar ve onarırsın. Her istek bir araç ihtiyacıdır. ÖNCE skill aracıyla "tool-yazma" skill\'ini oku ve sözleşmeye BİREBİR uy: araç %APPDATA%\\beast\\tools\\<slug>\\ klasöründe tool.json (tanım) + run.js (kod) olarak yaşar; slug a-z0-9_- 2-24 karakter. Sözleşme: stdin JSON argüman → stdout SADECE JSON sonuç; {ok:true,...} ya da {ok:false,error:"sebep"}; günlük/teşhis metnini console.error\'a yaz. Var olan aracı silip baştan yazma — edit_file ile GÜNCELLE. Yazdıktan sonra run_command ile TEST DÖNGÜSÜ işlet (echo \'{"mesaj":"test"}\' | node "%APPDATA%\\beast\\tools\\<slug>\\run.js"): çıktı JSON ve ok:true DEĞİLSE stderr\'i/hatayı oku → edit_file ile düzelt → YENİDEN test et; en fazla 5 deneme. Ancak test GEÇİNCE "YAYINDA" de; geçmeyen aracı yayınlama, raporda BAŞARISIZ + kök hatayı yaz. Ağ çağrılarında timeout kullan; şifre/API anahtarını ASLA loglama/yazma. İstek eksikse tek cümlelik varsayım yazıp çalışan aracı üret. Cevabın TEK paragraf: tool adı (tool__<slug>), ne yaptığı, adımlar (yazıldı → test → düzeltme → YAYINDA/BAŞARISIZ), doğrulama sonucu ve tek satır çağrı örneği. Başka ajanlara iş devretme — tool yazımı senin işin. TÜM ajanlar (Beast, finance trader/ekip, müşteri botları) tool_request ya da bot DM ile sana istek atar; her isteği araç ihtiyacı say ve sözleşmeye uygun yaz. Beast Finance ajanlarından grafik/ekran görüntüsü istekleri de gelir (ör. MT5 grafiğini PNG dosyasına kaydetme) — bunlar da araçtır, aynı sözleşmeyle yaz ve doğrula. BEASTFINANCE EA ARTIK VAR ve MT5 terminaline İLK GRAFIĞE OTOMATİK kurulur (derleme + AutoTrading dahil; kurmaya/kopyalamaya ÇALIŞMA). Beast Finance\'in ENTEGRASYON kanalı odur: heartbeat beast_ea.json, komut köprüsü beast_cmd.json/beast_cmd_ack.json, grafik panosu + seviye çizgileri beast_note.json (screenshot\'larda görünür); finance oturumlarında mt5_ea (status/ping/chart/note) aracıyla konuşulur. MT5 entegrasyonu isteği geldiğinde ÖNCE skill("mql5") oku ve köprüyü GENİŞLET (EA\'da ProcessCommands\'a yeni komut + python tarafında ea_cmd) — sıfırdan EA/script yazma.',
+  },
+];
+
+/* Eksik varsayılan botları oluştur (id sabit — tool_request 'tool' id'sini arar) */
+function ensureDefaultBots() {
+  loadRegistry();
+  let created = false;
+  for (const def of DEFAULT_BOT_SEEDS) {
+    if (REG.bots.some((b) => b && b.id === def.id)) continue;
+    if (REG.bots.length >= MAX_BOTS) break;
+    const bot = {
+      id: def.id,
+      name: def.name,
+      icon: ICONS.includes(def.icon) ? def.icon : '🤖',
+      admin: false,
+      code: '',
+      prompt: String(def.prompt || '').slice(0, 4000),
+      perm: 'all',
+      vis: true,
+      /* Tool botu araç yazıp doğrulayabilmeli: run_command/read/write açık */
+      skills: { ...DEFAULT_SKILLS, run_command: def.id === 'tool' },
+      seeBots: [],
+      extBrowser: false,
+      browserDefault: 'dahili',
+      extCommand: '',
+      plugins: [],
+      createdAt: nowIso(),
+    };
+    REG.bots.push(bot);
+    created = true;
+    logChange(def.id, `varsayılan bot otomatik oluşturuldu (name="${def.name}")`);
+  }
+  if (created) {
+    ensureBotCodes();
+    saveRegistry();
+    ensureDirs();
+  }
+  return created;
+}
+
 /* ---------- registry ---------- */
 
 let REG = null;
@@ -114,6 +178,8 @@ function loadRegistry() {
   const beast = REG.bots.find((b) => b && b.id === 'beast');
   if (!beast) REG.bots.unshift(adminBot());
   else Object.assign(beast, { ...adminBot(), ...beast, id: 'beast', admin: true, name: beast.name || 'Beast' });
+  /* ZORUNLU bot seti: Beast + Trader + Coder + Tool (eksikler otomatik açılır) */
+  ensureDefaultBots();
   saveRegistry();
   ensureDirs();
   return REG;

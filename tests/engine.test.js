@@ -88,6 +88,14 @@ test('finance: sistem promptu SKILLS kataloğunu içerir', () => {
   assert.ok(sys.includes('YETKİLERİN'));
   assert.ok(sys.includes('skill("tool-yazma")'));
   assert.ok(sys.includes('skill("mql5")'));
+  /* grafik/ekran görüntüsü yeteneği + eksik araç devri promptta açık */
+  assert.ok(sys.includes('computer_look'), 'finans ajanı ekran görüntüsü aracını bilmeli');
+  assert.ok(sys.includes('browser_screenshot'), 'web grafik görüntüsü aracı promptta olmalı');
+  assert.ok(sys.includes('ocr_read'), 'metin modelleri için OCR yolu promptta olmalı');
+  assert.ok(sys.includes('tool_request'), 'eksik grafik aracı TOOL botuna yazdırılabilmeli');
+  /* BeastFinance EA otomatik kurulur ve entegrasyon kanalıdır */
+  assert.ok(sys.includes('BEASTFINANCE EA'), 'EA entegrasyon bilgisi promptta olmalı');
+  assert.ok(sys.includes('mt5_ea'), 'mt5_ea köprü aracı promptta olmalı');
   const names = list.map((x) => x.name);
   assert.ok(names.includes('tool-yazma'), 'tool-yazma skill varsayılan tohum olmalı');
   assert.ok(names.includes('mql5'), 'mql5 skill varsayılan tohum olmalı');
@@ -189,6 +197,45 @@ test('payload hizalama: yetim tool sonucu / cevapsız tool_call temizlenir', () 
   assert.equal(orphan[1].role, 'user');
 });
 
+test('agent_dm: image:true son ekran görüntüsünü DM kaydına ve karşı ajana taşır', async () => {
+  const eng = makeEngine();
+  eng.flushPendingReports = () => {}; /* teslim akışı bu testin dışında */
+  const img = 'data:image/png;base64,' + 'A'.repeat(64);
+  const from = eng._load(eng.createSession().id);
+  from.messages.push({
+    role: 'user',
+    content: [{ type: 'text', text: '[ekran görüntüsü]' }, { type: 'image_url', image_url: { url: img } }],
+  });
+  eng.cache.set(from.id, from);
+  eng._bgJobs.set(String(from.id), { id: String(from.id), code: 'VIS', title: 'Görsel Ajan', status: 'running' });
+  eng._bgJobs.set('tr1', { id: 'tr1', code: 'TRD', title: 'Trader', status: 'running', continuous: true });
+  const r = JSON.parse(await eng._execTool('agent_dm', { to: 'Trader', message: 'grafik yapısı bozuk', image: true }, null, from.id));
+  assert.equal(r.ok, true);
+  /* DM paneli kaydı görseli taşır */
+  const list = eng.agentDmsList();
+  const rec = list.dms.find((d) => d.image);
+  assert.ok(rec, 'DM kaydında görsel olmalı');
+  assert.equal(rec.image, img);
+  /* karşı ajanın teslim kaydı da görseli taşır (vision mesajı olarak gider) */
+  const rep = (eng._pendingReports || []).find((x) => String(x.parentId) === 'tr1');
+  assert.ok(rep, 'hedef ajan için bekleyen rapor olmalı');
+  assert.equal(rep.image, img);
+  eng.agentDmsClear();
+});
+
+test('agent_dm: görselsiz DM kaydında image alanı yoktur (payload şişmez)', async () => {
+  const eng = makeEngine();
+  eng.flushPendingReports = () => {};
+  eng._bgJobs.set('a1', { id: 'a1', code: 'AAA', title: 'GOLD İşçisi', status: 'running', continuous: true });
+  eng._bgJobs.set('a2', { id: 'a2', code: 'BBB', title: 'Trader', status: 'running', continuous: true });
+  const r = JSON.parse(await eng._execTool('agent_dm', { to: 'Trader', message: 'düz metin' }, null, 'a1'));
+  assert.equal(r.ok, true);
+  const rec = eng.agentDmsList().dms.find((d) => d.text === 'düz metin');
+  assert.ok(rec);
+  assert.ok(!rec.image, 'görselsiz DM kaydı image taşımamalı');
+  eng.agentDmsClear();
+});
+
 test('skill aracı: katalogdaki SKILL.md gövdesini döndürür', async () => {
   const eng = makeEngine();
   const list = require('../src/agent/skills').scan();
@@ -200,6 +247,14 @@ test('skill aracı: katalogdaki SKILL.md gövdesini döndürür', async () => {
   /* olmayan skill zarif hata verir */
   const bad = JSON.parse(await eng._execTool('skill', { name: 'boyle-skill-yok' }, null, 's1'));
   assert.equal(bad.ok, false);
+});
+
+test('tool_request: dispatch bağlı — boş task "unknown tool" değil zarif hata döner', async () => {
+  const eng = makeEngine();
+  const r = JSON.parse(await eng._execTool('tool_request', {}, null, 's1'));
+  assert.equal(r.ok, false);
+  assert.match(String(r.error), /task gerekli/);
+  assert.ok(!/unknown tool/.test(String(r.error)), 'tool_request tanımı dispatch edilmeli');
 });
 
 /* ---------- sürekli paralel ajanlar + AJAN DM ---------- */
@@ -251,7 +306,8 @@ test('DM teslimi: sürekli ajanı UYANDIRMAZ — inbox\'a yazılır (sonsuz DM p
   ];
   eng.flushPendingReports('c1');
   assert.deepEqual(sent, [], 'sürekli ajan DM ile yeni tur AÇMAMALI');
-  assert.deepEqual(eng._bgJobs.get('c1').dmInbox, ['[AJAN DM] sürekli ajana']);
+  assert.equal(eng._bgJobs.get('c1').dmInbox.length, 1);
+  assert.equal(eng._bgJobs.get('c1').dmInbox[0].text, '[AJAN DM] sürekli ajana');
   assert.equal(eng._pendingReports.length, 1, 'normal ajanın raporu kuyrukta kalır');
   eng.flushPendingReports('n1');
   assert.deepEqual(sent, ['n1'], 'normal ajan DM ile uyanır');

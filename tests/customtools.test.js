@@ -53,3 +53,19 @@ test('customtools: bozuk JSON çıktı metne sarılır', async () => {
   assert.equal(out.result, 'merhaba dünya');
   customtools.remove('test_raw');
 });
+
+test('customtools: tool KENDİ klasöründe koşar (cwd = tools/<slug>)', async () => {
+  customtools.save({
+    name: 'test_cwd',
+    description: 'cwd kontrolü',
+    parameters: { type: 'object', properties: {} },
+    code: "console.log(JSON.stringify({ ok: true, cwd: process.cwd() }));",
+  });
+  const out = await customtools.call('tool__test_cwd', {});
+  assert.equal(out.ok, true);
+  assert.ok(
+    String(out.cwd || '').replace(/\\/g, '/').toLowerCase().endsWith('/tools/test_cwd'),
+    'beklenen cwd tools/test_cwd, gelen: ' + out.cwd
+  );
+  customtools.remove('test_cwd');
+});

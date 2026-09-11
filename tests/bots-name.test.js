@@ -12,6 +12,12 @@ const path = require('path');
 process.env.BEAST_DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'beast-bots-name-'));
 const bots = require('../src/agent/bots');
 
+/* zorunlu varsayılan botlar (trader/coder/tool) müşteri slotlarını doldurmasın —
+   bu dosya ad disiplinini sınıyor, MAX_BOTS tavanına takılmamalı */
+for (const id of ['trader', 'coder', 'tool']) {
+  try { bots.remove(id); } catch {}
+}
+
 test('bot ekleme: ad harf ile başlamalı', () => {
   for (const bad of ['1Muhasebe', '9bot', '-abc', '_x', ' 3BoT']) {
     const r = bots.add({ name: bad, prompt: '' });

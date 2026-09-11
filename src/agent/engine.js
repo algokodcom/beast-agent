@@ -132,15 +132,16 @@ const PERM_TOOL_SETS = {
     'web_search', 'http_fetch', 'webfetch', 'deep_search',
     'browser_open', 'browser_read', 'browser_snapshot', 'browser_screenshot',
     'browser_click', 'browser_type', 'browser_press', 'browser_scroll', 'browser_select',
-    'ocr_read',
+    'ocr_read', 'tool_request',
   ]),
   read: new Set([
     'web_search', 'http_fetch', 'webfetch', 'deep_search',
     'browser_open', 'browser_read', 'browser_snapshot',
     'list_dir', 'read_file', 'grep', 'glob',
     'git_diff_review', 'repo_map', 'repo_symbols', 'xlsx_read',
+    'tool_request',
   ]),
-  chat: new Set([]), // sadece sohbet
+  chat: new Set(['tool_request']), // sohbet + tool devri
 };
 const PERM_LEVELS = ['all', 'web', 'read', 'chat'];
 
@@ -320,6 +321,8 @@ class Engine {
     this.browser = opts.browser || null; // dahili tarayıcı kancaları
     this.fileSend = opts.fileSend || null; // #26 dosya gönderim köprüsü (chat/WA)
     this.notifyOwnerFail = opts.notifyOwnerFail !== false; // #25 hata mail bildirimi (runtime /notify)
+    /* ENTEGRASYON BİLDİRİMİ: tool yazım/doğrulama adımları WA/TG/Discord'a düşer */
+    this.integrationNotify = typeof opts.integrationNotify === 'function' ? opts.integrationNotify : null;
     this.reminders = opts.reminders || null; // hatırlatıcı kancası (main enjekte eder)
     this.watchers = opts.watchers || null; // arka plan izleyici köprüsü (main enjekte eder)
     /* opencode permission Service (birebir port): ask/reply — once|always|reject.
@@ -1918,6 +1921,8 @@ class Engine {
           'ROL: TEKNİK ANALİZ AJANI 📊 — fiyat yapısı uzmanısın, İşlem AÇMAZSIN (mt5_trade/mt5_pending/mt5_close KULLANMA). Her turda odak semboller için: trend/yapı, destek-direnç bölgeleri, momentum (mt5_market + mt5_history verisiyle); sembol başına AL/SAT/BEKLE + giriş/SL/TP fikri üret — trader bu öneriyi işleme çevirir.',
         macro:
           'ROL: MAKRO AJANI 🌍 — büyük resim uzmanısın, İşlem AÇMAZSIN (mt5_trade/mt5_pending/mt5_close KULLANMA). Her turda web_search ile güncel makro manşetleri + ekonomik takvim riskleri (faiz, CPI, jeopolitik); DXY/altın/petrol bağıntılarını odak sembollere çevir; sembol başına yön eğilimi + TEMKİN/BEKLE notu ver.',
+        visual:
+          'ROL: GÖRSEL ANALİZ AJANI 👁 — grafik/ekran görüntüsü uzmanısın, İşlem AÇMAZSIN (mt5_trade/mt5_pending/mt5_close KULLANMA). Her turda computer_look ile MT5 grafiğini yakala (gerekirse computer_act ile timeframe/zoom ayarla); web grafikleri için browser_open + browser_screenshot, görsel göremeyen metin-model isen ocr_read (source:"screen"/"browser") kullan. Gördüğün yapıyı yorumla: trend, formasyon, mum yapısı, destek-direnç ve SL/TP çizgileri; sembol başına GÖRSEL TEYİT + AL/SAT/BEKLE notu üret. Önemli bulguyu görseliyle birlikte agent_dm ile ANA TRADER\'a ya da ekibe bildir (yakaladığın grafiği paylaş).',
       })[String((session && session.financeRole) || '')] || '';
     /* ROL → SKILL eşleştirmesi (ayarlar modalı): rol başına TEK ve ZORUNLU
        skill; ANA TRADER için ayrıca PLAYBOOK skill'i (roleSkills.trader).
@@ -1956,12 +1961,20 @@ class Engine {
       modeBlock2 + '\n' +
       (roleBlockFull ? roleBlockFull + '\n' : '') +
       (teamLine || '') +
-      'MT5 ARAÇLARI: mt5_status (bağlantı), mt5_account (hesap), mt5_market (canlı fiyat), mt5_positions (açık pozisyonlar), mt5_orders (bekleyen emirler), mt5_history (kapanan işlemler), mt5_trade (piyasa emri), mt5_close (kapat), mt5_modify (SL/TP), mt5_pending (bekleyen emir), mt5_cancel (emir iptal).\n' +
+      'MT5 ARAÇLARI: mt5_status (bağlantı), mt5_account (hesap), mt5_market (canlı fiyat), mt5_positions (açık pozisyonlar), mt5_orders (bekleyen emirler), mt5_history (kapanan işlemler), mt5_ea (BeastFinance grafik panosu: status/ping/chart/note), mt5_trade (piyasa emri), mt5_close (kapat), mt5_modify (SL/TP), mt5_pending (bekleyen emir), mt5_cancel (emir iptal).\n' +
+      'BEASTFINANCE EA (OTOMATİK GRAFİK UZMANI — ENTEGRASYON KANALI): MT5 terminaline bağlanıldığında BeastFinance uzman danışmanı İLK GRAFİĞE OTOMATİK yüklenir, AutoTrading izni açılır (kurulum sistem tarafından yapılır; elle ekleme gerekmez). Grafik panosu + seviye çizgileri + dosya köprüsü (beast_ea.json / beast_cmd.json / beast_note.json) bu EA üzerinden yürür: entegrasyon işlerinde (status/ping/chart/note) mt5_ea kullan; yazdığın not ve çizgiler computer_look screenshot\'ında görünür, entegrasyon bildirimleriyle birlikte çalışır.\n' +
       'YETKİLERİN (AÇIK — çekinmeden kullan):\n' +
       '- skill: kurulu SKILL.md kataloğunu oku ve uygula — tool yazmadan ÖNCE skill("tool-yazma"), MT5 tarafı işlerden ÖNCE skill("mql5") oku ve prosedürüne birebir uy.\n' +
       '- Kişisel tool yazma: %APPDATA%\\beast\\tools\\<slug>\\ içine tool.json + run.js yaz (write_file/edit_file); run_command ile çıktısını (JSON, ok alanlı) doğrula → tool__<slug> ANINDA tüm finance ajanlarında çağrılabilir olur.\n' +
       '- MQL5: MT5 tarafında script/gösterge/EA yaz (write_file), metaeditor64.exe /compile ile derle, MQL5\\Files dosya köprüsüyle veriyi Beast\'e taşı; kullanıcıya çalıştırma adımını açıkça söyle.\n' +
-      '- Yerleşik araçlar: run_command, python_run, read_file/write_file/edit_file, web_search/deep_search, browser_* — hepsi açık.\n' +
+      '- Yerleşik araçlar: run_command, python_run, read_file/write_file/edit_file, web_search/deep_search, browser_*, computer_look (ekran görüntüsü) — hepsi açık.\n' +
+      'GRAFİK & EKRAN GÖRÜNTÜSÜ (karar öncesi görsel doğrulama):\n' +
+      '- computer_look: masaüstü ekranını yakalar — MT5 grafiği SONRAKİ turda görsel olarak önüne gelir; trend/formasyon/mum yapısı + SL/TP çizgilerini doğrudan gör. Önemli işlem kararından önce grafiği gözle doğrula.\n' +
+      '- mt5_ea action:"note": grafiğe kısa analiz/plan metni + seviye çizgileri (destek/direnç/SL/TP) yazar — BeastFinance EA panosu computer_look screenshot\'ında GÖRÜNÜR; entegrasyon bildirimleriyle birlikte kullan.\n' +
+      '- browser_screenshot: web tabanlı grafikler (TradingView, Investing, MQL5) — browser_open ile aç, ekran görüntüsünü incele.\n' +
+      '- Görsel göremiyorsan (metin-model) ocr_read kullan: source:"screen" masaüstünü, source:"browser" paneli OCR ile okur; grafikteki fiyat/seviyeleri metne çevirir.\n' +
+      '- Grafikte gezinme/ölçek: computer_act ile timeframe, scroll, zoom (arka planda çalışır — kullanıcının faresini çalmaz).\n' +
+      '- EKSİK ARAÇ: özel grafik aracı gerekiyorsa (ör. MT5 grafiğini PNG dosyasına kaydetme, çoklu timeframe tek görüntü, indikatör paneli okuma) VAR SAYMA — tool_request ile TOOL botuna yazdır (doğrulanınca tool__<ad> olarak ANINDA çağrılır); küçük aracı skill("tool-yazma") prosedürüyle kendin de yazabilirsin.\n' +
       'VERİ AKIŞI (her değerlendirmede): mt5_account + mt5_positions + mt5_market çağrılarını AYNI turda PARALEL ver; gerekiyorsa mt5_history ile son işlemleri gör.\n' +
       'PARALEL + KOORDİNASYON: uzun araştırma/işleri run_background ile paralel finance işçisine devret (parent finance olduğu için işçi mt5 okuma araçlarını görür); koşan ajanlarla konuşmak için agent_dm (to: ajan başlığındaki anahtar kelime, örn "GOLD"; ortak karar için group: "İSİM" ile grup sohbeti kur — mesaj tüm üyelere düşer). Görevin bitince DM/grup sohbetleri otomatik KAPANIR (geçmiş panelde kalır).\n' +
       (symbols ? `İZLEME LİSTESİ: ${symbols}\n` : '') +
@@ -2031,6 +2044,14 @@ class Engine {
         '# SKILLS\nKullanmadan önce ilgili SKILL.md dosyasını read_file ile oku.\n' + sk.join('\n')
       );
     }
+    /* BOTLAR: MT5/Beast Finance entegrasyon kanalı — BeastFinance EA'sı otomatik
+       kurulur; botlar grafik/entegrasyon işlerinde bunu bilerek hareket etsin */
+    if (bctx) {
+      parts.push(
+        '# MT5 / BEAST FINANCE ENTEGRASYONU\n' +
+          'Beast Finance açıldığında MT5 terminaline bağlanılır; BeastFinance.mq5 uzman danışmanı İLK GRAFİĞE OTOMATİK kurulur ve AutoTrading açılır. Grafik/entegrasyon işleri bu EA üzerinden yürür (heartbeat beast_ea.json, komut köprüsü beast_cmd.json, grafik panosu/seviyeler beast_note.json; finance oturumlarında mt5_ea status/ping/chart/note) — pano ve çizgiler screenshot\'larda görünür. Elle EA ekleme varsayma; eksik araç gerekiyorsa Tool botuna tool_request at.'
+      );
+    }
     /* opencode instruction port (ajan modu): workspace AGENTS/CLAUDE/CONTEXT
        talimatları — oturum başına bir kez okunur, epoch boyunca sabit */
     const projChat = this._projectInstructions(session);
@@ -2072,6 +2093,7 @@ class Engine {
           'Kullanıcı bir tarihte/saatte hatırlatılmasını isterse set_reminder kullan; when değerini ORTAMdaki bugüne göre hesapla (yerel saat). "Her sabah/gün/hafta" gibi tekrarlı isteklerde repeat alanını da ver (daily/weekly/monthly/weekdays veya cron).',
                     'Kullanıcı kalıcı bir arka plan takibi isterse (fiyat eşiği, pil seviyesi, sayfa değişikliği) watcher_add ile izleyici kur; kurduktan sonra watcher_list ile doğrula ve kullanıcıya koşulu + kontrol sıklığını kısaca bildir.',
           'Anlık olay takipleri için (yeni mail, fiyat eşiği, dosya değişimi, webhook) event_subscribe kullan — cron/polling gerekmez; listeyi event_list ile göster, vazgeçirirse event_unsubscribe.',
+          'ARAÇ EKSİKSE ÇEKİNME (CEPHANE): ihtiyacın olan bir araç yoksa/bozuksa tool_request ile TOOL botuna yazdır — tool yazımı onun TEK işidir; task alanına araç adı + ne yapacağı + girdi/çıktı sözleşmesini, context alanına örnek veri/yol/endpoint yaz. Araç doğrulanınca tool__<ad> olarak ANINDA çağrılabilir. Küçük kişisel araçları skill("tool-yazma") prosedürüyle kendin de yazabilirsin — yazdığını run_command ile MUTLAKA doğrula.',
           'LOG ZEKASI: "hata var mı / ne oldu / neden çalışmadı" sorularında ya da bir iş beklenmedik bittiğinde/hata verdiğini fark ettiğinde log_analyze ile logları tara — top desenleri okuyup en olası KÖK NEDENİ tek cümlede söyle, somut çözüm öner; aynı desen 3+ tekrarlıysa bunu vurgula. Sürekli log gözetimi istenirse watcher_add ile kind:"logs" kur (örn "hata artarsa bağır" → level:"error", windowMin:10, op:"gt", value:2) ve koşulu kısaca bildir.',
         'Kullanıcı "artık hep böyle yap / bunu unutma" tarzı kalıcı talimat verirse kural olarak kaydet: sohbette /rule <metin> kullanmasını söyle VEYA kullanıcı isterse event_subscribe ile olaya bağlan (mail/fiyat/dosya/webhook).',
           'Kullanıcının mesajında 2+ ayrı iş/hedef varsa (örn "X yap ve sonra Y\u2019i kontrol et") KODLAMAYA/İŞE BAŞLAMADAN önce todo_write ile plan çıkar ve sırayla yürüt; her adımı tamamlarken güncelle. LİSTE DİSİPLİNİ: her adım bittiği AN status:"done" yap; son cevabını vermeden önce tüm maddeler done olmalı — yapılmayacaksa listeden düş. Listeyi yarım bırakma.',
@@ -2753,14 +2775,30 @@ class Engine {
       const jobRec = this._bgJobs && this._bgJobs.get(String(sessionId));
       if (jobRec && Array.isArray(jobRec.dmInbox) && jobRec.dmInbox.length) {
         const inbox = jobRec.dmInbox.splice(0);
-        const boxText = inbox.join('\n\n').slice(0, 6000);
+        const boxText = inbox
+          .map((x) => (typeof x === 'string' ? x : String((x && x.text) || '')))
+          .join('\n\n')
+          .slice(0, 6000);
+        /* görselli DM'ler: son 2 görsel bu turun mesajına vision olarak eklenir */
+        const inboxImgs = inbox
+          .map((x) => (x && typeof x === 'object' && /^data:image\//i.test(String(x.image || '')) ? String(x.image) : ''))
+          .filter(Boolean)
+          .slice(-2);
         const prefix =
           `[BEKLEYEN AJAN DM'LERİ — ${inbox.length} mesaj]\n${boxText}\n` +
           `(Tur aralığında biriken DM'ler. Bu turda değerlendir; yalnızca aksiyon/cevap GEREKİYORSA agent_dm ile TEK kısa cevap ver — teşekkür/onay/ack mesajı YAZMA.)\n\n`;
         if (typeof msg.content === 'string') {
-          msg.content = prefix + msg.content;
-        } else if (Array.isArray(msg.content) && msg.content[0] && typeof msg.content[0].text === 'string') {
-          msg.content[0] = { ...msg.content[0], text: prefix + msg.content[0].text };
+          msg.content = inboxImgs.length
+            ? [
+                { type: 'text', text: prefix + msg.content },
+                ...inboxImgs.map((u) => ({ type: 'image_url', image_url: { url: u } })),
+              ]
+            : prefix + msg.content;
+        } else if (Array.isArray(msg.content)) {
+          if (msg.content[0] && typeof msg.content[0].text === 'string') {
+            msg.content[0] = { ...msg.content[0], text: prefix + msg.content[0].text };
+          }
+          for (const u of inboxImgs) msg.content.push({ type: 'image_url', image_url: { url: u } });
         }
       }
     } catch {}
@@ -3604,13 +3642,21 @@ class Engine {
       if (this._deletedSessions && this._deletedSessions.has(sessionId)) continue;
       if (continuous) {
         job.dmInbox = job.dmInbox || [];
-        job.dmInbox.push(String(r.text || '').slice(0, 4000));
+        job.dmInbox.push({
+          text: String(r.text || '').slice(0, 4000),
+          ...(r.image ? { image: String(r.image) } : {}),
+        });
         if (job.dmInbox.length > 20) job.dmInbox.splice(0, job.dmInbox.length - 20);
         continue;
       }
       if (this.isBusy(sessionId)) { rest.push(r); continue; }
       let sent = false;
-      try { sent = !!this.send(sessionId, { text: r.text }); } catch {}
+      try {
+        const payload = { text: r.text };
+        /* görselli DM: hedef ajan görüntüyü gerçekten GÖRSÜN (vision mesajı) */
+        if (r.image) payload.attachments = [{ type: 'image', name: 'ekran goruntusu', dataUrl: String(r.image) }];
+        sent = !!this.send(sessionId, payload);
+      } catch {}
       if (!sent) rest.push(r);
     }
     this._pendingReports = rest;
@@ -3630,6 +3676,7 @@ class Engine {
       `DOSYA KURALI: dosya işlemlerinde özel araçları kullan — VAR OLAN dosyayı edit_file ile düzenle, yeniyi write_file ile yaz, okuma/arama read_file/grep/glob; run_command terminal işlerindir (build, git, kurulum). Bir dosyayı BİR KEZ oku — içerik bağlamda kalır, tekrar okuma.\n` +
       (proj ? `PROJE TALİMATLARI (workspace AGENTS/CLAUDE/CONTEXT — daima uy):\n${proj}\n` : '') +
       `HIZ KURALLARI:\n` +
+      `- TOOL İSTEĞİ (CEPHANE): ihtiyacın olan araç yoksa/bozuksa tool_request ile TOOL botuna yazdır (araç doğrulanınca tool__<ad> olarak anında çağrılır); küçük aracı skill("tool-yazma") ile kendin de yaz ve run_command ile doğrula.\n` +
       `- Döngülü işleri (çok URL/dosya/sayfa, tekrarlı parse-hesap) TEK python_run betiğinde topluca bitir.\n` +
       `- Web için web_search kullan (zincir dahili tarayıcıyla başlar — gerçek Chromium ile Google); tek aramada bulunamazsa veya çok kaynaklı derin araştırma gerekiyorsa deep_search kullan (çoklu sorgu paralel + gizli tarayıcıda tam sayfa okuma). Sayfa açma/göstermenin VARSAYILANI DAHİLİ tarayıcıdır: browser_open → browser_snapshot → browser_click/type/read. Kullanıcı açıkça dış tarayıcı (chrome/firefox/başka/normal/kendi tarayıcım) istediyse run_command ile \`start "" <url>\` çalıştır. Görseli göremiyorsan metni ocr_read ile oku (source:"browser").\n` +
       `- Bağımsız araç çağrılarını aynı turda PARALEL ver.\n` +
@@ -3707,6 +3754,11 @@ class Engine {
         (session.bgJob || session.finance || !session.botId || session.botId === 'beast')
       ) {
         toolsList = [...toolsList, AGENT_DM_DEF];
+      }
+      /* TOOL İSTEĞİ (cephane): tool botu hariç TÜM oturumlar — müşteri bot
+         sohbetleri, paralel ajanlar ve finance ajanları dahil */
+      if (session && !session.isBotDm && session.botId !== 'tool') {
+        toolsList = [...toolsList, TOOL_REQUEST_DEF];
       }
       /* panel_run yalnız SANDBOX oturumlarında görünsün — diğer panellerde
          modelin alet çantasında olmasın (hook olmadan çalışmaz) */
@@ -4613,6 +4665,59 @@ const skills = require('./skills');
      Admin bot, 5 haneli kodla başka bota özel mesaj atar; hedef botun cevabı
      senkron döner. İzolasyon: DM turları gizli pair oturumunda yürür, bot_dm
      DM oturumlarında KAPALI (döngü koruması). Tüm trafik admin DM Log'ta. */
+
+  /* Deterministik pair oturumu: dm + (küçük kod + büyük kod) — aynı çift aynı oturum */
+  _botPairId(senderBotId, target) {
+    const sender = (typeof this.resolveBot === 'function' && senderBotId) ? this.resolveBot(senderBotId) : null;
+    const codes = [String(sender ? sender.code || '' : ''), String(target && target.code || '')]
+      .map((c) => (/^\d{5}$/.test(c) ? c : '00000'))
+      .sort();
+    return 'dm' + codes[0] + codes[1];
+  }
+
+  /* Ortak bot sohbeti: hedef bota mesajı düşür, tur bitene kadar bekle, son
+     asistan cevabını döndür. bot_dm (admin) + tool_request (tool botu) kullanır. */
+  async _botConverse(senderBotId, target, message, signal, timeoutMs) {
+    const pairId = this._botPairId(senderBotId, target);
+    let pair = this.cache.get(pairId) || this._load(pairId);
+    if (!pair.isBotDm) {
+      try {
+        fs.appendFileSync(this._file(pairId), JSON.stringify({ t: 'botdm', a: senderBotId, b: target.id, at: nowIso() }) + '\n');
+      } catch {}
+      pair.isBotDm = true;
+      pair.dmA = senderBotId;
+      pair.dmB = target.id;
+    }
+    /* hedef botun kimliğiyle çalışsın; izolasyon _botSystemBlock'tan gelir */
+    this.setSessionBot(pairId, target.id);
+    this.setSessionPerm(pairId, target.perm || 'all');
+    const senderBot = (typeof this.resolveBot === 'function' && senderBotId) ? this.resolveBot(senderBotId) : null;
+    const senderName = senderBot ? senderBot.name : 'Beast';
+    const senderCode = senderBot && /^\d{5}$/.test(String(senderBot.code || '')) ? senderBot.code : '';
+    const prefix = `[BOT DM — gönderen bot: ${senderName}${senderCode ? ' (kod ' + senderCode + ')' : ''} — cevabını kısa ve net ver, araç kullanman gerekmiyorsa kullanma]`;
+    const before = pair.messages.length;
+    const sent = this.send(pairId, { text: prefix + '\n' + message });
+    if (!sent) return { ok: false, error: 'DM oturumu başlatılamadı' };
+    /* tur bitene kadar bekle (ctrl kaydı düşer) */
+    const limit = Math.max(30000, Math.min(600000, Number(timeoutMs) || 120000));
+    const t0 = Date.now();
+    while (Date.now() - t0 < limit) {
+      if (signal && signal.aborted) return { ok: false, error: 'iptal edildi' };
+      await new Promise((r) => setTimeout(r, 400));
+      if (!this.ctrls.has(pairId)) break;
+    }
+    if (this.ctrls.has(pairId)) {
+      try { this.interrupt(pairId, 'bot DM zaman aşımına uğradı — tur kesildi'); } catch {}
+      return { ok: false, error: `hedef bot zaman aşımına uğradı (${Math.round(limit / 1000)} sn) — TOOLS panelinden sonucu takip et` };
+    }
+    const after = this.cache.get(pairId) || pair;
+    const newMsgs = after.messages.slice(before);
+    const lastA = [...newMsgs].reverse().find((m) => m.role === 'assistant' && m.content && !(m.tool_calls && m.tool_calls.length));
+    const reply = lastA ? String(typeof lastA.content === 'string' ? lastA.content : '(medya içerikli cevap)').slice(0, 12000) : '';
+    if (!reply.trim()) return { ok: false, error: 'hedef bot cevap vermedi' };
+    return { ok: true, from: target.name, code: target.code, reply };
+  }
+
   async _botDm(args, sessionId, signal) {
     const bots = require('./bots');
     const code = String((args && args.to) || '').replace(/\D/g, '');
@@ -4631,51 +4736,54 @@ const skills = require('./skills');
     const target = bots.byCode(code);
     if (!target) return { ok: false, error: `bu kotta bot yok: ${code}` };
     if (target.id === senderBotId) return { ok: false, error: 'kendine DM atılamaz' };
+    return this._botConverse(senderBotId, target, message, signal, 120000);
+  }
 
-    /* deterministik pair oturumu: dm + (küçük kod + büyük kod) — aynı çift aynı oturum */
-    const codes = [String(senderBot ? senderBot.code || '' : ''), String(target.code || '')]
-      .map((c) => (/^\d{5}$/.test(c) ? c : '00000'))
-      .sort();
-    const pairId = 'dm' + codes[0] + codes[1];
-
-    let pair = this.cache.get(pairId) || this._load(pairId);
-    const fresh = !pair.isBotDm && !pair.messages.length;
-    if (!pair.isBotDm) {
+  /* TOOL İSTEĞİ (cephane): her oturum/bot eksik aracı TOOL botuna yazdırır.
+     Admin şartı YOK — amaç tüm ajanların tool üretebilmesi; tool botunun
+     kendisi ve DM oturumları hariç (döngü koruması). */
+  async _toolRequest(args, sessionId, signal) {
+    const bots = require('./bots');
+    const task = String((args && args.task) || '').slice(0, 4000);
+    const context = String((args && args.context) || '').slice(0, 4000);
+    if (!task.trim()) return { ok: false, error: 'task gerekli — hangi araç, ne yapacak, girdi/çıktısı ne?' };
+    const session = this.cache.get(String(sessionId)) || this._load(String(sessionId));
+    if (session && session.isBotDm) return { ok: false, error: 'DM oturumunda tool_request kullanılamaz' };
+    const senderBotId = (session && session.botId) || 'beast';
+    if (senderBotId === 'tool') return { ok: false, error: 'Tool botu kendi işini kendisi yapar — doğrudan yaz' };
+    const all = bots.list() || [];
+    const target = all.find((b) => b && b.id === 'tool') || all.find((b) => b && /tool/i.test(String(b.name || '')));
+    if (!target) return { ok: false, error: 'Tool botu bulunamadı — botlar sayfasından oluştur' };
+    const who = (() => {
       try {
-        fs.appendFileSync(this._file(pairId), JSON.stringify({ t: 'botdm', a: senderBotId, b: target.id, at: nowIso() }) + '\n');
-      } catch {}
-      pair.isBotDm = true;
-      pair.dmA = senderBotId;
-      pair.dmB = target.id;
+        const b = typeof this.resolveBot === 'function' ? this.resolveBot(senderBotId) : null;
+        return (b && b.name) || (session && session.bgTitle) || 'Beast';
+      } catch { return 'Beast'; }
+    })();
+    const message =
+      `TOOL İSTEĞİ (gönderen: ${who}):\n` + task + '\n' +
+      (context ? `\nBAĞLAM (kod/yol/örnek veri/endpoint):\n` + context + '\n' : '') +
+      `\nHatırlatma: skill("tool-yazma") oku; %APPDATA%\\beast\\tools\\<slug>\\ içine tool.json + run.js yaz; run_command ile TEST DÖNGÜSÜNÜ işlet (çıktı {ok:true} olana kadar hata oku → edit_file ile düzelt → yeniden test; en fazla 5 deneme). Ancak test geçince yayınla; geçmeyen aracı yayınlama. Raporunda adımları yaz: yazıldı → test sonucu → (varsa) düzeltmeler → YAYINDA/BAŞARISIZ + tek satır çağrı örneği.`;
+    const r = await this._botConverse(senderBotId, target, message, signal, 240000);
+    /* RAPOR: tool yazım/doğrulama adımları bağlı entegrasyonlara (WA/TG/Discord) düşer */
+    const notifyIntegrations = (text) => {
+      try { if (typeof this.integrationNotify === 'function') this.integrationNotify(text); } catch {}
+    };
+    if (!r || !r.ok) {
+      notifyIntegrations('🛠️ Tool botu BAŞARISIZ — isteyen: ' + who + '\nİstenen: ' + task.slice(0, 140) + '\nSebep: ' + String((r && r.error) || 'yanıt yok'));
+      return r || { ok: false, error: 'Tool botu yanıt vermedi' };
     }
-    /* hedef botun kimliğiyle çalışsın; izolasyon _botSystemBlock'tan gelir */
-    this.setSessionBot(pairId, target.id);
-    this.setSessionPerm(pairId, target.perm || 'all');
-
-    const senderName = senderBot ? senderBot.name : 'Beast';
-    const senderCode = senderBot && /^\d{5}$/.test(String(senderBot.code || '')) ? senderBot.code : codes[0];
-    const prefix = `[BOT DM — gönderen bot: ${senderName} (kod ${senderCode}) — cevabını kısa ve net ver, araç kullanman gerekmiyorsa kullanma]`;
-    const before = pair.messages.length;
-    const sent = this.send(pairId, { text: prefix + '\n' + message });
-    if (!sent) return { ok: false, error: 'DM oturumu başlatılamadı' };
-
-    /* tur bitene kadar bekle (ctrl kaydı düşer), en fazla 120 sn */
-    const t0 = Date.now();
-    while (Date.now() - t0 < 120000) {
-      if (signal && signal.aborted) return { ok: false, error: 'iptal edildi' };
-      await new Promise((r) => setTimeout(r, 400));
-      if (!this.ctrls.has(pairId)) break;
-    }
-    if (this.ctrls.has(pairId)) {
-      try { this.interrupt(pairId, 'bot DM zaman aşımına uğradı (120 sn) — tur kesildi'); } catch {}
-      return { ok: false, error: 'hedef bot zaman aşımına uğradı (120 sn)' };
-    }
-    const after = this.cache.get(pairId) || pair;
-    const newMsgs = after.messages.slice(before);
-    const lastA = [...newMsgs].reverse().find((m) => m.role === 'assistant' && m.content && !(m.tool_calls && m.tool_calls.length));
-    const reply = lastA ? String(typeof lastA.content === 'string' ? lastA.content : '(medya içerikli cevap)').slice(0, 12000) : '';
-    if (!reply.trim()) return { ok: false, error: 'hedef bot cevap vermedi' };
-    return { ok: true, from: target.name, code: target.code, reply };
+    notifyIntegrations(
+      '🛠️ Tool botu raporu — isteyen: ' + who + '\n' +
+      'İstenen: ' + task.slice(0, 140) + '\n' +
+      String(r.reply || '').replace(/\s+/g, ' ').slice(0, 500)
+    );
+    return {
+      ok: true,
+      tool_bot: r.from,
+      reply: r.reply,
+      note: 'Araç hazır olduğunda modele tool__<slug> olarak ANINDA açılır (doğrulama testini Tool botu yaptı; adımlar entegrasyonlara bildirildi).',
+    };
   }
 
   /* ADMIN İZLEME: tüm botlar arası DM oturumlarının listesi */
@@ -5046,7 +5154,7 @@ const skills = require('./skills');
       }
       /* AJAN DM: ajanlar arası mesaj — hedef koşan ajanın oturumuna düşer */
       if (name === 'agent_dm') {
-        return JSON.stringify(this._agentDmSend(sessionId, args));
+        return JSON.stringify(await this._agentDmSend(sessionId, args));
       }
       /* KİŞİSEL TOOL: %APPDATA%\beast\tools\ — çocuk node prosesinde izole koşar */
       if (String(name).startsWith('tool__')) {
@@ -5235,6 +5343,11 @@ const skills = require('./skills');
         }
         const r = await this._botDm(args, sessionId, signal);
         return JSON.stringify(r);
+      }
+      /* TOOL İSTEĞİ (cephane): eksik/bozuk aracı TOOL botuna yazdırır —
+         tanım toolsList'e ekleniyordu ama dispatch'e bağlı değildi, burada bağlanır */
+      if (name === 'tool_request') {
+        return JSON.stringify(await this._toolRequest(args || {}, sessionId, signal));
       }
       if (name === 'send_file') {
         if (typeof this.fileSend !== 'function') {
@@ -5610,7 +5723,7 @@ const AGENT_DM_DEF = {
   function: {
     name: 'agent_dm',
     description:
-      'Send a short DM to another running agent (parallel agents / finance agents) to coordinate: share findings, ask status, warn about risk, hand off work, and MAKE JOINT DECISIONS. `to` = target session id OR a keyword from the agent title (e.g. "GOLD", "Trader"). `topic` = short subject label — replies to the same topic stay in the SAME conversation thread, so ALWAYS reuse the topic you were DMed with when replying. `group` = optional group-chat name (e.g. "GOLD EKIP"): creates or reuses a group conversation, adds the target agent as a member, and your message is delivered to EVERY member — use groups when a decision needs multiple agents.',
+      'Send a short DM to another running agent (parallel agents / finance agents) to coordinate: share findings, ask status, warn about risk, hand off work, and MAKE JOINT DECISIONS. `to` = target session id OR a keyword from the agent title (e.g. "GOLD", "Trader"). `topic` = short subject label — replies to the same topic stay in the SAME conversation thread, so ALWAYS reuse the topic you were DMed with when replying. `group` = optional group-chat name (e.g. "GOLD EKIP"): creates or reuses a group conversation, adds the target agent as a member, and your message is delivered to EVERY member — use groups when a decision needs multiple agents. `image:true` attaches your last screenshot (fresh capture if none) — the receiving agent and the AJAN DM panel see it as an actual image; use it to share chart/screen findings.',
     parameters: {
       type: 'object',
       properties: {
@@ -5618,8 +5731,28 @@ const AGENT_DM_DEF = {
         topic: { type: 'string', description: 'Short subject label for the conversation thread, e.g. "GOLD pozisyon riski"' },
         message: { type: 'string', description: 'Short message (1-3 sentences)' },
         group: { type: 'string', description: 'Optional group-chat name — send to ALL members of that group (creates it on first use, adds the target agent)' },
+        image: { type: 'boolean', description: 'true ise son ekran görüntünü mesaja iliştirir (yoksa taze ekran yakalar) — panelde ve karşı ajanda görsel olarak açılır; grafik/ekran bulgusunu paylaşmak için kullan' },
       },
       required: ['message'],
+    },
+  },
+};
+
+/* TOOL İSTEĞİ (cephane kuralı): eksik/bozuk araç TOOL botuna yazdırılır.
+   Tool botunun kendisi ve bot-DM oturumları hariç TÜM oturumlara açılır. */
+const TOOL_REQUEST_DEF = {
+  type: 'function',
+  function: {
+    name: 'tool_request',
+    description:
+      'İhtiyaç duyduğun bir araç eksikse ya da bozuksa TOOL botuna yazdırır ve doğrulanmış aracın raporunu döndürür. Tool yazımı Tool botunun TEK işidir — sen tool yazmaya çalışma. task: araç adı + ne yapacak + girdi/çıktı sözleşmesi; context: örnek veri, dosya yolu, endpoint veya hata çıktısı. Araç hazır olunca tool__<ad> olarak ANINDA çağrılabilir.',
+    parameters: {
+      type: 'object',
+      properties: {
+        task: { type: 'string', description: 'Araç ihtiyacı: ad, işlev, girdi/çıktı sözleşmesi' },
+        context: { type: 'string', description: 'Örnek veri, yol, endpoint ya da hata çıktısı' },
+      },
+      required: ['task'],
     },
   },
 };
@@ -6409,11 +6542,14 @@ Engine.prototype.clearTodos = function (sid) {
 /* Ajan DM gönder: hedef koşan paralel/finance ajanı (id YA DA başlık
    anahtar kelimesi). Teslim _pendingReports kuyruğuyla yapılır — hedef
    meşgulse mesaj done olunca düşer, kaybolmaz. Panel agent-dms.json'dan. */
-Engine.prototype._agentDmSend = function (fromSid, args) {
+Engine.prototype._agentDmSend = async function (fromSid, args) {
   try {
     const to = String((args && args.to) || '').trim();
     const text = String((args && args.message) || '').trim().slice(0, 1200);
     if (!text) return { ok: false, error: 'mesaj boş' };
+    /* GÖRSEL DM: son ekran görüntüsü (yoksa taze yakalama) mesaja iliştirilir */
+    const withImage = !!(args && args.image);
+    const image = withImage ? await this._agentDmCaptureImage(fromSid) : '';
     const groupName = String((args && args.group) || '').replace(/\s+/g, ' ').trim().slice(0, 40);
     const jobs = this._bgJobs || new Map();
     const fromJob = jobs.get(String(fromSid));
@@ -6538,6 +6674,7 @@ Engine.prototype._agentDmSend = function (fromSid, args) {
         groupTitle: g.title,
         topic,
         text,
+        ...(image ? { image } : {}),
       };
       this._pushAgentDm(dm);
       /* canlı event TEK SEFER — üye başına emit edilirse panelde çoğalır */
@@ -6549,6 +6686,7 @@ Engine.prototype._agentDmSend = function (fromSid, args) {
           text:
             `[AJAN DM (grup: "${g.title}") — ${dm.fromTitle} · konu: "${topic}"]\n${text}\n` +
             `(Cevap yalnızca aksiyon/karar GEREKİYORSA ver — agent_dm group: "${g.title}", to: "${dm.fromTitle}", topic: "${topic}"; teşekkür/onay yazma.)`,
+          ...(image ? { image } : {}),
         });
         this.flushPendingReports(m);
       }
@@ -6564,7 +6702,7 @@ Engine.prototype._agentDmSend = function (fromSid, args) {
 
     /* BİREYSEL DM — DÜZ CHAT OTURUMUNA (sahibin sohbet geçmişi) ENJEKTE
        ETMEYİZ: DM trafik yalnız AJAN DM konsolunda görünür. */
-    const dm = { at, from: String(fromSid), fromTitle, to: String(target), toTitle, topic, text };
+    const dm = { at, from: String(fromSid), fromTitle, to: String(target), toTitle, topic, text, ...(image ? { image } : {}) };
     this._pushAgentDm(dm);
     this._persistAgentDms();
     emitSafe(this, target, { type: 'agent-dm', ...dm });
@@ -6574,6 +6712,7 @@ Engine.prototype._agentDmSend = function (fromSid, args) {
         text:
           `[AJAN DM — ${dm.fromTitle} · konu: "${topic}"]\n${text}\n` +
           `(Cevap yalnızca aksiyon/karar GEREKİYORSA ver — agent_dm to: "${dm.fromTitle}", topic: "${topic}"; teşekkür/onay yazma.)`,
+        ...(image ? { image } : {}),
       });
       this.flushPendingReports(target);
     }
@@ -6581,6 +6720,35 @@ Engine.prototype._agentDmSend = function (fromSid, args) {
   } catch (e) {
     return { ok: false, error: String((e && e.message) || e) };
   }
+};
+
+/* AJAN DM görseli: gönderenin oturumundaki EN SON ekran görüntüsünü (yoksa
+   taze yakalama) data URL olarak döndürür. Çok büyük görseller DM kaydını
+   şişirmesin diye 2.5MB üstü atlanır. */
+Engine.prototype._agentDmCaptureImage = async function (sid) {
+  let found = '';
+  const sess = this.cache.get(String(sid || '')) || null;
+  const msgs = (sess && Array.isArray(sess.messages) ? sess.messages : []);
+  for (let i = msgs.length - 1; i >= 0 && !found; i--) {
+    const c = msgs[i] && msgs[i].content;
+    if (!Array.isArray(c)) continue;
+    for (let j = c.length - 1; j >= 0; j--) {
+      const p = c[j];
+      if (p && p.type === 'image_url' && p.image_url && /^data:image\//i.test(String(p.image_url.url || ''))) {
+        found = String(p.image_url.url);
+        break;
+      }
+    }
+  }
+  if (!found && this.computer && typeof this.computer.look === 'function') {
+    try {
+      const shot = await this.computer.look();
+      const url = typeof shot === 'string' ? shot : (shot && (shot.image || shot.dataUrl || shot.__injectImage)) || '';
+      if (/^data:image\//i.test(String(url || ''))) found = String(url);
+    } catch {}
+  }
+  if (!found || found.length > 2500000) return '';
+  return found;
 };
 
 /* İki ajanın ORTAK üyesi olduğu AÇIK grup var mı — 1:1 DM'leri grup içine
@@ -6735,7 +6903,16 @@ Engine.prototype._persistAgentDms = function () {
   try {
     const groups = {};
     for (const [, g] of this._agentGroups || new Map()) groups[g.id] = g;
-    this._atomicWrite(this._agentDmsFile, JSON.stringify({ dms: this._agentDms, groups }, null, 2));
+    /* görsel bütçesi: disk şişmesin — en yeni görseller tutulur (~24MB) */
+    const dms = (this._agentDms || []).slice();
+    let budget = 24 * 1024 * 1024;
+    for (let i = dms.length - 1; i >= 0; i--) {
+      const d = dms[i];
+      if (!d || typeof d.image !== 'string' || !d.image) continue;
+      if (d.image.length <= budget) { budget -= d.image.length; continue; }
+      dms[i] = { ...d, image: '', imageOmitted: true };
+    }
+    this._atomicWrite(this._agentDmsFile, JSON.stringify({ dms, groups }, null, 2));
   } catch {}
 };
 

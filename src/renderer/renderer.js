@@ -211,6 +211,11 @@ const els = {
   finSymAdd: $('#finSymAdd'),
   finSymOverlay: $('#finSymOverlay'),
   finSymClose: $('#finSymClose'),
+  finTeamOverlay: $('#finTeamOverlay'),
+  finTeamClose: $('#finTeamClose'),
+  finTeamPick: $('#finTeamPick'),
+  finTeamCount: $('#finTeamCount'),
+  finSetupBtn: $('#finSetupBtn'),
   finSkillsBtn: $('#finSkillsBtn'),
   finSkillsOverlay: $('#finSkillsOverlay'),
   finSkillsClose: $('#finSkillsClose'),
@@ -9357,15 +9362,31 @@ function finTraderInputsSet(cfg) {
   if (els.finTraderModel && ae !== els.finTraderModel && cfg.traderSel) els.finTraderModel.value = cfg.traderSel;
 }
 
-/* ANALİZ EKİBİ: SADECE SAYI seçilir — rolleri sistem otomatik atar
-   (FIN_ROLES_AUTO sırası: Teknik → Risk → Haber). Elle rol kutucukları
-   kaldırıldı; analysisAuto sunucuda daima açık. Katalog sunucudan gelir. */
+/* ANALİZ EKİBİ: tek satır çoklu seçim picker'ı — hangi uzman ajanların
+   koşacağını seçersin (Risk / Teknik / Haber / Görsel); sayaç rozeti seçili
+   ajan sayısını gösterir. Katalog sunucudan gelir (finance:state roles). */
+/* Ekip düğmesi ikonu: emoji yerine çizgi SVG (beyin) — tema rengiyle uyumlu */
+const FIN_TEAM_SVG =
+  '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px">' +
+  '<path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z"/>' +
+  '<path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z"/>' +
+  '<path d="M15 13a4.5 4.5 0 0 1-3-4 4.5 4.5 0 0 1-3 4"/>' +
+  '<path d="M17.599 6.5a3 3 0 0 0 .399-1.375"/>' +
+  '<path d="M6.003 5.125A3 3 0 0 0 6.401 6.5"/>' +
+  '<path d="M3.477 10.896a4 4 0 0 1 .585-.396"/>' +
+  '<path d="M19.938 10.5a4 4 0 0 1 .585.396"/>' +
+  '<path d="M6 18a4 4 0 0 1-1.967-.516"/>' +
+  '<path d="M19.967 17.484A4 4 0 0 1 18 18"/></svg>';
+function finTeamBtnPaint(btn, n) {
+  if (btn) btn.innerHTML = FIN_TEAM_SVG + '<span>Ekip: ' + n + ' ajan</span>';
+}
 let finRolesCatalog = [
   { id: 'risk', label: 'Risk Ajanı', desc: 'marj/kaldıraç/SL disiplini, exposure ve günlük kayıp hızı denetimi' },
   { id: 'technic', label: 'Teknik Analiz', desc: 'trend/yapı/destek-direnç/momentum okuma, AL-SAT-BEKLE önerileri' },
   { id: 'macro', label: 'Haber / Makro', desc: 'haber akışı + ekonomik takvim, DXY/emtia bağıntıları, yön eğilimi' },
+  { id: 'visual', label: 'Görsel Ajan', desc: 'MT5 grafiği/ekran görüntüsü — trend, formasyon, seviye ve mum yapısını görsel doğrulama' },
 ];
-let finRolesAuto = ['technic', 'risk', 'macro'];
+let finRolesAuto = ['technic', 'risk', 'macro', 'visual'];
 let finRolesDirty = false; /* tık→kaydet arası snapshot ezmesin */
 let finRolesSyncTimer = null;
 
@@ -9374,43 +9395,91 @@ function finRoleLabel(id) {
   return d ? d.label : String(id || '');
 }
 
+/* Etkin ekip listesi: oto modda ilk N rol, elle modda seçilen roller */
+function finTeamSelectedIds(cfg) {
+  const c = cfg || finCfgCache || {};
+  if (c.analysisAuto !== false) {
+    const n = Math.max(0, Math.min((finRolesAuto || []).length || 4, Math.round(Number(c.analysisCount) || 0)));
+    return (finRolesAuto || []).slice(0, n);
+  }
+  return (Array.isArray(c.analysisTeam) ? c.analysisTeam : []).filter((id) =>
+    (finRolesCatalog || []).some((d) => d.id === id)
+  );
+}
+
+/* tek satır: buton (seçili sayı) + seçili rol adları özeti */
 function finRenderRoles(cfg) {
   const box = els.finRoles;
   if (!box) return;
   if (finRolesDirty) return; /* bekleyen kullanıcı değişikliği korunur */
-  const max = Math.max(1, (finRolesAuto || []).length || 3);
-  const count = Math.max(0, Math.min(max, Math.round(Number(cfg && cfg.analysisCount) || 0)));
+  const selected = finTeamSelectedIds(cfg);
   box.innerHTML = '';
   const wrap = document.createElement('div');
   wrap.className = 'fin-team';
-  const cnt = document.createElement('input');
-  cnt.type = 'number';
-  cnt.className = 'fin-role-count';
-  cnt.min = '0';
-  cnt.max = String(max);
-  cnt.step = '1';
-  cnt.value = String(count);
-  cnt.title = 'Kaç uzman ajan koşacak (0 = ekip yok, en fazla ' + max + '). Roller otomatik atanır.';
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'fin-sym-select fin-team-btn';
+  finTeamBtnPaint(btn, selected.length);
+  btn.title = 'Uzman ajanları çoktan seç — seçilen her rol AYRI sürekli ajan olarak koşar (işlem açmaz)';
   const hint = document.createElement('span');
   hint.className = 'fin-team-hint';
-  const names = (n) => finRolesAuto.slice(0, n).map(finRoleLabel);
-  const paint = (n) => {
-    hint.textContent = n > 0 ? 'otomatik: ' + names(n).join(' · ') : 'ekip kapalı — sadece trader koşar';
-  };
-  cnt.addEventListener('change', () => {
-    const n = Math.max(0, Math.min(max, Math.round(Number(cnt.value) || 0)));
-    cnt.value = String(n);
-    finRolesDirty = true;
-    finSaveCfg({ analysisAuto: true, analysisCount: n });
-    paint(n);
-    toast(n ? 'Analiz ekibi: ' + n + ' ajan — ' + names(n).join(', ') : 'Analiz ekibi kapatıldı');
-    clearTimeout(finRolesSyncTimer);
-    finRolesSyncTimer = setTimeout(() => { finRolesDirty = false; finSnapshot(); }, 900);
-  });
-  paint(count);
-  wrap.appendChild(cnt);
+  hint.textContent = selected.length
+    ? ((cfg && cfg.analysisAuto !== false) ? 'oto: ' : '') + selected.map(finRoleLabel).join(', ')
+    : 'ekip kapalı — sadece trader koşar';
+  btn.addEventListener('click', finTeamPickerOpen);
+  wrap.appendChild(btn);
   wrap.appendChild(hint);
   box.appendChild(wrap);
+}
+
+/* picker modalı: çoklu checkbox listesi — her değişiklik ANINDA kaydedilir */
+function finTeamPickerPaint() {
+  const pick = els.finTeamPick;
+  if (!pick) return;
+  const sel = new Set(finTeamSelectedIds());
+  if (els.finTeamCount) els.finTeamCount.textContent = sel.size ? sel.size + ' seçili' : 'kapalı';
+  pick.innerHTML = '';
+  for (const d of finRolesCatalog || []) {
+    const row = document.createElement('label');
+    row.className = 'fin-team-item';
+    row.title = d.desc || '';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = sel.has(d.id);
+    cb.dataset.role = d.id;
+    cb.addEventListener('change', () => {
+      const ids = [...pick.querySelectorAll('input[data-role]')].filter((x) => x.checked).map((x) => x.dataset.role);
+      finRolesDirty = true;
+      finCfgCache = finCfgCache || {};
+      finCfgCache.analysisAuto = false;
+      finCfgCache.analysisTeam = ids;
+      finSaveCfg({ analysisAuto: false, analysisTeam: ids });
+      if (els.finTeamCount) els.finTeamCount.textContent = ids.length ? ids.length + ' seçili' : 'kapalı';
+      const btn = els.finRoles && els.finRoles.querySelector('.fin-team-btn');
+      const hint = els.finRoles && els.finRoles.querySelector('.fin-team-hint');
+      finTeamBtnPaint(btn, ids.length);
+      if (hint) hint.textContent = ids.length ? ids.map(finRoleLabel).join(', ') : 'ekip kapalı — sadece trader koşar';
+      toast(ids.length ? 'Analiz ekibi: ' + ids.length + ' ajan — ' + ids.map(finRoleLabel).join(', ') : 'Analiz ekibi kapatıldı');
+      clearTimeout(finRolesSyncTimer);
+      finRolesSyncTimer = setTimeout(() => { finRolesDirty = false; finSnapshot(); }, 900);
+    });
+    const txt = document.createElement('span');
+    txt.className = 'fin-team-txt';
+    txt.innerHTML = '<b>' + escapeHtml(d.label) + '</b><i>' + escapeHtml(d.desc || '') + '</i>';
+    row.appendChild(cb);
+    row.appendChild(txt);
+    pick.appendChild(row);
+  }
+}
+
+function finTeamPickerOpen() {
+  if (!els.finTeamOverlay) return;
+  finTeamPickerPaint();
+  els.finTeamOverlay.hidden = false;
+}
+
+function finTeamPickerClose() {
+  if (els.finTeamOverlay) els.finTeamOverlay.hidden = true;
 }
 
 function finRenderTrader(trader, cfg) {
@@ -9966,8 +10035,11 @@ function finAdvPaint() {
   const on = (() => { try { return localStorage.getItem(finAdvKey) === '1'; } catch { return false; } })();
   if (els.finAdvWrap) els.finAdvWrap.hidden = !on;
   if (els.finAdvToggle) {
-    els.finAdvToggle.textContent = (on ? '\u25BE' : '\u25B8') + ' Gelişmiş';
+    els.finAdvToggle.classList.toggle('on', on);
     els.finAdvToggle.setAttribute('aria-expanded', on ? 'true' : 'false');
+    els.finAdvToggle.title = on
+      ? 'Gelişmiş açık — disiplin kuralları + shadow mod (kapat)'
+      : 'Gelişmiş — disiplin kuralları + shadow mod';
   }
 }
 if (els.finAdvToggle) {
@@ -10049,6 +10121,20 @@ if (els.finModelRefreshBtn) {
     }
   });
 }
+if (els.finSetupBtn) {
+  els.finSetupBtn.addEventListener('click', async () => {
+    els.finSetupBtn.disabled = true;
+    const r = await beast.financeMt5Setup().catch((e) => ({ ok: false, error: String((e && e.message) || e) }));
+    els.finSetupBtn.disabled = false;
+    if (r && r.ok) {
+      toast(r.changed
+        ? 'MT5 kurulumu uygulandı' + (r.restartRequired ? ' — MT5 yeniden başlatılınca etkin' : '')
+        : 'MT5 kurulumu zaten güncel');
+    } else {
+      toast('MT5 kurulumu: ' + ((r && r.error) || 'başarısız'));
+    }
+  });
+}
 if (els.finTraderBtn) {
   els.finTraderBtn.addEventListener('click', async () => {
     if (els.finTraderBtn.classList.contains('stop')) {
@@ -10060,8 +10146,12 @@ if (els.finTraderBtn) {
       else if (r && r.ok) {
         const cfg = (await beast.financeState().catch(() => null));
         const c = (cfg && cfg.cfg) || {};
-        const team = Math.round(Number(c.analysisCount) || 0);
+        const team = c.analysisAuto === false
+          ? (Array.isArray(c.analysisTeam) ? c.analysisTeam.length : 0)
+          : Math.round(Number(c.analysisCount) || 0);
         toast(team ? 'Trade ajanı + analiz ekibi (' + team + ' uzman) başladı — turlar panelde izlenir' : 'Trade ajanı başladı — turlar panelde izlenir');
+        /* ajanlar arası konuşma için AJAN DM konsolu da açılır */
+        try { toggleDmRail(false); } catch {}
       }
     }
     finSnapshot();
@@ -10228,7 +10318,7 @@ function finRenderSkills() {
   const map = cfg.roleSkills && typeof cfg.roleSkills === 'object' ? cfg.roleSkills : {};
   /* ANA KARAR VERİCİ (trader) da bir satır: playbook skill'i zorunlu tek seçim */
   const roles = [
-    { id: 'trader', label: 'TRADER (Ana Karar Verici)', desc: 'playbook: hangi setup\'lar serbest, giriş/çıkış/iptal kuralları, seans ve risk disiplini — asıl karar vericinin zorunlu skill\'i' },
+    { id: 'trader', label: 'TRADER (Ana Karar Verici)', desc: 'playbook: hangi setup\'lar serbest, giriş/çıkış/iptal kuralları, seans ve risk disiplini — asıl karar vericinin skill\'i (boş = ajan kendi seçer)' },
   ].concat(Array.isArray(finRolesCatalog) ? finRolesCatalog : []);
   box.innerHTML = '';
   if (!roles.length) {
@@ -10249,10 +10339,34 @@ function finRenderSkills() {
       '<span>' + escapeHtml(String(r.desc || '').slice(0, 110)) + '</span>';
     const cur = Array.isArray(map[r.id]) ? map[r.id].map((x) => String(x || '').trim()).filter(Boolean) : [];
     const active = cur.length ? cur[0] : '';
+    /* ÇÖP: rolün skill atamasını kaldır — boş bırakmak da geçerli bir seçim
+       (o zaman ajan skill'i göreve göre SKILLS kataloğundan kendi seçer) */
+    const clearBtn = document.createElement('button');
+    clearBtn.type = 'button';
+    clearBtn.className = 'fin-skill-clear';
+    clearBtn.title = active
+      ? 'Skill atamasını kaldır (' + active + ') — boş kalırsa ajan göreve göre kendi seçer'
+      : 'Atama yok — boş bırakılabilir';
+    clearBtn.innerHTML =
+      '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px"><path d="M3 6h18"/><path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>';
+    clearBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const was = active;
+      finCfgCache = finCfgCache || {};
+      finCfgCache.roleSkills = finCfgCache.roleSkills || {};
+      finCfgCache.roleSkills[r.id] = [];
+      finSaveCfg({ roleSkills: { [r.id]: [] } });
+      toast(was
+        ? (r.label || r.id) + ' → ' + was + ' ataması kaldırıldı — ajan göreve göre kendi seçer'
+        : (r.label || r.id) + ' → atama zaten boş');
+      finRenderSkills();
+    });
+    head.appendChild(clearBtn);
     if (!active) {
       const warn = document.createElement('span');
       warn.className = 'fin-skill-req';
-      warn.textContent = 'ZORUNLU — skill seçilmedi';
+      warn.textContent = 'atama yok — ajan göreve göre kendi seçer';
       head.appendChild(warn);
     }
     row.appendChild(head);
@@ -10267,7 +10381,7 @@ function finRenderSkills() {
       cb.type = 'radio';
       cb.name = 'fin-skill-role-' + r.id;
       cb.checked = on;
-      /* TEK + ZORUNLU: yeni skill seçilir; mevcut seçim kaldırılamaz */
+      /* TEK seçim: yeni skill seçilir; kaldırmak için çöp ikonu kullanılır */
       cb.addEventListener('change', () => {
         if (!cb.checked) return;
         const next = [s.name];
@@ -10280,7 +10394,7 @@ function finRenderSkills() {
         const w = head.querySelector('.fin-skill-req');
         if (w) w.remove();
         finSaveCfg({ roleSkills: { [r.id]: next } });
-        toast((r.label || r.id) + ' → ' + s.name + ' (zorunlu tek skill)');
+        toast((r.label || r.id) + ' → ' + s.name + ' (tek skill)');
       });
       chip.appendChild(cb);
       chip.appendChild(document.createTextNode(s.name));
@@ -10333,6 +10447,15 @@ if (els.finSymOverlay) {
   });
   els.finSymOverlay.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') { e.stopPropagation(); finSymPickerClose(); }
+  });
+}
+if (els.finTeamClose) els.finTeamClose.addEventListener('click', finTeamPickerClose);
+if (els.finTeamOverlay) {
+  els.finTeamOverlay.addEventListener('click', (e) => {
+    if (e.target === els.finTeamOverlay) finTeamPickerClose();
+  });
+  els.finTeamOverlay.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') { e.stopPropagation(); finTeamPickerClose(); }
   });
 }
 if (els.finSymSearch) {

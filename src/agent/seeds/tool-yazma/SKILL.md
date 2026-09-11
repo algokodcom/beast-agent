@@ -62,12 +62,14 @@ try { args = JSON.parse(fs.readFileSync(0, 'utf8') || '{}'); } catch {}
 
 Slug kuralları: a-z, 0-9, alt çizgi, tire — 2-24 karakter (örn: gold_emir, haber_ozet). Hazır taslak: %APPDATA%\beast\tools\ornek_echo klasörünü referans al; yeni tool'u o biçimle yaz.
 
-## DÜZENLEME / DOĞRULAMA
+## TEST DÖNGÜSÜ / YAYIN (zorunlu)
 
 1. Mevcut toolu değiştirme: `edit_file` ile tool.json / run.js düzenle — ASLA tüm klasörü silip baştan yazma.
-2. Kayıttan sonra tool ANINDA aktifleşir (yeniden başlatma gerekmez) — bir sonraki turda `tool__<slug>` çağrılabilir.
-3. Doğrula: `run_command` ile `echo "{\"mesaj\":\"test\"}" | node "%APPDATA%\beast\tools\<slug>\run.js"` — çıktı JSON olmalı ve `ok` alanı içermeli.
-4. Hata çıktısı `ok:false + error` olsun — model hatayı okuyup düzeltir; çıplak stack yasak.
+2. TEST: `run_command` ile `echo "{\"mesaj\":\"test\"}" | node "%APPDATA%\beast\tools\<slug>\run.js"` çalıştır (çalışma klasörü tool'un kendi klasörüdür) — çıktı SADECE JSON olmalı ve `ok` alanı içermeli.
+3. DÖNGÜ: test `ok:true` DEĞİLSE stderr'i/hatayı oku → `edit_file` ile düzelt → YENİDEN test et. En fazla 5 deneme; her denemenin sonucunu not et.
+4. YAYIN: yalnız test GEÇİNCE yayınla (dosyalar anında aktifleşir; `tool__<slug>` sonraki turda çağrılır) ve "YAYINDA" diye raporla. Test geçmeyen aracı yayınlama.
+5. BAŞARISIZLIK: 5 denemede geçmezse yayınlama; rapora `ok:false + error` kök nedenini ve ne denediğini yaz — çıplak stack yasak.
+6. ADIM RAPORU: final raporda adımları yaz (yazıldı → test → düzeltmeler → YAYINDA/BAŞARISIZ). `tool_request` ile gelen isteklerde bu rapor bağlı entegrasyonlara (WhatsApp/Telegram/Discord) otomatik bildirilir.
 
 ## GÜVENLİK + STİL
 

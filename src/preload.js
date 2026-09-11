@@ -10,6 +10,7 @@ contextBridge.exposeInMainWorld('beast', {
   listSessions: () => ipcRenderer.invoke('sessions:list'),
   createSession: () => ipcRenderer.invoke('sessions:create'),
   openSession: (id) => ipcRenderer.invoke('sessions:open', id),
+  setActiveSession: (id) => ipcRenderer.invoke('sessions:active', id),
   deleteSession: (id) => ipcRenderer.invoke('sessions:delete', id),
   send: (sessionId, text) => ipcRenderer.invoke('agent:send', { sessionId, text }),
   interrupt: (sessionId, reason) => ipcRenderer.invoke('agent:interrupt', sessionId, reason),

@@ -317,6 +317,7 @@ let waHistory = new Map(); // jid -> [sid,...] bu sohbete ait tüm oturumlar
 let waBcMode = new Set(); // jid -> BeastCode modu AKTİF (WhatsApp'tan uzaktan kodlama)
 let waJidPn = new Map(); // jid -> gerçek telefon numarası (LID fallback için)
 let waLastActiveJid = ''; // en son mesaj gelen WA sohbeti — kanal tek oturumunda cevap/dosya hedefi
+let desktopActiveSid = ''; // masaüstü UI'da AÇIK olan oturum — proaktif not buraya işlenir
 const WA_HISTORY_CAP = 20;
 let tg = null;
 let tgChats = new Map(); // telegram chatId -> aktif session id (hepsi KANAL TEK OTURUMUNA bağlı)
@@ -5081,11 +5082,34 @@ ipcMain.handle('sessions:create', () => {
   return v;
 });
 ipcMain.handle('sessions:open', (_e, id) => engine.openSession(id));
-ipcMain.handle('sessions:delete', (_e, id) => engine.deleteSession(id));
+ipcMain.handle('sessions:delete', (_e, id) => {
+  const sid = String(id || '');
+  if (sid && sid === desktopActiveSid) desktopActiveSid = '';
+  return engine.deleteSession(id);
+});
+/* masaüstü UI hangi sohbeti AÇIK tutuyorsa main'e bildirir: empati loop
+   proaktif notu rastgele bir oturuma değil, kullanıcının gördüğü sohbete
+   işler; meşgulse enjeksiyon kuyruğa girer, tur bitince geçmişe düşer */
+ipcMain.handle('sessions:active', (_e, id) => {
+  const sid = String(id || '');
+  if (!sid) {
+    desktopActiveSid = '';
+    return true;
+  }
+  try {
+    if (sessionFileAlive(sid)) desktopActiveSid = sid;
+  } catch {}
+  return true;
+});
 
 ipcMain.handle('agent:send', (_e, { sessionId, text }) => {
   const raw = text && typeof text === 'object' ? String(text.text || '') : String(text ?? '');
   const t = raw.trim();
+  /* yazan sohbet = kullanıcının gördüğü sohbet: proaktif enjeksiyon hedefi */
+  try {
+    const asid = String(sessionId || '');
+    if (asid && sessionFileAlive(asid)) desktopActiveSid = asid;
+  } catch {}
   /* BOT HAFIZA GARANTİSİ: aktif bot bir MÜŞTERİ botuysa, botId'siz (eskiden
      kalma) oturumlar bu bota bağlanır — bot konuşması asla Beast'in global
      hafızasıyla (SOUL/USER/MEMORY) yürümez. Var olan botId asla üstüne yazılmaz. */
@@ -7210,10 +7234,18 @@ function ensureDcSession(channelId) {
   return dcSingleSid;
 }
 
-/* Masaüstü yedeği: en güncel (bg/bot-DM'siz, meşgul olmayan) sohbet — yoksa yeni */
-function empatiDesktopSid() {
+/* Masaüstü hedefi: kullanıcının AÇIK sohbeti önceliklidir — proaktif not
+   nereye bakıyorsa oraya işlenir; meşgulse empatiInjectToSession kuyruğa alır.
+   Açık sohbet bilinmiyorsa en güncel meşgul olmayan sohbet (kanal oturumları
+   hariç — onlara kanal yoluyla zaten enjekte edildi); o da yoksa yeni oturum. */
+function empatiDesktopSid(exclude) {
+  const skip = exclude instanceof Set ? exclude : null;
+  try {
+    if (desktopActiveSid && sessionFileAlive(desktopActiveSid)) return String(desktopActiveSid);
+  } catch {}
   try {
     for (const v of engine.listSessions()) {
+      if (skip && skip.has(String(v.id))) continue;
       if (!engine.isBusy(v.id)) return String(v.id);
     }
   } catch {}
@@ -7234,14 +7266,17 @@ function empatiNotify(text, ev) {
   const outWa = PROACTIVE_MARK + '\n' + text + (srcWa ? '\n' + srcWa : '');
   const inject = empatiInjectText(ev, out);
   const senders = [];
+  const channelSids = new Set(); /* bu tur enjeksiyon ALAN kanal oturumları */
   const tryWa = () => {
     try {
       const own = waOwnerNum();
       if (own && wa && wa.connected) {
         const jid = own + '@s.whatsapp.net';
+        const sid = ensureWaSession(jid);
+        channelSids.add(String(sid));
         senders.push(() =>
           Promise.resolve(sendWaSafe(jid, outWa))
-            .then(() => empatiInjectToSession(ensureWaSession(jid), inject))
+            .then(() => empatiInjectToSession(sid, inject))
             .catch(() => {})
         );
       }
@@ -7251,9 +7286,11 @@ function empatiNotify(text, ev) {
     try {
       if (tg && tg.connected) {
         for (const id of tgOwnerIds()) {
+          const sid = ensureTgSession(String(id));
+          channelSids.add(String(sid));
           senders.push(() =>
             Promise.resolve(sendTgSafe(id, outPlain))
-              .then(() => empatiInjectToSession(ensureTgSession(String(id)), inject))
+              .then(() => empatiInjectToSession(sid, inject))
               .catch(() => {})
           );
         }
@@ -7265,9 +7302,11 @@ function empatiNotify(text, ev) {
       if (dc && dc.connected) {
         const outDc = out.replace('🫡 *Beast proaktif:*', '🫡 **Beast proaktif:**');
         for (const id of dcOwnerIds()) {
+          const sid = ensureDcSession(String(id));
+          channelSids.add(String(sid));
           senders.push(() =>
             Promise.resolve(sendDcSafe(id, outDc))
-              .then(() => empatiInjectToSession(ensureDcSession(String(id)), inject))
+              .then(() => empatiInjectToSession(sid, inject))
               .catch(() => {})
           );
         }
@@ -7289,8 +7328,9 @@ function empatiNotify(text, ev) {
      gider (kanal kullanıcısı ham BAĞLAM bloğunu görmez, ajan görür). */
   try {
     if (win && !win.isDestroyed()) {
-      const dsid = empatiDesktopSid();
-      empatiInjectToSession(dsid, out);
+      const dsid = String(empatiDesktopSid(channelSids) || '');
+      /* aynı oturuma kanal yoluyla zaten enjekte edildiyse TEKRAR yazma */
+      if (dsid && !channelSids.has(dsid)) empatiInjectToSession(dsid, out);
       win.webContents.send('agent:event', { type: 'proactive', sessionId: dsid, id: ev.id, level: ev.level, title: ev.title, text: out });
     }
   } catch {}

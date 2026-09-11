@@ -1077,6 +1077,7 @@ setInterval(() => {
 
 async function openSession(id) {
   activeId = id;
+  try { beast.setActiveSession(id); } catch {}
   streamEl = null;
   const s = await beast.openSession(id);
   els.msgs.innerHTML = '';

@@ -224,6 +224,10 @@
                 <option value="flatten">Durdur + hepsini kapat</option>
               </select>
             </div>
+            <div id="finAlertList" class="fin-alerts"><div class="fin-empty">Aktif fiyat alarmı yok</div></div>
+          </div>
+          <div class="fin-card" id="finNotifyCard" hidden>
+            <div class="fin-card-title">BİLDİRİM <span class="fin-hint">— kanal seçimi ve olay filtresi</span></div>
             <div class="fin-field">
               <span>Bildirim kanalı</span>
               <select id="finNotifyTarget" title="Emir/işlem bildirimleri bu kanala gider; panel ve masaüstü toast her zaman çalışır">
@@ -239,7 +243,6 @@
                 <input id="finNotifyTradeOnly" type="checkbox" checked /> Kanala sadece emir/işlem olayları gelsin (alarm gelmez)
               </label>
             </div>
-            <div id="finAlertList" class="fin-alerts"><div class="fin-empty">Aktif fiyat alarmı yok</div></div>
           </div>
           <div class="fin-card" id="finPerfCard" hidden>
             <div class="fin-card-title">PERFORMANS <span id="finStatsInfo" class="fin-hint"></span><span class="file-spacer"></span><button id="finReportBtn" title="Haftalık rapor üret — istatistik + işlem günlüğü + ajan değerlendirmesi">&#128196; Rapor</button></div>
@@ -770,10 +773,14 @@
         <button class="mini-close" id="finSettingsClose" title="Kapat">&#x00D7;</button>
       </div>
       <div class="mini-body">
-        <div class="fin-set-hint">Varsayılan olarak üç bölüm de gizlidir — açmak tamamen isteğe bağlıdır. Seçim bilgisayarda hatırlanır. Risk otomasyonu gizliyken AKTİF OLMAZ.</div>
+        <div class="fin-set-hint">Varsayılan olarak dört bölüm de gizlidir — açmak tamamen isteğe bağlıdır. Seçim bilgisayarda hatırlanır. Risk otomasyonu gizliyken AKTİF OLMAZ.</div>
         <label class="fin-set-row" title="BE + trailing + kısmi TP koruması, günlük limitler, fiyat alarmları bölümü">
           <input id="finShowRisk" type="checkbox" />
           <span class="fsr-main"><b>RİSK OTOMASYONU</b><i>BE + trailing + kısmi TP, günlük limitler, alarmlar</i></span>
+        </label>
+        <label class="fin-set-row" title="Bildirim kanalı (WhatsApp/Telegram/Discord) ve hangi olayların gönderileceği bölümü">
+          <input id="finShowNotify" type="checkbox" />
+          <span class="fsr-main"><b>BİLDİRİM</b><i>Kanal seçimi, emir/alarm olay filtresi</i></span>
         </label>
         <label class="fin-set-row" title="Equity grafiği + günlük/haftalık istatistikler + haftalık rapor bölümü">
           <input id="finShowPerf" type="checkbox" />

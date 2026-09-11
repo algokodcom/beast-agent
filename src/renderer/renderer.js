@@ -169,9 +169,11 @@ const els = {
   finSettingsOverlay: $('#finSettingsOverlay'),
   finSettingsClose: $('#finSettingsClose'),
   finShowRisk: $('#finShowRisk'),
+  finShowNotify: $('#finShowNotify'),
   finShowPerf: $('#finShowPerf'),
   finShowFlow: $('#finShowFlow'),
   finRiskCard: $('#finRiskCard'),
+  finNotifyCard: $('#finNotifyCard'),
   finPerfCard: $('#finPerfCard'),
   finFlowCard: $('#finFlowCard'),
   finBalance: $('#finBalance'),
@@ -9691,15 +9693,16 @@ function finStrategyFlush() {
 }
 
 /* ---------- GÖRÜNÜM AYARLARI (isteğe bağlı bölümler) ----------
-   RİSK OTOMASYONU + PERFORMANS + AKIŞ varsayılan GİZLİ; açmak isteğe bağlı.
-   Seçim localStorage'da hatırlanır. Risk otomasyonu gizliyken watchdog
-   AKTİF OLMAZ — kart yeniden gösterilince kutucuktan açılabilir. */
+   RİSK OTOMASYONU + BİLDİRİM + PERFORMANS + AKIŞ varsayılan GİZLİ; açmak
+   isteğe bağlı. Seçim localStorage'da hatırlanır. Risk otomasyonu gizliyken
+   watchdog AKTİF OLMAZ — kart yeniden gösterilince kutucuktan açılabilir. */
 const finViewKey = 'beast.financeView';
-const finView = { risk: false, perf: false, flow: false };
+const finView = { risk: false, notify: false, perf: false, flow: false };
 try {
   const v = JSON.parse(localStorage.getItem(finViewKey) || 'null');
   if (v && typeof v === 'object') {
     finView.risk = v.risk === true;
+    finView.notify = v.notify === true;
     finView.perf = v.perf === true;
     finView.flow = v.flow === true;
   }
@@ -9707,15 +9710,18 @@ try {
 
 function finViewPaint() {
   if (els.finRiskCard) els.finRiskCard.hidden = !finView.risk;
+  if (els.finNotifyCard) els.finNotifyCard.hidden = !finView.notify;
   if (els.finPerfCard) els.finPerfCard.hidden = !finView.perf;
   if (els.finFlowCard) els.finFlowCard.hidden = !finView.flow;
   if (els.finShowRisk) els.finShowRisk.checked = finView.risk;
+  if (els.finShowNotify) els.finShowNotify.checked = finView.notify;
   if (els.finShowPerf) els.finShowPerf.checked = finView.perf;
   if (els.finShowFlow) els.finShowFlow.checked = finView.flow;
   const row = (cb) => cb && cb.closest('.fin-set-row');
   const r1 = row(els.finShowRisk); if (r1) r1.classList.toggle('on', finView.risk);
-  const r2 = row(els.finShowPerf); if (r2) r2.classList.toggle('on', finView.perf);
-  const r3 = row(els.finShowFlow); if (r3) r3.classList.toggle('on', finView.flow);
+  const r2 = row(els.finShowNotify); if (r2) r2.classList.toggle('on', finView.notify);
+  const r3 = row(els.finShowPerf); if (r3) r3.classList.toggle('on', finView.perf);
+  const r4 = row(els.finShowFlow); if (r4) r4.classList.toggle('on', finView.flow);
 }
 
 function finViewApply() {
@@ -9741,7 +9747,8 @@ function finViewToggle(key, on) {
       ? 'RİSK OTOMASYONU gösteriliyor — aktif etmek için karttaki kutucuğu işaretle'
       : 'RİSK OTOMASYONU gizlendi ve kapatıldı');
   } else {
-    toast((key === 'perf' ? 'PERFORMANS' : 'AKIŞ') + (on ? ' bölümü gösteriliyor' : ' bölümü gizlendi'));
+    const label = key === 'notify' ? 'BİLDİRİM' : key === 'perf' ? 'PERFORMANS' : 'AKIŞ';
+    toast(label + (on ? ' bölümü gösteriliyor' : ' bölümü gizlendi'));
   }
   if (financeModeOn()) finSnapshot();
 }
@@ -9757,6 +9764,7 @@ if (els.finSettingsOverlay) {
   });
 }
 if (els.finShowRisk) els.finShowRisk.addEventListener('change', () => finViewToggle('risk', els.finShowRisk.checked));
+if (els.finShowNotify) els.finShowNotify.addEventListener('change', () => finViewToggle('notify', els.finShowNotify.checked));
 if (els.finShowPerf) els.finShowPerf.addEventListener('change', () => finViewToggle('perf', els.finShowPerf.checked));
 if (els.finShowFlow) els.finShowFlow.addEventListener('change', () => finViewToggle('flow', els.finShowFlow.checked));
 finViewApply();

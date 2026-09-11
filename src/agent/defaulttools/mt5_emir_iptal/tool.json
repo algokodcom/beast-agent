@@ -1,0 +1,12 @@
+{
+  "name": "mt5_emir_iptal",
+  "description": "Bekleyen emri İPTAL eder: ticket zorunlu (mt5_bekleyen veya durum/emir listesinden gelen ticket no).",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "ticket": { "type": "number", "description": "Iptal edilecek bekleyen emrin ticket numarasi" }
+    },
+    "required": ["ticket"]
+  },
+  "updatedAt": "2026-09-09T18:50:00.000Z"
+}

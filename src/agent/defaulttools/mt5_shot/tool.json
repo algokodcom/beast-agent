@@ -1,0 +1,20 @@
+{
+  "name": "mt5_shot",
+  "description": "MT5 grafiğinin GERÇEK ekran görüntüsünü alır ve GÖRSELİ ÇAĞIRAN AJANA GÖSTERİR: MT5\\MQL5\\Files\\beast_cmd.json üzerinden BeastFinance EA'ya 'shot' komutu yazar, EA ChartScreenShot ile PNG üretir; PNG hem tool klasörüne hem <kullanıcı>\\beast_shots altına kopyalanır (dönen path send_file'a verilebilir) hem de data URL olarak sonuca gömülür — engine bunu sonraki turda ajana görsel olarak enjekte eder (embed:false kapatır). Aktif grafik istenen sembol/periyot ile aynıysa ondan çekilir (Beast panosu + seviye çizgileri görünür), değilse EA geçici grafik açar (ChartOpen/ChartSetSymbolPeriod + BeastShot.tpl açık tema). Komut id/ts ile yazılır, ack poll edilir ve PNG MQL5\\Files'ta belirene kadar beklenir; hata halinde gövde şu kodu taşır: err = no_terminal|ea_offline|cmd_write_fail|ea_no_ack|ea_error|png_yok|timeout (+ cmdId, filesDir, diagnostic, ping). Grafik analizi/raporu ve ekip paylaşımı için birincil screenshot aracıdır.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "symbol": { "type": "string", "description": "Boş = aktif grafik sembolü (örn GOLD)" },
+      "timeframe": { "type": "string", "description": "M1|M5|M15|M30|H1|H4|D1 (boş = aktif periyot)" },
+      "width": { "type": "number", "description": "Görüntü genişliği (varsayılan 1600)" },
+      "height": { "type": "number", "description": "Görüntü yüksekliği (varsayılan 900)" },
+      "file": { "type": "string", "description": "Opsiyonel dosya adı (varsayılan beast_shot_<id>.png)" },
+      "timeoutSec": { "type": "number", "description": "Ack/PNG bekleme süresi sn (varsayılan 20, 5-70)" },
+      "outdir": { "type": "string", "description": "PNG'nin kopyalanacağı klasör (varsayılan <kullanıcı>\\beast_shots — send_file buradan gönderebilir)" },
+      "diag": { "type": "boolean", "description": "Ack gelmezse teşhis amaçlı ping at (varsayılan true)" },
+      "embed": { "type": "boolean", "description": "PNG'yi ajana görsel olarak enjekte et (varsayılan true; false = yalnız dosya yolu döner)" }
+    },
+    "required": []
+  },
+  "updatedAt": "2026-09-11T23:15:00.000Z"
+}

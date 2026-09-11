@@ -2224,6 +2224,21 @@ body.browser-open #settingsDialog { width: min(70vw, calc(100vw - var(--bw, 480p
   color: var(--muted);
   margin-top: 2px;
 }
+/* ajan DM görseli (mt5_shot / ekran görüntüsü paylaşımı) */
+.dmt-msg .dmt-img {
+  display: block;
+  max-width: 100%;
+  max-height: 260px;
+  border-radius: 6px;
+  margin-top: 5px;
+  border: 1px solid var(--border, rgba(255,255,255,0.12));
+}
+.dmt-msg .dmt-img-note {
+  font-size: 10px;
+  color: var(--muted);
+  font-style: italic;
+  margin-top: 3px;
+}
 /* ajan adının yanındaki KOD rozeti (oturum id) */
 .dm-code {
   font-size: 9px; font-weight: 700; letter-spacing: 0.5px;

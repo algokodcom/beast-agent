@@ -62,11 +62,13 @@ Yani MT5 entegrasyonu yazarken EA'yı SIFIRDAN YAZMA, elle iliştirme varsayma �
 | Dosya (MQL5\Files) | Yön | İçerik |
 |---|---|---|
 | `beast_ea.json` | EA → Beast | heartbeat: version, symbol, period, equity/balance, `terminal_trade_allowed`, `mql_trade_allowed`, positions, note |
-| `beast_cmd.json` | Beast → EA | komut: `{id, cmd, params}` — desteklenen: ping / chart / status / note |
+| `beast_cmd.json` | Beast → EA | komut: `{id, cmd, params}` — desteklenen: ping / chart / status / note / shot |
 | `beast_cmd_ack.json` | EA → Beast | komut sonucu: `{ok, id, cmd, result|error}` |
 | `beast_note.json` | Beast → EA | grafik panosu: `{symbol?, text, levels:[{price,label}]}` — pano + yatay çizgiler; screenshot'ta görünür |
 
-- Finance oturumlarındaki ajan aracı: `mt5_ea` (action: status|ping|chart|note).
+- GRAFİK GÖRÜNTÜSÜ: `shot` komutu `{file, width, height, symbol?, timeframe?, template?}` alır — ChartScreenShot ile GERÇEK PNG üretir. Aktif grafik istenen sembol/periyot ile aynıysa panoyu + seviye çizgilerini içerir; farklıysa EA `ChartOpen` + `BeastShot.tpl` (açık tema, EA bloğu yok) ile geçici grafik açıp kapatır. Bu komutu sarmalayan VARSAYILAN araç `tool__mt5_shot`'tır: PNG'yi çağıran ajana görsel olarak enjekte eder, `path` döndürür (send_file / agent_dm image ile paylaşılır). Seviyeleri grafikte göstermek için önce `mt5_ea note`, sonra `tool__mt5_shot` çağır — paralel ekipte teknik ajan seviyeleri çizer, görsel ajan screenshot ile teyit edip trader'a atar.
+
+- Finance oturumlarındaki ajan aracı: `mt5_ea` (action: status|ping|chart|note); grafik PNG'si için varsayılan `tool__mt5_shot` (tüm oturumlarda açık).
 - Yeni MT5 entegrasyonu gerekiyorsa ÖNCE bu köprüyü GENİŞLET: EA'da `ProcessCommands()` içine yeni komut + Beast tarafında `mt5_ea` / python `ea_cmd`. Sıfırdan EA yazma.
 - EA kaynağı Beast uygulamasında `src/agent/mt5/BeastFinance.mq5`; güncelleme oradan yapılır, setup yeniden derler.
 - Derleme hatalarında dosya kodlaması UTF-16 (`FILE_UNICODE`) kullanılır; MQL5'te `FILE_UTF8` yoktur.

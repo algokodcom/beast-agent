@@ -3634,7 +3634,7 @@ app.whenReady().then(() => {
     reloadBackend();
     syncWhitelist(); // bot sistemi: whitelist.json aynası ilk açılışta garanti
     try { bots.ensureBotCodes(); } catch {} // her bota benzersiz 5 haneli kod garanti
-    try { customtools.seedIfEmpty(); } catch {} // kişisel toollar klasörü boşsa örnek tool kur
+    try { customtools.seedDefaults(); customtools.seedIfEmpty(); } catch {} // varsayılan MT5 toolları + kişisel toollar klasörü boşsa örnek tool kur
     createSplash();
     createWindow();
     log.info('main', 'Beast Agent başlatıldı');

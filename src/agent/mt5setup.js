@@ -493,6 +493,28 @@ function runSetup({ dataPath, terminalExe = '', force = false } = {}) {
       steps.push('Aktif profil grafiği bulunamadı — EA Navigator\'dan elle sürüklenebilir');
     }
 
+    /* 4c) BeastShot.tpl: mt5_shot geçici grafik açtığında uyguladığı temiz açık-tema
+       şablonu (EA bloğu yok) — kaynaktan kopyalanır; mt5_shot varsayılanı bunu arar. */
+    try {
+      const tplSrc = path.join(__dirname, 'mt5', 'BeastShot.tpl');
+      if (fs.existsSync(tplSrc)) {
+        const tplDir2 = path.join(mql5, 'Profiles', 'Templates');
+        const tplDst = path.join(tplDir2, 'BeastShot.tpl');
+        fs.mkdirSync(tplDir2, { recursive: true });
+        let same = false;
+        try { same = fs.readFileSync(tplDst).equals(fs.readFileSync(tplSrc)); } catch {}
+        if (!same) {
+          fs.copyFileSync(tplSrc, tplDst);
+          steps.push('Grafik şablonu yazıldı: ' + tplDst);
+          result.changed = true;
+        } else {
+          steps.push('Grafik şablonu güncel: ' + tplDst);
+        }
+      }
+    } catch (e) {
+      steps.push('Grafik şablonu yazılamadı: ' + String((e && e.message) || e));
+    }
+
     const running = terminalRunning();
     result.restartRequired = running && result.changed;
     if (result.restartRequired) steps.push('Değişiklikler MT5 yeniden başlatılınca etkinleşir');

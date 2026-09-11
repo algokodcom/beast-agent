@@ -170,9 +170,10 @@ void ApplyLevels(const string raw)
    if(end < 0) return;
    string body = StringSubstr(raw, arr + 1, end - arr - 1);
 
-   string names[];
-   int n = 0;
-   int pos = 0;
+    string names[];
+    ArrayResize(names, 64);   /* FIX: dizi boyutlandirilmadan atama EA'yi dusuruyordu */
+    int n = 0;
+    int pos = 0;
    while(pos < StringLen(body))
    {
       int p = StringFind(body, "\"price\"", pos);
@@ -279,6 +280,96 @@ void ProcessCommands()
       RefreshPanel();
       result = "{\"note\":true}";
    }
+   else if(cmd == "shot")
+   {
+      /* ChartScreenShot -> MQL5\Files\<file> (png/gif/bmp). params:
+         file, width, height, timeframe (M15/H1/...), symbol (bos=aktif grafik)
+         Aktif grafik zaten istenen sembol+periyot ise ondan cekilir
+         (Beast panosu + seviye cizgileri gorunur); degilse gecici grafik acilir. */
+      string file = JsonGet(raw, "file");
+      if(StringLen(file) == 0) file = "beast_shot.png";
+      int w = (int)StringToInteger(JsonGet(raw, "width"));
+      int hh = (int)StringToInteger(JsonGet(raw, "height"));
+      if(w <= 0) w = 1600;
+      if(hh <= 0) hh = 900;
+
+      string symTxt = JsonGet(raw, "symbol");
+      string tfTxt  = JsonGet(raw, "timeframe");
+
+      long cid = ChartID();
+      string symNow = ChartSymbol(cid);
+      ENUM_TIMEFRAMES tfNow = (ENUM_TIMEFRAMES)ChartPeriod(cid);
+
+      string symWant = symNow;
+      if(StringLen(symTxt) > 0 && StringCompare(symTxt, symNow) != 0)
+      {
+         if(SymbolSelect(symTxt, true)) symWant = symTxt;
+      }
+      if(SymbolSelect(symWant, true) == false)
+      {
+         ok = false;
+         err = "sembol bulunamadi: " + symWant;
+      }
+
+      ENUM_TIMEFRAMES tfWant = TfFromText(tfTxt);
+      ENUM_TIMEFRAMES tfUse = (tfWant == PERIOD_CURRENT) ? tfNow : tfWant;
+      bool tempChart = false;
+      bool tplApplied = false;
+      bool themeOk = false;
+      int  bgNow = -1;
+
+      if(ok && (symWant != symNow || tfUse != tfNow))
+      {
+         long newId = ChartOpen(symWant, tfUse);
+         if(newId == 0)
+         {
+            ok = false;
+            err = "gecici grafik acilamadi: " + symWant;
+         }
+         else
+         {
+            cid = newId;
+            tempChart = true;
+            /* temiz gorunum: BeastFinance.tpl temasi (EA blogu cikarilmis BeastShot.tpl) */
+            string tpl = JsonGet(raw, "template");
+            if(StringLen(tpl) == 0) tpl = "BeastShot";
+            if(StringFind(tpl, ".") < 0) tpl = tpl + ".tpl";
+            bool tplOk = false;
+            if(StringCompare(tpl, "none.tpl") != 0)
+            {
+               tplOk = ChartApplyTemplate(cid, tpl);
+               ChartRedraw(cid);
+               Sleep(700);
+            }
+            /* sablon sembol/periyot degistirdiyse geri al */
+            if(StringCompare(ChartSymbol(cid), symWant) != 0 || (ENUM_TIMEFRAMES)ChartPeriod(cid) != tfUse)
+               ChartSetSymbolPeriod(cid, symWant, tfUse);
+            /* sablon bulunamasa da gorunum ayni olsun -> acik tema renklerini zorla */
+            themeOk = ApplyLightTheme(cid);
+            bgNow = (int)ChartGetInteger(cid, CHART_COLOR_BACKGROUND);
+            tplApplied = tplOk;
+         }
+      }
+
+      if(ok)
+      {
+         ChartRedraw(cid);
+         Sleep(1200);            /* mumlar/olcek otursun */
+         ChartRedraw(cid);
+         Sleep(200);
+         if(!ChartScreenShot(cid, file, w, hh, ALIGN_RIGHT))
+         {
+            ok = false;
+            err = "screenshot basarisiz, hata=" + IntegerToString(GetLastError());
+         }
+         else
+         {
+            result = StringFormat("{\"file\":\"%s\",\"width\":%d,\"height\":%d,\"symbol\":\"%s\",\"period\":%d,\"temp_chart\":%s,\"template_applied\":%s,\"theme_ok\":%s,\"bg\":%d}",
+                                  JStr(file), w, hh, symWant, (int)tfUse, (tempChart ? "true" : "false"), (tplApplied ? "true" : "false"), (themeOk ? "true" : "false"), bgNow);
+         }
+      }
+      if(tempChart) ChartClose(cid);
+   }
    else
    {
       ok = false;
@@ -286,5 +377,51 @@ void ProcessCommands()
    }
    WriteAck(id, cmd, ok, err, result);
    FileDelete(CmdFile);
+}
+
+/* BeastFinance.tpl acik tema renklerini grafige uygular (sablon bulunamazsa da garanti) */
+bool ApplyLightTheme(const long cid)
+{
+   bool okAll = true;
+   okAll = ChartSetInteger(cid, CHART_COLOR_BACKGROUND,  (long)16449525) && okAll;
+   okAll = ChartSetInteger(cid, CHART_COLOR_FOREGROUND,  (long)0) && okAll;
+   okAll = ChartSetInteger(cid, CHART_COLOR_GRID,        (long)12632256) && okAll;
+   okAll = ChartSetInteger(cid, CHART_COLOR_CHART_UP,    (long)13434880) && okAll;
+   okAll = ChartSetInteger(cid, CHART_COLOR_CHART_DOWN,  (long)0) && okAll;
+   okAll = ChartSetInteger(cid, CHART_COLOR_CHART_LINE,  (long)0) && okAll;
+   okAll = ChartSetInteger(cid, CHART_COLOR_CANDLE_BULL, (long)13434880) && okAll;
+   okAll = ChartSetInteger(cid, CHART_COLOR_CANDLE_BEAR, (long)0) && okAll;
+   okAll = ChartSetInteger(cid, CHART_COLOR_VOLUME,      (long)32768) && okAll;
+   okAll = ChartSetInteger(cid, CHART_COLOR_BID,         (long)12632256) && okAll;
+   okAll = ChartSetInteger(cid, CHART_COLOR_ASK,         (long)12632256) && okAll;
+   okAll = ChartSetInteger(cid, CHART_COLOR_LAST,        (long)12632256) && okAll;
+   okAll = ChartSetInteger(cid, CHART_COLOR_STOP_LEVEL,  (long)17919) && okAll;
+   okAll = ChartSetInteger(cid, CHART_MODE, CHART_CANDLES) && okAll;
+   okAll = ChartSetInteger(cid, CHART_SHOW_GRID, false) && okAll;
+   okAll = ChartSetInteger(cid, CHART_SHOW_OHLC, true) && okAll;
+   okAll = ChartSetInteger(cid, CHART_SHOW_BID_LINE, false) && okAll;
+   okAll = ChartSetInteger(cid, CHART_SHOW_ASK_LINE, false) && okAll;
+   okAll = ChartSetInteger(cid, CHART_SHOW_LAST_LINE, true) && okAll;
+   ChartRedraw(cid);
+   return okAll;
+}
+
+/* "M15"/"H1"/"15"/"60" gibi metni ENUM_TIMEFRAMES'e cevirir */
+ENUM_TIMEFRAMES TfFromText(const string t)
+{
+   string s = t;
+   StringTrimLeft(s);
+   StringTrimRight(s);
+   StringToUpper(s);
+   if(s == "M1"  || s == "1")    return PERIOD_M1;
+   if(s == "M5"  || s == "5")    return PERIOD_M5;
+   if(s == "M15" || s == "15")   return PERIOD_M15;
+   if(s == "M30" || s == "30")   return PERIOD_M30;
+   if(s == "H1"  || s == "60")   return PERIOD_H1;
+   if(s == "H4"  || s == "240")  return PERIOD_H4;
+   if(s == "D1"  || s == "1440") return PERIOD_D1;
+   if(s == "W1")                 return PERIOD_W1;
+   if(s == "MN1")                return PERIOD_MN1;
+   return PERIOD_CURRENT;
 }
 //+------------------------------------------------------------------+

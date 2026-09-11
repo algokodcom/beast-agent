@@ -1,0 +1,16 @@
+{
+  "name": "mt5_fiyat",
+  "description": "MT5 canlı fiyat okur: symbols dizisindeki her sembol için bid/ask/spread/digit + sembol bilgisi döner. Broker sembol adlari GOLD ve BITCOIN'dir (XAUUSD/BTCUSD degil — onlar missing doner). Eksik sembol 'missing' işaretlenir. Örn: {\"symbols\":[\"GOLD\",\"BITCOIN\"]}",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "symbols": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "Sorgulanacak semboller, örn XAUUSD, BTCUSD"
+      }
+    },
+    "required": ["symbols"]
+  },
+  "updatedAt": "2026-09-09T18:45:00.000Z"
+}

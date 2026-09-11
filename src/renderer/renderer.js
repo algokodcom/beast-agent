@@ -5253,9 +5253,17 @@ function dmMsgHtml(m) {
   const who = m.group
     ? dmName(m.fromTitle, m.from)
     : `${dmName(m.fromTitle, m.from)} → ${dmName(m.toTitle, m.to)}`;
+  const rawImg = String(m.image || '');
+  const img = /^data:image\//i.test(rawImg)
+    ? `<img class="dmt-img" src="${escapeHtml(rawImg)}" alt="görsel" loading="lazy">`
+    : m.imageOmitted
+      ? '<div class="dmt-img-note">görsel (bütçe) kaydedilmedi</div>'
+      : '';
   return (
     `<div class="dmt-msg"><span class="dm-who">${who}</span>` +
-    `${escapeHtml(String(m.text || ''))}<span class="dm-at">${dmTime(m.at)}</span></div>`
+    `${escapeHtml(String(m.text || ''))}` +
+    img +
+    `<span class="dm-at">${dmTime(m.at)}</span></div>`
   );
 }
 
@@ -5788,6 +5796,8 @@ function onEvent(ev) {
       toTitle: ev.toTitle,
       topic: ev.topic,
       text: ev.text,
+      ...(ev.image ? { image: ev.image } : {}),
+      ...(ev.imageOmitted ? { imageOmitted: true } : {}),
       ...(ev.group ? { group: ev.group, groupTitle: ev.groupTitle } : {}),
       ...(ev.closed ? { closed: true, closedAt: ev.closedAt } : {}),
     };

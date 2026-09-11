@@ -1,0 +1,10 @@
+{
+  "name": "mt5_durum",
+  "description": "MT5 tur başı envanteri TEK çağrıda: köprü bağlantısı + hesap özeti (bakiye/özkaynak/serbest marj) + açık pozisyonlar + bekleyen emirler. Parametre almaz. Trader ajanları karar öncesi bununla durum okur.",
+  "parameters": {
+    "type": "object",
+    "properties": {},
+    "required": []
+  },
+  "updatedAt": "2026-09-09T18:42:00.000Z"
+}

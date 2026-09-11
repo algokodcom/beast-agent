@@ -1,0 +1,12 @@
+{
+  "name": "mt5_gecmis",
+  "description": "Kapanmış işlem geçmişi: son N günde kapatılan pozisyonlar/deals, kar-zarar, komisyon, swap. days verilmezse 1 gün (en fazla 90). Trader ajanları performans ve günlük P&L kontrolünde kullanır.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "days": { "type": "number", "description": "Kac gun geriye bakilsin (1-90, varsayilan 1)" }
+    },
+    "required": []
+  },
+  "updatedAt": "2026-09-09T18:45:00.000Z"
+}

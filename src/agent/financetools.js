@@ -229,7 +229,7 @@ const definitions = NAMES.map((name) => {
     },
     mt5_ea: {
       description:
-        'BEASTFINANCE EA KÖPRÜSÜ (grafikte çalışan uzman danışman): action:"status" → EA heartbeat (yüklü mü, AutoTrading/EA izni, equity, pozisyon, son ack); "ping" → EA canlı yanıt; "chart" → aktif grafiğin sembol/periyot/fiyat/spread bilgisi; "note" → {symbol?, text, levels:[{price,label}]} grafik panosuna not + yatay seviye çizgileri yazar. NOT: yazdığın pano ve çizgiler görsel ajanın computer_look screenshot\'ında GÖRÜNÜR — grafik analizini/planını panoya yazıp screenshot ile doğrula; entegrasyon bildirimleriyle birlikte kullan.',
+        'BEASTFINANCE EA KÖPRÜSÜ (grafikte çalışan uzman danışman): action:"status" → EA heartbeat (yüklü mü, AutoTrading/EA izni, equity, pozisyon, son ack); "ping" → EA canlı yanıt; "chart" → aktif grafiğin sembol/periyot/fiyat/spread bilgisi; "note" → {symbol?, text, levels:[{price,label}]} grafik panosuna not + yatay seviye çizgileri yazar. NOT: yazdığın pano ve çizgiler görsel ajanın screenshot\'ında GÖRÜNÜR — GERÇEK grafik PNG\'si için varsayılan kurulu tool__mt5_shot kullan (EA "shot" komutu; görsel ajanın gözüne gelir), seviyeleri çizdikten sonra tool__mt5_shot ile görsel doğrula; grafiği agent_dm image ile ekibe paylaş.',
       parameters: {
         type: 'object',
         properties: {

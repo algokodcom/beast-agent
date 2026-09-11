@@ -1,0 +1,17 @@
+{
+  "name": "mt5_emir",
+  "description": "MT5 köprüsüyle PİYASA EMİRİ açar (işlem açma). symbol (broker adı: GOLD veya BITCOIN — XAUUSD/BTCUSD DEĞİL), side (buy|sell), volume (lot) zorunlu; sl/tp/comment opsiyonel. Başarıda ticket/retcode döner. NOT: Bu tool tüm oturumlarda çalışır — Trader ajanları da işlem açmak için bunu kullanır.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "symbol": { "type": "string", "description": "Broker sembol adi: GOLD veya BITCOIN (XAUUSD degil)" },
+      "side": { "type": "string", "description": "buy | sell" },
+      "volume": { "type": "number", "description": "Lot büyüklüğü (0.01-0.1)" },
+      "sl": { "type": "number", "description": "Stop loss fiyatı (opsiyonel)" },
+      "tp": { "type": "number", "description": "Take profit fiyatı (opsiyonel)" },
+      "comment": { "type": "string", "description": "Kısa işlem notu (opsiyonel)" }
+    },
+    "required": ["symbol", "side", "volume"]
+  },
+  "updatedAt": "2026-09-09T18:40:00.000Z"
+}

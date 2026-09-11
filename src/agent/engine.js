@@ -402,6 +402,7 @@ class Engine {
     if (nrBoot.unref) nrBoot.unref();
     skills.seedIfEmpty();
     agentdefs.seedIfEmpty();
+    try { customtools.seedDefaults(); } catch {} // varsayılan MT5 toolları (mt5_shot, mt5_barlar2, ...) — tüm oturumlara açılır
   }
 
   /* ---------- opencode agent.ts port: özel ajanlar ---------- */
@@ -1918,11 +1919,11 @@ class Engine {
         risk:
           'ROL: RİSK AJANI 🛡 — portföyün RİSK GÖZCÜSÜSÜN, İşlem AÇMAZSIN (mt5_trade/mt5_pending/mt5_close KULLANMA). Her turda: hesap + pozisyonlar + marj kullanımı → kaldıraç/exposure değerlendirmesi; SL\u2019siz pozisyon, limit aşımı, tek yönlü birikme, günlük kayıp hızı risklerini raporla; net düzeltme önerisi ver (hangi pozisyon küçültülmeli/kapatılmalı).',
         technic:
-          'ROL: TEKNİK ANALİZ AJANI 📊 — fiyat yapısı uzmanısın, İşlem AÇMAZSIN (mt5_trade/mt5_pending/mt5_close KULLANMA). Her turda odak semboller için: trend/yapı, destek-direnç bölgeleri, momentum (mt5_market + mt5_history verisiyle); sembol başına AL/SAT/BEKLE + giriş/SL/TP fikri üret — trader bu öneriyi işleme çevirir.',
+          'ROL: TEKNİK ANALİZ AJANI 📊 — fiyat yapısı uzmanısın, İşlem AÇMAZSIN (mt5_trade/mt5_pending/mt5_close KULLANMA). Her turda odak semboller için: trend/yapı, destek-direnç bölgeleri, momentum (mt5_market + mt5_history verisiyle); sembol başına AL/SAT/BEKLE + giriş/SL/TP fikri üret — trader bu öneriyi işleme çevirir. Bulgularını mt5_ea action:"note" ile grafiğe ÇİZ (destek/direnç/SL/TP seviyeleri) ve tool__mt5_shot ile seviyelerin göründüğünü teyit et; önemli seviyeleri görselle birlikte agent_dm ile trader\'a/ekibe ilet — grafik üzerinde ortak karar alın.',
         macro:
           'ROL: MAKRO AJANI 🌍 — büyük resim uzmanısın, İşlem AÇMAZSIN (mt5_trade/mt5_pending/mt5_close KULLANMA). Her turda web_search ile güncel makro manşetleri + ekonomik takvim riskleri (faiz, CPI, jeopolitik); DXY/altın/petrol bağıntılarını odak sembollere çevir; sembol başına yön eğilimi + TEMKİN/BEKLE notu ver.',
         visual:
-          'ROL: GÖRSEL ANALİZ AJANI 👁 — grafik/ekran görüntüsü uzmanısın, İşlem AÇMAZSIN (mt5_trade/mt5_pending/mt5_close KULLANMA). Her turda computer_look ile MT5 grafiğini yakala (gerekirse computer_act ile timeframe/zoom ayarla); web grafikleri için browser_open + browser_screenshot, görsel göremeyen metin-model isen ocr_read (source:"screen"/"browser") kullan. Gördüğün yapıyı yorumla: trend, formasyon, mum yapısı, destek-direnç ve SL/TP çizgileri; sembol başına GÖRSEL TEYİT + AL/SAT/BEKLE notu üret. Önemli bulguyu görseliyle birlikte agent_dm ile ANA TRADER\'a ya da ekibe bildir (yakaladığın grafiği paylaş).',
+          'ROL: GÖRSEL ANALİZ AJANI 👁 — grafik/ekran görüntüsü uzmanısın, İşlem AÇMAZSIN (mt5_trade/mt5_pending/mt5_close KULLANMA). MT5 grafiği için ÖNCE tool__mt5_shot kullan (BeastFinance EA "shot": gerçek grafik PNG + görsel SONRAKİ TURDA gözüne gelir; symbol/timeframe vererek başka sembol/periyot çekebilirsin; dönen path send_file ile gönderilebilir); gerekirse EA panosuna mt5_ea action:"note" ile plan/seviye yaz. web grafiklerinde browser_open + browser_screenshot; bilgisayar ekranı için computer_look; görsel göremeyen metin-model isen ocr_read (source:"screen"/"browser") kullan. Gördüğün yapıyı yorumla: trend, formasyon, mum yapısı, destek-direnç ve SL/TP çizgileri; sembol başına GÖRSEL TEYİT + AL/SAT/BEKLE notu üret. Önemli bulguyu GÖRSELİYLE paylaş: agent_dm image:true (son ekran görüntün) ya da image:"<mt5_shot path>" ile ANA TRADER\'a/ekibe gönder — karşı ajan görüntüyü GERÇEKTEN görür, AJAN DM panelinde açılır.',
       })[String((session && session.financeRole) || '')] || '';
     /* ROL → SKILL eşleştirmesi (ayarlar modalı): rol başına TEK ve ZORUNLU
        skill; ANA TRADER için ayrıca PLAYBOOK skill'i (roleSkills.trader).
@@ -1962,19 +1963,22 @@ class Engine {
       (roleBlockFull ? roleBlockFull + '\n' : '') +
       (teamLine || '') +
       'MT5 ARAÇLARI: mt5_status (bağlantı), mt5_account (hesap), mt5_market (canlı fiyat), mt5_positions (açık pozisyonlar), mt5_orders (bekleyen emirler), mt5_history (kapanan işlemler), mt5_ea (BeastFinance grafik panosu: status/ping/chart/note), mt5_trade (piyasa emri), mt5_close (kapat), mt5_modify (SL/TP), mt5_pending (bekleyen emir), mt5_cancel (emir iptal).\n' +
-      'BEASTFINANCE EA (OTOMATİK GRAFİK UZMANI — ENTEGRASYON KANALI): MT5 terminaline bağlanıldığında BeastFinance uzman danışmanı İLK GRAFİĞE OTOMATİK yüklenir, AutoTrading izni açılır (kurulum sistem tarafından yapılır; elle ekleme gerekmez). Grafik panosu + seviye çizgileri + dosya köprüsü (beast_ea.json / beast_cmd.json / beast_note.json) bu EA üzerinden yürür: entegrasyon işlerinde (status/ping/chart/note) mt5_ea kullan; yazdığın not ve çizgiler computer_look screenshot\'ında görünür, entegrasyon bildirimleriyle birlikte çalışır.\n' +
+      'KİŞİSEL MT5 ARAÇLARI (VARSAYILAN KURULU — tool__* tüm oturumlarda çağrılabilir): tool__mt5_shot (grafikten GERÇEK PNG + görsel ajana enjekte — grafik işlerinde BİRİNCİL), tool__mt5_barlar2 (OHLC mumlar, köprüsüz), tool__mt5_m15_m5 (GOLD M15+M5 hazır paket), tool__mt5_fiyat, tool__mt5_durum (hesap+pozisyon+emir tek çağrı), tool__mt5_gecmis, tool__mt5_pozisyon_gecmis, tool__mt5_sltp, tool__mt5_kapat, tool__mt5_bekleyen, tool__mt5_emir, tool__mt5_emir_iptal.\n' +
+      'BEASTFINANCE EA (OTOMATİK GRAFİK UZMANI — ENTEGRASYON KANALI): MT5 terminaline bağlanıldığında BeastFinance uzman danışmanı İLK GRAFİĞE OTOMATİK yüklenir, AutoTrading izni açılır (kurulum sistem tarafından yapılır; elle ekleme gerekmez). Grafik panosu + seviye çizgileri + dosya köprüsü (beast_ea.json / beast_cmd.json / beast_note.json) bu EA üzerinden yürür: entegrasyon işlerinde (status/ping/chart/note) mt5_ea kullan; ekran görüntüsü işlerinde tool__mt5_shot ("shot" komutu — gerçek PNG + ajan görseli) birincildir. Yazdığın not ve çizgiler tool__mt5_shot ve computer_look screenshot\'ında GÖRÜNÜR.\n' +
       'YETKİLERİN (AÇIK — çekinmeden kullan):\n' +
       '- skill: kurulu SKILL.md kataloğunu oku ve uygula — tool yazmadan ÖNCE skill("tool-yazma"), MT5 tarafı işlerden ÖNCE skill("mql5") oku ve prosedürüne birebir uy.\n' +
       '- Kişisel tool yazma: %APPDATA%\\beast\\tools\\<slug>\\ içine tool.json + run.js yaz (write_file/edit_file); run_command ile çıktısını (JSON, ok alanlı) doğrula → tool__<slug> ANINDA tüm finance ajanlarında çağrılabilir olur.\n' +
       '- MQL5: MT5 tarafında script/gösterge/EA yaz (write_file), metaeditor64.exe /compile ile derle, MQL5\\Files dosya köprüsüyle veriyi Beast\'e taşı; kullanıcıya çalıştırma adımını açıkça söyle.\n' +
       '- Yerleşik araçlar: run_command, python_run, read_file/write_file/edit_file, web_search/deep_search, browser_*, computer_look (ekran görüntüsü) — hepsi açık.\n' +
-      'GRAFİK & EKRAN GÖRÜNTÜSÜ (karar öncesi görsel doğrulama):\n' +
-      '- computer_look: masaüstü ekranını yakalar — MT5 grafiği SONRAKİ turda görsel olarak önüne gelir; trend/formasyon/mum yapısı + SL/TP çizgilerini doğrudan gör. Önemli işlem kararından önce grafiği gözle doğrula.\n' +
-      '- mt5_ea action:"note": grafiğe kısa analiz/plan metni + seviye çizgileri (destek/direnç/SL/TP) yazar — BeastFinance EA panosu computer_look screenshot\'ında GÖRÜNÜR; entegrasyon bildirimleriyle birlikte kullan.\n' +
-      '- browser_screenshot: web tabanlı grafikler (TradingView, Investing, MQL5) — browser_open ile aç, ekran görüntüsünü incele.\n' +
-      '- Görsel göremiyorsan (metin-model) ocr_read kullan: source:"screen" masaüstünü, source:"browser" paneli OCR ile okur; grafikteki fiyat/seviyeleri metne çevirir.\n' +
+      'GRAFİK & GÖRSEL DOĞRULAMA (karar öncesi — vazgeçilmez):\n' +
+      '- tool__mt5_shot: MT5 grafiğinin GERÇEK PNG\'si (BeastFinance EA "shot" komutu). Görsel SONRAKİ TURDA gözüne gelir; aktif grafikte Beast panosu + mt5_ea note ile çizilen seviyeler GÖRÜNÜR. symbol/timeframe ver → EA geçici grafik açıp o sembol/periyottan çeker; dönen path send_file ile kullanıcıya gönderilebilir. Grafik analizinde İLK tercih budur.\n' +
+      '- mt5_ea action:"note": grafiğe kısa plan metni + yatay seviye çizgileri yazar (destek/direnç/SL/TP) — sonra tool__mt5_shot ile çekip seviyelerin doğru yerde olduğunu GÖRSEL doğrula.\n' +
+      '- computer_look: tüm masaüstü ekranı (MT5 dışı pencereler dahil); browser_screenshot: web grafikleri (TradingView/Investing) — browser_open ile aç.\n' +
+      '- Görsel göremiyorsan (metin-model) ocr_read (source:"screen"/"browser") ile grafikteki fiyat/seviyeleri metne çevir.\n' +
       '- Grafikte gezinme/ölçek: computer_act ile timeframe, scroll, zoom (arka planda çalışır — kullanıcının faresini çalmaz).\n' +
-      '- EKSİK ARAÇ: özel grafik aracı gerekiyorsa (ör. MT5 grafiğini PNG dosyasına kaydetme, çoklu timeframe tek görüntü, indikatör paneli okuma) VAR SAYMA — tool_request ile TOOL botuna yazdır (doğrulanınca tool__<ad> olarak ANINDA çağrılır); küçük aracı skill("tool-yazma") prosedürüyle kendin de yazabilirsin.\n' +
+      '- EKİPLE GÖRSEL PAYLAŞIM: chart PNG\'sini agent_dm image:true (son görüntün) ya da image:"<dosya yolu>" (ör. tool__mt5_shot dönen path) ile trader/ekibe gönder — karşı ajan görüntüyü GERÇEKTEN görür, AJAN DM panelinde açılır. Ortak kararlarda grafiği paylaşmak zorunlu disiplindir.\n' +
+      '- PARALEL EKİP AKIŞI: teknik ajan seviyeleri hesaplar → mt5_ea note ile grafiğe çizer; görsel ajan tool__mt5_shot ile çekip TEYİT eder ve agent_dm ile görseli trader\'a atar; risk ajanı aynı görsel üzerinden SL/TP yerleşimini denetler; trader kararı işleme çevirir. Aynı sembolde koşan ajanlar tek DM grubunda (agent_dm group) toplanır — çelişen hareket etme.\n' +
+      '- EKSİK ARAÇ: özel grafik aracı gerekiyorsa (ör. çoklu timeframe tek görüntü, indikatör paneli okuma) VAR SAYMA — tool_request ile TOOL botuna yazdır (doğrulanınca tool__<ad> olarak ANINDA çağrılır); küçük aracı skill("tool-yazma") prosedürüyle kendin de yazabilirsin.\n' +
       'VERİ AKIŞI (her değerlendirmede): mt5_account + mt5_positions + mt5_market çağrılarını AYNI turda PARALEL ver; gerekiyorsa mt5_history ile son işlemleri gör.\n' +
       'PARALEL + KOORDİNASYON: uzun araştırma/işleri run_background ile paralel finance işçisine devret (parent finance olduğu için işçi mt5 okuma araçlarını görür); koşan ajanlarla konuşmak için agent_dm (to: ajan başlığındaki anahtar kelime, örn "GOLD"; ortak karar için group: "İSİM" ile grup sohbeti kur — mesaj tüm üyelere düşer). Görevin bitince DM/grup sohbetleri otomatik KAPANIR (geçmiş panelde kalır).\n' +
       (symbols ? `İZLEME LİSTESİ: ${symbols}\n` : '') +
@@ -2049,7 +2053,7 @@ class Engine {
     if (bctx) {
       parts.push(
         '# MT5 / BEAST FINANCE ENTEGRASYONU\n' +
-          'Beast Finance açıldığında MT5 terminaline bağlanılır; BeastFinance.mq5 uzman danışmanı İLK GRAFİĞE OTOMATİK kurulur ve AutoTrading açılır. Grafik/entegrasyon işleri bu EA üzerinden yürür (heartbeat beast_ea.json, komut köprüsü beast_cmd.json, grafik panosu/seviyeler beast_note.json; finance oturumlarında mt5_ea status/ping/chart/note) — pano ve çizgiler screenshot\'larda görünür. Elle EA ekleme varsayma; eksik araç gerekiyorsa Tool botuna tool_request at.'
+          'Beast Finance açıldığında MT5 terminaline bağlanılır; BeastFinance.mq5 uzman danışmanı İLK GRAFİĞE OTOMATİK kurulur ve AutoTrading açılır. Grafik/entegrasyon işleri bu EA üzerinden yürür (heartbeat beast_ea.json, komut köprüsü beast_cmd.json, grafik panosu/seviyeler beast_note.json; finance oturumlarında mt5_ea status/ping/chart/note). Grafik görseli için varsayılan kurulu tool__mt5_shot kullan (EA "shot" komutu: gerçek PNG + görsel ajana enjekte edilir; path send_file/agent_dm ile paylaşılabilir) — pano ve çizgiler bu screenshot\'ta görünür. Elle EA ekleme varsayma; eksik araç gerekiyorsa Tool botuna tool_request at.'
       );
     }
     /* opencode instruction port (ajan modu): workspace AGENTS/CLAUDE/CONTEXT
@@ -4324,7 +4328,7 @@ class Engine {
               const imgMsg = {
                 role: 'user',
                 content: [
-                  { type: 'text', text: '[tarayıcı ekran görüntüsü — bu kareyi analiz et ve devam et]' },
+                  { type: 'text', text: '[araç görseli — bu kareyi analiz et ve devam et]' },
                   { type: 'image_url', image_url: { url: injectedImage } },
                 ],
               };
@@ -5723,7 +5727,7 @@ const AGENT_DM_DEF = {
   function: {
     name: 'agent_dm',
     description:
-      'Send a short DM to another running agent (parallel agents / finance agents) to coordinate: share findings, ask status, warn about risk, hand off work, and MAKE JOINT DECISIONS. `to` = target session id OR a keyword from the agent title (e.g. "GOLD", "Trader"). `topic` = short subject label — replies to the same topic stay in the SAME conversation thread, so ALWAYS reuse the topic you were DMed with when replying. `group` = optional group-chat name (e.g. "GOLD EKIP"): creates or reuses a group conversation, adds the target agent as a member, and your message is delivered to EVERY member — use groups when a decision needs multiple agents. `image:true` attaches your last screenshot (fresh capture if none) — the receiving agent and the AJAN DM panel see it as an actual image; use it to share chart/screen findings.',
+      'Send a short DM to another running agent (parallel agents / finance agents) to coordinate: share findings, ask status, warn about risk, hand off work, and MAKE JOINT DECISIONS. `to` = target session id OR a keyword from the agent title (e.g. "GOLD", "Trader"). `topic` = short subject label — replies to the same topic stay in the SAME conversation thread, so ALWAYS reuse the topic you were DMed with when replying. `group` = optional group-chat name (e.g. "GOLD EKIP"): creates or reuses a group conversation, adds the target agent as a member, and your message is delivered to EVERY member — use groups when a decision needs multiple agents. `image` shares a chart/screen as an attachment the receiving agent REALLY sees and the AJAN DM panel shows: true = your last screenshot (fresh capture if none); a file path (e.g. the tool__mt5_shot "path") or a data URL = that exact image.',
     parameters: {
       type: 'object',
       properties: {
@@ -5731,7 +5735,7 @@ const AGENT_DM_DEF = {
         topic: { type: 'string', description: 'Short subject label for the conversation thread, e.g. "GOLD pozisyon riski"' },
         message: { type: 'string', description: 'Short message (1-3 sentences)' },
         group: { type: 'string', description: 'Optional group-chat name — send to ALL members of that group (creates it on first use, adds the target agent)' },
-        image: { type: 'boolean', description: 'true ise son ekran görüntünü mesaja iliştirir (yoksa taze ekran yakalar) — panelde ve karşı ajanda görsel olarak açılır; grafik/ekran bulgusunu paylaşmak için kullan' },
+        image: { type: ['boolean', 'string'], description: 'true = son ekran görüntün (yoksa taze yakalar); dosya yolu (ör. tool__mt5_shot dönen PNG path) ya da data:image URL = o görsel iliştirilir. Panelde ve karşı ajanda GÖRÜNÜR; grafik/ekran bulgusunu paylaşmak için kullan' },
       },
       required: ['message'],
     },
@@ -6547,9 +6551,17 @@ Engine.prototype._agentDmSend = async function (fromSid, args) {
     const to = String((args && args.to) || '').trim();
     const text = String((args && args.message) || '').trim().slice(0, 1200);
     if (!text) return { ok: false, error: 'mesaj boş' };
-    /* GÖRSEL DM: son ekran görüntüsü (yoksa taze yakalama) mesaja iliştirilir */
-    const withImage = !!(args && args.image);
-    const image = withImage ? await this._agentDmCaptureImage(fromSid) : '';
+    /* GÖRSEL DM: image:true → son ekran görüntüsü (yoksa taze yakalama);
+       image:"<dosya yolu>" ya da data URL → o görsel BİREBİR iliştirilir
+       (ör. tool__mt5_shot dönen PNG path'i). Karşı ajan görüntüyü görür. */
+    const imgArg = args && args.image;
+    let image = '';
+    if (typeof imgArg === 'string' && imgArg.trim()) {
+      const s = imgArg.trim();
+      image = /^data:image\//i.test(s) ? s : this._agentDmImageFromFile(s);
+    } else if (imgArg === true || imgArg === 'true') {
+      image = await this._agentDmCaptureImage(fromSid);
+    }
     const groupName = String((args && args.group) || '').replace(/\s+/g, ' ').trim().slice(0, 40);
     const jobs = this._bgJobs || new Map();
     const fromJob = jobs.get(String(fromSid));
@@ -6719,6 +6731,29 @@ Engine.prototype._agentDmSend = async function (fromSid, args) {
     return { ok: true, to: target, toTitle: dm.toTitle, topic };
   } catch (e) {
     return { ok: false, error: String((e && e.message) || e) };
+  }
+};
+
+/* AJAN DM görseli (dosyadan): png/jpg/webp/gif dosyasını data URL'e çevirir.
+   Send_file kapısına takılmadan (ör. tool__mt5_shot path'i) görsel paylaşımı;
+   2.5MB üstü DM kaydını şişirmesin diye atlanır. */
+Engine.prototype._agentDmImageFromFile = function (p) {
+  try {
+    const fp = String(p || '').trim();
+    if (!fp) return '';
+    const ext = path.extname(fp).toLowerCase();
+    const mime =
+      ext === '.png' ? 'image/png'
+        : ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg'
+          : ext === '.webp' ? 'image/webp'
+            : ext === '.gif' ? 'image/gif'
+              : '';
+    if (!mime) return '';
+    const buf = fs.readFileSync(fp);
+    if (!buf.length || buf.length > 2500000) return '';
+    return 'data:' + mime + ';base64,' + buf.toString('base64');
+  } catch {
+    return '';
   }
 };
 

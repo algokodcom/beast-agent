@@ -1,0 +1,10 @@
+{
+  "name": "mt5_m15_m5",
+  "description": "PARAMETRE ALMAZ (argumansiz cagrilir). SALT-OKUNUR, islem acmaz. C:\\Python314\\python.exe ile MetaTrader5 modulunu DOGRUDAN kullanip GOLD icin tek satir JSON dondurur: server_time (HH:MM), bid, ask, spread, m15 (son 12 M15 bari), m5 (son 12 M5 bari) - barlar [epoch,o,h,l,c] biciminde eskiden yeniye. Amac: parametre gecirmeyen runner icin parametresiz yedek yol.",
+  "parameters": {
+    "type": "object",
+    "properties": {},
+    "required": []
+  },
+  "updatedAt": "2026-09-10T10:05:00.000Z"
+}

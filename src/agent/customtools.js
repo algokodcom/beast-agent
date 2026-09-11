@@ -149,7 +149,16 @@ function call(name, args) {
       finish({ ok: false, error: 'tool zaman aşımı (' + Math.round(TOOL_TIMEOUT_MS / 1000) + ' sn)' });
     }, TOOL_TIMEOUT_MS);
     try {
-      child = spawn(process.execPath, [t.script], { cwd: path.dirname(t.script), stdio: ['pipe', 'pipe', 'pipe'] });
+      /* Araç ortamı: BEAST_* değişkenleri — tool'lar köprü/python yolunu ve
+         argümanları buradan güvenle çözebilir (stdin yanı sıra yedek kanal). */
+      const env = {
+        ...process.env,
+        BEAST_ROOT: beastRoot(),
+        BEAST_TOOL_ID: id,
+        BEAST_TOOL_ARGS: JSON.stringify(args || {}),
+        BEAST_FINANCE_DIR: path.join(beastRoot(), 'finance'),
+      };
+      child = spawn(process.execPath, [t.script], { cwd: path.dirname(t.script), env, stdio: ['pipe', 'pipe', 'pipe'] });
     } catch (e) {
       return finish({ ok: false, error: String((e && e.message) || e) });
     }
@@ -220,6 +229,47 @@ function remove(id) {
   }
 }
 
+/* VARSAYILAN TOOLLAR: uygulamayla gelen hazır araçlar (src/agent/defaulttools) —
+   MT5 köprúsü + grafik screenshot'ı. Kullanıcı klasöründe YOKSA kurulur;
+   var olanın üzerine YAZILMAZ (kullanıcı düzenlemesi korunur).
+
+   NOT: fs.cpSync Windows'ta bazı klasörlerde süreci düşürebildiği için
+   kopyalama mkdir+copyFile ile elle yapılır (güvenli, doğrulamalı). */
+function copyTree(srcDir, dstDir) {
+  fs.mkdirSync(dstDir, { recursive: true });
+  for (const e of fs.readdirSync(srcDir, { withFileTypes: true })) {
+    const from = path.join(srcDir, e.name);
+    const to = path.join(dstDir, e.name);
+    if (e.isDirectory()) copyTree(from, to);
+    else fs.copyFileSync(from, to);
+  }
+}
+
+function seedDefaults() {
+  const src = path.join(__dirname, 'defaulttools');
+  try {
+    if (!fs.existsSync(src)) return 0;
+    fs.mkdirSync(dir(), { recursive: true });
+    let n = 0;
+    for (const e of fs.readdirSync(src, { withFileTypes: true })) {
+      if (!e.isDirectory()) continue;
+      const to = path.join(dir(), e.name);
+      /* tam kurulu mu? tool.json + run.js yoksa yarım demektir → yeniden kur */
+      const complete = fs.existsSync(path.join(to, 'tool.json')) && fs.existsSync(path.join(to, 'run.js'));
+      if (complete) continue;
+      try {
+        if (fs.existsSync(to)) fs.rmSync(to, { recursive: true, force: true });
+        copyTree(path.join(src, e.name), to);
+        n++;
+      } catch {}
+    }
+    if (n) invalidate();
+    return n;
+  } catch {
+    return 0;
+  }
+}
+
 /* Örnek tool: klasör boşsa biçimi göstermek için bir adet kur */
 function seedIfEmpty() {
   try {
@@ -249,4 +299,4 @@ function seedIfEmpty() {
   } catch {}
 }
 
-module.exports = { setNotify, list, scan, definitions, names, call, save, remove, seedIfEmpty, invalidate, dir, slugify };
+module.exports = { setNotify, list, scan, definitions, names, call, save, remove, seedIfEmpty, seedDefaults, invalidate, dir, slugify };

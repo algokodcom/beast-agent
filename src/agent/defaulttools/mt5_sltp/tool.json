@@ -1,0 +1,14 @@
+{
+  "name": "mt5_sltp",
+  "description": "Açık pozisyonun STOP LOSS / TAKE PROFIT seviyelerini günceller: ticket zorunlu, sl ve/veya tp verilir (0 = o seviyeyi kaldir). SL'siz pozisyon bırakmamak için risk yönetiminde kullanılır.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "ticket": { "type": "number", "description": "Pozisyonun ticket numarasi" },
+      "sl": { "type": "number", "description": "Yeni stop loss fiyati (0 = kaldir)" },
+      "tp": { "type": "number", "description": "Yeni take profit fiyati (0 = kaldir)" }
+    },
+    "required": ["ticket"]
+  },
+  "updatedAt": "2026-09-09T18:48:00.000Z"
+}

@@ -1,0 +1,17 @@
+{
+  "name": "mt5_bekleyen",
+  "description": "BEKLEYEN EMİR koyar: symbol, type (buy_limit|sell_limit|buy_stop|sell_stop), volume, price zorunlu; sl/tp opsiyonel. Başarıda emir ticket'ı döner.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "symbol": { "type": "string", "description": "Broker sembol adi: GOLD veya BITCOIN (XAUUSD degil)" },
+      "type": { "type": "string", "description": "buy_limit | sell_limit | buy_stop | sell_stop" },
+      "volume": { "type": "number", "description": "Lot (0.01-0.1)" },
+      "price": { "type": "number", "description": "Tetiklenme/limit fiyati" },
+      "sl": { "type": "number", "description": "Stop loss (opsiyonel)" },
+      "tp": { "type": "number", "description": "Take profit (opsiyonel)" }
+    },
+    "required": ["symbol", "type", "volume", "price"]
+  },
+  "updatedAt": "2026-09-09T18:50:00.000Z"
+}

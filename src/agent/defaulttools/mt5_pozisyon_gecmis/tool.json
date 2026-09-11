@@ -1,0 +1,12 @@
+{
+  "name": "mt5_pozisyon_gecmis",
+  "description": "Kapanan pozisyon geçmişi — açılış ve kapanış TEK SATIRDA birleşik gösterilir (deal'ler ayrı ayrı değil). Sembol, yön, lot, açılış/kapanış fiyatı ve zamanı, net kâr/zarar (profit+komisyon+swap). days verilmezse bugün (en fazla 90).",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "days": { "type": "number", "description": "Kac gun geriye bakilsin (1-90, varsayilan 1 = bugun)" }
+    },
+    "required": []
+  },
+  "updatedAt": "2026-09-09T22:10:00.000Z"
+}

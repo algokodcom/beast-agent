@@ -6904,6 +6904,12 @@ function cronMirrorTargets(cronSid) {
 }
 
 function cronFire(job) {
+  /* BEAST FINANCE günlük rutin: plan/review job'ları trader'a özel gönderilir */
+  if (job && (job.kind === 'finance-plan' || job.kind === 'finance-review')) {
+    try { finDailyRoutine(job.kind === 'finance-plan' ? 'plan' : 'review'); } catch {}
+    cronEmit();
+    return;
+  }
   try {
     const sid = reuseOrLatestSession(job.sessionId);
     if (sid !== String(job.sessionId || '')) {
@@ -8431,6 +8437,7 @@ function studioWatchStop() {
    oturumu, tur tur piyasa tarayıp (farklı API/model seçilebilir) işlem kovalar. */
 const mt5bridge = require('./mt5bridge');
 const financetools = require('./agent/financetools');
+const finrisk = require('./agent/finrisk');
 const customtools = require('./agent/customtools');
 const finwatch = require('./agent/finwatch');
 const finstats = require('./agent/finstats');
@@ -8445,6 +8452,9 @@ const financeState = {
   installTried: false,
   agents: new Map(), /* sid -> { symbols, main, round, timer } — AYNI ANDA koşan finance ajanları */
   watch: new Map(), /* ticket -> risk otomasyonu durumu (R, BE, kısmi TP...) */
+  excursions: new Map(), /* ticket -> { symbol, side, mfe, mae, at } — MAE/MFE takibi */
+  excDirty: false,
+  excSavedAt: 0,
   watchTimer: null,
   watchBusy: false,
   watchTickAt: 0,
@@ -8495,9 +8505,25 @@ function finCfg() {
     const cur = Array.isArray(f.roleSkills[d.id]) ? f.roleSkills[d.id] : [];
     f.roleSkills[d.id] = cur.map((s) => String(s || '').trim()).filter(Boolean).slice(0, 1);
   }
+  /* TRADER PLAYBOOK: asıl karar vericinin zorunlu skill'i (roleSkills.trader) */
+  {
+    const cur = Array.isArray(f.roleSkills.trader) ? f.roleSkills.trader : [];
+    f.roleSkills.trader = cur.map((s) => String(s || '').trim()).filter(Boolean).slice(0, 1);
+  }
   if (!Number(f.intervalSec)) f.intervalSec = 120;
   if (!Number(f.maxLot)) f.maxLot = 0.1;
   if (f.maxPositions == null) f.maxPositions = 3;
+  /* KODLA DİSİPLİN (trader kuralları): hepsi 0 = kural kapalı */
+  if (!Number.isFinite(Number(f.maxTradesPerDay))) f.maxTradesPerDay = 10;
+  if (!Number.isFinite(Number(f.lossStreakLimit))) f.lossStreakLimit = 2;
+  if (!Number.isFinite(Number(f.lossStreakPauseMin))) f.lossStreakPauseMin = 30;
+  if (!Number.isFinite(Number(f.reentryCooldownMin))) f.reentryCooldownMin = 15;
+  if (!Number.isFinite(Number(f.maxPerCurrency))) f.maxPerCurrency = 3;
+  /* SHADOW MOD: emir gönderilmez — kararlar gerekçesiyle günlüğe yazılır */
+  if (typeof f.shadowMode !== 'boolean') f.shadowMode = false;
+  /* GÜNLÜK RUTİN: plan/review saatleri (HH:MM; boş = kapalı) — hafta içi cron */
+  if (typeof f.planTime !== 'string') f.planTime = '';
+  if (typeof f.reviewTime !== 'string') f.reviewTime = '';
   /* RİSK OTOMASYONU (watchdog): +R'da BE, trailing, kısmi TP — main süreç
      saniyelik döngüyle uygular; ajan turunu BEKLEMEZ. 0 = ilgili kural kapalı. */
   if (typeof f.watchdog !== 'boolean') f.watchdog = true;
@@ -8603,6 +8629,121 @@ function finJournalTail(n) {
   } catch {
     return [];
   }
+}
+
+/* ---------- GERİ BİLDİRİM DÖNGÜSÜ: ajanın kendi işlem geçmişi özeti ----------
+   Trader her turda son kapanışlarını, bugününü, kayıp serisini, kâr yakalama
+   oranını (MFE) ve son notlarını sistem promptunda görür. */
+function finBuildDigest() {
+  let entries = [];
+  try { entries = finJournalTail(300); } catch { return ''; }
+  const closesAll = entries.filter((e) => e.kind === 'close');
+  const closes = closesAll.slice(-10);
+  const L = [];
+  const dayStart = (() => { const d = new Date(); d.setHours(0, 0, 0, 0); return d.getTime(); })();
+  const todayOpens = entries.filter((e) => e.kind === 'open' && Number(e.at) >= dayStart).length;
+  const todayCloses = closesAll.filter((e) => Number(e.at) >= dayStart);
+  const todayNet = Math.round(todayCloses.reduce((a, e) => a + (Number(e.net) || 0), 0) * 100) / 100;
+  const f = finCfg();
+  L.push(`Bugün: ${todayOpens} açılış · ${todayCloses.length} kapanış · net ${todayNet >= 0 ? '+' : ''}${todayNet}`);
+  if (closes.length) {
+    L.push('Son kapanışlar (yeni→eski): ' + closes
+      .slice()
+      .reverse()
+      .map((e) => `${e.symbol || '?'}${e.side ? ' ' + String(e.side).toUpperCase() : ''} ${Number(e.net) >= 0 ? '+' : ''}${Number(e.net) || 0}`)
+      .join(' · '));
+  }
+  let streak = 0;
+  for (const c of closesAll.slice().reverse()) {
+    if ((Number(c.net) || 0) < 0) streak++;
+    else break;
+  }
+  if (streak >= 2) L.push(`DİKKAT: ${streak} ardışık kayıp — seri molası kuralı ${f.lossStreakLimit} kayıpta devreye girer`);
+  /* MFE (maksimum kâr) yakalama oranı: kârı ne kadarını geri veriyorsun */
+  const withMfe = closesAll.filter((e) => typeof e.mfe === 'number').slice(-30);
+  if (withMfe.length >= 3) {
+    const winMfe = withMfe.filter((e) => (Number(e.net) || 0) > 0 && Number(e.mfe) > 0);
+    const sumMfe = winMfe.reduce((a, e) => a + Number(e.mfe), 0);
+    const sumNet = winMfe.reduce((a, e) => a + (Number(e.net) || 0), 0);
+    if (sumMfe > 0) {
+      L.push(`Kâr yakalama: son ${winMfe.length} kazanan işlemde ulaşılan maksimum kârın %${Math.round((sumNet / sumMfe) * 100)}'i realize edildi`);
+    }
+    const losers = withMfe.filter((e) => (Number(e.net) || 0) < 0 && typeof e.mae === 'number');
+    if (losers.length) {
+      const avgMae = losers.reduce((a, e) => a + Math.abs(Number(e.mae) || 0), 0) / losers.length;
+      L.push(`Kaybedenlerde ortalama MAE (en kötü seviye): -${Math.round(avgMae * 100) / 100}`);
+    }
+  }
+  const notes = entries.filter((e) => e.kind === 'note').slice(-3);
+  if (notes.length) {
+    L.push('Son notların: ' + notes.map((n) => `${n.symbol || '?'}: ${String(n.note || '').replace(/\s+/g, ' ').slice(0, 90)}`).join(' | '));
+  }
+  /* Aktif disiplin kilidi varsa ajana açıkça söyle */
+  try {
+    const block = finrisk.disciplineError(entries, Date.now(), f, 'buy', '', []);
+    if (block) L.push('AKTİF KİLİT: ' + block);
+  } catch {}
+  return L.join('\n');
+}
+
+/* Koşan ekip ajanlarının son raporlarını trader turuna taşır. */
+function finTeamDigest() {
+  const L = [];
+  try {
+    for (const [sid, a] of financeState.agents) {
+      if (!a || !a.role || !engine) continue;
+      const s = engine.cache.get(String(sid));
+      const msgs = (s && s.messages) || [];
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        const m = msgs[i];
+        if (m && m.role === 'assistant' && typeof m.content === 'string' && m.content.trim()) {
+          const def = finRoleDef(a.role);
+          L.push(`- ${def ? def.label : a.role}: ${m.content.replace(/\s+/g, ' ').slice(0, 260)}`);
+          break;
+        }
+      }
+    }
+  } catch {}
+  return L.join('\n');
+}
+
+/* KODLA DİSİPLİN kancası: financetools işlem öncesi bunu çağırır. */
+function finDisciplineError(side, symbol, positions) {
+  try {
+    return finrisk.disciplineError(finJournalTail(400), Date.now(), finCfg(), side, symbol, positions);
+  } catch {
+    return null;
+  }
+}
+
+/* ---------- MAE/MFE: pozisyonun gördüğü en iyi/en kötü seviye ---------- */
+function finExcLoad() {
+  try {
+    const raw = finReadJson(finFile('excursions.json'), {});
+    for (const [t, v] of Object.entries(raw || {})) {
+      if (!v || typeof v !== 'object') continue;
+      financeState.excursions.set(String(t), {
+        symbol: String(v.symbol || ''),
+        side: String(v.side || ''),
+        mfe: Number(v.mfe) || 0,
+        mae: Number(v.mae) || 0,
+        at: Number(v.at) || Date.now(),
+      });
+    }
+  } catch {}
+}
+function finExcSave() {
+  financeState.excDirty = true;
+}
+function finExcFlush(force) {
+  if (!financeState.excDirty) return;
+  const now = Date.now();
+  if (!force && now - financeState.excSavedAt < 15000) return;
+  financeState.excSavedAt = now;
+  financeState.excDirty = false;
+  try {
+    finWriteJson(finFile('excursions.json'), Object.fromEntries(financeState.excursions));
+  } catch {}
 }
 
 function finAgentInfo(sid) {
@@ -8867,7 +9008,14 @@ async function finRecordClose(ticket, st) {
     }
   } catch {}
   const rounded = net == null ? null : Math.round(net * 100) / 100;
-  finJournal({ kind: 'close', ticket, symbol, net: rounded, side: (st && st.side) || '' });
+  /* MAE/MFE: pozisyonun gördüğü en iyi/en kötü seviyeler kapanışa iliştirilir */
+  const ex = financeState.excursions.get(String(ticket)) || null;
+  const mfe = ex ? Math.round(Number(ex.mfe) * 100) / 100 : undefined;
+  const mae = ex ? Math.round(Number(ex.mae) * 100) / 100 : undefined;
+  financeState.excursions.delete(String(ticket));
+  finExcSave();
+  finExcFlush(true);
+  finJournal({ kind: 'close', ticket, symbol, net: rounded, side: (st && st.side) || '', mfe, mae });
   const pl = rounded == null ? '' : ` · K/Z ${rounded >= 0 ? '+' : ''}${rounded.toFixed(2)}`;
   const line = `🏁 Pozisyon kapandı: ${symbol || '?'} #${ticket}${pl}`;
   financeLog('[watchdog] ' + line);
@@ -8945,6 +9093,19 @@ async function finWatchTick() {
     for (const p of positions) {
       const ticket = String(p.ticket);
       live.add(ticket);
+      /* MAE/MFE excursion takibi: kâr/zararın gördüğü en iyi-en kötü seviye */
+      {
+        let ex = financeState.excursions.get(ticket);
+        const profit = Number(p.profit) || 0;
+        if (!ex) {
+          ex = { symbol: String(p.symbol || ''), side: Number(p.type) === 0 ? 'buy' : 'sell', mfe: profit, mae: profit, at: Date.now() };
+          financeState.excursions.set(ticket, ex);
+        } else {
+          if (profit > ex.mfe) ex.mfe = profit;
+          if (profit < ex.mae) ex.mae = profit;
+        }
+        finExcSave();
+      }
       let st = financeState.watch.get(ticket);
       if (!st) {
         st = {
@@ -9026,6 +9187,7 @@ async function finWatchTick() {
       finStatsRefresh(true).catch(() => {});
     }
     finMaybeWeeklyReport();
+    finExcFlush(false); /* MAE/MFE deposu 15 sn'de bir diske */
   } catch {
   } finally {
     financeState.watchBusy = false;
@@ -9076,8 +9238,19 @@ async function finWeeklyReport(manual) {
   const positions = posR && posR.ok ? ((posR.data && posR.data.positions) || []) : [];
   const fromTs = now - 7 * 86400000;
   const equity = (financeState.equity || []).filter((p) => Number(p.at) >= fromTs - 86400000);
-  const journal = finJournalTail(40);
+  const journal = finJournalTail(400);
   const drawdown = finstats.maxDrawdown(equity);
+  /* MFE/MAE özeti: kâr yakalama oranı ve kaybedenlerde ortalama en kötü seviye */
+  const withMfe = journal.filter((e) => e.kind === 'close' && typeof e.mfe === 'number');
+  const mfeWin = withMfe.filter((e) => (Number(e.net) || 0) > 0 && Number(e.mfe) > 0);
+  const mfeSumMfe = mfeWin.reduce((a, e) => a + Number(e.mfe), 0);
+  const mfeSumNet = mfeWin.reduce((a, e) => a + (Number(e.net) || 0), 0);
+  const mfeLoss = withMfe.filter((e) => (Number(e.net) || 0) < 0 && typeof e.mae === 'number');
+  const mfe = withMfe.length ? {
+    n: withMfe.length,
+    capture: mfeSumMfe > 0 ? Math.round((mfeSumNet / mfeSumMfe) * 100) : null,
+    avgMaeLoss: mfeLoss.length ? Math.round((mfeLoss.reduce((a, e) => a + Math.abs(Number(e.mae)), 0) / mfeLoss.length) * 100) / 100 : null,
+  } : null;
   let review = '';
   if (engine) {
     try {
@@ -9090,7 +9263,7 @@ async function finWeeklyReport(manual) {
       review = String(res || '').trim().slice(0, 4000);
     } catch {}
   }
-  const md = finstats.buildWeeklyReport({ stats, drawdown, equity, journal, account, positions, fromTs, toTs: now, review });
+  const md = finstats.buildWeeklyReport({ stats, drawdown, equity, journal, account, positions, fromTs, toTs: now, review, mfe });
   const day = finstats.dayKey(now);
   const file = path.join(financeDir(), 'reports', 'weekly-' + day + '.md');
   try {
@@ -9125,6 +9298,7 @@ function finMaybeWeeklyReport() {
 
 try { finAlertsLoad(); } catch {}
 try { finWatchLoad(); } catch {}
+try { finExcLoad(); } catch {}
 try { finStatsLoad(); } catch {}
 try { finEquityLoad(); } catch {}
 
@@ -9132,6 +9306,7 @@ try { finEquityLoad(); } catch {}
 try {
   financetools.setConfig(() => finCfg());
   financetools.setAlerts(finAlertApi());
+  financetools.setDiscipline((side, symbol, positions) => finDisciplineError(side, symbol, positions));
   financetools.setNotify((entry) => {
     const k = String((entry && entry.kind) || '');
     const d = entry && entry.data ? entry.data : {};
@@ -9142,15 +9317,23 @@ try {
       finJournal({ kind: 'note', sid, agent: who, symbol: d.symbol, note: d.note, ticket: d.ticket || 0, side: d.side || '' });
       return;
     }
+    /* SHADOW: gerçek emir yok — karar teziyle günlüğe yazılır (test/ölçüm) */
+    if (k === 'shadow') {
+      finJournal({ kind: 'shadow', sid, agent: who, symbol: d.symbol, side: d.side || '', volume: d.volume, sl: d.sl || 0, tp: d.tp || 0, price: d.price || 0, type: d.type || '', reason: d.reason || '' });
+      const sline = `🧪 SHADOW: ${d.side || d.type || ''} ${d.volume || ''} ${d.symbol || ''} — emir gönderilmedi (karar günlüğe yazıldı)`;
+      financeLog('[shadow] ' + sline);
+      finPush('trade', { line: sline });
+      return;
+    }
     if (k === 'trade') {
-      finJournal({ kind: 'trade', sid, agent: who, symbol: d.symbol, side: d.side, volume: d.volume, sl: d.sl, tp: d.tp, reason: d.comment || '' });
+      finJournal({ kind: 'trade', sid, agent: who, symbol: d.symbol, side: d.side, volume: d.volume, sl: d.sl, tp: d.tp, reason: d.reason || d.comment || '' });
     } else if (k === 'close') {
       finJournal({ kind: 'close-req', sid, agent: who, ticket: d.ticket, volume: d.volume });
       return; /* kesin kapanış K/Z'si watchdog tarafından yazılır (çift bildirim yok) */
     } else if (k === 'modify') {
       finJournal({ kind: 'modify', sid, agent: who, ticket: d.ticket, sl: d.sl, tp: d.tp });
     } else if (k === 'pending') {
-      finJournal({ kind: 'pending', sid, agent: who, symbol: d.symbol, type: d.type, volume: d.volume });
+      finJournal({ kind: 'pending', sid, agent: who, symbol: d.symbol, type: d.type, volume: d.volume, reason: d.reason || '' });
     } else if (k === 'cancel') {
       finJournal({ kind: 'cancel', sid, agent: who, ticket: d.ticket });
     }
@@ -9196,6 +9379,10 @@ try {
 } catch {}
 
 function financeEnsureBridge() {
+  /* BEAST FINANCE = MT5 KAPISI: mod KAPALIYKEN köprü HİÇ başlatılmaz —
+     Beast, kullanıcı finance açmadıkça MT5 terminalini açmaz/yeniden
+     başlatmaz. Mod açılınca finance:mode handler'ı burayı çağırır. */
+  if (!financeState.mode) return mt5bridge.status();
   const f = finCfg();
   const candidates = [String(f.pythonPath || '').trim(), 'python', 'py -3'].filter(Boolean);
   /* Beast gömülü Python runtime kuruluysa en başa ekle (makinede Python olmasa da köprü çalışır) */
@@ -9343,19 +9530,23 @@ function finAgentRegisterBg(s, symbols) {
   } catch {}
 }
 
-function finApplyTraderFields(s, symbolsOverride, role) {
+function finApplyTraderFields(s, symbolsOverride, role, isMain) {
   const f = finCfg();
   const r = String(role || s.financeRole || '');
   s.finance = true;
   s.financeTrader = true;
   s.financeRole = r;
+  /* ANA TRADER: playbook skill'i roleSkills.trader'dan gelir */
+  if (typeof isMain === 'boolean') s.financePlaybook = isMain;
   /* rol ajanları ASLA işlem açmaz — trade ajanı ve işçileri DAIMA açabilir */
   s.financeAuto = !r;
   s.financeSymbols = Array.isArray(symbolsOverride) && symbolsOverride.length ? symbolsOverride : f.symbols;
   s.financeStrategy = String(f.strategy || '');
+  s.financeShadow = !!f.shadowMode; /* shadow modda işlem araçları emir göndermez */
   s.financeLimits = { maxLot: f.maxLot, maxPositions: f.maxPositions };
-  /* rolün okuması gereken skill'ler (modal eşleştirmesi) — promptta role eklenir */
-  s.financeRoleSkills = (f.roleSkills && f.roleSkills[r]) || [];
+  /* ZORUNLU TEK skill: rol ajanı → roleSkills[rol], ana trader → roleSkills.trader */
+  const skillKey = r || (s.financePlaybook ? 'trader' : '');
+  s.financeRoleSkills = (skillKey && f.roleSkills && f.roleSkills[skillKey]) || [];
   engine.cache.set(String(s.id), s);
 }
 
@@ -9384,7 +9575,7 @@ function finAgentCreate(symbols, isMain, role) {
     timer: null,
   };
   financeState.agents.set(String(s.id), record);
-  finApplyTraderFields(s, record.symbols, record.role);
+  finApplyTraderFields(s, record.symbols, record.role, !!isMain);
   finAgentRegisterBg(s, record.symbols);
   return { s, agent: record };
 }
@@ -9423,6 +9614,9 @@ function finTraderBrief(agent) {
   const syms = agent && agent.symbols && agent.symbols.length ? agent.symbols.join(', ') : (f.symbols || []).join(', ');
   const roleDef = finRoleDef(agent && agent.role);
   const who = agent && agent.main ? 'TRADER' : roleDef ? roleDef.label.toUpperCase() : 'FINANCE AJANI';
+  const playbook = agent && agent.main && f.roleSkills && f.roleSkills.trader && f.roleSkills.trader[0]
+    ? f.roleSkills.trader[0]
+    : '';
   return [
     `Beast Finance ${who} başlatıldı — ilk tur: strateji çerçeveni kur ve piyasa taramasını yap.`,
     `Odak semboller: ${syms || '(boş — mt5_status ile terminale bak, mantıklı semboller seç)'}`,
@@ -9434,11 +9628,63 @@ function finTraderBrief(agent) {
       ? 'Bulgularını agent_dm ile ANA TRADER\u2019a bildir (to: "Trader" ya da ajan başlığı anahtarı); teknik/öneri çelişkisi varsa gerekçenle yaz.'
       : f.strategy ? `Sahibinin strateji notu: ${f.strategy}` : 'Strateji notu yok: trend + destek/direnç + momentum ile temel okuma yap.',
     roleDef && f.strategy ? `Sahibinin strateji notu (bu çerçevede analiz et): ${f.strategy}` : '',
+    playbook ? `PLAYBOOK (ZORUNLU skill): skill("${playbook}") — sistem promptunda tam metni verilmiştir; her turda birebir uygula.` : '',
+    f.shadowMode ? 'SHADOW MOD AÇIK: emir gönderilmez — kararlarını gerekçesiyle raporla, gerçek işlem açılmaz.' : '',
     'Bu turda: mt5_status → hesap/pozisyon/fiyat verisi → mt5_rates/mt5_indicators ile teknik okuma → değerlendirme → kararlar (veya BEKLE: sebep) → kısa rapor.',
     'Önemli kararların gerekçesini mt5_note ile günlüğe yaz (haftalık performans raporu bu notları kullanır).',
     'Risk otomasyonu main süreçte 5 sn döngüyle çalışır (+R BE, trailing, kısmi TP) — sen yine de SL/TP seviyelerini aktif yönet.',
     'Diğer finance/paralel ajanlarla koordinasyon için agent_dm aracı var (to: ajan başlığı anahtar kelimesi).',
+    agent && agent.main && !roleDef ? `İŞLEM GEÇMİŞİN:\n${finBuildDigest()}` : '',
   ].filter(Boolean).join('\n');
+}
+
+/* GÜNLÜK RUTİN: plan (açılış) / review (kapanış) — cron 'finance-plan' /
+   'finance-review' job'ları tetikler. Trader koşmuyorsa sessizce atlanır. */
+function finDailyRoutine(mode) {
+  try {
+    let mainSid = '';
+    for (const [sid, a] of financeState.agents) {
+      if (a && a.main) { mainSid = String(sid); break; }
+    }
+    if (!mainSid || !engine) {
+      financeLog('[rutin] trader koşmuyor — günlük ' + mode + ' atlandı');
+      return;
+    }
+    const agent = financeState.agents.get(mainSid);
+    const s = engine.cache.get(mainSid);
+    if (s) finApplyTraderFields(s, agent.symbols, agent.role, true);
+    if (engine.isBusy(mainSid)) {
+      financeLog('[rutin] trader meşgul — günlük ' + mode + ' atlandı');
+      return;
+    }
+    const digest = finBuildDigest();
+    const text = mode === 'plan'
+      ? 'GÜNLÜK PLAN (açılış rutini): Bugün için net bir plan yap — izleme listesini ve piyasa koşullarını tara; sembol başına yön eğilimi, izlenecek seviyeler ve risk planı (kaç işlem, hangi setup/kurulum, günlük kayıp sınırı) yaz. Zorunlu işlem yok. Planı mt5_note ile günlüğe kaydet.\n\nİŞLEM GEÇMİŞİN:\n' + digest
+      : 'GÜNLÜK REVIEW (kapanış rutini): Bugünün işlemlerini ve performans geçmişini değerlendir — hangi kararlar işledi, hangileri hata; kâr yakalama (MFE) ve MAE verisine bak; açık pozisyonların SL/TP\'lerini kontrol et, korumasız bırakma; yarın için 2-3 somut ders çıkar ve mt5_note ile kaydet.\n\nİŞLEM GEÇMİŞİN:\n' + digest;
+    const ok = engine.send(mainSid, text, { userAction: true });
+    financeLog('[rutin] günlük ' + mode + (ok ? ' gönderildi' : ' gönderilemedi (meşgul)'));
+  } catch {}
+}
+
+/* Plan/review saatlerini hafta içi cron job'larına bağla (cron.json kalıcı). */
+function finSyncScheduleJobs() {
+  try {
+    const f = finCfg();
+    cron.removeIf((j) => j && (j.kind === 'finance-plan' || j.kind === 'finance-review'));
+    const add = (kind, name, time) => {
+      const m = /^([01]?\d|2[0-3]):([0-5]\d)$/.exec(String(time || '').trim());
+      if (!m) return;
+      const r = cron.add({
+        name,
+        schedule: `${Number(m[2])} ${Number(m[1])} * * 1-5`,
+        prompt: name,
+        kind,
+      });
+      if (r && r.ok) financeLog('[rutin] ' + name + ' zamanlandı: ' + r.job.schedule + ' (hafta içi)');
+    };
+    add('finance-plan', 'Finance Günlük Plan', f.planTime);
+    add('finance-review', 'Finance Günlük Review', f.reviewTime);
+  } catch {}
 }
 
 /* Her tur öncesi CHAT AJANINDAN plan iste: aynı motorun odaklı alt-ajanı
@@ -9505,13 +9751,21 @@ function finAgentRound(sid) {
   if (agent.main) financeState.traderRounds = agent.round;
   const f = finCfg();
   const roleDef = finRoleDef(agent.role);
+  let shadow = false;
   try {
     const s = engine.cache.get(String(sid));
-    if (s) finApplyTraderFields(s, agent.symbols, agent.role);
+    if (s) {
+      finApplyTraderFields(s, agent.symbols, agent.role, !!agent.main);
+      /* Geri bildirim döngüsü: ana trader her turda kendi işlem geçmişini görür */
+      s.financeDigest = agent.main ? finBuildDigest() : '';
+      shadow = !!s.financeShadow;
+    }
   } catch {}
   const auto = roleDef
     ? `UZMANLIK: ${roleDef.desc} — İŞLEM AÇMA, yalnız analiz + net öneri.`
-    : 'İşlem açabilirsin — limitlere uy, SL\u2019siz pozisyon bırakma.';
+    : shadow
+      ? 'SHADOW MOD AÇIK: emir GÖNDERİLMEZ — kararını teziyle raporla (günlüğe yazılır).'
+      : 'İşlem açabilirsin — limitlere uy, SL\u2019siz pozisyon bırakma.';
   const focus = agent.symbols.length ? `Odak: ${agent.symbols.join(', ')}. ` : '';
   const round = `FINANCE TUR #${agent.round}: ${focus}hesap + pozisyonlar + fiyatları çek; ${roleDef ? 'rolüne uygun analiz yap (mt5_rates/mt5_indicators ile) ve öneri ver.' : 'açık pozisyonları yönet (SL/TP güncelle, hedefe ulaşanı kapat); mt5_rates/mt5_indicators ile yeni fırsatları değerlendir.'} ${auto} Önemli kararların gerekçesini mt5_note ile günlüğe yaz. Kısa rapor ver.`;
   const launch = (planBlock) => {
@@ -9526,15 +9780,22 @@ function finAgentRound(sid) {
       agent.timer = setTimeout(() => { try { finAgentRound(sid); } catch {} }, 30000);
     }
   };
+  /* EKİP ENTEGRASYONU: ana trader turuna koşan uzman ajanların son raporları
+     enjekte edilir — karar öncesi görülmesi garanti edilir. */
+  let teamPrefix = '';
+  if (agent.main) {
+    const team = finTeamDigest();
+    if (team) teamPrefix = '[EKİP RAPORLARI — koşan uzman ajanların son raporları; kararında dikkate al]\n' + team + '\n\n';
+  }
   if (f.consultChat === false || roleDef) {
     /* danışma kapalı ya da rol ajanı (plan trader'a yöneliktir): tur doğrudan başlar */
-    launch('');
+    launch(teamPrefix);
     return;
   }
   if (agent.main) finPush('trader', { state: 'consult', round: agent.round });
   finConsultPlan(f, agent, String(sid))
-    .then((plan) => launch(plan ? `[ANA AJAN PLANI — bu turun varsayılan stratejisi; strateji notuyla çelişirse not önceliklidir]\n${plan}\n\n` : ''))
-    .catch(() => launch(''));
+    .then((plan) => launch(teamPrefix + (plan ? `[ANA AJAN PLANI — bu turun varsayılan stratejisi; strateji notuyla çelişirse not önceliklidir]\n${plan}\n\n` : '')))
+    .catch(() => launch(teamPrefix));
 }
 
 /* Tur/durum sonları: sürekli ajan döngüsünü besle; kullanıcı iptalinde kapat */
@@ -9616,6 +9877,20 @@ ipcMain.handle('finance:snapshot', async () => {
 
 ipcMain.handle('finance:mode', async (_e, payload) => {
   financeState.mode = !!(payload && payload.on);
+  /* BEAST FINANCE = MT5 KAPISI:
+     - mod AÇILINCA köprü + MT5 terminali OTOMATİK başlar (watchdog dahil) —
+       panel açılır açılmaz bağlantı kurulur, snapshot'ı beklemez.
+     - mod KAPANINCA otomatik başlatma İZNİ kapanır: köprü/watchdog çalışmaya
+       devam eder (açık MT5'te koruma sürer) ama MT5 kapalıysa Beast onu ARTIK
+       açmaz/yeniden başlatmaz. Açık terminal KAPATILMAZ (manuel işlemlere ve
+       açık pozisyonlara dokunulmaz); finance tekrar açılınca MT5 gerekirse
+       yeniden otomatik başlar. */
+  if (financeState.mode) {
+    try { financeEnsureBridge(); } catch {}
+    try { await mt5bridge.call('policy', { launch: true }, 4000); } catch {}
+  } else {
+    try { await mt5bridge.call('policy', { launch: false }, 4000); } catch {}
+  }
   const sid = String((payload && payload.sessionId) || '');
   let needNew = false;
   let resumeSid = '';
@@ -9731,11 +10006,12 @@ ipcMain.handle('finance:settings', async (_e, patch) => {
   if (p.analysisTeam !== undefined) f.analysisTeam = finRolesValid(p.analysisTeam);
   if (p.analysisAuto !== undefined) f.analysisAuto = !!p.analysisAuto;
   if (p.analysisCount !== undefined) f.analysisCount = Math.max(0, Math.min(FIN_ROLES_AUTO.length, Math.round(Number(p.analysisCount) || 0)));
-  /* ROL → SKILL eşleştirmesi güncellemesi (modal): rol başına TEK skill */
+  /* ROL → SKILL eşleştirmesi güncellemesi (modal): rol başına TEK skill +
+     ana trader playbook'u (trader) */
   if (p.roleSkills !== undefined && p.roleSkills && typeof p.roleSkills === 'object') {
-    for (const d of FIN_ROLES) {
-      if (p.roleSkills[d.id] === undefined) continue;
-      f.roleSkills[d.id] = (Array.isArray(p.roleSkills[d.id]) ? p.roleSkills[d.id] : [])
+    for (const id of [...FIN_ROLES.map((d) => d.id), 'trader']) {
+      if (p.roleSkills[id] === undefined) continue;
+      f.roleSkills[id] = (Array.isArray(p.roleSkills[id]) ? p.roleSkills[id] : [])
         .map((s) => String(s || '').trim()).filter(Boolean).slice(0, 1);
     }
     /* koşan rol ajanlarını da tazele — seçim sonraki turdan itibaren sistem
@@ -9749,6 +10025,15 @@ ipcMain.handle('finance:settings', async (_e, patch) => {
       }
     }
   }
+  /* KODLA DİSİPLİN + SHADOW + GÜNLÜK RUTİN ayarları */
+  if (p.maxTradesPerDay !== undefined) f.maxTradesPerDay = Math.max(0, Math.min(50, Math.round(Number(p.maxTradesPerDay) || 0)));
+  if (p.lossStreakLimit !== undefined) f.lossStreakLimit = Math.max(0, Math.min(10, Math.round(Number(p.lossStreakLimit) || 0)));
+  if (p.lossStreakPauseMin !== undefined) f.lossStreakPauseMin = Math.max(0, Math.min(1440, Math.round(Number(p.lossStreakPauseMin) || 0)));
+  if (p.reentryCooldownMin !== undefined) f.reentryCooldownMin = Math.max(0, Math.min(1440, Math.round(Number(p.reentryCooldownMin) || 0)));
+  if (p.maxPerCurrency !== undefined) f.maxPerCurrency = Math.max(0, Math.min(20, Math.round(Number(p.maxPerCurrency) || 0)));
+  if (p.shadowMode !== undefined) f.shadowMode = !!p.shadowMode;
+  if (p.planTime !== undefined) f.planTime = /^([01]?\d|2[0-3]):([0-5]\d)$/.test(String(p.planTime || '').trim()) ? String(p.planTime).trim() : '';
+  if (p.reviewTime !== undefined) f.reviewTime = /^([01]?\d|2[0-3]):([0-5]\d)$/.test(String(p.reviewTime || '').trim()) ? String(p.reviewTime).trim() : '';
   if (p.pythonPath !== undefined) f.pythonPath = String(p.pythonPath || '').trim();
   if (p.terminalPath !== undefined) f.terminalPath = String(p.terminalPath || '').trim();
   if (p.traderSel !== undefined) {
@@ -9762,7 +10047,7 @@ ipcMain.handle('finance:settings', async (_e, patch) => {
   if (financeState.traderSid && engine) {
     try {
       const ts = engine.cache.get(financeState.traderSid);
-      if (ts) finApplyTraderFields(ts);
+      if (ts) finApplyTraderFields(ts, undefined, undefined, true);
     } catch {}
   }
   /* finance SOHBET oturumları: strateji/sembol/limit/rol-skill değişince ANINDA
@@ -9777,6 +10062,8 @@ ipcMain.handle('finance:settings', async (_e, patch) => {
       }
     } catch {}
   }
+  /* günlük plan/review saatleri değiştiyse cron job'larını eşitle */
+  if (p.planTime !== undefined || p.reviewTime !== undefined) finSyncScheduleJobs();
   return { ok: true, cfg: f };
 });
 
@@ -9786,6 +10073,7 @@ async function financeTraderStart() {
   if (!engine) return { ok: false, error: 'ajan hazır değil' };
   const f = finCfg();
   if (!engine.publicState().hasModel && !f.traderSel) return { ok: false, error: 'model yok — Ayarlar → Provider' };
+  try { finSyncScheduleJobs(); } catch {} /* plan/review saatleri trader açılışında garantiye alınır */
   /* ANA trader: varsa aynen sürdür, yoksa yeni sürekli ajan aç */
   let mainSid = '';
   let mainAgent = null;

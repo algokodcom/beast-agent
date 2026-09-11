@@ -186,6 +186,14 @@ const els = {
   finInterval: $('#finInterval'),
   finMaxLot: $('#finMaxLot'),
   finStrategy: $('#finStrategy'),
+  finMaxTradesDay: $('#finMaxTradesDay'),
+  finLossStreak: $('#finLossStreak'),
+  finLossStreakPause: $('#finLossStreakPause'),
+  finReentry: $('#finReentry'),
+  finMaxPerCurrency: $('#finMaxPerCurrency'),
+  finPlanTime: $('#finPlanTime'),
+  finReviewTime: $('#finReviewTime'),
+  finShadow: $('#finShadow'),
   finSymBtn: $('#finSymBtn'),
   finRoles: $('#finRoles'),
   finWatchClear: $('#finWatchClear'),
@@ -7043,7 +7051,9 @@ async function init() {
     els.input.focus();
   });
 
-  /* in-app confirm modal düğmeleri + Enter/Esc kısayolları */
+  /* in-app confirm modal düğmeleri + Enter/Esc kısayolları.
+     KRİTİK: Enter'da preventDefault ŞART — closeConfirm odağı sohbet input'una
+     geri verdiği için varsayılan Enter aksiyonu input'a satır atlatıyordu. */
   {
     const ok = $('#confirmOk');
     const cancel = $('#confirmCancel');
@@ -7052,9 +7062,16 @@ async function init() {
       ok.addEventListener('click', () => closeConfirm(true));
       cancel.addEventListener('click', () => closeConfirm(false));
       ov.addEventListener('keydown', (e) => {
-        if (e.key === 'Escape') { e.stopPropagation(); closeConfirm(false); }
-        else if (e.key === 'Enter') { e.stopPropagation(); closeConfirm(true); }
+        if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closeConfirm(false); }
+        else if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); closeConfirm(true); }
       });
+      /* modal AÇIKKEN odak nerede olursa olsun Enter/Esc modal'a gider —
+         sohbet input'u Enter ile satır atlamaz (capture: input'a ulaşmadan kes) */
+      document.addEventListener('keydown', (e) => {
+        if (ov.hidden) return;
+        if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); closeConfirm(true); }
+        else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closeConfirm(false); }
+      }, true);
     }
   }
 
@@ -9326,6 +9343,14 @@ function finTraderInputsSet(cfg) {
   if (els.finInterval && ae !== els.finInterval) els.finInterval.value = cfg.intervalSec || 120;
   if (els.finMaxLot && ae !== els.finMaxLot) els.finMaxLot.value = cfg.maxLot || 0.1;
   if (els.finStrategy && ae !== els.finStrategy && !finStrategyDirty) els.finStrategy.value = cfg.strategy || '';
+  if (els.finMaxTradesDay && ae !== els.finMaxTradesDay) els.finMaxTradesDay.value = Number(cfg.maxTradesPerDay) || 0;
+  if (els.finLossStreak && ae !== els.finLossStreak) els.finLossStreak.value = Number(cfg.lossStreakLimit) || 0;
+  if (els.finLossStreakPause && ae !== els.finLossStreakPause) els.finLossStreakPause.value = Number(cfg.lossStreakPauseMin) || 0;
+  if (els.finReentry && ae !== els.finReentry) els.finReentry.value = Number(cfg.reentryCooldownMin) || 0;
+  if (els.finMaxPerCurrency && ae !== els.finMaxPerCurrency) els.finMaxPerCurrency.value = Number(cfg.maxPerCurrency) || 0;
+  if (els.finPlanTime && ae !== els.finPlanTime) els.finPlanTime.value = String(cfg.planTime || '');
+  if (els.finReviewTime && ae !== els.finReviewTime) els.finReviewTime.value = String(cfg.reviewTime || '');
+  if (els.finShadow && ae !== els.finShadow) els.finShadow.checked = !!cfg.shadowMode;
   finSymBtnUpdate();
   if (els.finTraderModel && ae !== els.finTraderModel && cfg.traderSel) els.finTraderModel.value = cfg.traderSel;
 }
@@ -9908,6 +9933,31 @@ finAutoNum(els.finRiskPct, 'riskPerTradePct', 0, 20, 0.1);
 finAutoNum(els.finMaxPerSymbol, 'maxPerSymbol', 0, 20, 1);
 finAutoNum(els.finMaxSameSide, 'maxSameSide', 0, 20, 1);
 finAutoNum(els.finMinMarginLevel, 'minMarginLevel', 0, 1000, 10);
+/* KODLA DİSİPLİN + shadow + günlük plan/review — anında kaydedilir */
+finAutoNum(els.finMaxTradesDay, 'maxTradesPerDay', 0, 50, 1);
+finAutoNum(els.finLossStreak, 'lossStreakLimit', 0, 10, 1);
+finAutoNum(els.finLossStreakPause, 'lossStreakPauseMin', 0, 1440, 5);
+finAutoNum(els.finReentry, 'reentryCooldownMin', 0, 1440, 5);
+finAutoNum(els.finMaxPerCurrency, 'maxPerCurrency', 0, 20, 1);
+const finTimeSave = (el, key) => {
+  if (!el) return;
+  el.addEventListener('change', () => {
+    finSaveCfg({ [key]: String(el.value || '').slice(0, 5) });
+    toast(key === 'planTime'
+      ? (el.value ? 'Günlük plan saati: ' + el.value + ' (hafta içi)' : 'Günlük plan kapatıldı')
+      : (el.value ? 'Günlük review saati: ' + el.value + ' (hafta içi)' : 'Günlük review kapatıldı'));
+  });
+};
+finTimeSave(els.finPlanTime, 'planTime');
+finTimeSave(els.finReviewTime, 'reviewTime');
+if (els.finShadow) {
+  els.finShadow.addEventListener('change', () => {
+    finSaveCfg({ shadowMode: els.finShadow.checked });
+    toast(els.finShadow.checked
+      ? 'SHADOW MOD açık — emir gönderilmez, kararlar günlüğe yazılır'
+      : 'Shadow mod kapalı — gerçek emirler aktif');
+  });
+}
 if (els.finDailyLossAction) {
   els.finDailyLossAction.addEventListener('change', () => {
     finSaveCfg({ dailyLossAction: els.finDailyLossAction.value });
@@ -10156,7 +10206,10 @@ function finRenderSkills() {
   if (!box) return;
   const cfg = finCfgCache || {};
   const map = cfg.roleSkills && typeof cfg.roleSkills === 'object' ? cfg.roleSkills : {};
-  const roles = Array.isArray(finRolesCatalog) ? finRolesCatalog : [];
+  /* ANA KARAR VERİCİ (trader) da bir satır: playbook skill'i zorunlu tek seçim */
+  const roles = [
+    { id: 'trader', label: 'TRADER (Ana Karar Verici)', desc: 'playbook: hangi setup\'lar serbest, giriş/çıkış/iptal kuralları, seans ve risk disiplini — asıl karar vericinin zorunlu skill\'i' },
+  ].concat(Array.isArray(finRolesCatalog) ? finRolesCatalog : []);
   box.innerHTML = '';
   if (!roles.length) {
     box.innerHTML = '<div class="fin-empty">Rol kataloğu yok</div>';

@@ -4873,6 +4873,8 @@ body.finance-mode #composerWrap { margin-right: var(--finW, 400px); }
   border-radius: 6px;
 }
 .fin-field input:focus, .fin-field select:focus, .fin-field textarea:focus { border-color: var(--accent); outline: none; }
+.fin-time-row { display: flex; gap: 6px; }
+.fin-time-row input { flex: 1; min-width: 0; }
 /* Ajan talimatı: çok satırlı not alanı (dikey büyütülebilir) */
 .fin-field textarea {
   resize: vertical;

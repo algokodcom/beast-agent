@@ -31,6 +31,10 @@ const NAMES = [
 
 let getCfg = () => ({ allowTrading: false, maxLot: 0.1, maxPositions: 3, symbols: [] });
 let notify = () => {};
+/* DİSİPLİN KANCASI (main enjekte eder): kodla zorlanan kurallar — günlük işlem
+   limiti, kayıp serisi molası, re-entry beklemesi, kur maruziyeti.
+   (side, symbol, positions) → hata metni ya da null. */
+let discipline = () => null;
 /* alarm deposu main süreçte yaşar (dosyaya kalıcı) — buradan enjekte edilir */
 let alertsApi = {
   list: () => [],
@@ -48,6 +52,10 @@ function setNotify(fn) {
 
 function setAlerts(api) {
   if (api && typeof api === 'object') alertsApi = api;
+}
+
+function setDiscipline(fn) {
+  if (typeof fn === 'function') discipline = fn;
 }
 
 async function bcall(method, params, timeoutMs) {
@@ -75,6 +83,10 @@ async function preTradeCheck(cfg, side, symbol, info, price, volume, sl, tp, pos
   if (closeErr) return closeErr;
   const expErr = finrisk.exposureCheck(positions || [], side, symbol, cfg.maxPerSymbol, cfg.maxSameSide);
   if (expErr) return expErr;
+  /* KODLA DİSİPLİN: günlük limit / kayıp serisi molası / re-entry / kur maruziyeti */
+  let discErr = null;
+  try { discErr = discipline(side, symbol, positions || []); } catch {}
+  if (discErr) return discErr;
   const minLevel = Number(cfg.minMarginLevel) || 0;
   let account = null;
   let estMargin = 0;
@@ -216,7 +228,7 @@ const definitions = NAMES.map((name) => {
     },
     mt5_trade: {
       description:
-        'PİYASA EMRİ AÇAR: mt5_trade {symbol, side:"buy"|"sell", volume, sl?, tp?, comment?}. Lot limiti ve max pozisyon sayısı sistem tarafından zorlanır. Otomatik işlem anahtarı kapalıysa reddedilir. SL/TP vermek ŞIDDETLİ önerilir.',
+        'PİYASA EMRİ AÇAR: mt5_trade {symbol, side:"buy"|"sell", volume, sl?, tp?, comment?, reason?}. Lot limiti ve max pozisyon sayısı sistem tarafından zorlanır. Otomatik işlem anahtarı kapalıysa reddedilir. SL/TP vermek ŞIDDETLİ önerilir. reason: kararın tek cümlelik tezi (günlüğe yazılır, performans değerlendirmesinde kullanılır).',
       parameters: {
         type: 'object',
         properties: {
@@ -226,6 +238,7 @@ const definitions = NAMES.map((name) => {
           sl: { type: 'number', description: 'Stop loss fiyatı (0 = yok)' },
           tp: { type: 'number', description: 'Take profit fiyatı (0 = yok)' },
           comment: { type: 'string', description: 'Kısa işlem notu' },
+          reason: { type: 'string', description: 'Kararın tezi/gerekçesi (tek cümle)' },
         },
         required: ['symbol', 'side', 'volume'],
       },
@@ -255,7 +268,7 @@ const definitions = NAMES.map((name) => {
     },
     mt5_pending: {
       description:
-        'BEKLEYEN EMİR koyar: mt5_pending {symbol, type:"buy_limit"|"sell_limit"|"buy_stop"|"sell_stop", volume, price, sl?, tp?}. Otomatik işlem anahtarına tabidir.',
+        'BEKLEYEN EMİR koyar: mt5_pending {symbol, type:"buy_limit"|"sell_limit"|"buy_stop"|"sell_stop", volume, price, sl?, tp?, reason?}. Otomatik işlem anahtarına tabidir. reason: kararın tezi (günlüğe yazılır).',
       parameters: {
         type: 'object',
         properties: {
@@ -265,6 +278,7 @@ const definitions = NAMES.map((name) => {
           price: { type: 'number' },
           sl: { type: 'number' },
           tp: { type: 'number' },
+          reason: { type: 'string', description: 'Kararın tezi/gerekçesi (tek cümle)' },
         },
         required: ['symbol', 'type', 'volume', 'price'],
       },
@@ -499,9 +513,28 @@ const handlers = {
     if (list.length >= maxPos) {
       return { ok: false, error: `max eşzamanlı pozisyon dolu (${list.length}/${maxPos}) — önce bir pozisyon kapat` };
     }
-    /* risk katmanı: stops_level + yoğunluk/net yön + marj kalkanı */
+    /* risk katmanı: stops_level + yoğunluk/net yön + marj kalkanı + disiplin */
     const riskErr = await preTradeCheck(cfg, side, symbol, info, price, vol, sl, tp, list);
     if (riskErr) return { ok: false, error: riskErr };
+    /* SHADOW MOD: gerçek emir GÖNDERİLMEZ — karar teziyle günlüğe yazılır */
+    if (cfg.shadowMode) {
+      noteTrade('shadow', {
+        symbol,
+        side,
+        volume: vol,
+        sl,
+        tp,
+        reason: String(args.reason || '').slice(0, 500),
+        risk: riskInfo,
+      }, ctx);
+      return {
+        ok: true,
+        shadow: true,
+        planned: { symbol, side, volume: vol, sl, tp },
+        risk: riskInfo,
+        note: 'SHADOW MOD: emir GÖNDERİLMEDİ, karar günlüğe yazıldı. Gerçek işlem için TRADE AJANI ayarlarından shadow modu kapat.',
+      };
+    }
     const data = await bcall('market', {
       symbol,
       side,
@@ -511,7 +544,7 @@ const handlers = {
       deviation: 20,
       comment: String(args.comment || 'Beast').slice(0, 26),
     }, 20000);
-    noteTrade('trade', { symbol, side, volume: vol, sl, tp, risk: riskInfo, comment: String(args.comment || ''), result: data && data.result }, ctx);
+    noteTrade('trade', { symbol, side, volume: vol, sl, tp, risk: riskInfo, comment: String(args.comment || ''), reason: String(args.reason || '').slice(0, 500), result: data && data.result }, ctx);
     return { ok: true, opened: { symbol, side, volume: vol, sl, tp }, risk: riskInfo, result: data && data.result };
   },
   async mt5_close(args, ctx) {
@@ -553,16 +586,27 @@ const handlers = {
     const norm = finrisk.normalizeVolume(info, args.volume, Number(cfg.maxLot) || 0.1);
     if (norm.error) return { ok: false, error: norm.error };
     const vol = norm.volume;
+    const ptype = String(args.type || '').toLowerCase();
+    const pside = ptype.startsWith('buy') ? 'buy' : ptype.startsWith('sell') ? 'sell' : '';
+    /* KODLA DİSİPLİN: bekleyen emir de işlem sayılır */
+    let discErr = null;
+    try { discErr = discipline(pside, symbol, []); } catch {}
+    if (discErr) return { ok: false, error: discErr };
+    /* SHADOW MOD: bekleyen emir de GÖNDERİLMEZ — tez günlüğe düşer */
+    if (cfg.shadowMode) {
+      noteTrade('shadow', { symbol, type: ptype, side: pside, volume: vol, price: Number(args.price) || 0, sl: Number(args.sl) || 0, tp: Number(args.tp) || 0, reason: String(args.reason || '').slice(0, 500) }, ctx);
+      return { ok: true, shadow: true, note: 'SHADOW MOD: bekleyen emir GÖNDERİLMEDİ, karar günlüğe yazıldı.' };
+    }
     const data = await bcall('pending', {
       symbol,
-      type: String(args.type || '').toLowerCase(),
+      type: ptype,
       volume: vol,
       price: Number(args.price) || 0,
       sl: Number(args.sl) || 0,
       tp: Number(args.tp) || 0,
       comment: String(args.comment || 'Beast').slice(0, 26),
     }, 20000);
-    noteTrade('pending', { symbol, type: args.type, volume: vol }, ctx);
+    noteTrade('pending', { symbol, type: args.type, volume: vol, reason: String(args.reason || '').slice(0, 500) }, ctx);
     return { ok: true, result: data && data.result };
   },
   async mt5_cancel(args, ctx) {
@@ -575,4 +619,4 @@ const handlers = {
   },
 };
 
-module.exports = { definitions, handlers, NAMES, setConfig, setNotify, setAlerts };
+module.exports = { definitions, handlers, NAMES, setConfig, setNotify, setAlerts, setDiscipline };

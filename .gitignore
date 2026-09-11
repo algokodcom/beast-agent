@@ -21,3 +21,7 @@ RELEASE.md
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# Python derleme önbelleği
+__pycache__/
+*.pyc

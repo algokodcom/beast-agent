@@ -43,10 +43,13 @@ def d(obj):
 
 TERMINAL_PATH = ""
 INIT_TRIED = False
+ALLOW_LAUNCH = True  # Beast Finance kapaliyken False: MT5 kapaliysa ACILMAZ
 
 
 def ensure_init():
-    """Terminal baglantisi yoksa (yeniden) init dener; True/False doner."""
+    """Terminal baglantisi yoksa (yeniden) init dener; True/False doner.
+    ALLOW_LAUNCH False iken terminal kapaliysa BASLATMA denenmez — Beast
+    Finance acilmadikca MT5 kendiliginden acilmaz."""
     global INIT_TRIED
     if mt5 is None:
         return False
@@ -55,6 +58,8 @@ def ensure_init():
             return True
     except Exception:
         pass
+    if not ALLOW_LAUNCH:
+        return False
     INIT_TRIED = True
     if TERMINAL_PATH:
         return bool(mt5.initialize(path=TERMINAL_PATH))
@@ -65,6 +70,8 @@ def need():
     if mt5 is None:
         raise RuntimeError("MetaTrader5 python paketi kurulu degil (pip install MetaTrader5)")
     if not ensure_init():
+        if not ALLOW_LAUNCH:
+            raise RuntimeError("MT5 terminali kapali — Beast Finance acilinca otomatik baslatilir")
         last = ""
         try:
             last = str(mt5.last_error())
@@ -76,7 +83,16 @@ def need():
 # ---------------- yontemler ----------------
 
 def h_ping(p):
-    return {"pong": True, "mt5": mt5 is not None, "connected": bool(ensure_init()) if mt5 else False}
+    return {"pong": True, "mt5": mt5 is not None, "connected": bool(ensure_init()) if mt5 else False, "launch": ALLOW_LAUNCH}
+
+
+def h_policy(p):
+    """Otomatik baslatma politikasi: {"launch": bool}. Beast Finance
+    kapatilinca launch=False gonderilir — MT5 kapaliysa bir daha ACILMAZ;
+    terminal aciksa cagrilar calismaya devam eder (koruma surer)."""
+    global ALLOW_LAUNCH
+    ALLOW_LAUNCH = p.get("launch") is not False
+    return {"launch": ALLOW_LAUNCH}
 
 
 def h_account(p):
@@ -375,6 +391,7 @@ def h_all_symbols(p):
 
 HANDLERS = {
     "ping": h_ping,
+    "policy": h_policy,
     "account": h_account,
     "terminal": h_terminal,
     "symbols": h_symbols,

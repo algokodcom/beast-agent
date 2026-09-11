@@ -1920,24 +1920,29 @@ class Engine {
           'ROL: MAKRO AJANI 🌍 — büyük resim uzmanısın, İşlem AÇMAZSIN (mt5_trade/mt5_pending/mt5_close KULLANMA). Her turda web_search ile güncel makro manşetleri + ekonomik takvim riskleri (faiz, CPI, jeopolitik); DXY/altın/petrol bağıntılarını odak sembollere çevir; sembol başına yön eğilimi + TEMKİN/BEKLE notu ver.',
       })[String((session && session.financeRole) || '')] || '';
     /* ROL → SKILL eşleştirmesi (ayarlar modalı): rol başına TEK ve ZORUNLU
-       skill. Seçili SKILL.md'nin TAM GÖVDESİ prompta gömülür — ajan skill
-       aracını çağırmayı atlasa bile prosedür KESİN uygulanır. Eşleştirme
-       boşsa satır eklenmez; ajan skill'i göreve göre kendi seçer (SKILLS). */
+       skill; ANA TRADER için ayrıca PLAYBOOK skill'i (roleSkills.trader).
+       Seçili SKILL.md'nin TAM GÖVDESİ prompta gömülür — ajan skill aracını
+       çağırmayı atlasa bile prosedür KESİN uygulanır. */
     const roleSkills = Array.isArray(session && session.financeRoleSkills)
       ? session.financeRoleSkills.map((s) => String(s || '').trim()).filter(Boolean).slice(0, 1)
       : [];
     let roleSkillBlock = '';
-    if (roleBlock && roleSkills.length) {
+    if (roleSkills.length) {
       const roleSkillName = roleSkills[0];
       const sb = this._skillBody({ name: roleSkillName });
+      const what = roleBlock
+        ? 'Bu rolün ZORUNLU skill\'i'
+        : session && session.financePlaybook
+          ? 'TRADER PLAYBOOK\'un (ZORUNLU skill)'
+          : 'BU OTURUMUN ZORUNLU skill\'i';
       roleSkillBlock =
-        ` Bu rolün ZORUNLU skill'i: skill("${roleSkillName}")` +
+        ` ${what}: skill("${roleSkillName}")` +
         (sb && sb.ok && sb.content
           ? ' — aşağıda TAM prosedürü verilmiştir; HER TURDA birebir uygula (ayrıca okumana gerek yok):\n\n' +
             `===== SKILL: ${roleSkillName} =====\n${sb.content}\n===== /SKILL =====`
           : ' — ilk turda bu skill\'i mutlaka oku ve prosedürüne birebir uy.');
     }
-    const roleBlockFull = roleBlock ? roleBlock + roleSkillBlock : '';
+    const roleBlockFull = roleBlock + roleSkillBlock;
     /* FİNANS EKİBİ: tüm finance ajanları tek DM grubundadır — sohbet grup
        thread'inde toplanır (ayrı ayrı 1:1 thread'lere dağılmaz) */
     const finJob = this._bgJobs && this._bgJobs.get(String(session && session.id));
@@ -1967,6 +1972,8 @@ class Engine {
       '- Emin olmadığında İŞLEM YOK — "BEKLE: <sebep>" yaz. Sık işlem > iyi işlem.\n' +
       '- Hesap kaldıracı ve serbest marja göre pozisyon boyutunu düşük tut; tek işlemde serbest marjın büyük kısmını riske atma.\n' +
       (session && session.financeStrategy ? `SAHİBİNİN STRATEJİ NOTU (önceliklidir):\n${session.financeStrategy}\n` : '') +
+      (session && session.financeShadow ? 'SHADOW MOD AKTİF: mt5_trade/mt5_pending emir GÖNDERMEZ — kararını teziyle raporla; gerçek işlem açılmaz (karar günlüğe yazılır).\n' : '') +
+      (session && session.financeDigest ? `İŞLEM PERFORMANS GEÇMİŞİN (kendi kayıtların — kararlarında ders çıkar):\n${session.financeDigest}\n` : '') +
       (mem.user ? `# USER\n${mem.user}\n` : '') +
       (rules.length ? `# KURALLAR (sahibinin kalıcı talimatları — daima uy)\n${rules.map((r) => '- ' + r).join('\n')}\n` : '') +
       (skList.length

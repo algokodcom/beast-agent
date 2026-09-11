@@ -190,6 +190,22 @@
               <span>Ajan talimatı <i class="fin-hint">— 1-2 cümle; trader + tüm paralel ajanlara iletilir</i></span>
               <textarea id="finStrategy" rows="2" maxlength="2000" placeholder="örn. Her türde scalp yap — M1/M5 hızlı gir-çık, günlük kâr hedefine ulaşınca dur" title="Buraya yazdığın talimat trade ajanına ve koşan tüm paralel ajanlara (ekip + sembol işçileri) sistem promptunda öncelikli strateji notu olarak gider; kaydetmek için alandan çık"></textarea>
             </div>
+            <div class="fin-field">
+              <span>Disiplin <i class="fin-hint">— kodla zorlanır; 0 = kural kapalı</i></span>
+              <div class="fin-grid2">
+                <div class="fin-field"><span>Günlük max işlem</span><input id="finMaxTradesDay" type="number" min="0" max="50" step="1" title="Bir günde en fazla kaç işlem açılabilir (0 = sınırsız)" /></div>
+                <div class="fin-field"><span>Kayıp serisi limiti</span><input id="finLossStreak" type="number" min="0" max="10" step="1" title="Üst üste bu kadar kayıptan sonra yeni işlem kilidi (0 = kapalı)" /></div>
+                <div class="fin-field"><span>Seri molası (dk)</span><input id="finLossStreakPause" type="number" min="0" max="1440" step="5" title="Kayıp serisi limitine ulaşınca kaç dakika yeni işlem açılmaz" /></div>
+                <div class="fin-field"><span>Re-entry bekleme (dk)</span><input id="finReentry" type="number" min="0" max="1440" step="5" title="Aynı sembolda bir işlem kapandıktan sonra yeni giriş için beklenecek süre (0 = kapalı)" /></div>
+                <div class="fin-field"><span>Kur başına max</span><input id="finMaxPerCurrency" type="number" min="0" max="20" step="1" title="Yönlü kur maruziyeti (korelasyon) limiti — örn. 3: aynı para biriminde en fazla ±3 net pozisyon (0 = kapalı)" /></div>
+                <div class="fin-field"><span>Plan / Review (saat)</span><div class="fin-time-row"><input id="finPlanTime" type="time" title="Hafta içi günlük plan saati (boş = kapalı)" /><input id="finReviewTime" type="time" title="Hafta içi günlük review saati (boş = kapalı)" /></div></div>
+              </div>
+            </div>
+            <div class="fin-field fin-check">
+              <label title="SHADOW MOD: emir gönderilmez — kararlar teziyle günlüğe yazılır, gerçek işlem açılmaz. Ajanı para riske atmadan canlı test etmek için.">
+                <input id="finShadow" type="checkbox" /> Shadow mod — emir açmadan karar kaydı (canlı test)
+              </label>
+            </div>
             <div class="fin-row fin-btn-row">
               <button id="finTraderBtn" class="fin-start">&#9654;&#xFE0E; Ajanı Başlat</button>
             </div>

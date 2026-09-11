@@ -181,6 +181,61 @@ test('risk: yoğunluk kontrolü aynı yön ve sembol limitlerini uygular', () =>
   assert.strictEqual(risk.exposureCheck(list, 'sell', 'XAUUSD', 2, 3), null);
 });
 
+/* ---------------- finrisk: kodla disiplin ---------------- */
+
+test('disiplin: günlük işlem limiti dolar ve yeni gün sıfırlanır', () => {
+  const now = new Date('2026-09-11T14:00:00').getTime();
+  const day = (h) => new Date('2026-09-11T' + h + ':00:00').getTime();
+  const entries = [
+    { kind: 'open', at: day('09'), symbol: 'GOLD' },
+    { kind: 'open', at: day('10'), symbol: 'GOLD' },
+    { kind: 'open', at: day('11'), symbol: 'EURUSD' },
+  ];
+  const cfg = { maxTradesPerDay: 3 };
+  assert.ok(risk.disciplineError(entries, now, cfg, 'buy', 'GOLD', []), 'limit dolunca hata');
+  assert.strictEqual(risk.disciplineError(entries.slice(0, 2), now, cfg, 'buy', 'GOLD', []), null);
+  assert.strictEqual(risk.disciplineError(entries, now, {}, 'buy', 'GOLD', []), null, 'limit 0 = kapalı');
+});
+
+test('disiplin: ardışık kayıp serisi molası verir, süre dolunca açılır', () => {
+  const now = new Date('2026-09-11T12:00:00').getTime();
+  const at = (minAgo) => now - minAgo * 60000;
+  const entries = [
+    { kind: 'close', at: at(10), symbol: 'GOLD', net: -20 },
+    { kind: 'close', at: at(40), symbol: 'EURUSD', net: -10 },
+  ];
+  const cfg = { lossStreakLimit: 2, lossStreakPauseMin: 30 };
+  assert.ok(risk.disciplineError(entries, now, cfg, 'buy', 'GBPUSD', []), '2 kayıp + 10 dk önce → mola');
+  assert.strictEqual(risk.disciplineError(entries, now - 40 * 60000, cfg, 'buy', 'GBPUSD', []), null, 'mola süresi geçmişse serbest');
+  assert.strictEqual(risk.disciplineError([{ kind: 'close', at: at(5), symbol: 'GOLD', net: 5 }].concat(entries), now, cfg, 'buy', 'GBPUSD', []), null, 'son işlem kârlıysa seri kırılır');
+});
+
+test('disiplin: aynı sembole re-entry beklemesi uygulanır', () => {
+  const now = new Date('2026-09-11T12:00:00').getTime();
+  const entries = [{ kind: 'close', at: now - 5 * 60000, symbol: 'gold', net: -3 }];
+  const cfg = { reentryCooldownMin: 15 };
+  const err = risk.disciplineError(entries, now, cfg, 'buy', 'GOLD', []);
+  assert.ok(err && /re-entry/.test(err), '5 dk önce kapandı → bekle');
+  assert.strictEqual(risk.disciplineError(entries, now, cfg, 'buy', 'EURUSD', []), null, 'başka sembol serbest');
+});
+
+test('disiplin: yönlü kur maruziyeti (korelasyon) limiti uygular', () => {
+  const positions = [
+    { symbol: 'EURUSD', type: 0 }, /* +EUR -USD */
+    { symbol: 'GBPUSD', type: 0 }, /* +GBP -USD */
+    { symbol: 'AUDUSD', type: 0 }, /* +AUD -USD */
+  ];
+  /* USD zaten -3; 4. USD short'u (buy XXXUSD) limiti aşar */
+  const err = risk.currencyExposureError(positions, 'buy', 'NZDUSD', 3);
+  assert.ok(err && /USD/.test(err), 'USD maruziyeti -4 olur → hata');
+  assert.strictEqual(risk.currencyExposureError(positions, 'sell', 'NZDUSD', 3), null, 'ters yön maruziyeti dengeler');
+  assert.strictEqual(risk.currencyExposureError(positions, 'buy', 'NZDUSD', 4), null, 'limit yükselince serbest');
+  assert.deepStrictEqual(risk.symbolLegs('XAUUSD'), ['XAU', 'USD']);
+  assert.deepStrictEqual(risk.symbolLegs('GOLD'), ['XAU', 'USD']);
+  assert.deepStrictEqual(risk.symbolLegs('USDCAD'), ['USD', 'CAD']);
+  assert.deepStrictEqual(risk.symbolLegs('VOLX'), []);
+});
+
 /* ---------------- finstats ---------------- */
 
 test('istatistik: deals pozisyon bazında gruplanır, K/Z ve win rate doğru', () => {

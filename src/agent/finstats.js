@@ -189,6 +189,16 @@ function buildWeeklyReport(ctx) {
     for (const [d, v] of days) L.push('- ' + d + ': ' + money(v, cur));
     L.push('');
   }
+  if (c.mfe && c.mfe.n) {
+    L.push('## Kâr Yakalama (MFE/MAE)');
+    if (c.mfe.capture != null) {
+      L.push('- Kazanan işlemlerde ulaşılan maksimum kârın **%' + c.mfe.capture + '**\'i realize edildi (' + c.mfe.n + ' kapanış ölçüldü).');
+    }
+    if (c.mfe.avgMaeLoss != null) {
+      L.push('- Kaybedenlerde ortalama MAE (en kötü seviye): **-' + c.mfe.avgMaeLoss + '** — SL mesafesi bu veriye göre ayarlanabilir.');
+    }
+    L.push('');
+  }
   const syms = Object.entries(st.bySymbol || {})
     .map(([s, v]) => ({ symbol: s, ...v }))
     .sort((a, b) => b.net - a.net)

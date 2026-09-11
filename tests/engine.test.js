@@ -113,6 +113,35 @@ test('finance: sistem promptu SKILLS kataloğunu içerir', () => {
   assert.ok(!sys3.includes('ZORUNLU skill'));
 });
 
+test('finance: trader playbook + işlem geçmişi digest prompta gömülür', () => {
+  const eng = makeEngine();
+  /* ANA TRADER: role yok, playbook skill'i financeRoleSkills ile gelir */
+  const s = eng._load(eng.createSession().id);
+  s.finance = true;
+  s.financeTrader = true;
+  s.financePlaybook = true;
+  s.financeRoleSkills = ['price-action', 'yedek-skill'];
+  s.financeDigest = 'Bugün: 3 açılış · net -2.40\nDİKKAT: 2 ardışık kayıp';
+  const sys = eng.buildFinanceSystem(s);
+  assert.ok(sys.includes('TRADER PLAYBOOK'), 'playbook etiketi görünmeli');
+  assert.ok(sys.includes('===== SKILL: price-action ====='), 'playbook tam metni gömülmeli');
+  assert.ok(!sys.includes('yedek-skill'), 'tek skill kuralı trader için de geçerli');
+  assert.ok(sys.includes('İŞLEM PERFORMANS GEÇMİŞİN'), 'geri bildirim digest bloğu olmalı');
+  assert.ok(sys.includes('net -2.40'));
+  /* SHADOW modu promptta açıkça bildirilir */
+  s.financeShadow = true;
+  const sys2 = eng.buildFinanceSystem(s);
+  assert.ok(sys2.includes('SHADOW MOD AKTİF'));
+  /* Playbook'suz (worker/rol) oturumda trader etiketi çıkmaz */
+  const w = eng._load(eng.createSession().id);
+  w.finance = true;
+  w.financeTrader = true;
+  w.financeRoleSkills = ['price-action'];
+  const sysW = eng.buildFinanceSystem(w);
+  assert.ok(!sysW.includes('TRADER PLAYBOOK'));
+  assert.ok(!sysW.includes('Bu rolün ZORUNLU'));
+});
+
 /* ---------- payload tool-çifti hizalama (HTTP 400 emniyeti) ---------- */
 
 test('payload hizalama: yetim tool sonucu / cevapsız tool_call temizlenir', () => {

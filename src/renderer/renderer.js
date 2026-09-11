@@ -182,6 +182,7 @@ const els = {
   finModelRefreshBtn: $('#finModelRefreshBtn'),
   finInterval: $('#finInterval'),
   finMaxLot: $('#finMaxLot'),
+  finStrategy: $('#finStrategy'),
   finSymBtn: $('#finSymBtn'),
   finRoles: $('#finRoles'),
   finWatchClear: $('#finWatchClear'),
@@ -217,6 +218,7 @@ const els = {
   finMinMarginLevel: $('#finMinMarginLevel'),
   finDailyLossAction: $('#finDailyLossAction'),
   finNotifyTarget: $('#finNotifyTarget'),
+  finNotifyTradeOnly: $('#finNotifyTradeOnly'),
   finWatchDot: $('#finWatchDot'),
   finWatchInfo: $('#finWatchInfo'),
   finAlertList: $('#finAlertList'),
@@ -9128,6 +9130,7 @@ let finPollTimer = null;
 let finModelsFilled = false;
 let finLastPrices = new Map(); /* sembol → son bid (renk için) */
 let finCfgCache = null; /* son snapshot cfg — rol→skill modalı bundan okur */
+let finStrategyDirty = false; /* textarea'da kaydedilmeyi bekleyen ajan talimatı var */
 const FIN_COLOR_UP = 'fs-up';
 const FIN_COLOR_DOWN = 'fs-down';
 
@@ -9316,6 +9319,7 @@ function finTraderInputsSet(cfg) {
   const ae = document.activeElement;
   if (els.finInterval && ae !== els.finInterval) els.finInterval.value = cfg.intervalSec || 120;
   if (els.finMaxLot && ae !== els.finMaxLot) els.finMaxLot.value = cfg.maxLot || 0.1;
+  if (els.finStrategy && ae !== els.finStrategy && !finStrategyDirty) els.finStrategy.value = cfg.strategy || '';
   finSymBtnUpdate();
   if (els.finTraderModel && ae !== els.finTraderModel && cfg.traderSel) els.finTraderModel.value = cfg.traderSel;
 }
@@ -9431,6 +9435,7 @@ function finRenderAutomation(cfg, watch) {
   setNum(els.finMinMarginLevel, cfg.minMarginLevel != null ? cfg.minMarginLevel : 150);
   if (els.finDailyLossAction && ae !== els.finDailyLossAction) els.finDailyLossAction.value = cfg.dailyLossAction || 'stop';
   if (els.finNotifyTarget && ae !== els.finNotifyTarget) els.finNotifyTarget.value = cfg.notifyTarget || 'auto';
+  if (els.finNotifyTradeOnly && ae !== els.finNotifyTradeOnly) els.finNotifyTradeOnly.checked = cfg.notifyTradeOnly !== false;
   if (els.finWatchDot) {
     els.finWatchDot.classList.remove('on', 'off', 'busy');
     els.finWatchDot.classList.add(watch && watch.on ? 'on' : 'off');
@@ -9658,10 +9663,31 @@ let finCfgTimer = null;
 let finWatchDirty = false; /* picker/input değişikliği kaydedilmeyi bekliyor */
 function finSaveCfg(patch) {
   if (patch && patch.symbols !== undefined) finWatchDirty = true;
+  if (patch && patch.strategy !== undefined) finStrategyDirty = true;
   clearTimeout(finCfgTimer);
+  const wasStrategy = !!(patch && patch.strategy !== undefined);
   finCfgTimer = setTimeout(() => {
-    beast.financeSettings(patch).then(() => { finWatchDirty = false; }).catch(() => { finWatchDirty = false; });
+    beast.financeSettings(patch)
+      .then(() => {
+        if (wasStrategy) {
+          finStrategyDirty = false;
+          if (finCfgCache) finCfgCache.strategy = patch.strategy;
+        }
+        finWatchDirty = false;
+      })
+      .catch(() => { finWatchDirty = false; });
   }, 400);
+}
+
+/* Ajan talimatı: Ajanı Başlat'tan önce bekleyen değişiklik hemen yazılır ki
+   ilk tur brief'i talimatı görsün (debounce beklemeden). */
+function finStrategyFlush() {
+  if (!els.finStrategy || !finStrategyDirty) return Promise.resolve();
+  const v = els.finStrategy.value;
+  finStrategyDirty = false;
+  return beast.financeSettings({ strategy: v })
+    .then(() => { if (finCfgCache) finCfgCache.strategy = v; })
+    .catch(() => { finStrategyDirty = true; });
 }
 
 /* ---------- GÖRÜNÜM AYARLARI (isteğe bağlı bölümler) ----------
@@ -9789,6 +9815,14 @@ if (els.finNotifyTarget) {
     toast('Bildirim kanalı: ' + els.finNotifyTarget.options[els.finNotifyTarget.selectedIndex].textContent);
   });
 }
+if (els.finNotifyTradeOnly) {
+  els.finNotifyTradeOnly.addEventListener('change', () => {
+    finSaveCfg({ notifyTradeOnly: els.finNotifyTradeOnly.checked });
+    toast(els.finNotifyTradeOnly.checked
+      ? 'Kanala yalnız emir/işlem olayları gidecek — alarm/koruma bildirimleri panelde kalır'
+      : 'Tüm finance bildirimleri (alarm/koruma dahil) kanala gidecek');
+  });
+}
 if (els.finReportBtn) {
   els.finReportBtn.addEventListener('click', async () => {
     els.finReportBtn.disabled = true;
@@ -9807,6 +9841,19 @@ if (els.finTraderModel) {
   els.finTraderModel.addEventListener('change', () => {
     finSaveCfg({ traderSel: els.finTraderModel.value });
     toast('Trade ajanı modeli: ' + (els.finTraderModel.value || 'genel aktif model'));
+  });
+}
+/* AJAN TALİMATI: trader + ekip + sembol işçileri sistem promptunda
+   "öncelikli strateji notu" olarak okur; yazarken (debounce) kaydedilir */
+if (els.finStrategy) {
+  els.finStrategy.addEventListener('input', () => {
+    finSaveCfg({ strategy: els.finStrategy.value });
+  });
+  els.finStrategy.addEventListener('change', () => {
+    const v = els.finStrategy.value;
+    if (finCfgCache && String(finCfgCache.strategy || '') === v) return;
+    finSaveCfg({ strategy: v });
+    toast(v.trim() ? 'Ajan talimatı kaydedildi — tüm ajanlar sonraki turda uygular' : 'Ajan talimatı temizlendi');
   });
 }
 /* TRADE AJANI: modelleri yeniden çek — üstteki ⟳ ile aynı mantık
@@ -9831,6 +9878,7 @@ if (els.finTraderBtn) {
     if (els.finTraderBtn.classList.contains('stop')) {
       await beast.financeTraderStop().catch(() => {});
     } else {
+      await finStrategyFlush(); /* yazılan talimat ilk turdan önce kaydedilsin */
       const r = await beast.financeTraderStart().catch((e) => ({ ok: false, error: String((e && e.message) || e) }));
       if (r && !r.ok) toast(r.error || 'Trader başlatılamadı');
       else if (r && r.ok) {

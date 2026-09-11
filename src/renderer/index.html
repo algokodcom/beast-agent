@@ -186,6 +186,10 @@
               <span>Analiz ekibi <i class="fin-hint">— sadece sayı seç, rolleri sistem otomatik atar</i></span>
               <div id="finRoles" class="fin-roles" title="Trader&#39;ın yanında koşacak uzman ajan SAYISI — roller otomatik atanır (Teknik → Risk → Haber); işlem açmazlar"></div>
             </div>
+            <div class="fin-field">
+              <span>Ajan talimatı <i class="fin-hint">— 1-2 cümle; trader + tüm paralel ajanlara iletilir</i></span>
+              <textarea id="finStrategy" rows="2" maxlength="2000" placeholder="örn. Her türde scalp yap — M1/M5 hızlı gir-çık, günlük kâr hedefine ulaşınca dur" title="Buraya yazdığın talimat trade ajanına ve koşan tüm paralel ajanlara (ekip + sembol işçileri) sistem promptunda öncelikli strateji notu olarak gider; kaydetmek için alandan çık"></textarea>
+            </div>
             <div class="fin-row fin-btn-row">
               <button id="finTraderBtn" class="fin-start">&#9654;&#xFE0E; Ajanı Başlat</button>
             </div>
@@ -222,13 +226,18 @@
             </div>
             <div class="fin-field">
               <span>Bildirim kanalı</span>
-              <select id="finNotifyTarget" title="İşlem/koruma/alarm bildirimleri bu kanala gider; panel ve masaüstü toast her zaman çalışır">
+              <select id="finNotifyTarget" title="Emir/işlem bildirimleri bu kanala gider; panel ve masaüstü toast her zaman çalışır">
                 <option value="auto">Otomatik (bağlı olan kanallar)</option>
                 <option value="telegram">Telegram</option>
                 <option value="whatsapp">WhatsApp</option>
                 <option value="discord">Discord</option>
                 <option value="off">Kapalı (yalnız panel)</option>
               </select>
+            </div>
+            <div class="fin-field fin-check">
+              <label title="İşaretliyken kanala YALNIZ emir olayları düşer: açılış, kapanış, bekleyen emir, iptal. Fiyat alarmı, BE/trailing/kısmi TP, günlük limit ve rapor bildirimleri gelmez — onlar panelde kalır">
+                <input id="finNotifyTradeOnly" type="checkbox" checked /> Kanala sadece emir/işlem olayları gelsin (alarm gelmez)
+              </label>
             </div>
             <div id="finAlertList" class="fin-alerts"><div class="fin-empty">Aktif fiyat alarmı yok</div></div>
           </div>

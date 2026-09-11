@@ -8498,6 +8498,11 @@ function finCfg() {
   if (typeof f.notifyTarget !== 'string') f.notifyTarget = 'auto';
   if (typeof f.notifyTrades !== 'boolean') f.notifyTrades = true;
   if (typeof f.notifyWatchdog !== 'boolean') f.notifyWatchdog = true;
+  /* KANAL OLAY FİLTRESİ: varsayılan true — WhatsApp/Telegram/Discord'a yalnız
+     emir/işlem olayları (açılış, kapanış, bekleyen emir, iptal) düşer; fiyat
+     alarmı, koruma (BE/trailing/kısmi TP), günlük limit ve rapor bildirimleri
+     panelde kalır. false = tüm olaylar kanallara gider (eski davranış). */
+  if (typeof f.notifyTradeOnly !== 'boolean') f.notifyTradeOnly = true;
   if (!Number.isFinite(Number(f.maxDailyLossPct))) f.maxDailyLossPct = 3;
   /* GÜNLÜK LİMİT AKSİYONU: warn = yalnız uyarı; stop = tüm finance ajanlarını
      durdur; flatten = durdur + tüm pozisyonları kapat */
@@ -8617,6 +8622,11 @@ function financeNotify(text, kind, panel) {
   try { cfg = finCfg(); } catch { cfg = {}; }
   const target = String((cfg && cfg.notifyTarget) || 'auto');
   if (target === 'off') return;
+  /* KANAL FİLTRESİ: varsayılan olarak kanallara SADECE emir/işlem olayları
+     gider (emir açılış/kapanış, bekleyen emir, iptal). Alarm/koruma/risk/rapor
+     bildirimleri yalnız panelde görünür. */
+  const kindStr = String(kind || '');
+  if (cfg.notifyTradeOnly !== false && !['trade', 'close', 'pending', 'cancel'].includes(kindStr)) return;
   const body = '💼 *Beast Finance*\n' + line;
   const senders = [];
   try {
@@ -9396,7 +9406,7 @@ function finTraderBrief(agent) {
     roleDef
       ? 'Bulgularını agent_dm ile ANA TRADER\u2019a bildir (to: "Trader" ya da ajan başlığı anahtarı); teknik/öneri çelişkisi varsa gerekçenle yaz.'
       : f.strategy ? `Sahibinin strateji notu: ${f.strategy}` : 'Strateji notu yok: trend + destek/direnç + momentum ile temel okuma yap.',
-    !roleDef && f.strategy ? `Sahibinin strateji notu: ${f.strategy}` : '',
+    roleDef && f.strategy ? `Sahibinin strateji notu (bu çerçevede analiz et): ${f.strategy}` : '',
     'Bu turda: mt5_status → hesap/pozisyon/fiyat verisi → mt5_rates/mt5_indicators ile teknik okuma → değerlendirme → kararlar (veya BEKLE: sebep) → kısa rapor.',
     'Önemli kararların gerekçesini mt5_note ile günlüğe yaz (haftalık performans raporu bu notları kullanır).',
     'Risk otomasyonu main süreçte 5 sn döngüyle çalışır (+R BE, trailing, kısmi TP) — sen yine de SL/TP seviyelerini aktif yönet.',
@@ -9678,6 +9688,7 @@ ipcMain.handle('finance:settings', async (_e, patch) => {
   }
   if (p.notifyTrades !== undefined) f.notifyTrades = !!p.notifyTrades;
   if (p.notifyWatchdog !== undefined) f.notifyWatchdog = !!p.notifyWatchdog;
+  if (p.notifyTradeOnly !== undefined) f.notifyTradeOnly = !!p.notifyTradeOnly;
   if (p.maxDailyLossPct !== undefined) f.maxDailyLossPct = Math.max(0, Math.min(50, Number(p.maxDailyLossPct) || 0));
   if (p.dailyLossAction !== undefined) {
     const v = String(p.dailyLossAction || 'warn').toLowerCase();

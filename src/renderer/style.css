@@ -4846,7 +4846,7 @@ body.finance-mode #composerWrap { margin-right: var(--finW, 400px); }
 /* TRADE AJANI formu — etiket üstte, kontrol altta; tur/max lot 2 kolon */
 .fin-field { display: flex; flex-direction: column; gap: 3px; min-width: 0; margin-bottom: 8px; }
 .fin-field > span { font-size: 10px; color: var(--muted); }
-.fin-field input, .fin-field select {
+.fin-field input, .fin-field select, .fin-field textarea {
   width: 100%;
   min-width: 0;
   background: var(--panel2);
@@ -4856,7 +4856,15 @@ body.finance-mode #composerWrap { margin-right: var(--finW, 400px); }
   padding: 4px 7px;
   border-radius: 6px;
 }
-.fin-field input:focus, .fin-field select:focus { border-color: var(--accent); outline: none; }
+.fin-field input:focus, .fin-field select:focus, .fin-field textarea:focus { border-color: var(--accent); outline: none; }
+/* Ajan talimatı: çok satırlı not alanı (dikey büyütülebilir) */
+.fin-field textarea {
+  resize: vertical;
+  min-height: 46px;
+  max-height: 140px;
+  line-height: 1.35;
+  font-family: inherit;
+}
 .fin-field .fin-sym-select { width: 100%; }
 .fin-grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .fin-grid2 .fin-field { margin-bottom: 8px; }

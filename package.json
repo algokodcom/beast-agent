@@ -40,8 +40,6 @@
         "dist": "electron-builder --win nsis portable",
         "test": "node --test \"tests/**/*.test.js\"",
         "release": "node scripts/release.js",
-        "skillsweb:sync": "node skillsweb/sync-builtins.js",
-        "skillsweb:deploy": "node skillsweb/sync-builtins.js && cd skillsweb && firebase deploy --only hosting:skills",
         "postinstall": "node scripts/fix-electron.js --soft",
         "prepublishOnly": "node scripts/swap-electron.js deps",
         "postpublish": "node scripts/swap-electron.js devdeps"

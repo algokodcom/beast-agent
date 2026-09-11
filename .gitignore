@@ -12,9 +12,7 @@ logs/
 
 # web sitesi (firebase yapılandırması ile ayrı dağıtılır)
 beast agent web/
-
-# firebase hosting yerel önbelleği (skillsweb sitesi)
-skillsweb/.firebase/
+skillsweb/
 
 # sürüm çıkarma kılavuzu — yalnız lokal (repo'ya girmez)
 RELEASE.md

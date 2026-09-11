@@ -92,20 +92,25 @@ test('finance: sistem promptu SKILLS kataloğunu içerir', () => {
   assert.ok(names.includes('tool-yazma'), 'tool-yazma skill varsayılan tohum olmalı');
   assert.ok(names.includes('mql5'), 'mql5 skill varsayılan tohum olmalı');
   assert.ok(names.includes('price-action') && names.includes('risk-yonetimi') && names.includes('haber-duygu'), 'finans skill tohumları kurulu olmalı');
-  /* rol → skill eşleştirmesi prompta gömülür (ayarlar modalından değiştirilebilir) */
+  /* rol → skill eşleştirmesi prompta gömülür: rol başına TEK ve ZORUNLU skill
+     (modal tek seçim yazar; eski çoklu dizide yalnız ilk isim kullanılır) */
   const s2 = eng._load(eng.createSession().id);
   s2.finance = true;
   s2.financeRole = 'technic';
   s2.financeRoleSkills = ['price-action', 'ozel-skill'];
   const sys2 = eng.buildFinanceSystem(s2);
   assert.ok(sys2.includes('skill("price-action")'));
-  assert.ok(sys2.includes('skill("ozel-skill")'));
-  /* eşleştirme BOŞSA (varsayılan) zorunlu/öncelikli skill satırı eklenmez — AI seçer */
+  assert.ok(sys2.includes('ZORUNLU skill'));
+  /* seçili skill'in TAM GÖVDESİ prompta gömülür — ajan atlayamaz */
+  assert.ok(sys2.includes('===== SKILL: price-action ====='), 'skill tam metni prompta gömülü olmalı');
+  assert.ok(sys2.includes('===== /SKILL ====='), 'skill bloğu kapanmalı');
+  assert.ok(!sys2.includes('ozel-skill'), 'rol başına yalnız TEK skill prompta girer');
+  /* eşleştirme BOŞSA (varsayılan) zorunlu skill satırı eklenmez — AI seçer */
   const s3 = eng._load(eng.createSession().id);
   s3.finance = true;
   s3.financeRole = 'risk';
   const sys3 = eng.buildFinanceSystem(s3);
-  assert.ok(!sys3.includes('öncelikli skill'));
+  assert.ok(!sys3.includes('ZORUNLU skill'));
 });
 
 /* ---------- payload tool-çifti hizalama (HTTP 400 emniyeti) ---------- */

@@ -162,6 +162,7 @@ const els = {
   stSplit: $('#stSplit'),
   finBtn: $('#finBtn'),
   finPanel: $('#finPanel'),
+  finBody: $('#finBody'),
   finDot: $('#finDot'),
   finTerm: $('#finTerm'),
   finReconnect: $('#finReconnect'),
@@ -4949,7 +4950,9 @@ async function refreshAgentsPane() {
      kullanıcı çalışırken elle kapatırsa ezilmez; dahili tarayıcı ve IDE modu
      açıkken karışılmaz — orada railBtn ile elle açılır)
    - Tüm işler bitince otomatik KAPANIR (yalnız açılışı biz yaptıysak;
-     kullanıcı elle açtıysa açık kalır) */
+     kullanıcı elle açtıysa açık kalır). BEAST FINANCE istisnası: trade ajanı
+     durdurulunca konsol KAPANMAZ — duran ajanların raporları/geçmişi görünür
+     kalsın; kullanıcı isterse railBtn ile kendisi kapatır. */
 function maybeAutoOpenRail() {
   const hasRunning = agentState.jobs.some((j) => j.status === 'running');
   const hidden = document.body.classList.contains('rail-hidden');
@@ -4959,7 +4962,8 @@ function maybeAutoOpenRail() {
     railPrefBeforeBrowser = true;
   }
   if (!hasRunning && agentState.autoOpened && !hidden &&
-      !railManualOpen && !document.body.classList.contains('browser-open')) {
+      !railManualOpen && !document.body.classList.contains('browser-open') &&
+      !financeModeOn()) {
     toggleRail(true);
     railManualOpen = false;
   }
@@ -9769,6 +9773,100 @@ if (els.finShowPerf) els.finShowPerf.addEventListener('change', () => finViewTog
 if (els.finShowFlow) els.finShowFlow.addEventListener('change', () => finViewToggle('flow', els.finShowFlow.checked));
 finViewApply();
 
+/* ---------- BÖLÜM SIRALAMA (sürükle-bırak) ----------
+   Kartların sol üstündeki tutamak (⠿) ile bölümlerin yerini değiştir;
+   sıra localStorage'a yazılır — panel kapatılıp açılsa da korunur. */
+const finOrderKey = 'beast.financeOrder';
+let finDragCard = null;
+
+function finOrderLoad() {
+  try {
+    const v = JSON.parse(localStorage.getItem(finOrderKey) || 'null');
+    return Array.isArray(v) ? v.map(String).filter(Boolean) : [];
+  } catch { return []; }
+}
+
+function finOrderApply() {
+  const body = els.finBody;
+  if (!body) return;
+  const cards = [...body.querySelectorAll(':scope > .fin-card')];
+  const byKey = new Map();
+  for (const c of cards) if (c.dataset.finCard) byKey.set(c.dataset.finCard, c);
+  for (const key of finOrderLoad()) {
+    const c = byKey.get(key);
+    if (c) { body.appendChild(c); byKey.delete(key); }
+  }
+  for (const c of byKey.values()) body.appendChild(c); /* yeni kartlar sona */
+}
+
+function finOrderSave() {
+  const body = els.finBody;
+  if (!body) return;
+  const keys = [...body.querySelectorAll(':scope > .fin-card')]
+    .map((c) => c.dataset.finCard)
+    .filter(Boolean);
+  try { localStorage.setItem(finOrderKey, JSON.stringify(keys)); } catch {}
+}
+
+function finCardsInit() {
+  const body = els.finBody;
+  if (!body) return;
+  finOrderApply();
+  const cards = [...body.querySelectorAll(':scope > .fin-card')];
+  for (const card of cards) {
+    const title = card.querySelector('.fin-card-title');
+    if (!title) continue;
+    const grip = document.createElement('span');
+    grip.className = 'fin-grip';
+    grip.title = 'Sürükle-bırak: bölümün yerini değiştir';
+    grip.textContent = '⠿';
+    title.prepend(grip);
+    grip.addEventListener('mousedown', () => { card.draggable = true; });
+    card.addEventListener('dragstart', (e) => {
+      finDragCard = card;
+      card.classList.add('fin-dragging');
+      try {
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/plain', card.dataset.finCard || '');
+      } catch {}
+    });
+    card.addEventListener('dragend', () => {
+      finDragCard = null;
+      card.draggable = false;
+      card.classList.remove('fin-dragging');
+      body.querySelectorAll('.fin-drop-top, .fin-drop-bottom')
+        .forEach((x) => x.classList.remove('fin-drop-top', 'fin-drop-bottom'));
+      finOrderSave();
+    });
+    card.addEventListener('dragover', (e) => {
+      if (!finDragCard || finDragCard === card) return;
+      e.preventDefault();
+      try { e.dataTransfer.dropEffect = 'move'; } catch {}
+      const r = card.getBoundingClientRect();
+      const after = e.clientY > r.top + r.height / 2;
+      body.querySelectorAll('.fin-drop-top, .fin-drop-bottom')
+        .forEach((x) => x.classList.remove('fin-drop-top', 'fin-drop-bottom'));
+      card.classList.add(after ? 'fin-drop-bottom' : 'fin-drop-top');
+    });
+    card.addEventListener('dragleave', () => card.classList.remove('fin-drop-top', 'fin-drop-bottom'));
+    card.addEventListener('drop', (e) => {
+      e.preventDefault();
+      if (!finDragCard || finDragCard === card) return;
+      const r = card.getBoundingClientRect();
+      const after = e.clientY > r.top + r.height / 2;
+      if (after) card.after(finDragCard);
+      else card.before(finDragCard);
+      card.classList.remove('fin-drop-top', 'fin-drop-bottom');
+      finOrderSave();
+    });
+  }
+  document.addEventListener('mouseup', () => {
+    if (finDragCard) return;
+    body.querySelectorAll('.fin-card[draggable="true"]').forEach((c) => { c.draggable = false; });
+  });
+}
+finCardsInit();
+
 if (els.finInterval) els.finInterval.addEventListener('change', () => {
   const v = Math.max(30, Math.min(3600, Math.round(Number(els.finInterval.value) || 120)));
   els.finInterval.value = v;
@@ -10076,31 +10174,40 @@ function finRenderSkills() {
     head.innerHTML =
       '<b>' + escapeHtml(String(r.label || r.id)) + '</b>' +
       '<span>' + escapeHtml(String(r.desc || '').slice(0, 110)) + '</span>';
+    const cur = Array.isArray(map[r.id]) ? map[r.id].map((x) => String(x || '').trim()).filter(Boolean) : [];
+    const active = cur.length ? cur[0] : '';
+    if (!active) {
+      const warn = document.createElement('span');
+      warn.className = 'fin-skill-req';
+      warn.textContent = 'ZORUNLU — skill seçilmedi';
+      head.appendChild(warn);
+    }
     row.appendChild(head);
     const chips = document.createElement('div');
     chips.className = 'fin-skill-chips';
     for (const s of finSkillNames) {
-      const cur = Array.isArray(map[r.id]) ? map[r.id] : [];
+      const on = active === s.name;
       const chip = document.createElement('label');
-      chip.className = 'fin-skill-chip' + (cur.includes(s.name) ? ' on' : '');
+      chip.className = 'fin-skill-chip' + (on ? ' on' : '');
       chip.title = s.description || s.name;
       const cb = document.createElement('input');
-      cb.type = 'checkbox';
-      cb.checked = cur.includes(s.name);
+      cb.type = 'radio';
+      cb.name = 'fin-skill-role-' + r.id;
+      cb.checked = on;
+      /* TEK + ZORUNLU: yeni skill seçilir; mevcut seçim kaldırılamaz */
       cb.addEventListener('change', () => {
-        const liveBase = finCfgCache && finCfgCache.roleSkills && Array.isArray(finCfgCache.roleSkills[r.id])
-          ? finCfgCache.roleSkills[r.id]
-          : [];
-        const set = new Set(liveBase);
-        if (cb.checked) set.add(s.name); else set.delete(s.name);
-        const next = [...set];
+        if (!cb.checked) return;
+        const next = [s.name];
         /* yerel önbelleğe anında yaz — 3 sn'lik snapshot eski değeri geri getirmesin */
         finCfgCache = finCfgCache || {};
         finCfgCache.roleSkills = finCfgCache.roleSkills || {};
         finCfgCache.roleSkills[r.id] = next;
-        chip.classList.toggle('on', cb.checked);
+        chips.querySelectorAll('.fin-skill-chip').forEach((el) => el.classList.remove('on'));
+        chip.classList.add('on');
+        const w = head.querySelector('.fin-skill-req');
+        if (w) w.remove();
         finSaveCfg({ roleSkills: { [r.id]: next } });
-        toast((r.label || r.id) + ' → ' + (next.length ? next.join(', ') : 'skill kapalı'));
+        toast((r.label || r.id) + ' → ' + s.name + ' (zorunlu tek skill)');
       });
       chip.appendChild(cb);
       chip.appendChild(document.createTextNode(s.name));

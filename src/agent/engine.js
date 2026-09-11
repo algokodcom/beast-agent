@@ -1919,18 +1919,25 @@ class Engine {
         macro:
           'ROL: MAKRO AJANI 🌍 — büyük resim uzmanısın, İşlem AÇMAZSIN (mt5_trade/mt5_pending/mt5_close KULLANMA). Her turda web_search ile güncel makro manşetleri + ekonomik takvim riskleri (faiz, CPI, jeopolitik); DXY/altın/petrol bağıntılarını odak sembollere çevir; sembol başına yön eğilimi + TEMKİN/BEKLE notu ver.',
       })[String((session && session.financeRole) || '')] || '';
-    /* ROL → SKILL eşleştirmesi (ayarlar modalı): TAMAMEN İSTEĞE BAĞLI — boşsa
-       satır eklenmez ve ajan skill'i göreve göre kendi seçer (SKILLS kataloğu).
-       Doluysa rol için öncelikli skill'ler hatırlatılır. */
+    /* ROL → SKILL eşleştirmesi (ayarlar modalı): rol başına TEK ve ZORUNLU
+       skill. Seçili SKILL.md'nin TAM GÖVDESİ prompta gömülür — ajan skill
+       aracını çağırmayı atlasa bile prosedür KESİN uygulanır. Eşleştirme
+       boşsa satır eklenmez; ajan skill'i göreve göre kendi seçer (SKILLS). */
     const roleSkills = Array.isArray(session && session.financeRoleSkills)
-      ? session.financeRoleSkills.map((s) => String(s || '').trim()).filter(Boolean).slice(0, 8)
+      ? session.financeRoleSkills.map((s) => String(s || '').trim()).filter(Boolean).slice(0, 1)
       : [];
-    const roleBlockFull = roleBlock
-      ? roleBlock +
-        (roleSkills.length
-          ? ` Bu rol için isteğe bağlı öncelikli skill'ler: ${roleSkills.map((n) => `skill("${n}")`).join(', ')} — görev gerektiriyorsa skill aracıyla oku ve prosedürüne göre uygula.`
-          : '')
-      : '';
+    let roleSkillBlock = '';
+    if (roleBlock && roleSkills.length) {
+      const roleSkillName = roleSkills[0];
+      const sb = this._skillBody({ name: roleSkillName });
+      roleSkillBlock =
+        ` Bu rolün ZORUNLU skill'i: skill("${roleSkillName}")` +
+        (sb && sb.ok && sb.content
+          ? ' — aşağıda TAM prosedürü verilmiştir; HER TURDA birebir uygula (ayrıca okumana gerek yok):\n\n' +
+            `===== SKILL: ${roleSkillName} =====\n${sb.content}\n===== /SKILL =====`
+          : ' — ilk turda bu skill\'i mutlaka oku ve prosedürüne birebir uy.');
+    }
+    const roleBlockFull = roleBlock ? roleBlock + roleSkillBlock : '';
     /* FİNANS EKİBİ: tüm finance ajanları tek DM grubundadır — sohbet grup
        thread'inde toplanır (ayrı ayrı 1:1 thread'lere dağılmaz) */
     const finJob = this._bgJobs && this._bgJobs.get(String(session && session.id));

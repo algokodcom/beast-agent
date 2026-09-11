@@ -8477,10 +8477,9 @@ function finCfg() {
   f.analysisAuto = true;
   if (!Number.isFinite(Number(f.analysisCount))) f.analysisCount = 2;
   f.analysisCount = Math.max(0, Math.min(FIN_ROLES_AUTO.length, Math.round(Number(f.analysisCount) || 0)));
-  /* ROL → SKILL eşleştirmesi: VARSAYILAN BOŞ — ajan göreve göre skill'i kendi
-     seçer (SKILLS kataloğu promptta). İstenirse ⚙ modalından rol başına
-     sabitlenir; skill adları kurulu katalogdan gelir. Eski sürümün otomatik
-     doldurduğu varsayılanlar bir kez temizlenir. */
+  /* ROL → SKILL eşleştirmesi: rol başına TEK skill — modalda zorunlu tek
+     seçim yapılır. Eski çoklu seçimlerden yalnız İLKİ korunur (göç). Skill
+     adları kurulu katalogdan gelir. */
   if (f.roleSkillsDefaultsCleared !== true) {
     f.roleSkills = {};
     f.roleSkillsDefaultsCleared = true;
@@ -8488,7 +8487,7 @@ function finCfg() {
   if (!f.roleSkills || typeof f.roleSkills !== 'object') f.roleSkills = {};
   for (const d of FIN_ROLES) {
     const cur = Array.isArray(f.roleSkills[d.id]) ? f.roleSkills[d.id] : [];
-    f.roleSkills[d.id] = cur.map((s) => String(s || '').trim()).filter(Boolean).slice(0, 8);
+    f.roleSkills[d.id] = cur.map((s) => String(s || '').trim()).filter(Boolean).slice(0, 1);
   }
   if (!Number(f.intervalSec)) f.intervalSec = 120;
   if (!Number(f.maxLot)) f.maxLot = 0.1;
@@ -9713,12 +9712,22 @@ ipcMain.handle('finance:settings', async (_e, patch) => {
   if (p.analysisTeam !== undefined) f.analysisTeam = finRolesValid(p.analysisTeam);
   if (p.analysisAuto !== undefined) f.analysisAuto = !!p.analysisAuto;
   if (p.analysisCount !== undefined) f.analysisCount = Math.max(0, Math.min(FIN_ROLES_AUTO.length, Math.round(Number(p.analysisCount) || 0)));
-  /* ROL → SKILL eşleştirmesi güncellemesi (modal) */
+  /* ROL → SKILL eşleştirmesi güncellemesi (modal): rol başına TEK skill */
   if (p.roleSkills !== undefined && p.roleSkills && typeof p.roleSkills === 'object') {
     for (const d of FIN_ROLES) {
       if (p.roleSkills[d.id] === undefined) continue;
       f.roleSkills[d.id] = (Array.isArray(p.roleSkills[d.id]) ? p.roleSkills[d.id] : [])
-        .map((s) => String(s || '').trim()).filter(Boolean).slice(0, 8);
+        .map((s) => String(s || '').trim()).filter(Boolean).slice(0, 1);
+    }
+    /* koşan rol ajanlarını da tazele — seçim sonraki turdan itibaren sistem
+       promptuna girer (ajanı durdurmaya gerek yok) */
+    if (financeState.agents && engine) {
+      for (const [sid, a] of financeState.agents) {
+        try {
+          const ss = engine.cache.get(sid);
+          if (ss && a && a.role) finApplyTraderFields(ss, a.symbols, a.role);
+        } catch {}
+      }
     }
   }
   if (p.pythonPath !== undefined) f.pythonPath = String(p.pythonPath || '').trim();

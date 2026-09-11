@@ -4816,6 +4816,22 @@ body.finance-mode #composerWrap { margin-right: var(--finW, 400px); }
   align-items: center;
   gap: 6px;
 }
+.fin-grip {
+  flex: none;
+  cursor: grab;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1;
+  letter-spacing: -1px;
+  opacity: 0.7;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.fin-grip:hover { color: var(--accent); opacity: 1; }
+.fin-grip:active { cursor: grabbing; }
+.fin-card.fin-dragging { opacity: 0.45; border-style: dashed; }
+.fin-card.fin-drop-top { box-shadow: 0 -3px 0 0 var(--accent); }
+.fin-card.fin-drop-bottom { box-shadow: 0 3px 0 0 var(--accent); }
 
 .fin-grid {
   display: grid;
@@ -5209,6 +5225,14 @@ body.finance-mode #composerWrap { margin-right: var(--finW, 400px); }
 .fin-skill-role-head { display: flex; flex-direction: column; gap: 1px; margin-bottom: 7px; }
 .fin-skill-role-head b { font-size: 11.5px; color: var(--text); }
 .fin-skill-role-head span { font-size: 10px; color: var(--muted); }
+.fin-skill-req {
+  align-self: flex-start;
+  margin-top: 2px;
+  font-size: 9.5px;
+  font-weight: 800;
+  letter-spacing: 0.5px;
+  color: #ef4444;
+}
 .fin-skill-chips { display: flex; flex-wrap: wrap; gap: 4px; }
 .fin-skill-chip {
   display: inline-flex;

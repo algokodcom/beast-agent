@@ -153,7 +153,7 @@
           <button id="finSettings" title="Görünüm ayarları — bölümleri göster/gizle">&#9881;</button>
         </div>
         <div id="finBody">
-          <div class="fin-card">
+          <div class="fin-card" data-fin-card="account">
             <div class="fin-card-title">HESAP</div>
             <div class="fin-grid">
               <div class="fin-kv"><span>Bakiye</span><b id="finBalance">—</b></div>
@@ -162,8 +162,8 @@
               <div class="fin-kv"><span>Serbest Marj</span><b id="finFree">—</b></div>
             </div>
           </div>
-          <div class="fin-card fin-card-trader">
-            <div class="fin-card-title">TRADE AJANI <span id="finTraderDot" class="fin-dot off" title="Trader durumu"></span><span class="file-spacer"></span><button id="finModelRefreshBtn" title="Modelleri yeniden çek — eksik/güncel modelleri tazeler">&#x27F3;</button><button id="finSkillsBtn" title="Rol → skill eşleştirmesi — hangi rol hangi skill'i okur">&#9881;</button></div>
+          <div class="fin-card fin-card-trader" data-fin-card="trader">
+            <div class="fin-card-title">TRADE AJANI <span id="finTraderDot" class="fin-dot off" title="Trader durumu"></span><span class="file-spacer"></span><button id="finModelRefreshBtn" title="Modelleri yeniden çek — eksik/güncel modelleri tazeler">&#x27F3;</button><button id="finSkillsBtn" title="Rol → skill eşleştirmesi — her role ZORUNLU tek skill (ajan her turda onu okur)">&#9881;</button></div>
             <div class="fin-field">
               <span>Model</span>
               <select id="finTraderModel" title="Trader ajanının modeli — farklı API/model seçilebilir"></select>
@@ -195,7 +195,7 @@
             </div>
             <div id="finTraderStatus">Kapalı</div>
           </div>
-          <div class="fin-card" id="finRiskCard" hidden>
+          <div class="fin-card" id="finRiskCard" data-fin-card="risk" hidden>
             <div class="fin-card-title">RİSK OTOMASYONU <span id="finWatchDot" class="fin-dot off" title="Koruma döngüsü"></span><span id="finWatchInfo" class="fin-hint"></span></div>
             <div class="fin-field fin-check">
               <label title="5 saniyelik döngü: +R'da SL'yi başabaşa çeker, trailing uygular, kısmi TP alır — ajan turunu beklemez">
@@ -226,7 +226,7 @@
             </div>
             <div id="finAlertList" class="fin-alerts"><div class="fin-empty">Aktif fiyat alarmı yok</div></div>
           </div>
-          <div class="fin-card" id="finNotifyCard" hidden>
+          <div class="fin-card" id="finNotifyCard" data-fin-card="notify" hidden>
             <div class="fin-card-title">BİLDİRİM <span class="fin-hint">— kanal seçimi ve olay filtresi</span></div>
             <div class="fin-field">
               <span>Bildirim kanalı</span>
@@ -244,7 +244,7 @@
               </label>
             </div>
           </div>
-          <div class="fin-card" id="finPerfCard" hidden>
+          <div class="fin-card" id="finPerfCard" data-fin-card="perf" hidden>
             <div class="fin-card-title">PERFORMANS <span id="finStatsInfo" class="fin-hint"></span><span class="file-spacer"></span><button id="finReportBtn" title="Haftalık rapor üret — istatistik + işlem günlüğü + ajan değerlendirmesi">&#128196; Rapor</button></div>
             <div id="finEquityChart" class="fin-equity"></div>
             <div class="fin-grid">
@@ -256,13 +256,13 @@
               <div class="fin-kv"><span>İşlem (90g)</span><b id="finStatTrades">—</b></div>
             </div>
           </div>
-          <div class="fin-card">
+          <div class="fin-card" data-fin-card="positions">
             <div class="fin-card-title">POZİSYONLAR <span id="finPosCount"></span></div>
             <div id="finPosList"><div class="fin-empty">Açık pozisyon yok</div></div>
             <div class="fin-sect-title">BEKLEYEN EMİRLER <span id="finOrdCount"></span></div>
             <div id="finOrdList"><div class="fin-empty">Bekleyen emir yok</div></div>
           </div>
-          <div class="fin-card">
+          <div class="fin-card" data-fin-card="market">
             <div class="fin-card-title">
               PİYASA
               <span class="file-spacer"></span>
@@ -271,7 +271,7 @@
             </div>
             <div id="finSymList"><div class="fin-empty">—</div></div>
           </div>
-          <div class="fin-card fin-grow" id="finFlowCard" hidden>
+          <div class="fin-card fin-grow" id="finFlowCard" data-fin-card="flow" hidden>
             <div class="fin-card-title">AKIŞ</div>
             <div id="finLog"></div>
           </div>
@@ -761,7 +761,7 @@
       </div>
       <div class="mini-body">
         <div id="finSkillsList" class="mini-list"></div>
-        <div class="fin-sym-hint">İsteğe bağlı: rol başına skill sabitle. Boş bırakırsan ajan göreve göre skill'i kendi seçer — liste kurulu katalogdan gelir, yeni skill eklenince otomatik görünür.</div>
+        <div class="fin-sym-hint">Her rol için TEK skill ZORUNLUDUR — aynı role birden fazla skill seçilemez. Seçili skill kaldırılamaz; değiştirmek için başka bir skill'e tıkla. Seçim, koşan ajanlar dahil sonraki turdan itibaren rol ajanının sistem promptuna zorunlu skill olarak girer.</div>
       </div>
     </div>
   </div>

@@ -119,26 +119,29 @@ function modelContextOf(sel) {
 
 /* Çıktı biçimi kuralı: # ve * karakteri yasak (tüm ajanlar için ortak metin) */
 const FORMAT_RULES =
-  'ÇIKTI BİÇİMİ (ZORUNLU):\n' +
-  '- Yanıtlarında asla # karakteri kullanma (markdown başlık yok).\n' +
-  '- Asla * karakteri kullanma (kalın/italik yıldız yok); madde işaretleri için - kullan.\n' +
-  '- Uzun tire (em/en dash: — veya –) KULLANMA; cümle aralarını virgül, iki nokta ya da gerekiyorsa kısa çizgi (-) ile ayır.\n' +
-  '- Renkli sembol/ikon kullanma (renkli kalp, daire vb. yok); normal sarı emoji kullanabilirsin.\n' +
-  '- Kod bloklarında dil gereği # veya * gerekiyorsa kod içinde serbest.\n' +
-  '- Düz, doğal ve insani yaz: kalıplaşmış giriş/kapanış cümleleri, "umarım yardımcı olur" tarzı boş nezaket ve robotik madde listeleri kullanma.';
+  'ÇIKTI BİÇİMİ VE ÜSLUP (ZORUNLU):\n' +
+  '- Doğal ve insani yaz: anlatımı normal cümlelerle kur. Kalıplaşmış giriş/kapanış cümleleri, boş nezaket ("umarım yardımcı olur" vb.) ve art arda robotik madde listeleri kullanma.\n' +
+  '- Cümle içinde ayraç olarak uzun tire (—), kısa tire (-) ve eğik çizgi (/) KULLANMA; virgül, nokta, iki nokta kullan. Sözcükleri "/" ile birleştirme: "ve", "veya", "ya da" yaz. (Sayı aralığı "3-5", kod, URL ve komutlar istisnadır.)\n' +
+  '- Süs sembolleri kullanma (→ · • | ✓ ★ vb.); normal sarı emoji kullanabilirsin.\n' +
+  '- Asla # karakteri kullanma (markdown başlık yok). Asla * karakteri kullanma; madde listesi gerekirse satır başında "- " kullan.\n' +
+  '- Kod bloklarında dil gereği # * / - gerekiyorsa kod içinde serbest.';
 
-/* Uzun tire (—/–) temizliği: nihai metinden yapay zeka imzası sayılan tireleri
-   kaldırır — boşluklu em dash virgüle, en dash ve bitişik em dash kısa çizgiye
-   döner; kod blokları ve satır içi kod DOKUNULMADAN korunur. */
+/* Yapay zeka imzası sayılan işaret temizliği: uzun tireler ve cümle içi
+   ayraç tireleri virgüle, " / " "ya da"ya, süs sembolleri sadeleşir; sayı
+   aralıkları, kod blokları ve satır içi kod DOKUNULMADAN korunur. */
 function stripAiDashes(text) {
   const s = String(text == null ? '' : text);
-  if (!/[\u2013\u2014]/.test(s)) return s;
+  if (!/[\u2013\u2014\u00b7\u2022]|[ \t][-/][ \t]|ve\/veya/i.test(s)) return s;
   const parts = s.split(/(```[\s\S]*?```|`[^`\n]*`)/);
   for (let i = 0; i < parts.length; i += 2) {
     parts[i] = parts[i]
-      .replace(/[ \t]+\u2014[ \t]+/g, ', ')
-      .replace(/[ \t]*\u2013[ \t]*/g, '-')
-      .replace(/\u2014/g, '-')
+      .replace(/^([ \t]*)[\u2022\u00b7][ \t]*/gm, '$1- ')
+      .replace(/(\d)[ \t]*[-\u2013\u2014][ \t]*(\d)/g, '$1-$2')
+      .replace(/[ \t]*[\u2013\u2014][ \t]*/g, ', ')
+      .replace(/ve\/veya/gi, 'veya')
+      .replace(/(\S)[ \t]+\/[ \t]+(\S)/g, '$1 ya da $2')
+      .replace(/(\S)[ \t]+-[ \t]+/g, '$1, ')
+      .replace(/[ \t]*\u00b7[ \t]*/g, ', ')
       .replace(/,\s*,/g, ',')
       .replace(/[ \t]+([.!?:;])/g, '$1');
   }

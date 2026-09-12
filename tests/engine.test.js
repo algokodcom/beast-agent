@@ -43,11 +43,19 @@ test('todo: 20 ile sınırlı', () => {
 
 /* ---------- stripAiDashes (uzun tire temizliği) ---------- */
 
-test('dash: boşluklu em dash virgüle, en dash ve bitişik em dash kısa çizgiye döner', () => {
+test('dash: tireler virgüle döner, sayı aralığı korunur', () => {
   assert.equal(stripAiDashes('planı anlattı — sonra uyguladı'), 'planı anlattı, sonra uyguladı');
   assert.equal(stripAiDashes('3–5 arası'), '3-5 arası');
-  assert.equal(stripAiDashes('kelime—kelime'), 'kelime-kelime');
+  assert.equal(stripAiDashes('kelime—kelime'), 'kelime, kelime');
+  assert.equal(stripAiDashes('hızlı - etkili'), 'hızlı, etkili');
   assert.equal(stripAiDashes('düz metin'), 'düz metin');
+});
+
+test('dash: eğik çizgi ve süs sembolleri sadeleşir', () => {
+  assert.equal(stripAiDashes('giriş / çıkış'), 'giriş ya da çıkış');
+  assert.equal(stripAiDashes('ve/veya'), 'veya');
+  assert.equal(stripAiDashes('a · b'), 'a, b');
+  assert.equal(stripAiDashes('• bir\n• iki'), '- bir\n- iki');
 });
 
 test('dash: kod blokları ve satır içi kod korunur', () => {

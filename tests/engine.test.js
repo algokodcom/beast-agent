@@ -304,6 +304,40 @@ test('tool_request: dispatch bağlı — boş task "unknown tool" değil zarif h
   assert.ok(!/unknown tool/.test(String(r.error)), 'tool_request tanımı dispatch edilmeli');
 });
 
+test('tool_request: asenkron iletir, Tool botunda oturum açar, istek AJAN DM paneline düşer', async () => {
+  const eng = makeEngine();
+  const bots = require('../src/agent/bots');
+  const origList = bots.list;
+  bots.list = () => [{ id: 'tool', name: 'TOOL BOT', code: '11111', perm: 'all' }];
+  try {
+    const sid = eng.createSession().id;
+    const r = JSON.parse(
+      await eng._execTool('tool_request', { task: 'hava durumu aracı yaz', context: 'örnek veri' }, null, sid)
+    );
+    assert.equal(r.ok, true);
+    assert.equal(r.status, 'istek iletildi');
+    const rec = JSON.parse(fs.readFileSync(eng._toolSessionFile, 'utf8'));
+    const toolSess = eng._load(rec.id);
+    assert.equal(toolSess.botId, 'tool');
+    assert.ok(
+      toolSess.messages.some((m) => m.role === 'user' && String(m.content).includes('hava durumu')),
+      'istek Tool botunun kendi oturumuna düşmeli'
+    );
+    const dms = eng.agentDmsList().dms;
+    assert.ok(
+      dms.some((d) => String(d.text || '').includes('hava durumu')),
+      'istek AJAN DM kaydına düşmeli'
+    );
+    const requester = eng._load(sid);
+    assert.ok(
+      requester.messages.some((m) => m.role === 'assistant' && String(m.content).includes('TOOL BOTU')),
+      'tur bitince rapor isteyene dönmeli'
+    );
+  } finally {
+    bots.list = origList;
+  }
+});
+
 /* ---------- sürekli paralel ajanlar + AJAN DM ---------- */
 
 test('superviseReason: sürekli (continuous) işler denetlenmez', () => {

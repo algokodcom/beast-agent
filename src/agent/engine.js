@@ -392,6 +392,11 @@ class Engine {
        (AJAN DM paneli buradan beslenir; restart sonrası da durur) */
     this._agentDms = [];
     this._agentDmsFile = path.join(this.sessionsDir, 'agent-dms.json');
+    /* TOOL İSTEKLERİ: tool_request artık SENKRON BEKLEMEZ — istek Tool botunun
+       KENDİ oturumunda arka planda koşar; bitince rapor isteyene düşer.
+       toolSid -> [{id, requesterSid, requesterTitle, task, before, at}] */
+    this._toolPending = new Map();
+    this._toolSessionFile = path.join(this.sessionsDir, 'tool-session.json');
     /* AJAN DM GRUPLARI: ajanların agent_dm ile kurduğu grup sohbetleri
        (id → {id,title,members,titles,createdAt,closed,closedAt}) */
     this._agentGroups = new Map();
@@ -2002,7 +2007,7 @@ class Engine {
       '- Grafikte gezinme/ölçek: computer_act ile timeframe, scroll, zoom (arka planda çalışır — kullanıcının faresini çalmaz).\n' +
       '- EKİPLE GÖRSEL PAYLAŞIM: chart PNG\'sini agent_dm image:true (son görüntün) ya da image:"<dosya yolu>" (ör. tool__mt5_shot dönen path) ile trader/ekibe gönder — karşı ajan görüntüyü GERÇEKTEN görür, AJAN DM panelinde açılır. Ortak kararlarda grafiği paylaşmak zorunlu disiplindir.\n' +
       '- PARALEL EKİP AKIŞI: teknik ajan seviyeleri hesaplar → mt5_ea note ile grafiğe çizer; görsel ajan tool__mt5_shot ile çekip TEYİT eder ve agent_dm ile görseli trader\'a atar; risk ajanı aynı görsel üzerinden SL/TP yerleşimini denetler; trader kararı işleme çevirir. Aynı sembolde koşan ajanlar tek DM grubunda (agent_dm group) toplanır — çelişen hareket etme.\n' +
-      '- EKSİK ARAÇ: özel grafik aracı gerekiyorsa (ör. çoklu timeframe tek görüntü, indikatör paneli okuma) VAR SAYMA — tool_request ile TOOL botuna yazdır (doğrulanınca tool__<ad> olarak ANINDA çağrılır); küçük aracı skill("tool-yazma") prosedürüyle kendin de yazabilirsin.\n' +
+      '- EKSİK ARAÇ: özel grafik aracı gerekiyorsa (ör. çoklu timeframe tek görüntü, indikatör paneli okuma) VAR SAYMA — tool_request ile TOOL botuna yazdır (asenkron çalışır; rapor sohbete düşer, araç doğrulanınca tool__<ad> olarak ANINDA çağrılır); küçük aracı skill("tool-yazma") prosedürüyle kendin de yazabilirsin.\n' +
       'VERİ AKIŞI (her değerlendirmede): mt5_account + mt5_positions + mt5_market çağrılarını AYNI turda PARALEL ver; gerekiyorsa mt5_history ile son işlemleri gör.\n' +
       'PARALEL + KOORDİNASYON: uzun araştırma/işleri run_background ile paralel finance işçisine devret (parent finance olduğu için işçi mt5 okuma araçlarını görür); koşan ajanlarla konuşmak için agent_dm (to: ajan başlığındaki anahtar kelime, örn "GOLD"; ortak karar için group: "İSİM" ile grup sohbeti kur — mesaj tüm üyelere düşer). Görevin bitince DM/grup sohbetleri otomatik KAPANIR (geçmiş panelde kalır).\n' +
       (symbols ? `İZLEME LİSTESİ: ${symbols}\n` : '') +
@@ -2121,7 +2126,7 @@ class Engine {
           'Kullanıcı bir tarihte/saatte hatırlatılmasını isterse set_reminder kullan; when değerini ORTAMdaki bugüne göre hesapla (yerel saat). "Her sabah/gün/hafta" gibi tekrarlı isteklerde repeat alanını da ver (daily/weekly/monthly/weekdays veya cron).',
                     'Kullanıcı kalıcı bir arka plan takibi isterse (fiyat eşiği, pil seviyesi, sayfa değişikliği) watcher_add ile izleyici kur; kurduktan sonra watcher_list ile doğrula ve kullanıcıya koşulu + kontrol sıklığını kısaca bildir.',
           'Anlık olay takipleri için (yeni mail, fiyat eşiği, dosya değişimi, webhook) event_subscribe kullan — cron/polling gerekmez; listeyi event_list ile göster, vazgeçirirse event_unsubscribe.',
-          'ARAÇ EKSİKSE ÇEKİNME (CEPHANE): ihtiyacın olan bir araç yoksa/bozuksa tool_request ile TOOL botuna yazdır — tool yazımı onun TEK işidir; task alanına araç adı + ne yapacağı + girdi/çıktı sözleşmesini, context alanına örnek veri/yol/endpoint yaz. Araç doğrulanınca tool__<ad> olarak ANINDA çağrılabilir. Küçük kişisel araçları skill("tool-yazma") prosedürüyle kendin de yazabilirsin — yazdığını run_command ile MUTLAKA doğrula.',
+          'ARAÇ EKSİKSE ÇEKİNME (CEPHANE): ihtiyacın olan bir araç yoksa/bozuksa tool_request ile TOOL botuna yazdır — tool yazımı onun TEK işidir; task alanına araç adı + ne yapacağı + girdi/çıktı sözleşmesini, context alanına örnek veri/yol/endpoint yaz. ASENKRON: istek anında kabul edilir, Tool botu kendi oturumunda arka planda yazar; sen BEKLEME, işine devam et. Araç doğrulanınca tool__<ad> olarak ANINDA çağrılabilir; rapor bitince sohbete otomatik düşer. Küçük kişisel araçları skill("tool-yazma") prosedürüyle kendin de yazabilirsin — yazdığını run_command ile MUTLAKA doğrula.',
           'LOG ZEKASI: "hata var mı / ne oldu / neden çalışmadı" sorularında ya da bir iş beklenmedik bittiğinde/hata verdiğini fark ettiğinde log_analyze ile logları tara — top desenleri okuyup en olası KÖK NEDENİ tek cümlede söyle, somut çözüm öner; aynı desen 3+ tekrarlıysa bunu vurgula. Sürekli log gözetimi istenirse watcher_add ile kind:"logs" kur (örn "hata artarsa bağır" → level:"error", windowMin:10, op:"gt", value:2) ve koşulu kısaca bildir.',
         'Kullanıcı "artık hep böyle yap / bunu unutma" tarzı kalıcı talimat verirse kural olarak kaydet: sohbette /rule <metin> kullanmasını söyle VEYA kullanıcı isterse event_subscribe ile olaya bağlan (mail/fiyat/dosya/webhook).',
           'Kullanıcının mesajında 2+ ayrı iş/hedef varsa (örn "X yap ve sonra Y\u2019i kontrol et") KODLAMAYA/İŞE BAŞLAMADAN önce todo_write ile plan çıkar ve sırayla yürüt; her adımı tamamlarken güncelle. LİSTE DİSİPLİNİ: her adım bittiği AN status:"done" yap; son cevabını vermeden önce tüm maddeler done olmalı — yapılmayacaksa listeden düş. Listeyi yarım bırakma.',
@@ -3705,7 +3710,7 @@ class Engine {
       `DOSYA KURALI: dosya işlemlerinde özel araçları kullan — VAR OLAN dosyayı edit_file ile düzenle, yeniyi write_file ile yaz, okuma/arama read_file/grep/glob; run_command terminal işlerindir (build, git, kurulum). Bir dosyayı BİR KEZ oku — içerik bağlamda kalır, tekrar okuma.\n` +
       (proj ? `PROJE TALİMATLARI (workspace AGENTS/CLAUDE/CONTEXT — daima uy):\n${proj}\n` : '') +
       `HIZ KURALLARI:\n` +
-      `- TOOL İSTEĞİ (CEPHANE): ihtiyacın olan araç yoksa/bozuksa tool_request ile TOOL botuna yazdır (araç doğrulanınca tool__<ad> olarak anında çağrılır); küçük aracı skill("tool-yazma") ile kendin de yaz ve run_command ile doğrula.\n` +
+      `- TOOL İSTEĞİ (CEPHANE): ihtiyacın olan araç yoksa/bozuksa tool_request ile TOOL botuna yazdır (asenkron: istek anında döner, Tool botu arka planda yazar; araç doğrulanınca tool__<ad> olarak anında çağrılır, rapor sohbete düşer); küçük aracı skill("tool-yazma") ile kendin de yaz ve run_command ile doğrula.\n` +
       `- Döngülü işleri (çok URL/dosya/sayfa, tekrarlı parse-hesap) TEK python_run betiğinde topluca bitir.\n` +
       `- Web için web_search kullan (zincir dahili tarayıcıyla başlar — gerçek Chromium ile Google); tek aramada bulunamazsa veya çok kaynaklı derin araştırma gerekiyorsa deep_search kullan (çoklu sorgu paralel + gizli tarayıcıda tam sayfa okuma). Sayfa açma/göstermenin VARSAYILANI DAHİLİ tarayıcıdır: browser_open → browser_snapshot → browser_click/type/read. Kullanıcı açıkça dış tarayıcı (chrome/firefox/başka/normal/kendi tarayıcım) istediyse run_command ile \`start "" <url>\` çalıştır. Görseli göremiyorsan metni ocr_read ile oku (source:"browser").\n` +
       `- Bağımsız araç çağrılarını aynı turda PARALEL ver.\n` +
@@ -4400,6 +4405,8 @@ class Engine {
       }
     } finally {
       this.ctrls.delete(sid);
+      /* Tool botu turu bittiyse bekleyen tool isteklerinin raporu dağıtılır */
+      try { this._toolRequestFinished(sid); } catch {}
       emit({ type: 'status', status: 'idle' });
       /* bekleyen paralel-ajan raporları HER bitiş yolunda boşaltılır —
          hata/durdurma/tur-limiti sonrası bile sonuç raporu kullanıcıya ulaşır.
@@ -4769,8 +4776,10 @@ const skills = require('./skills');
   }
 
   /* TOOL İSTEĞİ (cephane): her oturum/bot eksik aracı TOOL botuna yazdırır.
-     Admin şartı YOK — amaç tüm ajanların tool üretebilmesi; tool botunun
-     kendisi ve DM oturumları hariç (döngü koruması). */
+     Admin şartı YOK. ASENKRON akış: istek Tool botunun KENDİ oturumunda
+     arka planda koşar (timeout yok), AJAN DM paneline düşer; rapor bitince
+     isteyen oturuma otomatik iletilir. İstek anında döner — isteyen ajan
+     beklemeden işine devam eder, araç hazır olunca tool__<ad> çağrılır. */
   async _toolRequest(args, sessionId, signal) {
     const bots = require('./bots');
     const task = String((args && args.task) || '').slice(0, 4000);
@@ -4789,30 +4798,142 @@ const skills = require('./skills');
         return (b && b.name) || (session && session.bgTitle) || 'Beast';
       } catch { return 'Beast'; }
     })();
-    const message =
-      `TOOL İSTEĞİ (gönderen: ${who}):\n` + task + '\n' +
+    const requestId = 'tr' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+    /* TOOL BOTUNUN KENDİ OTURUMU: yoksa açılır — botta kalıcı oturum oluşur */
+    const toolSid = this._ensureToolBotSession(target);
+    const text =
+      `[TOOL İSTEĞİ — ${requestId} — gönderen: ${who}]\n` + task + '\n' +
       (context ? `\nBAĞLAM (kod/yol/örnek veri/endpoint):\n` + context + '\n' : '') +
       `\nHatırlatma: skill("tool-yazma") oku; %APPDATA%\\beast\\tools\\<slug>\\ içine tool.json + run.js yaz; run_command ile TEST DÖNGÜSÜNÜ işlet (çıktı {ok:true} olana kadar hata oku → edit_file ile düzelt → yeniden test; en fazla 5 deneme). Ancak test geçince yayınla; geçmeyen aracı yayınlama. Raporunda adımları yaz: yazıldı → test sonucu → (varsa) düzeltmeler → YAYINDA/BAŞARISIZ + tek satır çağrı örneği.`;
-    const r = await this._botConverse(senderBotId, target, message, signal, 240000);
-    /* RAPOR: tool yazım/doğrulama adımları bağlı entegrasyonlara (WA/TG/Discord) düşer */
-    const notifyIntegrations = (text) => {
-      try { if (typeof this.integrationNotify === 'function') this.integrationNotify(text); } catch {}
+    /* AJAN DM paneline istek kaydı — kullanıcı Tool botu ile konuşmayı canlı görür */
+    const dm = {
+      at: new Date().toISOString(),
+      from: String(sessionId || 'beast'),
+      fromTitle: who,
+      to: toolSid,
+      toTitle: target.name || 'Tool botu',
+      topic: 'tool isteği',
+      text: task,
     };
-    if (!r || !r.ok) {
-      notifyIntegrations('🛠️ Tool botu BAŞARISIZ — isteyen: ' + who + '\nİstenen: ' + task.slice(0, 140) + '\nSebep: ' + String((r && r.error) || 'yanıt yok'));
-      return r || { ok: false, error: 'Tool botu yanıt vermedi' };
+    try {
+      this._pushAgentDm(dm);
+      this._persistAgentDms();
+      emitSafe(this, toolSid, { type: 'agent-dm', ...dm });
+    } catch {}
+    const toolSess = this.cache.get(toolSid) || this._load(toolSid);
+    const before = toolSess.messages.length;
+    /* bekleyen kaydı send'DEN ÖNCE düş — tur senkron bitebilir (ör. model
+       yok); _run finally anında raporu dağıtır, kayıt kaçmaz */
+    const list = this._toolPending.get(toolSid) || [];
+    list.push({
+      id: requestId,
+      requesterSid: String(sessionId || ''),
+      requesterTitle: who,
+      responderTitle: target.name || 'Tool botu',
+      task: task.slice(0, 300),
+      before,
+      at: Date.now(),
+    });
+    this._toolPending.set(toolSid, list);
+    const sent = this.send(toolSid, { text });
+    if (!sent) {
+      this._toolPending.set(toolSid, list.filter((x) => x.id !== requestId));
+      return { ok: false, error: 'Tool botu oturumu başlatılamadı (durdurulmuş olabilir)' };
     }
-    notifyIntegrations(
-      '🛠️ Tool botu raporu — isteyen: ' + who + '\n' +
-      'İstenen: ' + task.slice(0, 140) + '\n' +
-      String(r.reply || '').replace(/\s+/g, ' ').slice(0, 500)
-    );
+    if (!this.ctrls.has(toolSid)) {
+      let s2 = this.cache.get(toolSid) || this._load(toolSid);
+      if (s2.messages.length === before) this._toolRequestFinished(toolSid);
+    }
     return {
       ok: true,
-      tool_bot: r.from,
-      reply: r.reply,
-      note: 'Araç hazır olduğunda modele tool__<slug> olarak ANINDA açılır (doğrulama testini Tool botu yaptı; adımlar entegrasyonlara bildirildi).',
+      status: 'istek iletildi',
+      tool_bot: target.name || 'Tool botu',
+      request_id: requestId,
+      session_id: 'bot:' + String(target.id || 'tool'),
+      note: 'Tool botu ARKA PLANDA yazıyor; sen beklemeden işine devam et. Araç hazır olunca tool__<ad> olarak ANINDA çağrılır; rapor bitince bu sohbete otomatik düşer. Aynı araç için tekrar istek atma.',
     };
+  }
+
+  /* Tool botunun KALICI kendi oturumu (yoksa oluşturur) — istekler burada
+     birikir, kullanıcı Tool botu sohbetinden tüm geçmişi görebilir. */
+  _ensureToolBotSession(target) {
+    const want = String((target && target.id) || 'tool');
+    try {
+      const rec = JSON.parse(fs.readFileSync(this._toolSessionFile, 'utf8'));
+      const sid = String((rec && rec.id) || '');
+      if (sid && fs.existsSync(this._file(sid))) {
+        const s = this._load(sid);
+        if (s && !s.isBotDm) {
+          if (String(s.botId || '') !== want) this.setSessionBot(sid, want);
+          return sid;
+        }
+      }
+    } catch {}
+    const created = this.createSession();
+    const sid = String(created.id);
+    this.setSessionBot(sid, want);
+    this.setSessionPerm(sid, target.perm || 'all');
+    try {
+      fs.writeFileSync(this._toolSessionFile, JSON.stringify({ id: sid, botId: want, at: nowIso() }));
+    } catch {}
+    return sid;
+  }
+
+  /* Tool botunun turu bitti: bekleyen isteklerin raporunu AJAN DM paneline
+     ve isteyen oturuma düşür. _run finally'den çağrılır (tüm bitiş yolları). */
+  _toolRequestFinished(sid) {
+    try {
+      const key = String(sid || '');
+      if (!this._toolPending || !this._toolPending.size) return;
+      const list = this._toolPending.get(key);
+      if (!list || !list.length) return;
+      this._toolPending.delete(key);
+      const s = this.cache.get(key) || this._load(key);
+      const reply = (() => {
+        for (let i = s.messages.length - 1; i >= 0; i--) {
+          const m = s.messages[i];
+          if (m && m.role === 'assistant' && m.content && !(Array.isArray(m.tool_calls) && m.tool_calls.length)) {
+            const txt = typeof m.content === 'string' ? m.content : '';
+            if (txt.trim()) return stripAiDashes(txt.trim());
+          }
+        }
+        return '';
+      })();
+      for (const req of list) {
+        const body = reply
+          ? `[TOOL BOTU RAPORU — ${req.id}]\n${reply}`
+          : `[TOOL BOTU] ${req.id} numaralı istek tamamlanamadı (tur yarıda kesildi ya da metin rapor üretilemedi). Tool botu sohbetinden ayrıntıya bakabilirsin.`;
+        const dm = {
+          at: new Date().toISOString(),
+          from: key,
+          fromTitle: req.responderTitle || 'Tool botu',
+          to: req.requesterSid || '',
+          toTitle: req.requesterTitle || 'Beast',
+          topic: 'tool isteği',
+          text: body,
+        };
+        try {
+          this._pushAgentDm(dm);
+          this._persistAgentDms();
+          emitSafe(this, req.requesterSid || key, { type: 'agent-dm', ...dm });
+        } catch {}
+        if (req.requesterSid) {
+          try {
+            if (this.ctrls.has(String(req.requesterSid))) this.send(String(req.requesterSid), { text: body });
+            else this.injectAssistant(String(req.requesterSid), body);
+          } catch {}
+        }
+        try {
+          if (typeof this.integrationNotify === 'function') {
+            this.integrationNotify(
+              '🛠️ Tool botu raporu — isteyen: ' + (req.requesterTitle || 'Beast') + '\n' +
+              'İstenen: ' + String(req.task || '').slice(0, 140) + '\n' +
+              String(reply || 'tamamlanamadı').replace(/\s+/g, ' ').slice(0, 500)
+            );
+          }
+        } catch {}
+      }
+    } catch {}
   }
 
   /* ADMIN İZLEME: tüm botlar arası DM oturumlarının listesi */
@@ -5826,7 +5947,7 @@ const TOOL_REQUEST_DEF = {
   function: {
     name: 'tool_request',
     description:
-      'İhtiyaç duyduğun bir araç eksikse ya da bozuksa TOOL botuna yazdırır ve doğrulanmış aracın raporunu döndürür. Tool yazımı Tool botunun TEK işidir — sen tool yazmaya çalışma. task: araç adı + ne yapacak + girdi/çıktı sözleşmesi; context: örnek veri, dosya yolu, endpoint veya hata çıktısı. Araç hazır olunca tool__<ad> olarak ANINDA çağrılabilir.',
+      'İhtiyaç duyduğun bir araç eksikse ya da bozuksa TOOL botuna yazdırır. ASENKRON çalışır: istek anında kabul edilir, Tool botu KENDİ oturumunda arka planda aracı yazar ve test eder; sen BEKLEME, işine devam et. Araç hazır olunca tool__<ad> olarak ANINDA çağrılır; Tool botunun raporu bitince bu sohbete otomatik düşer (AJAN DM panelinde de görünür). task: araç adı + ne yapacak + girdi/çıktı sözleşmesi; context: örnek veri, dosya yolu, endpoint veya hata çıktısı. Aynı araç için tekrar istek atma.',
     parameters: {
       type: 'object',
       properties: {

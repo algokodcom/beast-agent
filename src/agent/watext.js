@@ -58,6 +58,7 @@ const TOOL_LABELS = {
   todo_write: (a) => `Görev listesi (${(a.todos || []).length})`,
   delegate_task: (a) => `Alt görev: ${String(a.task || '').slice(0, 80)}`,
   set_reminder: (a) => `Hatırlatma${a.repeat ? ' [' + a.repeat + ']' : ''}: ${String(a.message || '').slice(0, 60)}`,
+  channel_send: (a) => `Kanal mesajı → ${a.to || ''}${a.channel && a.channel !== 'auto' ? ' (' + a.channel + ')' : ''}: ${String(a.text || '').slice(0, 60)}`,
   watcher_add: (a) => `İzleyici kur: ${a.name || ''}`,
   watcher_list: () => 'İzleyiciler',
   watcher_remove: (a) => `İzleyici sil: ${a.id || ''}`,

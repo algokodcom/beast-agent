@@ -338,6 +338,31 @@ test('tool_request: asenkron iletir, Tool botunda oturum açar, istek AJAN DM pa
   }
 });
 
+test('channel_send: köprü yoksa zarif hata döner', async () => {
+  const eng = makeEngine();
+  const r = JSON.parse(await eng._execTool('channel_send', { to: 'anne', text: 'selam' }, null, 's1'));
+  assert.equal(r.ok, false);
+  assert.match(String(r.error), /köprü/);
+});
+
+test('channel_send: args köprüye aynen iletilir', async () => {
+  let got = null;
+  const eng = makeEngine({
+    channelSend: async (a) => {
+      got = a;
+      return { ok: true, sent: [{ channel: 'whatsapp', to: 'anne' }] };
+    },
+  });
+  const r = JSON.parse(
+    await eng._execTool('channel_send', { channel: 'whatsapp', to: 'anne', text: 'selam' }, null, 's9')
+  );
+  assert.equal(r.ok, true);
+  assert.equal(got.channel, 'whatsapp');
+  assert.equal(got.to, 'anne');
+  assert.equal(got.text, 'selam');
+  assert.equal(got.sessionId, 's9');
+});
+
 /* ---------- sürekli paralel ajanlar + AJAN DM ---------- */
 
 test('superviseReason: sürekli (continuous) işler denetlenmez', () => {

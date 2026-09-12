@@ -2271,6 +2271,7 @@ function botToolSet(cfg) {
     'event_list', 'event_subscribe', 'event_unsubscribe',
     'watcher_add', 'watcher_list', 'watcher_remove',
     'tool_request', /* CEPHANE: eksik aracı TOOL botuna yazdırma hakkı HER botta */
+    'channel_send', /* İLK MESAJ: allow listteki kişilere kendiliğinden yazma hakkı HER botta */
   ]);
   if (s.web_search) { set.add('web_search'); set.add('http_fetch'); set.add('webfetch'); set.add('deep_search'); }
   if (s.browser) {
@@ -3227,6 +3228,7 @@ function reloadBackend() {
     /* tool yazım/doğrulama adımları → bağlı entegrasyonlara (WA/TG/Discord) */
     integrationNotify: integrationBroadcast,
     fileSend: deliverFile,
+    channelSend: (args) => channelSendFromAgent(args),
     reminders: { add: scheduleReminder },
     watchers: {
       list: () => watchers.list(),
@@ -8962,6 +8964,145 @@ function integrationBroadcast(text) {
   try {
     if (dc && dc.connected) for (const id of dcOwnerIds()) Promise.resolve(sendDcSafe(id, body)).catch(() => {});
   } catch {}
+}
+
+/* ---------- AJAN İLK MESAJI (channel_send) ----------
+   Allow listteki kişilere WhatsApp/Telegram/Discord'dan SEN İLK MESAJI atar;
+   karşıdan mesaj gelmesini beklemez. Güvenlik: yalnız allow listteki kişiler
+   hedeflenir; müşteri botu (non-admin) yalnız KENDİ bot_id'sine bağlı
+   kişilere yazabilir. */
+async function channelSendFromAgent(input) {
+  const a = input || {};
+  const body = stripAiDashes(String(a.text || '').trim()).slice(0, 4000);
+  if (!body) return { ok: false, error: 'text gerekli' };
+  const want = String(a.channel || 'auto').toLowerCase();
+  const q = String(a.to || '').trim();
+  if (!q) return { ok: false, error: 'to gerekli (isim, numara, ID, @kullanıcı adı, "sahip" ya da "all")' };
+  const ql = q.toLowerCase();
+  const isAll = ['all', 'herkes', 'hepsi', 'tümü', 'tumu', 'everyone'].includes(ql);
+  const isOwner = ['sahip', 'owner', 'patron'].includes(ql);
+
+  /* oturumun botu: müşteri botuysa hedef kısıtı (izolasyon) */
+  let botId = '';
+  try {
+    const s = engine.cache.get(String(a.sessionId || '')) || engine._load(String(a.sessionId || ''));
+    botId = String((s && s.botId) || '');
+  } catch {}
+  const bot = botId ? bots.get(botId) : null;
+  const unrestricted = !bot || !!bot.admin;
+  const botOk = (e) => unrestricted || String((e && typeof e === 'object' && e.bot_id) || '') === botId;
+
+  const targets = [];
+  const notes = [];
+  const known = [];
+
+  /* WHATSAPP */
+  if (want === 'auto' || want === 'whatsapp' || want === 'wa') {
+    if (wa && wa.connected) {
+      const own = waOwnerNum();
+      const qd = q.replace(/\D/g, '');
+      for (const e of settings.waAllow || []) {
+        if (e === '*') continue;
+        if (!botOk(e)) continue;
+        const pn = waEntryDigits(e);
+        if (!pn) continue;
+        const name = typeof e === 'object' ? String(e.name || '') : '';
+        if (name) known.push(name + ' (whatsapp)');
+        const hit =
+          isAll ||
+          (isOwner && own && pn === own) ||
+          (qd.length >= 6 && (pn === qd || pn.endsWith(qd))) ||
+          (name && name.toLowerCase().includes(ql));
+        if (hit) targets.push({ channel: 'whatsapp', id: pn + '@s.whatsapp.net', label: name || pn });
+      }
+    } else if (want !== 'auto') notes.push('whatsapp bağlı değil');
+  }
+
+  /* TELEGRAM */
+  if (want === 'auto' || want === 'telegram' || want === 'tg') {
+    if (tg && tg.connected) {
+      const owners = tgOwnerIds();
+      for (const e of settings.tgAllow || []) {
+        if (e === '*') continue;
+        if (!botOk(e)) continue;
+        const id = typeof e === 'string' ? e.trim() : String((e && e.id) || '').trim();
+        if (!id || id === '*') continue;
+        const name = typeof e === 'object' ? String(e.name || '') : '';
+        const owner = typeof e === 'object' && !!e.owner;
+        if (name) known.push(name + ' (telegram)');
+        const hit =
+          isAll ||
+          (isOwner && owner && owners.includes(id)) ||
+          id === q ||
+          id.toLowerCase() === ql ||
+          (name && name.toLowerCase().includes(ql));
+        if (hit) targets.push({ channel: 'telegram', id, label: name || id });
+      }
+    } else if (want !== 'auto') notes.push('telegram bağlı değil');
+  }
+
+  /* DISCORD */
+  if (want === 'auto' || want === 'discord' || want === 'dc') {
+    if (dc && dc.connected) {
+      const owners = dcOwnerIds();
+      for (const e of settings.dcAllow || []) {
+        if (e === '*') continue;
+        if (!botOk(e)) continue;
+        const id = typeof e === 'string' ? e.trim() : String((e && e.id) || '').trim();
+        if (!id || id === '*') continue;
+        const name = typeof e === 'object' ? String(e.name || '') : '';
+        const owner = typeof e === 'object' && !!e.owner;
+        if (name) known.push(name + ' (discord)');
+        const hit =
+          isAll ||
+          (isOwner && owner && owners.includes(id)) ||
+          id === q ||
+          id.toLowerCase() === ql ||
+          (name && name.toLowerCase().includes(ql));
+        if (hit) targets.push({ channel: 'discord', id, label: name || id });
+      }
+    } else if (want !== 'auto') notes.push('discord bağlı değil');
+  }
+
+  if (!targets.length) {
+    return {
+      ok: false,
+      error:
+        'allow listte eşleşen hedef yok: "' + q + '"' +
+        (notes.length ? ' (' + notes.join('; ') + ')' : '') +
+        (known.length ? ' — listedekiler: ' + [...new Set(known)].slice(0, 10).join(', ') : ''),
+    };
+  }
+  /* aynı hedefe çift gönderim olmasın */
+  const uniq = [];
+  const seen = new Set();
+  for (const t of targets) {
+    const k = t.channel + '|' + t.id;
+    if (seen.has(k)) continue;
+    seen.add(k);
+    uniq.push(t);
+  }
+  const sent = [];
+  const failed = [];
+  for (const t of uniq) {
+    let ok = false;
+    try {
+      if (t.channel === 'whatsapp') ok = await sendWaSafe(t.id, body);
+      else if (t.channel === 'telegram') ok = await sendTgSafe(t.id, body);
+      else if (t.channel === 'discord') ok = await sendDcSafe(t.id, body);
+    } catch {}
+    if (ok) sent.push({ channel: t.channel, to: t.label });
+    else failed.push({ channel: t.channel, to: t.label, error: 'gönderilemedi (bağlantı yok ya da kişi bota izin vermemiş olabilir)' });
+  }
+  return {
+    ok: sent.length > 0,
+    sent,
+    failed,
+    ...(notes.length ? { notes } : {}),
+    note: sent.length
+      ? 'İlk mesaj gönderildi: ' + sent.map((x) => x.to + ' (' + x.channel + ')').join(', ')
+      : 'Hiçbir hedefe gönderilemedi' + (notes.length ? ' — ' + notes.join('; ') : ''),
+  };
 }
 
 /* ---- fiyat alarmları (kalıcı) ---- */

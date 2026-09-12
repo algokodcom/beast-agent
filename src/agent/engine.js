@@ -193,6 +193,7 @@ const CEO_EXEC_TOOLS = new Set([
   'browser_click', 'browser_type', 'browser_press', 'browser_scroll', 'browser_select',
   'computer_look', 'computer_act',
   'ocr_read',
+  'channel_send', // dış kişilere mesaj: CEO devreder, kendisi atmaz
   'delegate_task', // senkron bekler — CEO hep asenkron run_background kullanır
 ]);
 
@@ -343,6 +344,7 @@ class Engine {
     this.historyTokenBudget = Number(opts.historyTokenBudget) || HISTORY_TOKEN_BUDGET;
     this.browser = opts.browser || null; // dahili tarayıcı kancaları
     this.fileSend = opts.fileSend || null; // #26 dosya gönderim köprüsü (chat/WA)
+    this.channelSend = opts.channelSend || null; // kanal ilk mesaj köprüsü (WA/TG/DC)
     this.notifyOwnerFail = opts.notifyOwnerFail !== false; // #25 hata mail bildirimi (runtime /notify)
     /* ENTEGRASYON BİLDİRİMİ: tool yazım/doğrulama adımları WA/TG/Discord'a düşer */
     this.integrationNotify = typeof opts.integrationNotify === 'function' ? opts.integrationNotify : null;
@@ -2124,6 +2126,7 @@ class Engine {
           'Basit soruları araç kullanmadan doğrudan cevapla — hız önceliklidir.',
           'Kod/dosya işlerinde: içerik araması grep (regex), dosya adı araması glob, VAR OLAN dosyayı değiştirme edit_file (write_file yalnız yeni dosya/tam yeniden yazım). read_file satır numaralı döner; büyük dosyada devamını offset parametresiyle oku, ASLA baştan okuma; bir dosyayı aynı oturumda BİR KEZ okumak yeter — okunan içerik oturum sonuna kadar bağlamda kalır, dosyayı tekrar okuma. Dosya işlemlerinde özel araçları kullan (edit_file/write_file/read_file/grep/glob); run_command terminal işlerindir (build, git, kurulum, paket) — dosya düzenlemeyi komutla değil edit_file ile yap. edit_file/write_file sonucu additions/deletions döner ve değişiklik diske ANINDA uygulanır — doğrulamak için dosyayı TEKRAR OKUMA; önceki okuduğun içerik + kendi değişikliklerin üzerinden devam et.',
           'Kullanıcı bir tarihte/saatte hatırlatılmasını isterse set_reminder kullan; when değerini ORTAMdaki bugüne göre hesapla (yerel saat). "Her sabah/gün/hafta" gibi tekrarlı isteklerde repeat alanını da ver (daily/weekly/monthly/weekdays veya cron).',
+          'İLK MESAJ (channel_send): kullanıcı "X kişiye yaz / haber ver / duyur" derse channel_send ile SEN ilk mesajı at — karşıdan mesaj gelmesini BEKLEME. Yalnız allow listteki kişiler hedeflenebilir: isim (kısmi), telefon numarası, Telegram/Discord ID, @kullanıcı adı, "sahip" ya da "all". Kişi listede yoksa gönderme, kullanıcıya söyle. Telegram/Discord\'da karşı taraf bota daha önce hiç yazmadıysa gönderim başarısız olabilir; sonucu dürüstçe bildir.',
                     'Kullanıcı kalıcı bir arka plan takibi isterse (fiyat eşiği, pil seviyesi, sayfa değişikliği) watcher_add ile izleyici kur; kurduktan sonra watcher_list ile doğrula ve kullanıcıya koşulu + kontrol sıklığını kısaca bildir.',
           'Anlık olay takipleri için (yeni mail, fiyat eşiği, dosya değişimi, webhook) event_subscribe kullan — cron/polling gerekmez; listeyi event_list ile göster, vazgeçirirse event_unsubscribe.',
           'ARAÇ EKSİKSE ÇEKİNME (CEPHANE): ihtiyacın olan bir araç yoksa/bozuksa tool_request ile TOOL botuna yazdır — tool yazımı onun TEK işidir; task alanına araç adı + ne yapacağı + girdi/çıktı sözleşmesini, context alanına örnek veri/yol/endpoint yaz. ASENKRON: istek anında kabul edilir, Tool botu kendi oturumunda arka planda yazar; sen BEKLEME, işine devam et. Araç doğrulanınca tool__<ad> olarak ANINDA çağrılabilir; rapor bitince sohbete otomatik düşer. Küçük kişisel araçları skill("tool-yazma") prosedürüyle kendin de yazabilirsin — yazdığını run_command ile MUTLAKA doğrula.',
@@ -5036,6 +5039,7 @@ const skills = require('./skills');
         (t) =>
           t.function.name !== 'delegate_task' &&
           t.function.name !== 'set_reminder' &&
+          t.function.name !== 'channel_send' &&
           !t.function.name.startsWith('email_')
       ).sort((a, b) => String(a.function.name).localeCompare(String(b.function.name))); // önek-cache: sabit sıra
       system =
@@ -5555,6 +5559,18 @@ const skills = require('./skills');
         const p = String((args && args.path) || '').trim();
         if (!p) return JSON.stringify({ ok: false, error: 'path gerekli' });
         const r = await this.fileSend(sessionId, p, String((args && args.caption) || ''));
+        return JSON.stringify(r);
+      }
+      if (name === 'channel_send') {
+        if (typeof this.channelSend !== 'function') {
+          return JSON.stringify({ ok: false, error: 'kanal gönderim köprüsü yok' });
+        }
+        const r = await this.channelSend({
+          channel: String((args && args.channel) || 'auto'),
+          to: String((args && args.to) || ''),
+          text: String((args && args.text) || ''),
+          sessionId: String(sessionId || ''),
+        });
         return JSON.stringify(r);
       }
       if (name === 'pdf_write') {
@@ -6346,6 +6362,23 @@ const TOOLS = [
           caption: { type: 'string', description: 'Optional short caption' },
         },
         required: ['path'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'channel_send',
+      description:
+        "Send a message FROM YOU to an allow-listed person on WhatsApp/Telegram/Discord — the FIRST message, without waiting for them to write first. Use when the user says 'write to X', 'let X know', 'announce to the list'. channel: whatsapp|telegram|discord|auto (default auto = every connected channel where the target matches). to: allow-list name (partial), phone number, Telegram/Discord numeric id, @username, 'owner'/'sahip' for the owner, or 'all' for everyone on the list. text: the message (max ~4000 chars). Only allow-listed people can be targeted; if the name is not on the list the send is refused. Telegram/Discord can only deliver if that person has already started/permitted the bot; report failures honestly.",
+      parameters: {
+        type: 'object',
+        properties: {
+          channel: { type: 'string', enum: ['auto', 'whatsapp', 'telegram', 'discord'], description: 'Channel (default auto)' },
+          to: { type: 'string', description: "Allow-list name, number, id, @username, 'owner'/'sahip' or 'all'" },
+          text: { type: 'string', description: 'Message text to send' },
+        },
+        required: ['to', 'text'],
       },
     },
   },

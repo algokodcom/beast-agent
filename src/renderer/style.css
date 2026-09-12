@@ -88,14 +88,26 @@ body {
 }
 
 #brand {
-  padding: 18px 16px 12px;
+  padding: 14px 16px 12px;
   letter-spacing: 3px;
   font-weight: 800;
   text-align: center;
   -webkit-app-region: drag;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+}
+#brandLogo {
+  width: 26px;
+  height: 26px;
+  display: block;
+  flex: none;
+  box-shadow: 0 0 0 1px var(--border);
+  border-radius: 6px;
 }
 .brand-beast { color: var(--accent); font-size: 17px; }
-.brand-sub { color: var(--muted); font-size: 11px; margin-left: 6px; letter-spacing: 2px; }
+.brand-sub { color: var(--muted); font-size: 11px; letter-spacing: 2px; }
 
 #newChat {
   margin: 4px 12px 10px;
@@ -860,12 +872,18 @@ body.term-dragging * { cursor: row-resize !important; }
   gap: 10px;
 }
 #emptyLogo {
-  font-size: 44px;
-  font-weight: 900;
-  letter-spacing: 10px;
-  color: var(--accent);
-  opacity: 0.9;
-  text-shadow: 0 0 30px rgba(19, 19, 21, 0.15);
+  width: 132px;
+  height: 132px;
+  opacity: 0.95;
+}
+#emptyLogo img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+  box-shadow: 0 0 0 1px var(--border);
+  border-radius: 26px;
+  filter: drop-shadow(0 12px 32px rgba(0, 0, 0, 0.28));
 }
 #emptyHint { color: var(--muted); }
 

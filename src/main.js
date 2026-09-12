@@ -3774,7 +3774,7 @@ function toastNotify(title, body, target) {
     const n = new Notification({
       title: String(title || 'Beast Agent').slice(0, 120),
       body: String(body || '').slice(0, 240),
-      icon: path.join(__dirname, '..', 'assets', 'tray.png'),
+      icon: path.join(__dirname, '..', 'assets', 'logo.png'),
       silent: false,
     });
     n.on('click', () => {
@@ -4342,6 +4342,34 @@ function researchViewAt(idx) {
   return v;
 }
 
+/* Ajanın DERİN ARAŞTIRMADA okuduğu sayfalar gizli havuzda açılır (hız için);
+   panel GÖRÜNÜR açıksa sayfa canlı izlensin diye aynı adres görünür view'e de
+   yansıtılır. 500ms debounce + son adres kazanır: paralel okumalar paneli
+   boğmaz, gizli modda (visible=false) hiçbir ek yük bindirmez. */
+let __mirrorTimer = null;
+let __mirrorUrl = '';
+function browserMirror(url) {
+  try {
+    if (!browser.open || !browser.visible) return;
+    if (!browser.view || browser.view.webContents.isDestroyed()) return;
+    const u = String(url || '').trim();
+    if (!/^https?:\/\//i.test(u)) return;
+    __mirrorUrl = u;
+    if (__mirrorTimer) return;
+    __mirrorTimer = setTimeout(() => {
+      __mirrorTimer = null;
+      const target = __mirrorUrl;
+      if (!target || !browser.open || !browser.visible || !browser.view) return;
+      const wc = browser.view.webContents;
+      if (!wc || wc.isDestroyed()) return;
+      let cur = '';
+      try { cur = wc.getURL() || ''; } catch {}
+      if (cur === target) return;
+      try { wc.loadURL(target).catch(() => {}); } catch {}
+    }, 500);
+  } catch {}
+}
+
 async function researchRead(rawUrl, signal) {
   const url = String(rawUrl || '').trim();
   if (!/^https?:\/\//i.test(url)) return { ok: false, url, error: 'geçersiz adres' };
@@ -4360,6 +4388,7 @@ async function researchRead(rawUrl, signal) {
       wc.once('did-finish-load', onDone);
       wc.on('did-fail-load', onFail);
       wc.loadURL(url).catch(() => {});
+      browserMirror(url); /* panel görünürse ajanın okuduğu sayfa canlı izlenir */
     });
     /* SPA hidrasyonu için kısa settle; metin boşsa bir kez daha dene */
     await new Promise((r) => setTimeout(r, RESEARCH_SETTLE_MS));
@@ -4588,6 +4617,19 @@ async function browserSearchNow(query, signal, ctx) {
       return blocked
         ? { ok: false, blocked: true, engine: 'browser-google', query: q, error: 'unusual traffic (CAPTCHA)' }
         : null;
+    }
+    /* İZLEME: fetch() sayfayı değiştirmediği için panel google.com ana sayfasında
+       kalıyordu — görünür moddayken gerçek sonuç sayfasına geç ki kullanıcı ajanın
+       ne aradığını canlı görsün (gizli modda ek yük yok; zaten sonuç sayfasındaysa
+       fallback reload'u yapılmaz). */
+    if (browser.visible) {
+      let cur = '';
+      try { cur = wc.getURL() || ''; } catch {}
+      if (!cur.startsWith('https://www.google.com/search')) {
+        try {
+          wc.loadURL('https://www.google.com/search?q=' + encodeURIComponent(q) + '&num=10&hl=tr&pws=0&aep=1').catch(() => {});
+        } catch {}
+      }
     }
     flushBrowserStorage();
     const out = { ok: true, engine: 'browser-google', query: q, results };
@@ -4931,6 +4973,10 @@ function createSplash() {
     const bg = dark ? '#0d0d0f' : '#f7f7f8';
     const fg = dark ? '#f2f2f4' : '#17171a';
     const muted = dark ? '#9a9aa2' : '#707078';
+    let logoUri = '';
+    try {
+      logoUri = 'data:image/png;base64,' + fs.readFileSync(path.join(__dirname, '..', 'assets', 'logo.png')).toString('base64');
+    } catch {}
     splash = new BrowserWindow({
       width: 420,
       height: 352,
@@ -4944,7 +4990,9 @@ function createSplash() {
     });
     const html = `<!doctype html><html><head><meta charset="utf-8"><style>
       body{margin:0;height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;background:${bg};font-family:'Segoe UI',sans-serif;color:${fg}}
-      .logo{width:84px;height:84px;border-radius:20px;background:${fg};color:${bg};display:flex;align-items:center;justify-content:center;font-weight:900;font-size:44px}
+      .logo{width:96px;height:96px;display:flex;align-items:center;justify-content:center}
+      .logo img{width:100%;height:100%;object-fit:contain;border-radius:22px}
+      .logo-fb{width:84px;height:84px;border-radius:20px;background:${fg};color:${bg};display:flex;align-items:center;justify-content:center;font-weight:900;font-size:44px}
       .t{margin-top:16px;font-size:20px;color:${fg}}.t b{font-weight:900}
       .v{margin-top:8px;font-size:12.5px;font-weight:800;letter-spacing:.6px;color:${muted};background:${muted}22;padding:2px 12px;border-radius:9px}
       .s{margin-top:6px;font-size:12px;color:${muted}}
@@ -4955,7 +5003,7 @@ function createSplash() {
       .bar>i{display:block;height:100%;width:40%;background:${fg};border-radius:2px;animation:sw 1.1s ease-in-out infinite}
       @keyframes sw{0%{transform:translateX(-100%)}100%{transform:translateX(260%)}}
     </style></head><body>
-      <div class="logo">B</div>
+      ${logoUri ? `<div class="logo"><img src="${logoUri}" alt="Beast Agent"></div>` : '<div class="logo-fb">B</div>'}
       <div class="t"><b>BEAST</b> Agent</div>
       <div class="v">v${beastVersion()}</div>
       <div class="s">hızlı · hafif · becerikli</div>

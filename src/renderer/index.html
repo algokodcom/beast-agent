@@ -3,14 +3,14 @@
 <head>
   <meta charset="UTF-8" />
   <meta http-equiv="Content-Security-Policy"
-        content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self' blob: file:; script-src 'self'" />
+        content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: file:; media-src 'self' blob: file:; script-src 'self'" />
   <title>Beast Agent</title>
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
   <div id="app">
     <aside id="sidebar">
-      <div id="brand"><span class="brand-beast">BEAST</span><span class="brand-sub">Agent</span></div>
+      <div id="brand"><img id="brandLogo" src="../../assets/logo.png" alt="Beast Agent" draggable="false" /><span class="brand-beast">BEAST</span><span class="brand-sub">Agent</span></div>
       <button id="newChat" title="Yeni sohbet" data-i18n="newChat">+ Yeni Sohbet</button>
       <div id="sessList"></div>
       <div id="watchPane">
@@ -121,7 +121,7 @@
 
       <div id="chatScroll">
         <div id="empty">
-          <div id="emptyLogo">BEAST</div>
+          <div id="emptyLogo"><img src="../../assets/logo.png" alt="Beast Agent" draggable="false" /></div>
           <div id="emptyHint" data-i18n="emptyHint">Hızlı · hafif · becerikli. Ne yapalım?</div>
         </div>
         <div id="msgs"></div>

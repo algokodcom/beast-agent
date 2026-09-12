@@ -84,6 +84,7 @@ contextBridge.exposeInMainWorld('beast', {
   browserShownGet: () => ipcRenderer.invoke('browser:shown:get'),
   browserShownSet: (v) => ipcRenderer.invoke('browser:shown:set', v),
   browserHideSet: (v) => ipcRenderer.invoke('browser:hide:set', v),
+  browserStateGet: () => ipcRenderer.invoke('browser:state:get'),
   terminalToggle: () => ipcRenderer.invoke('terminal:toggle'),
   terminalRun: (cmd, shell) => ipcRenderer.invoke('terminal:run', { cmd, shell }),
   terminalStop: () => ipcRenderer.invoke('terminal:stop'),

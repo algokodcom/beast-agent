@@ -5104,7 +5104,12 @@ function resyncBrowserUi() {
     setTimeout(() => { try { layoutBrowser(); resyncBrowserUi(); } catch {} }, 80);
     setTimeout(() => { try { layoutBrowser(); resyncBrowserUi(); } catch {} }, 300);
   });
-  win.on('show', layoutBrowser);
+  win.on('show', () => { layoutBrowser(); resyncBrowserUi(); });
+  /* renderer her yeni yüklemede (açılış, reload, kurtarma) tarayıcı durumunu
+     TAZE alır — açılışta kaçan 'browser' olayı dock'un ayrılmamasına yol açıyordu */
+  win.webContents.on('did-finish-load', () => {
+    try { resyncBrowserUi(); } catch {}
+  });
   // X'e basınca gizle — tepside yaşamaya devam, WhatsApp bağlantısı sürer
   win.on('close', (e) => {
     if (!app.isQuitting) {
@@ -7594,6 +7599,23 @@ ipcMain.handle('browser:toggle', () => {
 /* göz ikonu: ajan tarayıcısını görünür/gizli yap — yalnızca gizleme özelliği
    (Ayarlar → Web Arama) açıkken etkilidir; özellik kapalıysa hep görünür */
 ipcMain.handle('browser:shown:get', () => ({ shown: !browserHeadlessPref(), enabled: browserHideEnabled() }));
+/* RENDERER AÇILIŞ SENKRONU: tarayıcı, renderer olayları dinlemeye başlamadan
+   açılmış olabilir (açılışta oturum kurtarma/arka plan işi) — durum buradan
+   PULL edilir; yoksa native view dock alanı ayrılmadan chat'in üzerinde kalır */
+ipcMain.handle('browser:state:get', () => {
+  let url = '';
+  try { url = browser.view && browser.open && !browser.view.webContents.isDestroyed() ? browser.view.webContents.getURL() : ''; } catch {}
+  return {
+    open: browser.open,
+    visible: browser.visible,
+    width: browserShownWidth(browserW()),
+    phone: browser.phone,
+    mobile: browser.mobile,
+    phoneRect: browser.mobileRect,
+    device: browser.deviceKey,
+    url,
+  };
+});
 ipcMain.handle('browser:shown:set', (_e, v) => {
   if (!browserHideEnabled()) return { shown: true, enabled: false };
   settings.browserHeadless = !v;

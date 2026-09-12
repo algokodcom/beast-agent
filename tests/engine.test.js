@@ -70,6 +70,30 @@ test('clearTodos: listeyi boşaltır, dosyaya boş t:todo yazar, restart sonras�
   assert.equal(eng.clearTodos('yok-oturum').ok, false);
 });
 
+test('todo hatırlatıcı: todo_write/clearTodos önbellekteki oturum kopyasını da günceller', () => {
+  const eng = makeEngine();
+  const sid = eng.createSession().id;
+  const s = eng._load(sid);
+
+  eng._execTool('todo_write', { items: [
+    { title: 'Planla', status: 'active' },
+    { title: 'Uygula', status: 'pending' },
+  ] }, null, sid);
+  assert.deepEqual(s.todos.map((t) => t.status), ['active', 'pending']);
+
+  /* tüm maddeler done → bayat oturum kopyasında bekleyen kalmamalı */
+  eng._execTool('todo_write', { items: [
+    { title: 'Planla', status: 'done' },
+    { title: 'Uygula', status: 'done' },
+  ] }, null, sid);
+  assert.equal(s.todos.filter((t) => t.status !== 'done').length, 0);
+
+  eng._execTool('todo_write', { items: [{ title: 'Yeni iş', status: 'pending' }] }, null, sid);
+  assert.equal(eng.clearTodos(sid).ok, true);
+  assert.deepEqual(s.todos, []);
+  assert.deepEqual(eng.openSession(sid).todos, []);
+});
+
 /* ---------- Beast Finance: skills kataloğu + skill aracı ---------- */
 
 test('finance: sistem promptu SKILLS kataloğunu içerir', () => {

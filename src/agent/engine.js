@@ -1473,7 +1473,7 @@ class Engine {
     delete s.notes;
     delete s.notesAt;
     delete s.summary; // özet de sıfırlanır — taze başlangıç
-    this.todos.set(sid, []);
+    this.todos.set(sid, s.todos || []);
     this.emit({ type: 'sessions' });
     return true;
   }
@@ -4140,7 +4140,7 @@ class Engine {
           /* GÖREV LİSTESİ DİSİPLİNİ: ajan işi bitti sanıyor ama listede hâlâ
              bekleyen/aktif madde varsa BİR KEZ hatırlat ve tura devam et —
              liste ya tamamlanmalı ya kalan maddeler listeden düşürülmeli. */
-          const todos = session.todos || this.todos.get(sid) || [];
+          const todos = this.todos.has(sid) ? this.todos.get(sid) || [] : session.todos || [];
           const pending = todos.filter((t) => t && t.status !== 'done');
           if (pending.length && !nudged) {
             nudged = true;
@@ -5370,6 +5370,8 @@ const skills = require('./skills');
         const items = sanitizeTodoItems(args.items);
         this._tagTodoIds(sessionId, items); /* her madde kalıcı ID taşır — geri alma buna bağlanır */
         this.todos.set(sessionId, items);
+        const tSession = this.cache.get(String(sessionId));
+        if (tSession) tSession.todos = items;
         try {
           fs.appendFileSync(
             this._file(sessionId),
@@ -6550,6 +6552,8 @@ Engine.prototype.undoTodo = function (sid, todoId) {
     if (t && t.id === id && t.status === 'done') t.status = 'pending';
   }
   this.todos.set(key, todos);
+  const uSession = this.cache.get(key);
+  if (uSession) uSession.todos = todos;
   try {
     fs.appendFileSync(this._file(key), JSON.stringify({ t: 'todo', items: todos }) + '\n');
   } catch {}
@@ -6584,6 +6588,8 @@ Engine.prototype.clearTodos = function (sid) {
   }
   const prev = this.todos.get(key) || [];
   this.todos.set(key, []);
+  const cSession = this.cache.get(key);
+  if (cSession) cSession.todos = [];
   try {
     fs.appendFileSync(this._file(key), JSON.stringify({ t: 'todo', items: [] }) + '\n');
   } catch {}

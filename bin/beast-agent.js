@@ -1,96 +1,96 @@
 #!/usr/bin/env node
 'use strict';
 
-/* Beast Agent global npm başlatıcısı (`beast` kısa adı da aynı scripte bağlı):
-   `beast` / `beast-agent`          → uygulamayı detached başlatır, terminali hemen serbest bırakır
-   `beast update`                   → npm'den en son sürümü yükler (uygulama kapalıyken çalıştır) */
+/* Beast Agent global npm launcher (`beast` short alias points to the same script):
+   `beast` / `beast-agent`          → launches the app detached, frees the terminal immediately
+   `beast update`                   → installs the latest version from npm (run while the app is closed) */
 
 const { spawn, spawnSync } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
 
-/* kaldırma modu: uygulamayı kaldırır ama KİŞİSEL VERİLERİ korur
-   (%APPDATA%\beast: config.yaml, .env, oturumlar, hafıza, WhatsApp eşlemesi, yedekler) */
+/* uninstall mode: removes the app but KEEPS YOUR PERSONAL DATA
+   (%APPDATA%\beast: config.yaml, .env, sessions, memory, WhatsApp pairing, backups) */
 if (process.argv[2] === 'uninstall') {
   const isWin = process.platform === 'win32';
-  console.log('Beast Agent kald\u0131r\u0131l\u0131yor\u2026');
+  console.log('Uninstalling Beast Agent\u2026');
   if (isWin) {
-    /* çalışan örnekleri kapat */
+    /* stop running instances */
     try {
       spawnSync('powershell.exe', ['-NoProfile', '-Command',
         "Get-Process electron -ErrorAction SilentlyContinue | Where-Object { $_.Path -like '*node_modules*beast-agent*' } | Stop-Process -Force"],
         { stdio: 'ignore' });
-      console.log('\u2022 \u00E7al\u0131\u015Fan Beast kapat\u0131ld\u0131 (varsa)');
+      console.log('\u2022 stopped running Beast instances (if any)');
     } catch {}
-    /* startup kaydını sil — yalnız verisi beast-agent'a işaret ediyorsa */
+    /* remove the startup entry — only if it points to beast-agent */
     try {
       spawnSync('powershell.exe', ['-NoProfile', '-Command',
         "$k='HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run';" +
         "foreach($n in (Get-Item $k -ErrorAction SilentlyContinue).GetValueNames()){" +
-        "$v=(Get-ItemProperty $k).$n; if($v -like '*node_modules*beast-agent*'){ Remove-ItemProperty -Path $k -Name $n; Write-Host '• startup kayd\u0131 silindi' } }"],
+        "$v=(Get-ItemProperty $k).$n; if($v -like '*node_modules*beast-agent*'){ Remove-ItemProperty -Path $k -Name $n; Write-Host '\u2022 startup entry removed' } }"],
         { stdio: 'inherit' });
     } catch {}
-    /* masaüstü kısayolunu sil (gerçek Masaüstü yolu: OneDrive olabilir) */
+    /* remove the desktop shortcut (real Desktop path: may be under OneDrive) */
     try {
       spawnSync('powershell.exe', ['-NoProfile', '-Command',
-        "$d=[Environment]::GetFolderPath('Desktop'); if(Test-Path \"$d\\Beast Agent.lnk\"){ Remove-Item \"$d\\Beast Agent.lnk\" -Force; Write-Host '\u2022 masa\u00FCst\u00FC k\u0131sayolu silindi' }"],
+        "$d=[Environment]::GetFolderPath('Desktop'); if(Test-Path \"$d\\Beast Agent.lnk\"){ Remove-Item \"$d\\Beast Agent.lnk\" -Force; Write-Host '\u2022 desktop shortcut removed' }"],
         { stdio: 'inherit' });
     } catch {}
   } else {
     try { spawnSync('pkill', ['-f', 'node_modules/beast-agent'], { stdio: 'ignore' }); } catch {}
   }
-  console.log('\u2022 npm paketi kald\u0131r\u0131l\u0131yor\u2026');
+  console.log('\u2022 removing the npm package\u2026');
   const ur = spawnSync('npm', ['uninstall', '-g', 'beast-agent'], { stdio: 'inherit', shell: isWin });
-  console.log('\n\u2713 Beast Agent kald\u0131r\u0131ld\u0131.');
-  console.log('\u2139 Ki\u015Fisel verilerin korundu \u2014 %APPDATA%\\beast');
-  console.log('  (config.yaml, .env, oturumlar, haf\u0131za, WhatsApp e\u015Flemesi, \u015Fifreli yedekler)');
-  console.log('  Tekrar kurmak i\u00E7in: npm install -g beast-agent');
+  console.log('\n\u2713 Beast Agent uninstalled.');
+  console.log('\u2139 Your personal data is preserved \u2014 %APPDATA%\\beast');
+  console.log('  (config.yaml, .env, sessions, memory, WhatsApp pairing, encrypted backups)');
+  console.log('  To reinstall: npm install -g beast-agent');
   process.exit(ur.status || 0);
 }
 
-/* güncelleme modu: çalışan Beast'i kapat (dosya kilidi EBUSY vermesin) → npm güncelle (görünür ilerleme) → yeniden başlat.
-   Bu komut güncelleme butonu tarafından GÖRÜNÜR bir cmd penceresi içinde çalıştırılır;
-   doğrudan terminalden de çalışır — npm install çıktısı ekranda akar. */
+/* update mode: stop the running Beast (avoid file-lock EBUSY) → update npm (visible progress) → relaunch.
+   This command is run by the update button inside a VISIBLE cmd window;
+   it also works from a terminal — npm install output streams on screen. */
 if (process.argv[2] === 'update') {
   const isWin = process.platform === 'win32';
-  console.log('\u27F3 beast-agent g\u00FCncelleniyor\u2026');
+  console.log('\u27F3 Updating beast-agent\u2026');
   if (isWin) {
     try {
       spawnSync('powershell.exe', ['-NoProfile', '-Command',
         "Get-Process electron -ErrorAction SilentlyContinue | Where-Object { $_.Path -like '*node_modules*beast-agent*' } | Stop-Process -Force"],
         { stdio: 'ignore' });
-      console.log('\u2022 \u00E7al\u0131\u015Fan Beast kapat\u0131ld\u0131 (varsa)');
+      console.log('\u2022 stopped running Beast instances (if any)');
     } catch {}
   } else {
     try { spawnSync('pkill', ['-f', 'node_modules/beast-agent'], { stdio: 'ignore' }); } catch {}
   }
-  /* dosya kilidi (EBUSY) bazen ilk denemede patlar — 5 deneme hakkı */
+  /* file locks (EBUSY) sometimes fail on the first attempt — 5 tries */
   let ok = false;
   for (let i = 1; i <= 5 && !ok; i++) {
     const r = spawnSync('npm', ['install', '-g', 'beast-agent@latest'], { stdio: 'inherit', shell: isWin });
     ok = r.status === 0;
     if (!ok && i < 5) {
-      console.log(`  \u2022 deneme ${i}/5 ba\u015Far\u0131s\u0131z (dosya kilidi olabilir) \u2014 3 sn sonra tekrar\u2026`);
+      console.log(`  \u2022 attempt ${i}/5 failed (possible file lock) \u2014 retrying in 3s\u2026`);
       if (isWin) spawnSync('powershell.exe', ['-NoProfile', '-Command', 'Start-Sleep -Seconds 3'], { stdio: 'ignore' });
       else spawnSync('sleep', ['3']);
     }
   }
   if (!ok) {
-    console.log('\n\u2717 g\u00FCncelleme ba\u015Far\u0131s\u0131z \u2014 elle: npm install -g beast-agent@latest');
+    console.log('\n\u2717 update failed \u2014 manually: npm install -g beast-agent@latest');
     if (isWin) spawnSync('cmd.exe', ['/c', 'pause'], { stdio: 'inherit', shell: false });
     process.exit(1);
   }
-  console.log('\n\u2713 beast-agent g\u00FCncellendi \u2014 uygulama ba\u015Flat\u0131l\u0131yor\u2026');
+  console.log('\n\u2713 beast-agent updated \u2014 launching the app\u2026');
   launchDetached([]);
   if (isWin) spawnSync('cmd.exe', ['/c', 'timeout /t 3'], { stdio: 'ignore' });
   process.exit(0);
 }
 
-/* SearXNG: yerel arama motoru — kur + arka planda başlat (127.0.0.1:8888)
-   beast searxng        → gerekirse kur, başlat
-   beast searxng status → durum
-   beast searxng stop   → kulla */
+/* SearXNG: local search engine — install + start in the background (127.0.0.1:8888)
+   beast searxng        → install if needed, then start
+   beast searxng status → status
+   beast searxng stop   → stop */
 if (process.argv[2] === 'searxng') {
   require('../src/agent/searxng').cli(process.argv.slice(3)).catch((e) => {
     console.error('\u2717 ' + String((e && e.message) || e));
@@ -99,9 +99,9 @@ if (process.argv[2] === 'searxng') {
   return;
 }
 
-/* detached başlatıcı + kendini onaran electron:
-   taze makinalarda npm postinstall sırasında electron binary indirmesi
-   sessizce başarısız olmuş olabilir → burada otomatik tamir edilir. */
+/* detached launcher + self-healing electron:
+   on fresh machines the electron binary download during npm postinstall
+   may have silently failed → it is repaired automatically here. */
 function launchDetached(extraArgs) {
   let electron = null;
   try { electron = require('electron'); } catch {}
@@ -109,17 +109,17 @@ function launchDetached(extraArgs) {
     let fix = null;
     try { fix = require('../scripts/fix-electron'); } catch {}
     if (fix) {
-      console.log('\u27F3 electron \u00e7al\u0131\u015Fma dosyalar\u0131 eksik bulundu \u2014 otomatik onar\u0131l\u0131yor\u2026');
+      console.log('\u27F3 electron runtime files are missing \u2014 repairing automatically\u2026');
       const r = fix.repair({ quiet: false });
-      if (r.ok && !r.skipped) console.log('\u2713 electron onar\u0131ld\u0131');
+      if (r.ok && !r.skipped) console.log('\u2713 electron repaired');
       if (r.ok) {
         try { electron = require('electron'); } catch {}
       }
     }
   }
   if (typeof electron !== 'string') {
-    console.log('\n\u2717 Electron \u00e7al\u0131\u015Fma dosyas\u0131 kurulamad\u0131.');
-    console.log('  Elle \u00e7\u00f6z\u00fcm \u2014 \u015fu 2 komutu \u00e7al\u0131\u015Ft\u0131r:');
+    console.log('\n\u2717 Electron runtime could not be installed.');
+    console.log('  Manual fix \u2014 run these 2 commands:');
     console.log('    npm config set ignore-scripts false');
     console.log('    npm install -g beast-agent');
     return false;
@@ -127,7 +127,7 @@ function launchDetached(extraArgs) {
   const child = spawn(electron, [path.resolve(__dirname, '..'), ...extraArgs], {
     stdio: 'ignore',
     detached: true,
-    /* windowsHide KULLANMA: Chromium ilk pencereyi gizli başlatıyor (tray-only bug) */
+    /* do NOT use windowsHide: Chromium starts the first window hidden (tray-only bug) */
   });
   child.unref();
   return true;

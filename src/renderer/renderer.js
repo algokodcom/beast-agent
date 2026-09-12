@@ -5741,6 +5741,43 @@ function renderAgentsPane() {
 
 /* ---------------- events from engine ---------------- */
 
+/* Tarayıcı panel durumu: canlı 'browser' olayı + açılış senkronu (browserStateGet)
+   AYNI yolu kullanır — native view ile dock alanı (--bw) asla ayrışmasın */
+function applyBrowserState(ev) {
+  /* visible=false → ajan tarayıcıyı GİZLİ kullanıyor: UI yer açmaz */
+  const shown = !!ev.open && ev.visible !== false;
+  const wasShown = document.body.classList.contains('browser-open');
+  document.body.classList.toggle('browser-open', shown);
+  if (shown && ev.width) document.body.style.setProperty('--bw', ev.width + 'px');
+  document.body.classList.toggle('phone-mode', !!ev.phone);
+  if (els.bbPhone) els.bbPhone.classList.toggle('on', !!ev.phone);
+  els.browserBar.hidden = !shown;
+  els.bbResize.hidden = !shown;
+  /* terminal artık ALT dock — tarayıcıyla birlikte yaşar, kapatılmaz */
+  /* #19 tarayıcı açılınca paralel ajan konsolu (sağ panel) yerini bırakır;
+     kapanınca önceki durumuna döner — istenirse railBtn ile elle açılır.
+     GİZLİ ajan gezinmeleri (shown=false, wasShown=false) rail'e DOKUNMAZ —
+     aksi halde paralel ajan konsolu kendi kendine kapanırdı */
+  if (shown) {
+    railPrefBeforeBrowser = !document.body.classList.contains('rail-hidden');
+    toggleRail(true);
+  } else if (wasShown) {
+    toggleRail(!railPrefBeforeBrowser);
+  }
+  /* IDE modunda tarayıcı açılır/kapanır/genişlik değişirse row yeniden bölünür —
+     editör + Beast Code ORTAK kırpılıp ORTAK açılır (kullanıcı payı korunur) */
+  if (ideModeOn()) ideSplitApplyFrac();
+  if (sbModeOn()) sbSplitApplyFrac();
+  if (shown) {
+    els.browserBtn.classList.add('on');
+    if (ev.url && document.activeElement !== els.bbUrl) {
+      els.bbUrl.value = ev.url.startsWith('https://duckduckgo.com/?q=') ? decodeURIComponent(ev.url.split('q=')[1] || '') : ev.url;
+    }
+  } else {
+    els.browserBtn.classList.remove('on');
+  }
+}
+
 function onEvent(ev) {
     if (ev.type === 'notify-click') {
       /* toast tıklandı: ilgili panele atla */
@@ -5991,41 +6028,9 @@ function onEvent(ev) {
          soldaki klasör paneli ELLE yenilemeden canlı tazelenir */
       ideRefreshTree();
       break;
-    case 'browser': {
-      /* visible=false → ajan tarayıcıyı GİZLİ kullanıyor: UI yer açmaz */
-      const shown = !!ev.open && ev.visible !== false;
-      const wasShown = document.body.classList.contains('browser-open');
-      document.body.classList.toggle('browser-open', shown);
-      if (shown && ev.width) document.body.style.setProperty('--bw', ev.width + 'px');
-      document.body.classList.toggle('phone-mode', !!ev.phone);
-      if (els.bbPhone) els.bbPhone.classList.toggle('on', !!ev.phone);
-      els.browserBar.hidden = !shown;
-      els.bbResize.hidden = !shown;
-      /* terminal artık ALT dock — tarayıcıyla birlikte yaşar, kapatılmaz */
-      /* #19 tarayıcı açılınca paralel ajan konsolu (sağ panel) yerini bırakır;
-         kapanınca önceki durumuna döner — istenirse railBtn ile elle açılır.
-         GİZLİ ajan gezinmeleri (shown=false, wasShown=false) rail'e DOKUNMAZ —
-         aksi halde paralel ajan konsolu kendi kendine kapanırdı */
-      if (shown) {
-        railPrefBeforeBrowser = !document.body.classList.contains('rail-hidden');
-        toggleRail(true);
-      } else if (wasShown) {
-        toggleRail(!railPrefBeforeBrowser);
-      }
-      /* IDE modunda tarayıcı açılır/kapanır/genişlik değişirse row yeniden bölünür —
-         editör + Beast Code ORTAK kırpılıp ORTAK açılır (kullanıcı payı korunur) */
-      if (ideModeOn()) ideSplitApplyFrac();
-      if (sbModeOn()) sbSplitApplyFrac();
-      if (shown) {
-        els.browserBtn.classList.add('on');
-        if (ev.url && document.activeElement !== els.bbUrl) {
-          els.bbUrl.value = ev.url.startsWith('https://duckduckgo.com/?q=') ? decodeURIComponent(ev.url.split('q=')[1] || '') : ev.url;
-        }
-      } else {
-        els.browserBtn.classList.remove('on');
-      }
+    case 'browser':
+      applyBrowserState(ev);
       break;
-    }
     case 'status':
       /* kuyruktan tetiklenen yeni iş: kilitle kendiliğinden açılmışsa geri kapat */
       if (ev.status !== 'idle' && !busy) setBusy(true);
@@ -7045,6 +7050,14 @@ async function renderAgendaPane() {
 async function init() {
   beast.onEvent(onEvent);
   toggleRail(true); /* Paralel Ajanlar paneli varsayılan KAPALI — railBtn ile açılır */
+
+  /* AÇILIŞ SENKRONU: tarayıcı renderer hazır olmadan açılmışsa (oturum kurtarma/
+     arka plan işi) 'browser' olayı kaybolurdu — durum PULL edilir ki dock alanı
+     (--bw) ayrılsın ve native view chat'in üzerine binmesin */
+  try {
+    const bst = await beast.browserStateGet();
+    if (bst) applyBrowserState(bst);
+  } catch {}
 
   state = await beast.getState();
   try {

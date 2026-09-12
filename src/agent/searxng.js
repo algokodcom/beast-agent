@@ -1,14 +1,14 @@
 'use strict';
 
-/* SearXNG — yerel metasearch entegrasyonu (github.com/searxng/searxng)
-   SearXNG resmi olarak Linux/Docker hedefler; Windows'ta `import pwd`
-   yüzünden patlar. Bu modül Beast'ın GÖMÜLÜ Python'ına gerçek searxng'yi
-   (GitHub master) kurar + pwd shim'i yazar + 127.0.0.1:8888'de arka planda
-   çalıştırır. Arama zinciri 'searxng' motorunu yalnız AYAKTAYSA kullanır.
+/* SearXNG — local metasearch integration (github.com/searxng/searxng)
+   SearXNG officially targets Linux/Docker; on Windows it crashes because of
+   `import pwd`. This module installs the real searxng (GitHub master) into
+   Beast's EMBEDDED Python + writes a pwd shim + runs it in the background on
+   127.0.0.1:8888. The search chain only uses the 'searxng' engine while it is UP.
 
-   CLI:  beast searxng          → gerekirse kur + başlat
-         beast searxng status   → durum
-         beast searxng stop     → kulla */
+   CLI:  beast searxng          → install if needed + start
+         beast searxng status   → status
+         beast searxng stop     → stop */
 
 const fs = require('fs');
 const path = require('path');
@@ -20,7 +20,7 @@ const PKG_URL = 'https://github.com/searxng/searxng/archive/refs/heads/master.zi
 const GETPIP_URL = 'https://bootstrap.pypa.io/get-pip.py';
 const DEFAULT_URL = 'http://127.0.0.1:8888';
 
-/* ---------- yollar ---------- */
+/* ---------- paths ---------- */
 
 function beastAppDir() {
   if (process.env.BEAST_DATA) return process.env.BEAST_DATA;
@@ -40,7 +40,7 @@ function runPyPath() { return path.join(dir(), 'run.py'); }
 function pidPath() { return path.join(dir(), 'server.pid'); }
 function pyExe() { return path.join(beastAppDir(), 'py', 'python.exe'); }
 
-/* ---------- durum yoklama (cache'li) ---------- */
+/* ---------- status probe (cached) ---------- */
 
 let _probe = { at: 0, up: false, url: '' };
 const PROBE_UP_TTL = 5 * 60 * 1000;
@@ -64,11 +64,11 @@ async function isUp(baseUrl = DEFAULT_URL, { force = false } = {}) {
   return up;
 }
 
-/* ---------- arama (zincir motoru) ---------- */
+/* ---------- search (chain engine) ---------- */
 
 async function search(query, { maxResults = 8, signal, baseUrl } = {}) {
   const base = String(baseUrl || process.env.BEAST_SEARXNG_URL || DEFAULT_URL).replace(/\/+$/, '');
-  if (!(await isUp(base))) return null; // ayakta değil → zincir sıradaki motora geçer
+  if (!(await isUp(base))) return null; // not up → the chain moves to the next engine
   try {
     const sig =
       signal && typeof AbortSignal !== 'undefined' && AbortSignal.any
@@ -100,7 +100,7 @@ async function search(query, { maxResults = 8, signal, baseUrl } = {}) {
   }
 }
 
-/* ---------- kurulum ---------- */
+/* ---------- installation ---------- */
 
 function sh(exe, args, timeoutMs = 600000) {
   return new Promise((resolve, reject) => {
@@ -116,7 +116,7 @@ function sh(exe, args, timeoutMs = 600000) {
 
 async function downloadTo(url, dest) {
   const r = await fetch(url, { signal: AbortSignal.timeout(120000) });
-  if (!r.ok) throw new Error(`indirme başarısız: HTTP ${r.status}`);
+  if (!r.ok) throw new Error(`download failed: HTTP ${r.status}`);
   fs.writeFileSync(dest, Buffer.from(await r.arrayBuffer()));
 }
 
@@ -124,7 +124,7 @@ function sitePackagesDir(py) {
   return sh(py, ['-c', 'import sysconfig;print(sysconfig.get_paths()["purelib"])']).then((s) => s.trim());
 }
 
-/* gömülü python'un ._pth dosyasında `import site` açık değilse pip/paketler görünmez */
+/* if `import site` is not enabled in the embedded python's ._pth file, pip/packages are invisible */
 function fixEmbeddedPth(py) {
   try {
     const dirPy = path.dirname(py);
@@ -145,14 +145,14 @@ async function ensurePip(py, onLog) {
     await sh(py, ['-m', 'pip', '--version'], 60000);
     return;
   } catch {}
-  onLog('pip kuruluyor…');
+  onLog('installing pip…');
   const gp = path.join(os.tmpdir(), 'beast-get-pip.py');
   await downloadTo(GETPIP_URL, gp);
   await sh(py, [gp, '--no-warn-script-location'], 300000);
   fixEmbeddedPth(py);
 }
 
-/** Tam kurulum — `beast searxng` komutunun yaptığı iş. */
+/** Full installation — what the `beast searxng` command does. */
 async function install({ onLog } = {}) {
   const log = (m) => { try { (onLog || ((s) => console.log('  • ' + s)))(m); } catch {} };
   const tools = require('./tools');
@@ -161,22 +161,22 @@ async function install({ onLog } = {}) {
   log('python: ' + py);
 
   await ensurePip(py, log);
-  log('setuptools/wheel/tzdata kuruluyor…');
+  log('installing setuptools/wheel/tzdata…');
   await sh(py, ['-m', 'pip', 'install', '--no-warn-script-location', 'setuptools', 'wheel', 'tzdata'], 600000);
 
-  log('searxng bağımlılıkları indiriliyor (~40 MB)…');
+  log('downloading searxng dependencies (~40 MB)…');
   const reqs = path.join(os.tmpdir(), 'beast-searxng-requirements.txt');
   await downloadTo(REQS_URL, reqs);
   await sh(py, ['-m', 'pip', 'install', '--no-warn-script-location', '-r', reqs], 900000);
 
-  log('searxng motoru kuruluyor…');
+  log('installing the searxng engine…');
   await sh(py, ['-m', 'pip', 'install', '--no-warn-script-location', '--no-build-isolation', PKG_URL], 900000);
 
-  /* pwd shim — searxng/valkeydb.py unix socket sahipliği için pwd import eder */
+  /* pwd shim — searxng/valkeydb.py imports pwd for unix socket ownership */
   const sp = (await sitePackagesDir(py)) || path.join(path.dirname(py), 'Lib', 'site-packages');
   const shim = [
-    '"""Windows shim: SearXNG valkeydb.py yalnizca unix-socket sahipligi icin pwd',
-    'kullanir; Windows\'ta valkey devre disi oldugundan donuk yanit yeterlidir."""',
+    '"""Windows shim: SearXNG valkeydb.py only uses pwd for unix-socket ownership;',
+    'valkey is disabled on Windows, so a stub response is sufficient."""',
     'import os',
     '',
     'class _Pw:',
@@ -203,7 +203,7 @@ async function install({ onLog } = {}) {
   ].join('\n');
   fs.writeFileSync(path.join(sp, 'pwd.py'), shim, 'utf8');
 
-  /* ayarlar + çalıştırıcı */
+  /* settings + runner */
   const secret = 'beast-' + Math.random().toString(36).slice(2, 14);
   fs.writeFileSync(
     settingsPath(),
@@ -225,11 +225,11 @@ async function install({ onLog } = {}) {
   );
   fs.writeFileSync(runPyPath(), 'from searx.webapp import run; run()', 'utf8');
   resetProbeCache();
-  log('kurulum tamam');
+  log('installation complete');
   return { ok: true };
 }
 
-/* ---------- başlat / durdur / durum ---------- */
+/* ---------- start / stop / status ---------- */
 
 function readPid() {
   try {
@@ -243,7 +243,7 @@ function readPid() {
 async function start({ installIfMissing = true, onLog } = {}) {
   if (await isUp(DEFAULT_URL, { force: true })) return { ok: true, already: true, url: DEFAULT_URL };
   if (!fs.existsSync(settingsPath()) || !fs.existsSync(runPyPath())) {
-    if (!installIfMissing) return { ok: false, error: 'kurulu değil — önce: beast searxng' };
+    if (!installIfMissing) return { ok: false, error: 'not installed — first run: beast searxng' };
     await install({ onLog });
   }
   const tools = require('./tools');
@@ -256,17 +256,17 @@ async function start({ installIfMissing = true, onLog } = {}) {
   });
   try { fs.writeFileSync(pidPath(), String(child.pid)); } catch {}
   child.unref();
-  /* ayağa kalkmasını bekle (ilk açılış motor listesini derler — birkaç sn) */
+  /* wait for it to come up (the first boot compiles the engine list — a few seconds) */
   for (let i = 0; i < 20; i++) {
     await new Promise((r) => setTimeout(r, 1000));
     if (await isUp(DEFAULT_URL, { force: true })) return { ok: true, url: DEFAULT_URL, pid: child.pid };
   }
-  return { ok: false, error: 'searxng başlatılamadı (20 sn içinde yanıt yok)' };
+  return { ok: false, error: 'searxng failed to start (no response within 20s)' };
 }
 
 function stop() {
   const pid = readPid();
-  if (!pid) return { ok: true, note: 'çalışmıyor' };
+  if (!pid) return { ok: true, note: 'not running' };
   try {
     execSync(`taskkill /PID ${pid} /T /F`, { stdio: 'ignore' });
   } catch {}
@@ -288,26 +288,26 @@ async function status() {
 
 async function cli(argv) {
   const sub = String(argv[0] || 'start').toLowerCase();
-  console.log('\u27F3 SearXNG (yerel arama motoru)');
+  console.log('\u27F3 SearXNG (local search engine)');
   if (sub === 'stop') {
     const r = stop();
-    console.log(r.ok ? '\u2713 durduruldu' : '\u2717 durdurulamadı');
+    console.log(r.ok ? '\u2713 stopped' : '\u2717 could not stop');
     process.exit(r.ok ? 0 : 1);
   }
   if (sub === 'status') {
     const s = await status();
-    console.log(`  kurulu : ${s.installed ? 'evet' : 'hayır'}`);
-    console.log(`  çalışıyor: ${s.up ? 'evet (' + s.url + ')' : 'hayır'}`);
+    console.log(`  installed: ${s.installed ? 'yes' : 'no'}`);
+    console.log(`  running  : ${s.up ? 'yes (' + s.url + ')' : 'no'}`);
     process.exit(0);
   }
   /* start */
   const r = await start({ installIfMissing: true, onLog: (m) => console.log('  \u2022 ' + m) });
   if (r.ok) {
-    console.log(r.already ? '\u2713 SearXNG zaten çalışıyor — ' + r.url : '\u2713 SearXNG başlatıldı — ' + r.url);
-    console.log('\u2139 arama zincirinde kullanılmaya hazır (Ayarlar → Web Arama sırası)');
+    console.log(r.already ? '\u2713 SearXNG is already running — ' + r.url : '\u2713 SearXNG started — ' + r.url);
+    console.log('\u2139 ready to use in the search chain (Settings → Web Search order)');
     process.exit(0);
   }
-  console.error('\u2717 ' + (r.error || 'başlatılamadı'));
+  console.error('\u2717 ' + (r.error || 'failed to start'));
   process.exit(1);
 }
 

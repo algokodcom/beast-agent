@@ -24,8 +24,8 @@ Beast Agent is a personal AI agent that runs on your machine and connects to **a
 - **Slash commands** — `/new`, `/open`, `/change`, `/think`, `/rule`, `/allow`, `/block`, `/backup`, `/approve` and more
 - **Event center** — IMAP IDLE email watching, file-change watching, price feed (Binance), webhook inputs
 - **Cron + watchers** — scheduled tasks, file/web/battery watchers
-- **MCP desteği** — Model Context Protocol server bağla (filesystem, git, fetch, memory + binlerce topluluk server'ı); araçlar `mcp__server__tool` adıyla modele açılır, Ayarlar → MCP'den yönetilir
-- **Skills** — `%APPDATA%\beast\skills\<ad>\SKILL.md` ile ajanına yetenek öğret; Superpowers metodoloji paketi (planlama, TDD, paralel ajan disiplini, doğrulama) builtin gelir
+- **MCP support** — connect Model Context Protocol servers (filesystem, git, fetch, memory + thousands of community servers); tools are exposed to the model as `mcp__server__tool` and managed from Settings → MCP
+- **Skills** — teach your agent new abilities with `%APPDATA%\beast\skills\<name>\SKILL.md`; the Superpowers methodology pack (planning, TDD, parallel-agent discipline, verification) ships built-in
 - **Web search chain** — TinyFish (free, used first if a key is set) → built-in browser (direct Google) → python multi-engine (DDG/Bing/Mojeek) → Exa
 - **Approval gate** — optional confirmation for risky actions (commands / file deletion-modification): default OFF (everything free), when ON the agent asks (`/approve`, `/approve always`, `/deny`)
 - **Provider-based limits** — per-provider max input token limit with context compression

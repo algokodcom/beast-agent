@@ -1,8 +1,8 @@
-# Beast Agent sağlayıcı yapılandırması örneği.
-# Kullanım: bu dosyayı %APPDATA%\beast\config.yaml olarak kopyala ve düzenle.
-# (Taşınabilir kullanım için BEAST_DATA ortam değişkeni ile başka klasöre alabilirsin.)
+# Beast Agent provider configuration example.
+# Usage: copy this file to %APPDATA%\beast\config.yaml and edit it.
+# (For portable setups, set the BEAST_DATA environment variable to use another folder.)
 
-# ÖNERİLEN: OpenCode Zen — ücretsiz modeller, kredi kartı gerekmez (opencode.ai/auth)
+# RECOMMENDED: OpenCode Zen — free models, no credit card required (opencode.ai/auth)
 providers:
   opencode:
     name: OpenCode Zen
@@ -14,7 +14,7 @@ providers:
       deepseek-v4-flash-free: {}
       big-pickle: {}
       minimax-m3: {}
-  # OpenCode Go aboneliğin varsa base_url: https://opencode.ai/zen/go/v1 kullan.
+  # If you have an OpenCode Go subscription, use base_url: https://opencode.ai/zen/go/v1
 
   zhipu:
     name: Zhipu AI
@@ -33,7 +33,7 @@ providers:
       gpt-4o: {}
 
 model:
-  provider: opencode  # varsayılan provider id (yoksa ilk provider kullanılır)
-  default: glm-5.2    # varsayılan model
-  # base_url: ...      # istersen aktif provider'ın URL'ini override et
-  # key_env: ...       # istersen anahtarı farklı env'den oku
+  provider: opencode  # default provider id (the first provider is used if omitted)
+  default: glm-5.2    # default model
+  # base_url: ...      # optionally override the active provider URL
+  # key_env: ...       # optionally read the key from a different env variable

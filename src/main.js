@@ -272,15 +272,21 @@ try {
 try { nodemailer = require('nodemailer'); } catch {}
 
 const APP_DIR = path.join(app.getPath('appData'), 'beast');
-/* Windows toast bildirimleri için AppUserModelID erken ayarlanmalı. ANCAK özel
-   AUMID, Windows'ta kayıtlı kısayol yoksa taskbar ikonunu electron.exe logosuna
-   düşürür. Bu yüzden yalnız paketli kurulumda ya da npm modunda masaüstü
-   kısayolu (aynı AUMID ile oluşturulur) mevcutsa atanır. */
-try {
-  let aumidOk = app.isPackaged;
-  if (!aumidOk) aumidOk = fs.existsSync(path.join(app.getPath('desktop'), 'Beast Agent.lnk'));
-  if (aumidOk) app.setAppUserModelId('com.quantumalgo.beastagent');
-} catch {}
+/* Windows kimliği: görev çubuğu ikonu + toast bildirim adı/işareti için
+   AppUserModelID ŞART. Özel AUMID, kayıtlı kısayol yoksa taskbar ikonunu
+   electron.exe logosuna düşürür — bu yüzden atama, whenReady'de AUMID'li
+   kısayollar (masaüstü + Başlat menüsü) hazırlandıktan SONRA yapılır. */
+const BEAST_AUMID = 'com.quantumalgo.beastagent';
+try { app.setName('Beast Agent'); } catch {}
+function assignAppUserModelId() {
+  try {
+    const startMenu = path.join(app.getPath('appData'), 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Beast Agent.lnk');
+    const desktop = path.join(app.getPath('desktop'), 'Beast Agent.lnk');
+    if (app.isPackaged || fs.existsSync(startMenu) || fs.existsSync(desktop)) {
+      app.setAppUserModelId(BEAST_AUMID);
+    }
+  } catch {}
+}
 /* mem0-native embedding modeli whisper ile AYNI cache'i kullanır (src/agent/mem0.js okur) */
 process.env.BEAST_MODELS_DIR = path.join(APP_DIR, 'models');
 
@@ -3583,38 +3589,55 @@ if (!gotLock) {
     try { showWin(); } catch {}
   });
 
-  /* npm (global) kurulumda masaüstü kısayolu — yoksa bir kez oluşturulur.
-   (NSIS packaged modda kısayolu electron-builder zaten yapar.) */
-function ensureDesktopShortcut() {
+  /* Kısayol yazıcı: masaüstü + Başlat menüsü kısayolları AUMID, ikon ve
+     çalışma klasörüyle HER AÇILIŞTA tazelenir — eski kısayolda AUMID yoksa
+     Windows görev çubuğunda/toast'ta electron.exe kimliğini gösteriyordu. */
+function writeBeastShortcut(lnk) {
+  const goodCwd = app.getPath('home');
+  const base = {
+    target: process.execPath,
+    args: app.getAppPath(),
+    cwd: goodCwd,
+    description: 'Beast Agent — fast, light and resourceful',
+    icon: path.join(__dirname, '..', 'assets', 'app.ico'),
+    iconIndex: 0,
+    appUserModelId: BEAST_AUMID,
+  };
+  if (fs.existsSync(lnk)) {
+    /* mevcut kısayolu onar: AUMID + ikon + çalışma klasörü garantiye alınır */
+    try {
+      const cur = shell.readShortcutLink(lnk);
+      return shell.writeShortcutLink(lnk, 'update', {
+        ...cur,
+        cwd: goodCwd,
+        icon: base.icon,
+        iconIndex: 0,
+        appUserModelId: BEAST_AUMID,
+      });
+    } catch {}
+  }
+  return shell.writeShortcutLink(lnk, 'create', base);
+}
+
+/* npm (global) kurulumda masaüstü + Başlat menüsü kısayolları.
+   (NSIS packaged modda kısayolları electron-builder zaten oluşturur.) */
+function ensureShortcuts() {
   try {
-    const desktop = app.getPath('desktop');
-    const lnk = path.join(desktop, 'Beast Agent.lnk');
-    /* çalışma klasörü kullanıcı home'u olsun: paket klasöründe başlarsa güncelleme
-       cmd'si orada açılır ve npm install -g klasör kilidi (EBUSY) yemek zorunda kalır */
-    const goodCwd = app.getPath('home');
-    if (fs.existsSync(lnk)) {
-      /* eski kısayollar paket klasörünü çalışma klasörü olarak taşıyordu — onar */
-      try {
-        const cur = shell.readShortcutLink(lnk);
-        if (cur && cur.cwd && /node_modules[\\/]beast-agent/i.test(cur.cwd)) {
-          shell.writeShortcutLink(lnk, 'update', { ...cur, cwd: goodCwd });
-          log.info('main', 'Masaüstü kısayolu çalışma klasörü home\u2019a taşındı');
-        }
-      } catch {}
-      return;
-    }
-    const ok = shell.writeShortcutLink(lnk, 'create', {
-      target: process.execPath,
-      args: app.getAppPath(),
-      cwd: goodCwd,
-      description: 'Beast Agent — hızlı, hafif ve becerikli',
-      icon: path.join(__dirname, '..', 'assets', 'app.ico'),
-      iconIndex: 0,
-      appUserModelId: 'com.quantumalgo.beastagent',
-    });
-    log.info('main', ok ? 'Masaüstü kısayolu oluşturuldu (npm modu)' : 'Masaüstü kısayolu oluşturulamadı');
+    const desktopLnk = path.join(app.getPath('desktop'), 'Beast Agent.lnk');
+    const okDesktop = writeBeastShortcut(desktopLnk);
+    log.info('main', okDesktop ? 'Masaüstü kısayolu hazır (AUMID + ikon)' : 'Masaüstü kısayolu oluşturulamadı');
   } catch (e) {
-    log.info('main', 'Kısayol hatası: ' + String((e && e.message) || e));
+    log.info('main', 'Masaüstü kısayol hatası: ' + String((e && e.message) || e));
+  }
+  try {
+    /* Başlat menüsü kısayolu: Windows AUMID çözümünü (görev çubuğu ikonu +
+       toast bildirim adı) öncelikle buradan okur */
+    const startDir = path.join(app.getPath('appData'), 'Microsoft', 'Windows', 'Start Menu', 'Programs');
+    fs.mkdirSync(startDir, { recursive: true });
+    const okStart = writeBeastShortcut(path.join(startDir, 'Beast Agent.lnk'));
+    log.info('main', okStart ? 'Başlat menüsü kısayolu hazır (AUMID + ikon)' : 'Başlat menüsü kısayolu oluşturulamadı');
+  } catch (e) {
+    log.info('main', 'Başlat menüsü kısayol hatası: ' + String((e && e.message) || e));
   }
 }
 
@@ -3646,8 +3669,11 @@ app.whenReady().then(() => {
       } catch (e) {
         log.error('main', 'Startup kaydı (npm) başarısız: ' + String((e && e.message) || e));
       }
-      ensureDesktopShortcut();
+      ensureShortcuts();
     }
+    /* AUMID ataması kısayollardan SONRA: görev çubuğu ve toast bildirimleri
+       böylece Beast ikonunu/adını çözer (electron.exe kimliği ezilir) */
+    assignAppUserModelId();
     reloadBackend();
     syncWhitelist(); // bot sistemi: whitelist.json aynası ilk açılışta garanti
     try { bots.ensureBotCodes(); } catch {} // her bota benzersiz 5 haneli kod garanti

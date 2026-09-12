@@ -37,6 +37,12 @@ if (process.argv[2] === 'uninstall') {
         "$d=[Environment]::GetFolderPath('Desktop'); if(Test-Path \"$d\\Beast Agent.lnk\"){ Remove-Item \"$d\\Beast Agent.lnk\" -Force; Write-Host '\u2022 desktop shortcut removed' }"],
         { stdio: 'inherit' });
     } catch {}
+    /* remove the Start Menu shortcut (Windows AUMID registration) */
+    try {
+      spawnSync('powershell.exe', ['-NoProfile', '-Command',
+        "$s=Join-Path $env:APPDATA 'Microsoft\\Windows\\Start Menu\\Programs\\Beast Agent.lnk'; if(Test-Path $s){ Remove-Item $s -Force; Write-Host '\u2022 Start Menu shortcut removed' }"],
+        { stdio: 'inherit' });
+    } catch {}
   } else {
     try { spawnSync('pkill', ['-f', 'node_modules/beast-agent'], { stdio: 'ignore' }); } catch {}
   }

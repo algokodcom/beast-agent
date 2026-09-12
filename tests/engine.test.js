@@ -7,7 +7,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const { Engine, sanitizeTodoItems } = require('../src/agent/engine');
+const { Engine, sanitizeTodoItems, stripAiDashes } = require('../src/agent/engine');
 
 function makeEngine(extra = {}) {
   const sessionsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'beast-sess-'));
@@ -39,6 +39,21 @@ test('todo: boş/geçersiz girdiler elenir', () => {
 test('todo: 20 ile sınırlı', () => {
   const items = Array.from({ length: 50 }, (_, i) => ({ title: 'görev ' + i }));
   assert.equal(sanitizeTodoItems(items).length, 20);
+});
+
+/* ---------- stripAiDashes (uzun tire temizliği) ---------- */
+
+test('dash: boşluklu em dash virgüle, en dash ve bitişik em dash kısa çizgiye döner', () => {
+  assert.equal(stripAiDashes('planı anlattı — sonra uyguladı'), 'planı anlattı, sonra uyguladı');
+  assert.equal(stripAiDashes('3–5 arası'), '3-5 arası');
+  assert.equal(stripAiDashes('kelime—kelime'), 'kelime-kelime');
+  assert.equal(stripAiDashes('düz metin'), 'düz metin');
+});
+
+test('dash: kod blokları ve satır içi kod korunur', () => {
+  const fenced = 'örnek:\n```\nconst s = "a — b–c";\n```\nbitti';
+  assert.ok(stripAiDashes(fenced).includes('"a — b–c"'));
+  assert.ok(stripAiDashes('şu `a — b` kalsın').includes('`a — b`'));
 });
 
 /* ---------- clearTodos (/deltodo) ---------- */

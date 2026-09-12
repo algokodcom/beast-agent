@@ -11,7 +11,7 @@ const crypto = require('crypto');
    isteklerindeki konuşma-başına kimlik agent/llm.js'te üretilir */
 const OPENCODE_SESSION = 'beast-' + crypto.randomUUID();
 const { spawn } = require('child_process');
-const { Engine, OBSERVE_MARK } = require('./agent/engine');
+const { Engine, OBSERVE_MARK, stripAiDashes } = require('./agent/engine');
 const { loadBeastConfig, parseEnvFile, beastDir } = require('./agent/config');
 const bots = require('./agent/bots');
 const mqueue = require('./agent/mqueue');
@@ -7171,7 +7171,7 @@ function empatiLlmCompose(prompt) {
       ],
       temperature: 0.6,
     }, { signal: ctrl.signal })
-    .then((r) => String(r.content || '').trim().slice(0, 600))
+    .then((r) => stripAiDashes(String(r.content || '').trim()).slice(0, 600))
     .catch(() => '')
     .finally(() => clearTimeout(kill));
 }

@@ -122,8 +122,28 @@ const FORMAT_RULES =
   'ÇIKTI BİÇİMİ (ZORUNLU):\n' +
   '- Yanıtlarında asla # karakteri kullanma (markdown başlık yok).\n' +
   '- Asla * karakteri kullanma (kalın/italik yıldız yok); madde işaretleri için - kullan.\n' +
+  '- Uzun tire (em/en dash: — veya –) KULLANMA; cümle aralarını virgül, iki nokta ya da gerekiyorsa kısa çizgi (-) ile ayır.\n' +
   '- Renkli sembol/ikon kullanma (renkli kalp, daire vb. yok); normal sarı emoji kullanabilirsin.\n' +
-  '- Kod bloklarında dil gereği # veya * gerekiyorsa kod içinde serbest.';
+  '- Kod bloklarında dil gereği # veya * gerekiyorsa kod içinde serbest.\n' +
+  '- Düz, doğal ve insani yaz: kalıplaşmış giriş/kapanış cümleleri, "umarım yardımcı olur" tarzı boş nezaket ve robotik madde listeleri kullanma.';
+
+/* Uzun tire (—/–) temizliği: nihai metinden yapay zeka imzası sayılan tireleri
+   kaldırır — boşluklu em dash virgüle, en dash ve bitişik em dash kısa çizgiye
+   döner; kod blokları ve satır içi kod DOKUNULMADAN korunur. */
+function stripAiDashes(text) {
+  const s = String(text == null ? '' : text);
+  if (!/[\u2013\u2014]/.test(s)) return s;
+  const parts = s.split(/(```[\s\S]*?```|`[^`\n]*`)/);
+  for (let i = 0; i < parts.length; i += 2) {
+    parts[i] = parts[i]
+      .replace(/[ \t]+\u2014[ \t]+/g, ', ')
+      .replace(/[ \t]*\u2013[ \t]*/g, '-')
+      .replace(/\u2014/g, '-')
+      .replace(/,\s*,/g, ',')
+      .replace(/[ \t]+([.!?:;])/g, '$1');
+  }
+  return parts.join('');
+}
 
 /* Kişi bazlı granül izin seviyeleri: hangi araçlara erişilebilir */
 const PERM_TOOL_SETS = {
@@ -865,6 +885,7 @@ class Engine {
           costIn: Number(c.costIn) || null,
           costOut: Number(c.costOut) || null,
         };
+        if (res && typeof res.content === 'string') res.content = stripAiDashes(res.content);
         return res;
       } catch (e) {
         if (e && (e.name === 'AbortError' || (signal && signal.aborted))) throw e;
@@ -4934,6 +4955,7 @@ const skills = require('./skills');
               }),
           }
         );
+        if (res && typeof res.content === 'string') res.content = stripAiDashes(res.content);
         const assistant = { role: 'assistant', content: res.content || '' };
         if (res.toolCalls && res.toolCalls.length) assistant.tool_calls = res.toolCalls;
         if (res.reasoning) assistant.reasoning_content = res.reasoning; /* thinking geri-besleme */
@@ -7113,3 +7135,4 @@ module.exports.PERM_TOOL_SETS = PERM_TOOL_SETS;
 module.exports.PERM_LEVELS = PERM_LEVELS;
 module.exports.normalizePerms = normalizePerms;
 module.exports.OBSERVE_MARK = OBSERVE_MARK;
+module.exports.stripAiDashes = stripAiDashes;

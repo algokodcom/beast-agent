@@ -426,21 +426,23 @@
           <section id="sbRun">
             <div id="sbRunHead">
               <span id="sbRunTitle">ÇALIŞTIR</span>
+              <span id="sbRunKind"></span>
               <span id="sbRunCwd" title="">—</span>
             </div>
             <div id="sbRunBtns">
-              <button id="sbRunInstall" title="Ajana talimat: projeyi kur — doğru komutu ajan bulur"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:3px"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Kur</button>
-              <button id="sbRunStart" title="Ajana talimat: projeyi çalıştır — uzun süreli süreç ÇALIŞTIR panelinde başlar"><svg viewBox="0 0 24 24" width="12" height="12" fill="currentColor" stroke="none" style="vertical-align:-2px;margin-right:3px"><polygon points="6 3 20 12 6 21 6 3"/></svg>Başlat</button>
-              <button id="sbRunDev" title="Ajana talimat: geliştirme modunda başlat (dev)"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:3px"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>Dev</button>
+              <button id="sbRunInstall" title="Kur — algılanan paket yöneticisiyle bağımlılıkları yükle (npm/pip/cargo/go)"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:3px"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Kur</button>
+              <button id="sbRunStart" title="Başlat — algılanan komutla çalıştır (sunucu adresi sağdaki tarayıcıda açılır)"><svg viewBox="0 0 24 24" width="12" height="12" fill="currentColor" stroke="none" style="vertical-align:-2px;margin-right:3px"><polygon points="6 3 20 12 6 21 6 3"/></svg>Başlat</button>
+              <button id="sbRunDev" title="Geliştirme modunda başlat (npm run dev, vite, expo…)"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:3px"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>Dev</button>
               <button id="sbRunStop" title="Süreci durdur" hidden><svg viewBox="0 0 24 24" width="12" height="12" fill="currentColor" stroke="none" style="vertical-align:-2px;margin-right:3px"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>Durdur</button>
             </div>
             <div id="sbRunCustom">
               <input id="sbRunCmd" placeholder="özel komut: python main.py, cargo run, node index.js…" spellcheck="false" autocomplete="off" />
               <button id="sbRunGo" title="Çalıştır"><svg viewBox="0 0 24 24" width="12" height="12" fill="currentColor" stroke="none"><polygon points="6 3 20 12 6 21 6 3"/></svg></button>
+              <button id="sbRunSave" title="Yazılan komutu bu reponun başlatma komutu olarak kaydet"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg></button>
             </div>
             <div id="sbRunOut"></div>
             <div id="sbRunFoot">
-              <button id="sbRunOpen" title="Ajana talimat: çalışma adresini bulup tarayıcıda açar" disabled><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:3px"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg><span id="sbRunOpenLabel">Tarayıcıda aç</span></button>
+              <button id="sbRunOpen" title="Önizlemeyi sağdaki dahili tarayıcıda aç" disabled><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:3px"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg><span id="sbRunOpenLabel">Tarayıcıda aç</span></button>
               <span id="sbRunUrl" title=""></span>
             </div>
           </section>

@@ -1616,6 +1616,22 @@ const definitions = [
   {
     type: 'function',
     function: {
+      name: 'sandbox_repo',
+      description:
+        'Beast Sandbox yönetimi — kullanıcı GitHub repo adresi/linki verdiğinde ya da indirilmiş bir repoyu kurmak/çalıştırmak istediğinde kullan. action=indir: repoyu ~/Beast-Sandbox klasörüne klonlar (owner/repo ya da tam URL); action=kur: algılanan kurulum komutunu (npm install, pip install -r requirements.txt, uv sync, cargo fetch, go mod download) ÇALIŞTIR panelinde başlatır; action=baslat: algılanan çalıştırma komutunu başlatır (npm run dev, python app.py vb.) — localhost adresi yakalanınca sağdaki dahili tarayıcıda otomatik açılır; action=durdur: repodaki çalışan süreci durdurur. Kur/Başlat turu KİLİTLEMEZ, çıktı panelde canlı akar. repo alanı boşsa panelde son kullanılan repo kullanılır.',
+      parameters: {
+        type: 'object',
+        properties: {
+          action: { type: 'string', enum: ['indir', 'kur', 'baslat', 'durdur'], description: 'Yapılacak işlem' },
+          repo: { type: 'string', description: 'GitHub adresi (owner/repo ya da tam URL) ya da repo adı/klasör yolu; son kullanılan repo için boş bırak' },
+        },
+        required: ['action'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'read_file',
       /* opencode read.txt BİREBİR port (parametre adı path olarak kaldı) */
       description:

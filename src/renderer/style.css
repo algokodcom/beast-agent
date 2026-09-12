@@ -4409,6 +4409,18 @@ body.sandbox-mode #sandboxRow { display: flex; flex-direction: row; }
   background: var(--panel);
 }
 #sbRunTitle { font-size: 11px; font-weight: 800; letter-spacing: 1px; color: var(--accent); flex: none; }
+#sbRunKind {
+  flex: none;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 6px;
+}
+#sbRunKind:empty { display: none; }
 #sbRunCwd {
   color: var(--muted);
   font-family: Consolas, monospace;

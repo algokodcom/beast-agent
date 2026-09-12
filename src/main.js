@@ -3474,6 +3474,15 @@ function reloadBackend() {
   /* PANEL RUN köprüsü: ajanın panel_run aracı → ÇALIŞTIR panelindeki yönetilen
      süreç koşucusu (sandbox:run IPC ile aynı makine). */
   engine.sbRunHook = sbRunStartManaged;
+  /* SANDBOX KÖPRÜSÜ: ana sohbetteki ajanın sandbox_repo aracı → panel ile aynı
+     makine (indir/kur/başlat/durdur); kullanıcı chatte repo linki bırakınca
+     ajan kendisi indirip kurabilir. */
+  engine.sbCloneHook = sbCloneRepo;
+  engine.sbFolderHook = sbResolveFolder;
+  engine.sbDetectHook = sbProjectInfoMerged;
+  engine.sbInstallHook = sbInstallRepo;
+  engine.sbStartHook = sbStartRepo;
+  engine.sbStopHook = sbRunStopFolder;
 
   /* SQUEEZE (opsiyonel token sıkıştırma): varsayılan KAPALI; ayar açıksa
      her LLM isteğinin kopyası gönderimden önce sıkıştırılır. */
@@ -10814,6 +10823,7 @@ ipcMain.handle('studio:delete', async (_e, rel) => {
    run_command/read/write araçları repo klasöründe çalışır). Ana sohbet VE
    Code/Studio panellerinden tamamen ayrıdır; ana chat solda yerinde kalır. */
 const sbSessions = new Map(); /* klasör → sessionId */
+let sbLastFolder = ''; /* panelde seçilen / son indirilen repo — ajan araçları boş repo alanında bunu kullanır */
 const SB_DEBOUNCE_MS = 900;
 const sbQueue = new Map(); /* klasör → { timer, msgs[] } */
 
@@ -10935,6 +10945,29 @@ function sbRepoFromInput(input) {
   return null;
 }
 
+/* repo adres/klasör çözümleyici: hem panel hem ajan araçları (sandbox_repo)
+   kullanır — tam yol, klasör adı, owner/repo ya da boş ("son repo") kabul eder */
+function sbResolveFolder(input) {
+  const root = sandboxRoot();
+  const s = String(input || '').trim();
+  if (!s) return sbLastFolder;
+  try {
+    if (fs.existsSync(s) && fs.statSync(s).isDirectory()) return path.resolve(s);
+    const direct = path.join(root, s);
+    if (fs.existsSync(direct) && fs.statSync(direct).isDirectory()) return direct;
+    const name = s.toLowerCase().replace(/[\\/]+$/, '').split(/[\\/]/).pop().replace(/\.git$/i, '');
+    let partial = '';
+    for (const e of fs.readdirSync(root, { withFileTypes: true })) {
+      if (!e.isDirectory()) continue;
+      const n = e.name.toLowerCase();
+      if (n === name) return path.join(root, e.name);
+      if (!partial && n.startsWith(name + '-')) partial = path.join(root, e.name);
+    }
+    if (partial) return partial;
+  } catch {}
+  return sbLastFolder;
+}
+
 ipcMain.handle('sandbox:list', async () => {
   const root = sandboxRoot();
   const items = [];
@@ -10950,15 +10983,18 @@ ipcMain.handle('sandbox:list', async () => {
         sid = String(known);
         try { busy = engine.isBusy(known); } catch {}
       }
-      items.push({ name: e.name, folder, sid, busy });
+      const slot = sbProcs.get(folder);
+      items.push({ name: e.name, folder, sid, busy, running: !!(slot && slot.proc), kind: slot ? slot.kind : '' });
     }
   } catch {}
   return { ok: true, root, items };
 });
 
-ipcMain.handle('sandbox:clone', async (_e, input) => {
+/* klonlama çekirdeği: hem Sandbox paneli IPC'si hem de ajanın sandbox_repo
+   aracı buradan geçer (engine.sbCloneHook) */
+function sbCloneRepo(input) {
   const repo = sbRepoFromInput(input);
-  if (!repo) return { ok: false, error: 'github.com/owner/repo, owner/repo ya da tam .git adresi gir' };
+  if (!repo) return Promise.resolve({ ok: false, error: 'github.com/owner/repo, owner/repo ya da tam .git adresi gir' });
   const root = sandboxRoot();
   const base = String(repo.name || 'repo').replace(/[\\/:*?"<>|]/g, '_').slice(0, 60) || 'repo';
   let dest = path.join(root, base);
@@ -11019,6 +11055,7 @@ ipcMain.handle('sandbox:clone', async (_e, input) => {
         return;
       }
       log.info('main', 'sandbox: klonlandı ' + repo.url + ' → ' + finalName);
+      sbLastFolder = dest;
       resolve({ ok: true, name: finalName, folder: dest });
     };
     proc.on('error', done);
@@ -11031,7 +11068,9 @@ ipcMain.handle('sandbox:clone', async (_e, input) => {
       }
     }, 600000);
   });
-});
+}
+
+ipcMain.handle('sandbox:clone', async (_e, input) => sbCloneRepo(input));
 
 ipcMain.handle('sandbox:send', async (_e, payload) => {
   const text = String((payload && payload.msg) || '').trim();
@@ -11097,6 +11136,8 @@ ipcMain.handle('sandbox:remove', async (_e, payload) => {
   sbLoadMap();
   const sid = sbSessions.get(folder);
   if (sid && engine.isBusy(sid)) return { ok: false, error: 'repo çalışıyor — önce ■ ile durdur' };
+  const slot = sbProcs.get(folder);
+  if (slot && slot.proc) return { ok: false, error: 'repoda süreç çalışıyor — önce ■ Durdur' };
   try { fs.rmSync(folder, { recursive: true, force: true }); } catch (e) {
     return { ok: false, error: String((e && e.message) || e) };
   }
@@ -11104,6 +11145,12 @@ ipcMain.handle('sandbox:remove', async (_e, payload) => {
     try { engine.deleteSession(sid); } catch {}
     sbSessions.delete(folder);
     sbSaveMap();
+  }
+  sbProcs.delete(folder);
+  sbLoadCfg();
+  if (sbCfg[folder]) {
+    delete sbCfg[folder];
+    sbSaveCfg();
   }
   return { ok: true };
 });
@@ -11121,6 +11168,7 @@ ipcMain.handle('sandbox:open', async (_e, payload) => {
   const folder = String((payload && payload.folder) || '');
   if (!folder.startsWith(sandboxRoot() + path.sep)) return { ok: false, error: 'geçersiz klasör' };
   if (!engine) return { ok: false, error: 'ajan hazır değil' };
+  sbLastFolder = folder;
   const s = sandboxGetSession(folder);
   s.workspace = folder;
   engine.cache.set(s.id, s);
@@ -11162,25 +11210,154 @@ ipcMain.handle('sandbox:tree', (_e, payload) => {
   }
 });
 
-/* Sandbox ÇALIŞTIRICI: repo klasöründe uzun süreli komut (npm start/dev vb.)
-   YÖNETİLEN SÜREÇ — çıktı satır satır panele akar; ■ ile ağaç-kullanı durdurulur.
-   Dev server adresi çıktıdan yakalanır → 'Tarayıcıda aç' aktifleşir.
-   Aynı fonksiyon engine.sbRunHook olarak da bağlanır — ajanın panel_run
-   aracı turu KİLİTLEMEDEN süreç başlatır (Kur/Başlat butonları bunu kullanır). */
-const sbRunProc = { proc: null, folder: '', url: '' };
+/* Sandbox ÇALIŞTIRICI v2: repo başına YÖNETİLEN SÜREÇLER.
+   Kur/Başlat/Durdur butonları artık deterministik: proje tipi algılanır
+   (package.json, requirements.txt, pyproject.toml, Cargo.toml, go.mod,
+   index.html) ve doğru komut DOĞRUDAN çalıştırılır. Her repo kendi süreç
+   yuvasında koşar — birden çok repo aynı anda çalışabilir; çıktı tamponlanır,
+   repo değiştirilince panel geçmişi yeniden basılır. Dev server adresi
+   çıktıdan yakalanır → sağdaki dahili tarayıcıda açılır. Aynı fonksiyon
+   engine.sbRunHook'tur: ajanın panel_run aracı da buradan geçer. */
 
-function sbRunEmit(data) {
+const sbProcs = new Map(); /* klasör → { proc, kind, cmd, url, lines[], startedAt } */
+const SB_LOG_CAP = 500; /* repo başına tamponlanan çıktı satırı */
+const SB_CFG_FILE = 'sandbox-config.json';
+
+function sbCfgPath() {
+  return path.join(beastDir(), SB_CFG_FILE);
+}
+
+let sbCfgLoaded = false;
+let sbCfg = {}; /* klasör → { install, run, dev } — kullanıcının kaydettiği özel komutlar */
+
+function sbLoadCfg() {
+  if (sbCfgLoaded) return sbCfg;
+  sbCfgLoaded = true;
   try {
-    if (win && !win.isDestroyed()) win.webContents.send('agent:event', { type: 'sb-run', data: String(data || '') });
+    const raw = JSON.parse(fs.readFileSync(sbCfgPath(), 'utf8'));
+    if (raw && typeof raw === 'object') sbCfg = raw;
+  } catch {}
+  return sbCfg;
+}
+
+function sbSaveCfg() {
+  try { fs.writeFileSync(sbCfgPath(), JSON.stringify(sbCfg, null, 2)); } catch {}
+}
+
+/* embedded python varsa onu kullan — PATH'te python olmasa bile çalışsın */
+function sbPythonCmd() {
+  const cands = [process.env.BEAST_PYTHON, path.join(beastDir(), 'py', 'python.exe')];
+  for (const c of cands) {
+    try { if (c && fs.existsSync(c)) return '"' + c + '"'; } catch {}
+  }
+  return 'python';
+}
+
+/* repo köküne bakıp proje tipini + kur/çalıştır komutlarını çıkarır */
+function sbProjectInfo(folder) {
+  const out = { kind: 'unknown', label: 'bilinmiyor', name: path.basename(folder), install: '', run: '', dev: '', build: '' };
+  try {
+    const pkgPath = path.join(folder, 'package.json');
+    if (fs.existsSync(pkgPath)) {
+      let pkg = {};
+      try { pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8')); } catch {}
+      out.name = String(pkg.name || out.name);
+      let pm = 'npm';
+      if (fs.existsSync(path.join(folder, 'pnpm-lock.yaml'))) pm = 'pnpm';
+      else if (fs.existsSync(path.join(folder, 'yarn.lock'))) pm = 'yarn';
+      else if (fs.existsSync(path.join(folder, 'bun.lockb')) || fs.existsSync(path.join(folder, 'bun.lock'))) pm = 'bun';
+      const s = pkg.scripts && typeof pkg.scripts === 'object' ? pkg.scripts : {};
+      out.kind = 'node';
+      out.label = pm;
+      out.install = pm + ' install';
+      out.dev = s.dev ? pm + ' run dev' : '';
+      out.run = s.start ? pm + ' run start' : s.dev ? pm + ' run dev' : s.serve ? pm + ' run serve' : '';
+      out.build = s.build ? pm + ' run build' : '';
+      return out;
+    }
+    const hasPy = ['pyproject.toml', 'requirements.txt', 'setup.py'].some((f) => fs.existsSync(path.join(folder, f)));
+    if (hasPy) {
+      const py = sbPythonCmd();
+      out.kind = 'python';
+      out.label = 'python';
+      if (fs.existsSync(path.join(folder, 'uv.lock'))) out.install = 'uv sync';
+      else if (fs.existsSync(path.join(folder, 'requirements.txt'))) out.install = py + ' -m pip install -r requirements.txt';
+      else out.install = py + ' -m pip install -e .';
+      if (fs.existsSync(path.join(folder, 'manage.py'))) out.run = py + ' manage.py runserver';
+      else if (fs.existsSync(path.join(folder, 'main.py'))) out.run = py + ' main.py';
+      else if (fs.existsSync(path.join(folder, 'app.py'))) out.run = py + ' app.py';
+      else if (fs.existsSync(path.join(folder, 'run.py'))) out.run = py + ' run.py';
+      else if (fs.existsSync(path.join(folder, 'bot.py'))) out.run = py + ' bot.py';
+      out.dev = out.run;
+      return out;
+    }
+    if (fs.existsSync(path.join(folder, 'Cargo.toml'))) {
+      out.kind = 'rust';
+      out.label = 'cargo';
+      out.install = 'cargo fetch';
+      out.run = 'cargo run';
+      out.dev = 'cargo run';
+      return out;
+    }
+    if (fs.existsSync(path.join(folder, 'go.mod'))) {
+      out.kind = 'go';
+      out.label = 'go';
+      out.install = 'go mod download';
+      out.run = 'go run .';
+      out.dev = 'go run .';
+      return out;
+    }
+    if (fs.existsSync(path.join(folder, 'index.html'))) {
+      out.kind = 'static';
+      out.label = 'statik';
+      out.run = sbPythonCmd() + ' -m http.server 8123 --bind 127.0.0.1';
+      out.dev = out.run;
+      return out;
+    }
+  } catch {}
+  return out;
+}
+
+/* algılanan komutlar + kullanıcının kaydettiği özel komutlar birleşir */
+function sbProjectInfoMerged(folder) {
+  const info = sbProjectInfo(folder);
+  const c = sbLoadCfg()[folder];
+  if (c && typeof c === 'object') {
+    if (c.install) info.install = String(c.install);
+    if (c.run) info.run = String(c.run);
+    if (c.dev) info.dev = String(c.dev);
+    if (c.install || c.run || c.dev) info.custom = true;
+  }
+  return info;
+}
+
+function sbRunEmit(folder, data, kind) {
+  try {
+    if (win && !win.isDestroyed()) {
+      win.webContents.send('agent:event', {
+        type: 'sb-run',
+        folder: String(folder || ''),
+        kind: kind || 'run',
+        data: String(data || ''),
+      });
+    }
   } catch {}
 }
 
-function sbRunStartManaged(folder, cmd) {
+function sbSlotPush(slot, folder, text) {
+  slot.lines.push(String(text || ''));
+  if (slot.lines.length > SB_LOG_CAP) slot.lines.splice(0, slot.lines.length - SB_LOG_CAP);
+  sbRunEmit(folder, text, slot.kind);
+}
+
+function sbRunStartManaged(folder, cmd, kind) {
   folder = String(folder || '');
   cmd = String(cmd || '').trim();
+  kind = kind === 'install' ? 'install' : 'run';
   if (!folder.startsWith(sandboxRoot() + path.sep)) return { ok: false, error: 'geçersiz klasör' };
   if (!cmd) return { ok: false, error: 'komut boş' };
-  if (sbRunProc.proc) return { ok: false, error: 'ÇALIŞTIR panelinde zaten bir süreç çalışıyor — önce ■ ile durdur' };
+  const cur = sbProcs.get(folder);
+  if (cur && cur.proc) return { ok: false, error: 'Bu repoda zaten bir süreç çalışıyor — önce ■ Durdur' };
   const { spawn } = require('child_process');
   try {
     const proc = spawn('cmd.exe', ['/d', '/s', '/c', cmd], {
@@ -11188,19 +11365,19 @@ function sbRunStartManaged(folder, cmd) {
       windowsHide: true,
       env: { ...process.env, FORCE_COLOR: '0', NO_COLOR: '1' },
     });
-    sbRunProc.proc = proc;
-    sbRunProc.folder = folder;
-    sbRunProc.url = '';
+    const slot = { proc, kind, cmd, url: '', lines: [], startedAt: Date.now() };
+    sbProcs.set(folder, slot);
     const onLine = (buf) => {
       for (const piece of String(buf).split(/\r?\n/)) {
         if (!piece.trim()) continue;
-        sbRunEmit(piece);
+        sbSlotPush(slot, folder, piece);
+        if (kind !== 'run') continue;
         /* dev server adresi yakala (sadece localhost) */
         const m = /https?:\/\/(?:localhost|127\.0\.0\.1)(?::\d{2,5})?[^\s'"<>]*/i.exec(piece);
-        if (m && !sbRunProc.url) {
-          sbRunProc.url = m[0].replace(/[)\].,;:'"]+$/, '');
+        if (m && !slot.url) {
+          slot.url = m[0].replace(/[)\].,;:'"]+$/, '');
           try {
-            if (win && !win.isDestroyed()) win.webContents.send('agent:event', { type: 'sb-run-url', url: sbRunProc.url });
+            if (win && !win.isDestroyed()) win.webContents.send('agent:event', { type: 'sb-run-url', folder, url: slot.url });
           } catch {}
         }
       }
@@ -11208,40 +11385,131 @@ function sbRunStartManaged(folder, cmd) {
     proc.stdout.on('data', onLine);
     proc.stderr.on('data', onLine);
     proc.on('close', (code) => {
-      sbRunEmit('[süreç bitti' + (code != null ? ' — kod ' + code : '') + ']');
-      sbRunProc.proc = null;
+      sbSlotPush(slot, folder, '[süreç bitti' + (code != null ? ' — kod ' + code : '') + ']');
+      slot.proc = null;
       try {
-        if (win && !win.isDestroyed()) win.webContents.send('agent:event', { type: 'sb-run-end' });
+        if (win && !win.isDestroyed()) {
+          win.webContents.send('agent:event', { type: 'sb-run-end', folder, code: code == null ? null : Number(code) });
+        }
       } catch {}
     });
-    sbRunEmit('▶ ' + cmd + '  (klasör: ' + path.basename(folder) + ')');
+    sbSlotPush(slot, folder, '▶ ' + cmd + '  (klasör: ' + path.basename(folder) + ')');
     return {
       ok: true,
+      cmd,
+      kind,
       note: 'süreç ÇALIŞTIR panelinde başlatıldı — çıktı orada canlı akar; durdurmak için paneldeki ■. Kullanıcıya adres varsa bildir.',
     };
   } catch (e) {
-    sbRunProc.proc = null;
     return { ok: false, error: String((e && e.message) || e) };
   }
+}
+
+function sbRunStopFolder(folder) {
+  const slot = sbProcs.get(String(folder || ''));
+  if (!slot || !slot.proc) return false;
+  const p = slot.proc;
+  slot.proc = null;
+  try {
+    /* cmd.exe /c zinciriyle çocuklar (node/vite) geride kalmasın — ağaç kesimi */
+    if (process.platform === 'win32') {
+      const { exec } = require('child_process');
+      exec('taskkill /pid ' + p.pid + '/T /F', { windowsHide: true });
+    } else p.kill('SIGTERM');
+  } catch {}
+  return true;
 }
 
 ipcMain.handle('sandbox:run', async (_e, payload) => {
   const folder = String((payload && payload.folder) || '');
   const cmd = String((payload && payload.cmd) || '').trim();
-  return sbRunStartManaged(folder, cmd);
+  return sbRunStartManaged(folder, cmd, (payload && payload.kind) || 'run');
 });
 
-ipcMain.handle('sandbox:runstop', async () => {
-  const p = sbRunProc.proc;
-  if (!p) return { ok: true, wasRunning: false };
-  sbRunProc.proc = null;
-  try {
-    /* cmd.exe /c zinciriyle çocuklar (node/vite) geride kalmasın — ağaç kesimi */
-    const { exec } = require('child_process');
-    if (process.platform === 'win32') exec('taskkill /pid ' + p.pid + ' /T /F', { windowsHide: true });
-    else p.kill('SIGTERM');
-  } catch {}
-  return { ok: true, wasRunning: true };
+/* proje tipi + önerilen komutlar (kullanıcı özel komutlarıyla birleşik) */
+ipcMain.handle('sandbox:detect', async (_e, payload) => {
+  const folder = String((payload && payload.folder) || '');
+  if (!folder.startsWith(sandboxRoot() + path.sep)) return { ok: false, error: 'geçersiz klasör' };
+  return { ok: true, info: sbProjectInfoMerged(folder) };
+});
+
+/* Kur: algılanan/kayıtlı kurulum komutunu doğrudan çalıştırır (panel + ajan ortak) */
+function sbInstallRepo(folder) {
+  folder = String(folder || '');
+  if (!folder.startsWith(sandboxRoot() + path.sep)) return { ok: false, error: 'geçersiz klasör' };
+  const info = sbProjectInfoMerged(folder);
+  if (!info.install) return { ok: false, error: 'Bu repoda kurulum komutu algılanamadı — özel komutu kutuya yazıp ▶ ile çalıştır' };
+  const r = sbRunStartManaged(folder, info.install, 'install');
+  if (r.ok) r.cmd = info.install;
+  return r;
+}
+
+ipcMain.handle('sandbox:install', async (_e, payload) => sbInstallRepo(String((payload && payload.folder) || '')));
+
+/* Başlat/Dev: algılanan/kayıtlı çalıştırma komutunu başlatır (panel + ajan ortak) */
+function sbStartRepo(folder, mode) {
+  folder = String(folder || '');
+  mode = String(mode || 'run') === 'dev' ? 'dev' : 'run';
+  if (!folder.startsWith(sandboxRoot() + path.sep)) return { ok: false, error: 'geçersiz klasör' };
+  const info = sbProjectInfoMerged(folder);
+  const cmd = mode === 'dev' ? info.dev || info.run : info.run || info.dev;
+  if (!cmd) return { ok: false, error: 'Bu repo için çalıştırma komutu algılanamadı — özel komutu kutuya yazıp ▶ ile çalıştır' };
+  const r = sbRunStartManaged(folder, cmd, 'run');
+  if (r.ok) r.cmd = cmd;
+  return r;
+}
+
+ipcMain.handle('sandbox:start', async (_e, payload) => {
+  const folder = String((payload && payload.folder) || '');
+  return sbStartRepo(folder, String((payload && payload.mode) || 'run'));
+});
+
+/* seçili repo paneli için: çalışıyor mu + tamponlanmış çıktı */
+ipcMain.handle('sandbox:procstate', async (_e, payload) => {
+  const folder = String((payload && payload.folder) || '');
+  if (!folder.startsWith(sandboxRoot() + path.sep)) return { ok: false, error: 'geçersiz klasör' };
+  const slot = sbProcs.get(folder);
+  return {
+    ok: true,
+    running: !!(slot && slot.proc),
+    kind: slot ? slot.kind : '',
+    cmd: slot ? slot.cmd : '',
+    url: slot ? slot.url : '',
+    lines: slot ? slot.lines.slice() : [],
+  };
+});
+
+/* özel komutları kalıcı kaydet (repo klasörü → install/run/dev) */
+ipcMain.handle('sandbox:cfg:set', async (_e, payload) => {
+  const folder = String((payload && payload.folder) || '');
+  if (!folder.startsWith(sandboxRoot() + path.sep)) return { ok: false, error: 'geçersiz klasör' };
+  sbLoadCfg();
+  const cur = sbCfg[folder] && typeof sbCfg[folder] === 'object' ? sbCfg[folder] : {};
+  const next = { ...cur };
+  for (const k of ['install', 'run', 'dev']) {
+    if (payload && payload[k] !== undefined) {
+      const v = String(payload[k] || '').trim().slice(0, 500);
+      if (v) next[k] = v;
+      else delete next[k];
+    }
+  }
+  if (Object.keys(next).length) sbCfg[folder] = next;
+  else delete sbCfg[folder];
+  sbSaveCfg();
+  return { ok: true, cfg: sbCfg[folder] || {} };
+});
+
+ipcMain.handle('sandbox:runstop', async (_e, payload) => {
+  const folder = String((payload && payload.folder) || '');
+  if (folder) {
+    if (!folder.startsWith(sandboxRoot() + path.sep)) return { ok: false, error: 'geçersiz klasör' };
+    return { ok: true, wasRunning: sbRunStopFolder(folder) };
+  }
+  let any = false;
+  for (const f of Array.from(sbProcs.keys())) {
+    if (sbRunStopFolder(f)) any = true;
+  }
+  return { ok: true, wasRunning: any };
 });
 
 ipcMain.handle('sandbox:openurl', async (_e, url) => {

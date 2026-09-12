@@ -2106,6 +2106,7 @@ class Engine {
             ? 'Bağımsız alt-işleri run_background ile PARALEL ajana devret; işi KENDİN YÜRÜTME — emri ver, takip et, raporla.'
             : 'Bağımsız alt-işleri delegate_task ile devret; kendi başına halledebileceğin işleri devretme.',
           'Güncel/dış bilgi gerekiyorsa web_search kullan (zincir DAHİLİ tarayıcıyla başlar — gerçek Chromium ile Google); hızlı ham metin okuması için webfetch (veya http_fetch) kullan.',
+          'KULLANICI GITHUB REPO ADRESİ/LİNKİ VERİRSE (github.com/owner/repo) ya da "şu repoyu indir/kur/çalıştır" derse sandbox_repo aracını kullan: action=indir → Beast Sandbox\'a (~/Beast-Sandbox) klonlar; ardından action=kur (bağımlılıklar) ve action=baslat (çalıştır) ile devam et — uzun sürse bile tur KİLİTLENMEZ, çıktı Sandbox ÇALIŞTIR panelinde canlı akar, localhost adresi sağdaki dahili tarayıcıda otomatik açılır. Sonucu kullanıcıya tek cümleyle bildir (repo, komut, çalışıyor mu).',
           'DERİN ARAŞTIRMA: web_search\u2019in sonucu yetersizse/istenen bilgi listede YOKSA aramayı tekrar tekrar deneme yerine deep_search kullan — 1-4 sorgu varyantını (eş anlamlı, Türkçe+İngilizce yazımlar) PARALEL aratır ve ilk sayfaları GİZLİ gerçek Chromium\u2019da açıp tam metin okur (paneli açmaz, kullanıcıyı rahatsız etmez; JS/SPA sayfalar çalışır). Fiyat karşılaştırma, çok kaynaklı araştırma, "her şeyi bul" işleri ve Türkçe sorgularda sonuç zayıfsa doğrudan deep_search seç. read_top=0 verirsen yalnız harmanlanmış sonuç listesi döner.',
           'ARAMA-DİSİPLİN: bir bilgiyi 2-3 denemede bulamazsan TAKILMA — farklı bir açıya/sorguya geç, yine yoksa bulabildiğin kısmi bilgiyle cevap ver ve neyi bulamadığını açıkça söyle. Kapalı/gizli içerik (private profil, login arkası veri) peşinde KOŞMA — bulunamayacağı belliyse hemen vazgeç.',
           'TARAYICI VARSAYILANI (ZORUNLU): kullanıcı "şu siteyi aç", "bunu ara / google\u2019da ara", "şu sayfaya git" gibi bir web isteği verdiğinde HEP DAHİLİ TARAYICIYI KULLAN (browser_open ile aç → açılış yanıtında hazır snapshot gelir → ref numaralarıyla browser_click/browser_type/browser_select ile hareket et; HER eylem yanıtında taze snapshot döner — ayrıca browser_snapshot çağırma, yanıttaki refleri kullan; browser_read ile metin oku; sadece görsel yerleşim/grafik gerekiyorsa browser_screenshot çek). Tarih/saat alanlarını (type=date/time) browser_type ile DÜZ METİN yaz ("15.03.2026", "2026-03-15") — takvimden tıklamaya çalışma, alan programatik ayarlanır. Panel ekranın sağında açılır ve kullanıcı da sayfayı anında görür; JS/login/SPA/dinamik içerik için idealdir. Bu kural TÜM oturumları kapsar — masaüstü sohbeti ve çok kullanıcılı botlar (WhatsApp vb.) dahil.' +
@@ -5010,6 +5011,51 @@ const skills = require('./skills');
     return { ...r, via };
   }
 
+  /* Sandbox köprüsü (main.js hook'ları): ana sohbetteki ajan sandbox_repo
+     aracıyla repo indirir/kurar/çalıştırır — Sandbox paneliyle AYNI makine.
+     Kur/Başlat yönetilen süreçtir: tur kilitlenmez, çıktı panelde akar,
+     localhost adresi sağdaki dahili tarayıcıda açılır. */
+  async _sandboxRepo(args) {
+    const action = String((args && args.action) || '').trim().toLowerCase();
+    const repo = String((args && args.repo) || '').trim();
+    if (action === 'indir') {
+      if (typeof this.sbCloneHook !== 'function') return { ok: false, error: 'sandbox köprüsü yok' };
+      const r = await this.sbCloneHook(repo);
+      if (!r || !r.ok) return r || { ok: false, error: 'klonlanamadı' };
+      let info = null;
+      try { if (typeof this.sbDetectHook === 'function') info = this.sbDetectHook(r.folder); } catch {}
+      return {
+        ok: true,
+        name: r.name,
+        folder: r.folder,
+        detected: info ? { kind: info.kind, label: info.label, install: info.install, run: info.run } : undefined,
+        note:
+          'Repo "' + r.name + '" → ' + r.folder + ' klasörüne indirildi. Kurmak için sandbox_repo action=kur, çalıştırmak için action=baslat; kullanıcı Sandbox panelindeki Kur/Başlat butonlarını da kullanabilir.',
+      };
+    }
+    if (action !== 'kur' && action !== 'baslat' && action !== 'durdur') {
+      return { ok: false, error: 'action şunlardan biri olmalı: indir | kur | baslat | durdur' };
+    }
+    let folder = '';
+    try { if (typeof this.sbFolderHook === 'function') folder = String(this.sbFolderHook(repo) || ''); } catch {}
+    if (!folder) return { ok: false, error: 'repo bulunamadı — önce sandbox_repo action=indir ile indir ya da Sandbox panelinden bir repo seç' };
+    if (action === 'kur') {
+      if (typeof this.sbInstallHook !== 'function') return { ok: false, error: 'sandbox köprüsü yok' };
+      const r = this.sbInstallHook(folder);
+      if (!r || !r.ok) return r || { ok: false, error: 'kurulum başlatılamadı' };
+      return { ok: true, folder, command: r.cmd, note: 'Kurulum ÇALIŞTIR panelinde başladı: ' + r.cmd + ' — çıktı panelde canlı akar; bitince kullanıcıya bildir, sonra action=baslat.' };
+    }
+    if (action === 'baslat') {
+      if (typeof this.sbStartHook !== 'function') return { ok: false, error: 'sandbox köprüsü yok' };
+      const r = this.sbStartHook(folder, 'run');
+      if (!r || !r.ok) return r || { ok: false, error: 'başlatılamadı' };
+      return { ok: true, folder, command: r.cmd, note: 'Süreç ÇALIŞTIR panelinde başladı: ' + r.cmd + '. Dev server adresi yakalanınca sağdaki dahili tarayıcıda otomatik açılır; durdurmak için action=durdur.' };
+    }
+    if (typeof this.sbStopHook !== 'function') return { ok: false, error: 'sandbox köprüsü yok' };
+    const stopped = !!this.sbStopHook(folder);
+    return { ok: true, folder, wasRunning: stopped, note: stopped ? 'Süreç durduruldu.' : 'Bu repoda çalışan bir süreç yoktu.' };
+  }
+
   async _subExecTool(name, args, signal) {
     try {
       const blocked = this._guardTool(name, args);
@@ -5024,6 +5070,7 @@ const skills = require('./skills');
         });
       }
       if (name === 'ocr_read') return JSON.stringify(await this._ocrRead(args || {}, signal));
+      if (name === 'sandbox_repo') return JSON.stringify(await this._sandboxRepo(args || {}));
       /* opencode general-agent portu: alt-ajan da edit/grep/glob kullanır.
          MT5 (mt5_*) araçları da tools.exec'e geçer (finance işçileri/danışma). */
       if (!(name === 'run_command' || name === 'read_file' || name === 'write_file' || name === 'edit_file' ||
@@ -5564,6 +5611,9 @@ const skills = require('./skills');
         const q = String((args && args.query) || '');
         const n = Number((args && args.max_results) || 8);
         return JSON.stringify(await this._webSearchChain(q, n, sessionId, signal));
+      }
+      if (name === 'sandbox_repo') {
+        return JSON.stringify(await this._sandboxRepo(args || {}));
       }
       if (name === 'ocr_read') {
         return JSON.stringify(await this._ocrRead(args || {}, signal, sessionId));

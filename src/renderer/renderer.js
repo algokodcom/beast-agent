@@ -136,12 +136,14 @@ const els = {
   sbInput: $('#sbInput'),
   sbStop: $('#sbStop'),
   sbRunCwd: $('#sbRunCwd'),
+  sbRunKind: $('#sbRunKind'),
   sbRunInstall: $('#sbRunInstall'),
   sbRunStart: $('#sbRunStart'),
   sbRunDev: $('#sbRunDev'),
   sbRunStop: $('#sbRunStop'),
   sbRunCmd: $('#sbRunCmd'),
   sbRunGo: $('#sbRunGo'),
+  sbRunSave: $('#sbRunSave'),
   sbRunOut: $('#sbRunOut'),
   sbRunOpen: $('#sbRunOpen'),
   sbRunUrl: $('#sbRunUrl'),
@@ -11964,6 +11966,7 @@ let sbCloning = false;
 const sbTreeState = { cache: new Map(), open: new Set(['']), path: '' };
 let sbRunUrl = '';
 let sbRunRunning = false;
+let sbRunInfo = null;
 
 function sbModeOn() {
   return document.body.classList.contains('sandbox-mode');
@@ -12095,7 +12098,7 @@ async function loadSandboxList() {
   for (const it of sbItems) {
     const o = document.createElement('option');
     o.value = it.folder;
-    o.textContent = it.name + (it.busy ? ' ●' : '');
+    o.textContent = it.name + (it.busy ? ' ●' : '') + (it.running ? ' ▶' : '');
     sel.appendChild(o);
   }
   if (sbFolder && sbItems.some((x) => x.folder === sbFolder)) sel.value = sbFolder;
@@ -12140,6 +12143,31 @@ async function sbSelectCurrent() {
     sbLine('t-err', (r && r.error) || 'oturum açılamadı');
   }
   sbSetBusy(!!(r && r.busy));
+  /* yönetilen süreç durumu: repo değişince arka plandaki süreç + tampon çıktı geri yüklenir */
+  sbRunInfo = null;
+  const st = await beast.sandboxProcState({ folder: sbFolder }).catch(() => null);
+  if (st && st.ok) {
+    sbRunUrl = st.url || '';
+    sbRunRunning = !!st.running;
+    if (els.sbRunStop) els.sbRunStop.hidden = !sbRunRunning;
+    if (els.sbRunOpen) els.sbRunOpen.disabled = !sbRunUrl;
+    if (els.sbRunUrl) els.sbRunUrl.textContent = sbRunUrl || '';
+    for (const l of st.lines || []) sbRunLine(l);
+  }
+  /* proje tipi algıla: butonlar hangi komutu çalıştıracağını bilir */
+  const det = await beast.sandboxDetect({ folder: sbFolder }).catch(() => null);
+  if (det && det.ok && det.info) {
+    sbRunInfo = det.info;
+    if (els.sbRunKind) els.sbRunKind.textContent = det.info.label || '';
+    if (els.sbRunCmd) {
+      els.sbRunCmd.placeholder = det.info.run
+        ? 'özel komut (algılanan: ' + det.info.run + ')…'
+        : 'özel komut: python main.py, cargo run, node index.js…';
+    }
+    if (!sbRunRunning && !(st && (st.lines || []).length)) {
+      sbRunLine('ℹ ' + (det.info.label || 'proje') + ' · kur: ' + (det.info.install || '—') + ' · çalıştır: ' + (det.info.run || '—'), 't-dim');
+    }
+  }
   /* sol konsol: seçilen reponun klasörü — oturum açıldıktan sonra da garanti tazele */
   sbTreeState.cache.clear();
   if (sbModeOn()) renderFileTree().catch(() => {});
@@ -12242,26 +12270,24 @@ function setSandboxMode(on) {
   }
 }
 
-/* ---------- ÇALIŞTIRICI: butonlar KOMUT DEĞİL AJANA TALİMATTIR ----------
-   Her proje farklı çalışır; komutu kullanıcı bilemez, AJAN bilir:
-   paket bildirim dosyasına + README'ye bakıp doğru komutu bulur, uzun süreli
-   süreci panel_run aracıyla ÇALIŞTIR panelinde (turu kilitlemeden) başlatır. */
-function sbInstruct(text) {
+/* ---------- ÇALIŞTIRICI v2: butonlar DETERMİNİSTİK ----------
+   Proje tipi algılanır (package.json/requirements.txt/pyproject/Cargo.toml/
+   go.mod/index.html) ve Kur/Başlat/Dev butonları algılanan komutu DOĞRUDAN
+   çalıştırır; süreç panelde canlı akar, repo başına ayrı yuvada koşar. */
+async function sbRunLaunch(mode) {
   if (!sbFolder) { toast('Önce repo indir ya da seç'); return; }
-  sbLine('t-cmd', 'sen> ' + text);
-  sbSetBusy(true);
-  beast.sandboxSend({ folder: sbFolder, msg: text }).then((r) => {
-    if (r && r.ok) {
-      if (r.sessionId) sbSessionId = r.sessionId;
-      if (r.queued) sbLine('t-dim', '⏳ kuyrukta (' + r.count + ') — iş bitince gönderilir');
-    } else {
-      sbSetBusy(false);
-      sbLine('t-err', (r && r.error) || 'gönderilemedi');
-    }
-  }).catch((e) => {
-    sbSetBusy(false);
-    sbLine('t-err', String((e && e.message) || e));
-  });
+  if (sbRunRunning) { toast('Bu repoda süreç çalışıyor — önce ■ Durdur'); return; }
+  const call = mode === 'install'
+    ? beast.sandboxInstall({ folder: sbFolder })
+    : beast.sandboxStart({ folder: sbFolder, mode: mode === 'dev' ? 'dev' : 'run' });
+  const r = await call.catch((e) => ({ ok: false, error: String((e && e.message) || e) }));
+  if (!r || !r.ok) {
+    sbRunLine('[hata] ' + ((r && r.error) || 'başlatılamadı'), 't-err');
+    return;
+  }
+  sbRunRunning = true;
+  if (els.sbRunStop) els.sbRunStop.hidden = false;
+  sbBadge(sbFolder, true);
 }
 
 function sbRunLine(text, cls) {
@@ -12274,8 +12300,28 @@ function sbRunLine(text, cls) {
   return div;
 }
 
-/* süreç çıktısı akışı: sessionId'siz global olaylar — en üstte yönlendirilir */
+/* repo listesindeki rozet: ▶ = bu repoda süreç çalışıyor */
+function sbBadge(folder, on) {
+  if (!els.sbRepo || !folder) return;
+  for (const o of Array.from(els.sbRepo.options)) {
+    if (o.value !== folder) continue;
+    const it = sbItems.find((x) => x.folder === folder);
+    const name = it ? it.name : o.textContent.replace(/ (?:●|▶)+$/g, '');
+    o.textContent = name + (it && it.busy ? ' ●' : '') + (on ? ' ▶' : '');
+    return;
+  }
+}
+
+/* süreç çıktısı akışı: klasör etiketli olaylar — seçili repo paneli süzer,
+   arka plandaki repolar yalnızca rozetlerini günceller */
 function sbRunIngest(ev) {
+  const folder = String(ev.folder || '');
+  const mine = !folder || !sbFolder || folder === sbFolder;
+  if (!mine) {
+    if (ev.type === 'sb-run-url') sbBadge(folder, true);
+    if (ev.type === 'sb-run-end') sbBadge(folder, false);
+    return;
+  }
   if (ev.type === 'sb-run') {
     sbRunLine(ev.data);
     return;
@@ -12285,11 +12331,15 @@ function sbRunIngest(ev) {
     sbRunLine('🌐 dev server: ' + sbRunUrl, 't-dim');
     if (els.sbRunOpen) els.sbRunOpen.disabled = !sbRunUrl;
     if (els.sbRunUrl) els.sbRunUrl.textContent = sbRunUrl;
+    sbBadge(folder || sbFolder, true);
+    /* sağdaki dahili tarayıcıda otomatik açılır — sandbox modundayken */
+    if (sbModeOn() && sbRunUrl) beast.sandboxOpenUrl(sbRunUrl).catch(() => {});
     return;
   }
   if (ev.type === 'sb-run-end') {
     sbRunRunning = false;
     if (els.sbRunStop) els.sbRunStop.hidden = true;
+    sbBadge(folder || sbFolder, false);
   }
 }
 
@@ -12303,6 +12353,8 @@ function sbRunExec(cmd) {
       sbRunRunning = false;
       if (els.sbRunStop) els.sbRunStop.hidden = true;
       sbRunLine('[hata] ' + ((r && r.error) || 'çalıştırılamadı'), 't-err');
+    } else {
+      sbBadge(sbFolder, true);
     }
   }).catch((e) => {
     sbRunRunning = false;
@@ -12370,17 +12422,10 @@ if (els.sbStop) {
     }).catch(() => {});
   });
 }
-/* ÇALIŞTIRICI butonları — KOMUT DEĞİL AJANA TALİMAT (komutu ajan bulur):
-   uzun süreli süreci panel_run ile ÇALIŞTIR paneline bırakır, tur kilitlenmez */
-if (els.sbRunInstall) els.sbRunInstall.addEventListener('click', () =>
-  sbInstruct('Bu projeyi KUR — paket bildirim dosyasına (package.json, requirements.txt, Cargo.toml, go.mod, pom.xml vb.) göre doğru kurulum komutunu bul ve çalıştır (run_command); sonucu 1-2 satırla raporla.')
-);
-if (els.sbRunStart) els.sbRunStart.addEventListener('click', () =>
-  sbInstruct('Bu projeyi ÇALIŞTIR — README/package.json scripts\u2019e göre doğru başlatma komutunu bul; uzun süreli sunucu/süreçse panel_run ile ÇALIŞTIR panelinde başlat (tur kilitleme), adresini/çalıştığını kullanıcıya bildir.')
-);
-if (els.sbRunDev) els.sbRunDev.addEventListener('click', () =>
-  sbInstruct('Bu projeyi GELİŞTİRME modunda başlat — package.json scripts\u2019e bak (npm run dev, vite, expo start, ng serve vb. hangisi varsa) ve panel_run ile ÇALIŞTIR panelinde başlat; adresini kullanıcıya bildir.')
-);
+/* ÇALIŞTIRICI butonları: algılanan komutu doğrudan çalıştırır */
+if (els.sbRunInstall) els.sbRunInstall.addEventListener('click', () => sbRunLaunch('install'));
+if (els.sbRunStart) els.sbRunStart.addEventListener('click', () => sbRunLaunch('run'));
+if (els.sbRunDev) els.sbRunDev.addEventListener('click', () => sbRunLaunch('dev'));
 if (els.sbRunGo) els.sbRunGo.addEventListener('click', () => {
   const c = els.sbRunCmd.value.trim();
   if (!c) { toast('Komut yaz'); return; }
@@ -12395,17 +12440,38 @@ if (els.sbRunCmd) {
     }
   });
 }
+if (els.sbRunSave) els.sbRunSave.addEventListener('click', async () => {
+  if (!sbFolder) { toast('Önce repo seç'); return; }
+  const c = els.sbRunCmd ? els.sbRunCmd.value.trim() : '';
+  if (!c) { toast('Kaydetmek için komut yaz'); return; }
+  const r = await beast.sandboxCfgSet({ folder: sbFolder, run: c }).catch(() => null);
+  if (r && r.ok) {
+    toast('kaydedildi — Başlat/Dev artık bu komutu kullanır');
+    const det = await beast.sandboxDetect({ folder: sbFolder }).catch(() => null);
+    if (det && det.ok && det.info) {
+      sbRunInfo = det.info;
+      if (els.sbRunCmd) els.sbRunCmd.placeholder = 'özel komut (algılanan: ' + (det.info.run || c) + ')…';
+    }
+  } else {
+    toast((r && r.error) || 'kaydedilemedi');
+  }
+});
 if (els.sbRunStop) {
   els.sbRunStop.addEventListener('click', () => {
-    beast.sandboxRunStop().then((r) => {
-      if (r && r.ok) sbRunLine('⏹ durduruldu', 't-dim');
+    beast.sandboxRunStop({ folder: sbFolder }).then((r) => {
+      if (r && r.ok) {
+        sbRunLine('⏹ durduruldu', 't-dim');
+        sbRunRunning = false;
+        if (els.sbRunStop) els.sbRunStop.hidden = true;
+        sbBadge(sbFolder, false);
+      }
     }).catch(() => {});
   });
 }
 if (els.sbRunOpen) {
-  els.sbRunOpen.addEventListener('click', () => {
-    /* Tarayıcıda aç da AJANA TALİMAT: ajan çalışma adresini bulup kendi
-       browser_open aracıyla dahili tarayıcıda açar */
-    sbInstruct('Bu projenin web arayüzü çalışıyorsa adresini tespit et (çıktılar/README/port taraması) ve browser_open aracıyla DAHİLİ TARAYICIDA aç.')
+  els.sbRunOpen.addEventListener('click', async () => {
+    if (!sbRunUrl) { toast('Adres henüz yakalanmadı — Başlat/Dev ile sunucuyu çalıştır'); return; }
+    const r = await beast.sandboxOpenUrl(sbRunUrl).catch(() => null);
+    if (!r || !r.ok) toast('Açılamadı: ' + ((r && r.error) || 'bilinmeyen hata'));
   });
 }

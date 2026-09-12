@@ -192,6 +192,7 @@ contextBridge.exposeInMainWorld('beast', {
   sandboxProcState: (payload) => ipcRenderer.invoke('sandbox:procstate', payload),
   sandboxCfgSet: (payload) => ipcRenderer.invoke('sandbox:cfg:set', payload),
   sandboxOpenUrl: (url) => ipcRenderer.invoke('sandbox:openurl', url),
+  sbPreviewSet: (payload) => ipcRenderer.invoke('sbpreview:set', payload),
   waStart: () => ipcRenderer.invoke('wa:start'),
   waStop: () => ipcRenderer.invoke('wa:stop'),
   waReset: () => ipcRenderer.invoke('wa:reset'),

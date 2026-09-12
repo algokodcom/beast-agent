@@ -4271,7 +4271,7 @@ body.sandbox-mode #sandboxRow { display: flex; flex-direction: row; }
   flex-direction: column;
   min-height: 0;
   min-width: 300px;
-  flex: 0 0 var(--sbSplit, 480px);
+  flex: 1 1 auto;
   background: var(--bg);
   overflow: hidden;
 }
@@ -4280,10 +4280,20 @@ body.sandbox-mode #sandboxRow { display: flex; flex-direction: row; }
   flex-direction: column;
   min-height: 0;
   min-width: 240px;
-  flex: 1;
+  flex: 0 0 var(--sbSplit, 480px);
   background: var(--bg);
   overflow: hidden;
-  border-left: 1px solid var(--border);
+}
+#sbSplit {
+  flex: none;
+  width: 6px;
+  cursor: col-resize;
+  background: var(--border);
+  opacity: 0.55;
+  transition: opacity 0.15s;
+}
+#sbSplit:hover {
+  opacity: 1;
 }
 
 #sbHead {
@@ -4394,9 +4404,31 @@ body.sandbox-mode #sandboxRow { display: flex; flex-direction: row; }
   padding: 7px 9px;
   border-radius: 8px;
   font-family: inherit;
+  overflow-y: hidden;
+  max-height: 140px;
+  line-height: 1.45;
+  display: block;
 }
 #sbInput:focus { border-color: var(--accent); outline: none; }
 #sbInput.expand { overflow-y: auto; }
+#sbInputRow button {
+  flex: none;
+  background: var(--panel2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 7px;
+  cursor: pointer;
+  font-size: 11px;
+  padding: 6px 9px;
+  line-height: 1;
+  margin-bottom: 1px;
+}
+#sbInputRow button:hover { border-color: var(--accent); }
+#sbSend { color: var(--accent); }
+#sbSend:hover { background: var(--accent-dim); }
+#sbStop { color: var(--err); }
+#sbStop[hidden] { display: none; }
+#sbStop:hover { border-color: var(--err); }
 
 /* ---------- ÇALIŞTIR bölmesi ---------- */
 #sbRunHead {
@@ -4429,6 +4461,33 @@ body.sandbox-mode #sandboxRow { display: flex; flex-direction: row; }
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+#sbRunHead button {
+  flex: none;
+  background: var(--panel2);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 11px;
+  padding: 3px 9px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+#sbRunHead button:hover { color: var(--text); border-color: var(--accent); }
+#sbRunHead button.on { color: var(--accent); border-color: var(--accent); }
+#sbPreviewHost {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg);
+}
+#sbPreviewHost[hidden] { display: none; }
+#sbPreviewHint {
+  color: var(--muted);
+  font-size: 12px;
+  padding: 0 16px;
+  text-align: center;
 }
 #sbRunBtns {
   flex: none;

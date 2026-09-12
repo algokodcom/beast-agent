@@ -272,8 +272,15 @@ try {
 try { nodemailer = require('nodemailer'); } catch {}
 
 const APP_DIR = path.join(app.getPath('appData'), 'beast');
-/* Windows toast bildirimleri için AppUserModelID erken ayarlanmalı */
-try { app.setAppUserModelId('com.quantumalgo.beastagent'); } catch {}
+/* Windows toast bildirimleri için AppUserModelID erken ayarlanmalı. ANCAK özel
+   AUMID, Windows'ta kayıtlı kısayol yoksa taskbar ikonunu electron.exe logosuna
+   düşürür. Bu yüzden yalnız paketli kurulumda ya da npm modunda masaüstü
+   kısayolu (aynı AUMID ile oluşturulur) mevcutsa atanır. */
+try {
+  let aumidOk = app.isPackaged;
+  if (!aumidOk) aumidOk = fs.existsSync(path.join(app.getPath('desktop'), 'Beast Agent.lnk'));
+  if (aumidOk) app.setAppUserModelId('com.quantumalgo.beastagent');
+} catch {}
 /* mem0-native embedding modeli whisper ile AYNI cache'i kullanır (src/agent/mem0.js okur) */
 process.env.BEAST_MODELS_DIR = path.join(APP_DIR, 'models');
 
@@ -3603,6 +3610,7 @@ function ensureDesktopShortcut() {
       description: 'Beast Agent — hızlı, hafif ve becerikli',
       icon: path.join(__dirname, '..', 'assets', 'app.ico'),
       iconIndex: 0,
+      appUserModelId: 'com.quantumalgo.beastagent',
     });
     log.info('main', ok ? 'Masaüstü kısayolu oluşturuldu (npm modu)' : 'Masaüstü kısayolu oluşturulamadı');
   } catch (e) {
@@ -11152,6 +11160,7 @@ ipcMain.handle('sandbox:remove', async (_e, payload) => {
     delete sbCfg[folder];
     sbSaveCfg();
   }
+  try { fs.rmSync(path.join(beastDir(), 'sandbox-installed', path.basename(folder)), { force: true }); } catch {}
   return { ok: true };
 });
 
@@ -11211,7 +11220,7 @@ ipcMain.handle('sandbox:tree', (_e, payload) => {
 });
 
 /* Sandbox ÇALIŞTIRICI v2: repo başına YÖNETİLEN SÜREÇLER.
-   Kur/Başlat/Durdur butonları artık deterministik: proje tipi algılanır
+   Başlat/Dev/Durdur butonları artık deterministik: proje tipi algılanır
    (package.json, requirements.txt, pyproject.toml, Cargo.toml, go.mod,
    index.html) ve doğru komut DOĞRUDAN çalıştırılır. Her repo kendi süreç
    yuvasında koşar — birden çok repo aynı anda çalışabilir; çıktı tamponlanır,
@@ -11253,6 +11262,25 @@ function sbPythonCmd() {
   return 'python';
 }
 
+/* statik site üreticileri: hugo / jekyll / mkdocs — doküman repoları sık böyle;
+   Başlat/Dev butonları bunları da tanısın (ör. docs/ altında hugo.yaml) */
+function sbSiteGenInfo(folder) {
+  for (const d of ['', 'docs', 'site', 'website']) {
+    const base = d ? path.join(folder, d) : folder;
+    const has = (f) => { try { return fs.existsSync(path.join(base, f)); } catch { return false; } };
+    if (has('hugo.toml') || has('hugo.yaml') || has('hugo.json') || (has('config.toml') && (has('content') || has('themes')))) {
+      return { kind: 'static', label: 'hugo', install: '', run: 'hugo server' + (d ? ' -s ' + d : '') };
+    }
+    if (has('_config.yml') && (has('Gemfile') || has('Gemfile.lock'))) {
+      return { kind: 'ruby', label: 'jekyll', install: 'bundle install', run: 'bundle exec jekyll serve' + (d ? ' -s ' + d : '') };
+    }
+    if (has('mkdocs.yml') || has('mkdocs.yaml')) {
+      return { kind: 'python', label: 'mkdocs', install: sbPythonCmd() + ' -m pip install mkdocs', run: sbPythonCmd() + ' -m mkdocs serve' };
+    }
+  }
+  return null;
+}
+
 /* repo köküne bakıp proje tipini + kur/çalıştır komutlarını çıkarır */
 function sbProjectInfo(folder) {
   const out = { kind: 'unknown', label: 'bilinmiyor', name: path.basename(folder), install: '', run: '', dev: '', build: '' };
@@ -11273,6 +11301,21 @@ function sbProjectInfo(folder) {
       out.dev = s.dev ? pm + ' run dev' : '';
       out.run = s.start ? pm + ' run start' : s.dev ? pm + ' run dev' : s.serve ? pm + ' run serve' : '';
       out.build = s.build ? pm + ' run build' : '';
+      return out;
+    }
+    /* statik site üreticisi (hugo/jekyll/mkdocs) python paketinden ÖNCE gelir:
+       docs/ altındaki hugo.yaml, kökteki requirements.txt'i gölgeleyebilsin */
+    const site = sbSiteGenInfo(folder);
+    if (site) {
+      out.kind = site.kind;
+      out.label = site.label;
+      if (site.install) out.install = site.install;
+      if (site.run) { out.run = site.run; out.dev = site.run; }
+      if (!out.install) {
+        const py = sbPythonCmd();
+        if (fs.existsSync(path.join(folder, 'requirements.txt'))) out.install = py + ' -m pip install -r requirements.txt';
+        else if (fs.existsSync(path.join(folder, 'pyproject.toml'))) out.install = py + ' -m pip install -e .';
+      }
       return out;
     }
     const hasPy = ['pyproject.toml', 'requirements.txt', 'setup.py'].some((f) => fs.existsSync(path.join(folder, f)));
@@ -11350,7 +11393,7 @@ function sbSlotPush(slot, folder, text) {
   sbRunEmit(folder, text, slot.kind);
 }
 
-function sbRunStartManaged(folder, cmd, kind) {
+function sbRunStartManaged(folder, cmd, kind, opts) {
   folder = String(folder || '');
   cmd = String(cmd || '').trim();
   kind = kind === 'install' ? 'install' : 'run';
@@ -11365,7 +11408,7 @@ function sbRunStartManaged(folder, cmd, kind) {
       windowsHide: true,
       env: { ...process.env, FORCE_COLOR: '0', NO_COLOR: '1' },
     });
-    const slot = { proc, kind, cmd, url: '', lines: [], startedAt: Date.now() };
+    const slot = { proc, kind, cmd, url: '', lines: [], startedAt: Date.now(), installCmd: (opts && opts.installCmd) || '' };
     sbProcs.set(folder, slot);
     const onLine = (buf) => {
       for (const piece of String(buf).split(/\r?\n/)) {
@@ -11387,9 +11430,20 @@ function sbRunStartManaged(folder, cmd, kind) {
     proc.on('close', (code) => {
       sbSlotPush(slot, folder, '[süreç bitti' + (code != null ? ' — kod ' + code : '') + ']');
       slot.proc = null;
+      /* başarılı kurulum damgalanır: sonraki Başlat/Dev kurulumu tekrarlamaz */
+      if (code === 0 && (slot.kind === 'install' || slot.installCmd)) sbMarkInstalled(folder);
+      /* hızlı çöküş (10 sn içinde sıfırdan farklı çıkış): renderer bunu ajan
+         devralması için işaret sayar — yanlış algılanan komut ajanla düzeltilir */
+      const quickFail = code != null && Number(code) !== 0 && Date.now() - slot.startedAt < 10000;
       try {
         if (win && !win.isDestroyed()) {
-          win.webContents.send('agent:event', { type: 'sb-run-end', folder, code: code == null ? null : Number(code) });
+          win.webContents.send('agent:event', {
+            type: 'sb-run-end',
+            folder,
+            code: code == null ? null : Number(code),
+            kind: slot.kind,
+            quickFail,
+          });
         }
       } catch {}
     });
@@ -11446,7 +11500,35 @@ function sbInstallRepo(folder) {
 
 ipcMain.handle('sandbox:install', async (_e, payload) => sbInstallRepo(String((payload && payload.folder) || '')));
 
-/* Başlat/Dev: algılanan/kayıtlı çalıştırma komutunu başlatır (panel + ajan ortak) */
+/* bağımlılıklar eksik mi? — Başlat/Dev gerekirse ÖNCE kurar; kurulum bir kez
+   yapıldıktan sonra damga dosyasıyla (node_modules var / %APPDATA% damgası)
+   tekrarlanmaz */
+function sbInstallNeeded(folder, info) {
+  try {
+    if (!info.install) return false;
+    if (info.kind === 'node') {
+      const nm = path.join(folder, 'node_modules');
+      return !fs.existsSync(nm) || !fs.readdirSync(nm).length;
+    }
+    if (info.label === 'jekyll') return !fs.existsSync(path.join(folder, 'Gemfile.lock'));
+    if (info.kind === 'python' || info.label === 'mkdocs') {
+      if (fs.existsSync(path.join(folder, '.venv'))) return false;
+      return !fs.existsSync(path.join(beastDir(), 'sandbox-installed', path.basename(folder)));
+    }
+  } catch {}
+  return false;
+}
+
+function sbMarkInstalled(folder) {
+  try {
+    const dir = path.join(beastDir(), 'sandbox-installed');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, path.basename(folder)), new Date().toISOString());
+  } catch {}
+}
+
+/* Başlat/Dev: algılanan çalıştırma komutunu başlatır; bağımlılıklar eksikse
+   önce kurulum komutunu zincirler (npm install && npm run dev gibi) */
 function sbStartRepo(folder, mode) {
   folder = String(folder || '');
   mode = String(mode || 'run') === 'dev' ? 'dev' : 'run';
@@ -11454,8 +11536,10 @@ function sbStartRepo(folder, mode) {
   const info = sbProjectInfoMerged(folder);
   const cmd = mode === 'dev' ? info.dev || info.run : info.run || info.dev;
   if (!cmd) return { ok: false, error: 'Bu repo için çalıştırma komutu algılanamadı — özel komutu kutuya yazıp ▶ ile çalıştır' };
-  const r = sbRunStartManaged(folder, cmd, 'run');
-  if (r.ok) r.cmd = cmd;
+  const pre = sbInstallNeeded(folder, info) ? info.install : '';
+  const full = pre ? pre + ' && ' + cmd : cmd;
+  const r = sbRunStartManaged(folder, full, 'run', pre ? { installCmd: pre } : null);
+  if (r.ok) r.cmd = full;
   return r;
 }
 
@@ -11523,6 +11607,98 @@ ipcMain.handle('sandbox:openurl', async (_e, url) => {
     return { ok: false, error: String((e && e.message) || e) };
   }
 });
+
+/* ---------- SANDBOX PANEL İÇİ CANLI ÖNİZLEME (native WebContentsView) ----------
+   ÇALIŞTIR bölümünde, çıktı günlüğünün yerine repo'nun çalışan hâlini gösterir.
+   Tarayıcı dock'undan bağımsızdır: renderer host alanının DOM dikdörtgenini
+   gönderir, view tam o alana oturur. Yalnız localhost adresleri yüklenir. */
+const sbPreview = { view: null, attached: false, visible: false, url: '', bounds: null };
+
+function ensureSbPreview() {
+  if (sbPreview.view) return sbPreview.view;
+  const view = new WebContentsView({
+    webPreferences: {
+      partition: 'persist:sandbox-preview',
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      spellcheck: false,
+      backgroundThrottling: false,
+    },
+  });
+  view.setBackgroundColor(settings.theme === 'dark' ? '#0d0d0f' : '#ffffff');
+  const wc = view.webContents;
+  try {
+    const chromeUA = `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${process.versions.chrome} Safari/537.36`;
+    wc.setUserAgent(chromeUA);
+  } catch {}
+  wc.setWindowOpenHandler(({ url }) => {
+    if (/^https?:\/\//i.test(url)) wc.loadURL(url).catch(() => {});
+    return { action: 'deny' };
+  });
+  wc.on('render-process-gone', () => {
+    if (win && !win.isDestroyed() && sbPreview.view) {
+      try { win.contentView.removeChildView(sbPreview.view); } catch {}
+    }
+    sbPreview.view = null;
+    sbPreview.attached = false;
+    sbPreview.visible = false;
+  });
+  sbPreview.view = view;
+  return view;
+}
+
+function sbPreviewDetach() {
+  if (sbPreview.view && win && !win.isDestroyed()) {
+    try { sbPreview.view.setVisible(false); } catch {}
+    try { win.contentView.removeChildView(sbPreview.view); } catch {}
+  }
+  sbPreview.attached = false;
+  sbPreview.visible = false;
+}
+
+function sbPreviewSet(payload) {
+  if (!win || win.isDestroyed()) return { ok: false, error: 'pencere yok' };
+  const p = payload || {};
+  if (p.bounds && typeof p.bounds === 'object') {
+    sbPreview.bounds = {
+      x: Math.max(0, Math.round(Number(p.bounds.x) || 0)),
+      y: Math.max(0, Math.round(Number(p.bounds.y) || 0)),
+      width: Math.max(0, Math.round(Number(p.bounds.width) || 0)),
+      height: Math.max(0, Math.round(Number(p.bounds.height) || 0)),
+    };
+  }
+  if (p.url) {
+    const u = String(p.url);
+    if (/^https?:\/\/(?:localhost|127\.0\.0\.1)(?::\d{2,5})?(?:[/?#]|$)/i.test(u)) sbPreview.url = u;
+  }
+  const b = sbPreview.bounds;
+  const want = p.visible !== false && !!sbPreview.url && !!b && b.width > 0 && b.height > 0;
+  if (!want) {
+    if (sbPreview.view) {
+      try { sbPreview.view.setVisible(false); } catch {}
+    }
+    sbPreview.visible = false;
+    return { ok: true, visible: false };
+  }
+  const view = ensureSbPreview();
+  if (sbPreview.url) {
+    let cur = '';
+    try { cur = view.webContents.getURL(); } catch {}
+    if (cur !== sbPreview.url) view.webContents.loadURL(sbPreview.url).catch(() => {});
+  }
+  if (!sbPreview.attached) {
+    try { win.contentView.addChildView(view); sbPreview.attached = true; } catch {}
+  }
+  try {
+    view.setBounds({ x: b.x, y: b.y, width: b.width, height: b.height });
+    view.setVisible(true);
+    sbPreview.visible = true;
+  } catch {}
+  return { ok: true, visible: true, url: sbPreview.url };
+}
+
+ipcMain.handle('sbpreview:set', async (_e, payload) => sbPreviewSet(payload || {}));
 
 /* Sağ tık menüsü: HTML dosyasını dahili tarayıcıda GÖRÜNÜR aç */
 /* ---------- BC DAHİLİ STATİK SUNUCU ----------

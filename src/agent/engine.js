@@ -5030,7 +5030,7 @@ const skills = require('./skills');
         folder: r.folder,
         detected: info ? { kind: info.kind, label: info.label, install: info.install, run: info.run } : undefined,
         note:
-          'Repo "' + r.name + '" → ' + r.folder + ' klasörüne indirildi. Kurmak için sandbox_repo action=kur, çalıştırmak için action=baslat; kullanıcı Sandbox panelindeki Kur/Başlat butonlarını da kullanabilir.',
+          'Repo "' + r.name + '" → ' + r.folder + ' klasörüne indirildi. Kurmak için sandbox_repo action=kur, çalıştırmak için action=baslat (bağımlılıklar eksikse önce kurar); kullanıcı Sandbox panelindeki Başlat/Dev butonlarını da kullanabilir.',
       };
     }
     if (action !== 'kur' && action !== 'baslat' && action !== 'durdur') {

@@ -150,6 +150,18 @@ const els = {
   sbRunOut: $('#sbRunOut'),
   sbRunOpen: $('#sbRunOpen'),
   sbRunUrl: $('#sbRunUrl'),
+  mcpBtn: $('#mcpBtn'),
+  mcpRow: $('#mcpRow'),
+  mcpList: $('#mcpList'),
+  mcpReload: $('#mcpReload'),
+  mcpAddBtn: $('#mcpAddBtn'),
+  mcpDetailTitle: $('#mcpDetailTitle'),
+  mcpDetailState: $('#mcpDetailState'),
+  mcpDetailBody: $('#mcpDetailBody'),
+  mcpJson: $('#mcpJson'),
+  mcpJsonPath: $('#mcpJsonPath'),
+  mcpSave: $('#mcpSave'),
+  mcpMsg: $('#mcpMsg'),
   stPanel: $('#stPanel'),
   stTitle: $('#stTitle'),
   stCwd: $('#stCwd'),
@@ -8358,6 +8370,7 @@ async function setIdeMode(on) {
   if (on && studioModeOn()) await setStudioMode(false); /* Studio açıkken IDE'ye geçiş — Studio kapanır */
   if (on && sbModeOn()) setSandboxMode(false); /* Sandbox açıkken IDE'ye geçiş — Sandbox kapanır */
   if (on && financeModeOn()) setFinanceMode(false); /* Finance açıkken IDE'ye geçiş — Finance kapanır */
+  if (on && mcpModeOn()) setMcpMode(false); /* MCP açıkken IDE'ye geçiş — MCP kapanır */
   document.body.classList.toggle('ide-mode', !!on);
   if (els.ideBtn) els.ideBtn.classList.toggle('on', !!on);
   /* soldaki marka: chat modunda BEAST Agent, IDE modunda BEAST Code, Studio modunda BEAST Studio */
@@ -8433,6 +8446,7 @@ async function setStudioMode(on) {
   if (on && ideModeOn()) await setIdeMode(false); /* IDE açıkken Studio'ya geçiş — IDE kapanır */
   if (on && sbModeOn()) setSandboxMode(false); /* Sandbox açıkken Studio'ya geçiş — Sandbox kapanır */
   if (on && financeModeOn()) setFinanceMode(false); /* Finance açıkken Studio'ya geçiş — Finance kapanır */
+  if (on && mcpModeOn()) setMcpMode(false); /* MCP açıkken Studio'ya geçiş — MCP kapanır */
   document.body.classList.toggle('studio-mode', !!on);
   if (els.studioBtn) els.studioBtn.classList.toggle('on', !!on);
   /* ALT TERMINAL: yalnız Beast Code'a özgü — Studio'ya geçişte kapanır */
@@ -9729,6 +9743,7 @@ async function setFinanceMode(on) {
   if (on && ideModeOn()) await setIdeMode(false);
   if (on && studioModeOn()) await setStudioMode(false);
   if (on && sbModeOn()) setSandboxMode(false);
+  if (on && mcpModeOn()) setMcpMode(false); /* MCP açıkken Finance'a geçiş — MCP kapanır */
   document.body.classList.toggle('finance-mode', !!on);
   if (els.finBtn) els.finBtn.classList.toggle('on', !!on);
   const brandSub = document.querySelector('#brand .brand-sub');
@@ -12262,6 +12277,7 @@ function setSandboxMode(on) {
   if (on && ideModeOn()) { setIdeMode(false); }
   if (on && studioModeOn()) { setStudioMode(false); }
   if (on && financeModeOn()) { setFinanceMode(false); }
+  if (on && mcpModeOn()) setMcpMode(false); /* MCP açıkken Sandbox'a geçiş — MCP kapanır */
   document.body.classList.toggle('sandbox-mode', !!on);
   if (els.sbBtn) els.sbBtn.classList.toggle('on', !!on);
   sbPreviewApply();
@@ -12281,6 +12297,160 @@ function setSandboxMode(on) {
     renderFileTree().catch(() => {});
   }
 }
+
+/* ================= BEAST MCP MODU =================
+   Model Context Protocol sunucuları: tek panelde durum, araç listesi,
+   aç/kapat, yeniden bağlan ve mcp.json düzenleme. Ana sohbeti bozmaz —
+   diğer modlar gibi body.mcp-mode ile ayrı satır. */
+function mcpModeOn() {
+  return document.body.classList.contains('mcp-mode');
+}
+
+const MCP_STATE_TR = { up: 'BAĞLI', starting: 'BAĞLANIYOR', down: 'HATA', idle: 'BEKLEMEDE', disabled: 'KAPALI' };
+let mcpSel = '';
+let mcpTimer = null;
+
+async function setMcpMode(on) {
+  if (on && ideModeOn()) await setIdeMode(false);
+  if (on && studioModeOn()) await setStudioMode(false);
+  if (on && sbModeOn()) setSandboxMode(false);
+  if (on && financeModeOn()) setFinanceMode(false);
+  document.body.classList.toggle('mcp-mode', !!on);
+  if (els.mcpBtn) els.mcpBtn.classList.toggle('on', !!on);
+  const brandSub = document.querySelector('#brand .brand-sub');
+  if (brandSub) brandSub.textContent = on ? 'MCP' : 'Agent';
+  if (on) {
+    await renderMcpPanel();
+    if (!mcpTimer) {
+      mcpTimer = setInterval(() => { if (mcpModeOn()) renderMcpPanel(); }, 5000);
+    }
+  } else if (mcpTimer) {
+    clearInterval(mcpTimer);
+    mcpTimer = null;
+  }
+}
+
+async function renderMcpPanel() {
+  if (!els.mcpList || !mcpModeOn()) return;
+  const st = await beast.mcpStatus().catch(() => ({ path: '', servers: [] }));
+  const cfg = await beast.mcpConfigGet().catch(() => ({ path: '', raw: '' }));
+  const servers = st.servers || [];
+  if (!servers.length) {
+    els.mcpList.innerHTML = '<div class="file-empty">Henüz MCP server yok — aşağıdaki mcp.json\'a ekle ya da “Yeni Server”e bas.</div>';
+  } else {
+    if (!servers.some((s) => s.name === mcpSel)) mcpSel = servers[0].name;
+    els.mcpList.innerHTML = servers.map((s) => {
+      const badge = MCP_STATE_TR[s.state] || s.state;
+      return '<div class="mcp-card' + (s.name === mcpSel ? ' sel' : '') + '" data-n="' + escapeHtml(s.name) + '">' +
+        '<div class="mc-top"><span class="mc-name">' + escapeHtml(s.name) + '</span>' +
+        '<span class="mcp-badge ' + escapeHtml(s.state) + '">' + escapeHtml(badge) + '</span>' +
+        '<span class="file-spacer"></span>' +
+        (s.enabled && s.toolCount ? '<span class="mcp-badge">' + s.toolCount + ' araç</span>' : '') + '</div>' +
+        '<div class="mc-cmd">' + escapeHtml((s.command || '') + ' ' + (s.args || []).join(' ')) + '</div>' +
+        (s.lastError && s.state === 'down' ? '<div class="mc-err">' + escapeHtml(String(s.lastError).slice(0, 140)) + '</div>' : '') +
+        '<div class="mc-actions">' +
+        '<button class="mcp-tgl" data-n="' + escapeHtml(s.name) + '">' + (s.enabled ? '⏸ Durdur' : '▶ Başlat') + '</button>' +
+        '<button class="mcp-ref" data-n="' + escapeHtml(s.name) + '">⟳ Yenile</button>' +
+        '</div></div>';
+    }).join('');
+  }
+  renderMcpDetail(servers.find((s) => s.name === mcpSel) || null);
+  if (els.mcpJson && document.activeElement !== els.mcpJson) {
+    els.mcpJson.value = cfg.raw || JSON.stringify({ servers: {} }, null, 2);
+  }
+  if (els.mcpJsonPath) {
+    els.mcpJsonPath.textContent = cfg.path || '';
+    els.mcpJsonPath.title = cfg.path || '';
+  }
+
+  els.mcpList.querySelectorAll('.mcp-card').forEach((c) => c.addEventListener('click', (ev) => {
+    if (ev.target.closest('button')) return;
+    mcpSel = c.dataset.n;
+    renderMcpPanel();
+  }));
+  els.mcpList.querySelectorAll('.mcp-ref').forEach((b) => b.addEventListener('click', async () => {
+    b.disabled = true;
+    mcpSel = b.dataset.n;
+    await beast.mcpRefresh(b.dataset.n).catch(() => {});
+    renderMcpPanel();
+  }));
+  els.mcpList.querySelectorAll('.mcp-tgl').forEach((b) => b.addEventListener('click', async () => {
+    b.disabled = true;
+    try {
+      const obj = JSON.parse(els.mcpJson.value || '{}');
+      const name = b.dataset.n;
+      if (obj.servers && obj.servers[name]) {
+        obj.servers[name].enabled = obj.servers[name].enabled === false;
+        await beast.mcpConfigSet(JSON.stringify(obj)).catch(() => {});
+        mcpSel = name;
+      }
+    } catch (e) {
+      toast('JSON hatası: ' + String((e && e.message) || e));
+    }
+    renderMcpPanel();
+  }));
+}
+
+function renderMcpDetail(s) {
+  if (els.mcpDetailTitle) els.mcpDetailTitle.textContent = s ? s.name : 'Detay';
+  if (els.mcpDetailState) {
+    els.mcpDetailState.className = 'mcp-badge' + (s ? ' ' + s.state : '');
+    els.mcpDetailState.textContent = s ? (MCP_STATE_TR[s.state] || s.state) : '';
+  }
+  if (!els.mcpDetailBody) return;
+  if (!s) {
+    els.mcpDetailBody.innerHTML = '<div class="file-empty">Soldan bir server seç.</div>';
+    return;
+  }
+  const rows = [
+    ['Komut', (s.command || '') + ' ' + (s.args || []).join(' ')],
+    ['Durum', (MCP_STATE_TR[s.state] || s.state) + (s.enabled ? '' : ' (kapalı)')],
+    ['Araç', s.enabled ? String(s.toolCount || 0) + ' araç' : '—'],
+    s.timeoutMs ? ['Zaman aşımı', s.timeoutMs + ' ms'] : null,
+    s.tools && s.tools.length ? ['İzinli liste', s.tools.join(', ')] : null,
+  ].filter(Boolean);
+  let html = rows.map(([k, v]) =>
+    '<div class="mcp-drow"><span class="mcp-dk">' + escapeHtml(k) + '</span><span>' + escapeHtml(String(v)) + '</span></div>'
+  ).join('');
+  if (s.lastError && s.state === 'down') {
+    html += '<div class="mcp-drow"><span class="mcp-dk">Hata</span><span style="color:var(--err)">' + escapeHtml(s.lastError) + '</span></div>';
+  }
+  if (s.toolNames && s.toolNames.length) {
+    html += '<div class="mcp-dk" style="margin-top:10px">Araçlar</div><div class="mcp-tools">' +
+      s.toolNames.map((t) => '<span class="mcp-tool">' + escapeHtml(t) + '</span>').join('') + '</div>';
+  } else if (s.enabled) {
+    html += '<div class="file-empty">Araç listesi için ⟳ Yenile (server ilk kullanımda bağlanır).</div>';
+  }
+  els.mcpDetailBody.innerHTML = html;
+}
+
+if (els.mcpBtn) els.mcpBtn.addEventListener('click', () => setMcpMode(!mcpModeOn()));
+if (els.mcpReload) els.mcpReload.addEventListener('click', () => renderMcpPanel());
+if (els.mcpSave) els.mcpSave.addEventListener('click', async () => {
+  const r = await beast.mcpConfigSet(els.mcpJson.value || '').catch(() => ({ ok: false, error: 'IPC' }));
+  if (els.mcpMsg) {
+    els.mcpMsg.textContent = r && r.ok ? 'Kaydedildi' : ('Hata: ' + ((r && r.error) || '?'));
+    els.mcpMsg.style.color = r && r.ok ? '' : 'var(--err)';
+  }
+  if (r && r.ok) renderMcpPanel();
+});
+if (els.mcpAddBtn) els.mcpAddBtn.addEventListener('click', () => {
+  if (!els.mcpJson) return;
+  try {
+    const obj = JSON.parse(els.mcpJson.value || '{}') || {};
+    obj.servers = obj.servers || {};
+    let i = 1;
+    let name = 'yeni-server';
+    while (obj.servers[name]) name = 'yeni-server' + (++i);
+    obj.servers[name] = { command: 'npx', args: ['-y', '@modelcontextprotocol/server-filesystem', 'C:/'], enabled: false };
+    els.mcpJson.value = JSON.stringify(obj, null, 2);
+    els.mcpJson.focus();
+    if (els.mcpMsg) {
+      els.mcpMsg.textContent = 'örnek eklendi — komutu düzenleyip Kaydet';
+      els.mcpMsg.style.color = '';
+    }
+  } catch {}
+});
 
 /* ---------- ÇALIŞTIRICI v2: butonlar DETERMİNİSTİK ----------
    Proje tipi algılanır (package.json/requirements.txt/pyproject/Cargo.toml/

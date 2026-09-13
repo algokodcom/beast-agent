@@ -195,41 +195,52 @@ async function install(voiceId) {
   }
 }
 
-/* ---------- sentez: metin → { audio: WAV buffer, mime } ---------- */
+/* ---------- sentez: metin → { audio: WAV buffer, mime } ----------
+   DİKKAT: piper'ı ASLA stdout'a yazdırmıyoruz (--output_file -). Windows'ta
+   binary stdout akışı bozuluyor — çıktı gürültülü/cızırtılı geliyor
+   (rhasspy/piper#211: "piping raw output... choppy"). Geçici WAV dosyasına
+   yazıp okuyoruz; dosya çıktısı temiz. */
 
 function synthesize(text, opts = {}) {
   const vid = resolveVoice(opts.voice);
   return (async () => {
     await ensureRuntime();
     await ensureVoice(vid);
-    return new Promise((resolve, reject) => {
-      const args = [
-        '--model', voicePath(vid),
-        '--config', voiceJsonPath(vid),
-        '--output_file', '-',
-        '-q',
-      ];
-      const p = spawn(exePath(), args, { windowsHide: true, cwd: binDir() });
-      const chunks = [];
-      let err = '';
-      const timer = setTimeout(() => {
-        try { p.kill(); } catch {}
-        reject(new Error('piper zaman aşımı'));
-      }, 120000);
-      p.stdout.on('data', (d) => chunks.push(d));
-      p.stderr.on('data', (d) => { err += d.toString(); });
-      p.on('error', (e) => { clearTimeout(timer); reject(e); });
-      p.on('close', (code) => {
-        clearTimeout(timer);
-        const buf = Buffer.concat(chunks);
-        if (code !== 0 || buf.length < 44) {
-          return reject(new Error('piper başarısız (kod ' + code + '): ' + err.slice(0, 140)));
-        }
-        resolve({ audio: buf, mime: 'audio/wav' });
+    const tmpDir = path.join(rootDir(), 'tmp');
+    fs.mkdirSync(tmpDir, { recursive: true });
+    const outFile = path.join(tmpDir, 'out-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8) + '.wav');
+    try {
+      await new Promise((resolve, reject) => {
+        const args = [
+          '--model', voicePath(vid),
+          '--config', voiceJsonPath(vid),
+          '--output_file', outFile,
+          '-q',
+        ];
+        const p = spawn(exePath(), args, { windowsHide: true, cwd: binDir() });
+        let err = '';
+        const timer = setTimeout(() => {
+          try { p.kill(); } catch {}
+          reject(new Error('piper zaman aşımı'));
+        }, 120000);
+        p.stderr.on('data', (d) => { err += d.toString(); });
+        p.on('error', (e) => { clearTimeout(timer); reject(e); });
+        p.on('close', (code) => {
+          clearTimeout(timer);
+          if (code !== 0) return reject(new Error('piper başarısız (kod ' + code + '): ' + err.slice(0, 140)));
+          resolve();
+        });
+        p.stdin.write(String(text).slice(0, 4000));
+        p.stdin.end();
       });
-      p.stdin.write(String(text).slice(0, 4000));
-      p.stdin.end();
-    });
+      const buf = fs.readFileSync(outFile);
+      if (buf.length < 44 || buf.slice(0, 4).toString('latin1') !== 'RIFF') {
+        throw new Error('geçersiz WAV çıktısı');
+      }
+      return { audio: buf, mime: 'audio/wav' };
+    } finally {
+      try { fs.unlinkSync(outFile); } catch {}
+    }
   })();
 }
 

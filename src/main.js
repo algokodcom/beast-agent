@@ -703,7 +703,10 @@ function sttBaseUrl() {
 }
 function sttProvider() {
   const explicit = String(settings.sttProvider || '').trim().toLowerCase();
-  if (explicit === 'groq' || explicit === 'openai' || explicit === 'local') return explicit;
+  /* açık seçim: anahtar yoksa bulut seçimi yerel Whisper'a düşer (sessiz hata olmasın) */
+  if (explicit === 'local') return 'local';
+  if (explicit === 'groq' && sttGroqKey()) return 'groq';
+  if (explicit === 'openai' && (sttOpenaiKey() || sttBaseUrl())) return 'openai';
   if (sttGroqKey()) return 'groq';
   if (sttOpenaiKey() || sttBaseUrl()) return 'openai';
   return 'local';
@@ -6639,12 +6642,21 @@ ipcMain.handle('stt:transcribe', async (_e, b64, lang, priority) => {
 
 ipcMain.handle('stt:lang:get', () => settings.sttLang || 'tr');
 
+/* STT MOTORU SEÇİMİ: '' = otomatik (anahtar varsa bulut, yoksa yerel Whisper),
+   'local' = yerel Whisper, 'groq' | 'openai' = bulut */
+ipcMain.handle('stt:provider:set', (_e, p) => {
+  const v = String(p || '').trim().toLowerCase();
+  settings.sttProvider = ['local', 'groq', 'openai'].includes(v) ? v : '';
+  saveSettings();
+  return { ok: true, pref: settings.sttProvider, provider: sttProvider(), engineLabel: sttEngineLabel() };
+});
+
 /* STT DURUMU: ayarlar ekranı için — model indirildi mi/in-progress mi,
    hangi motor, ne kadar disk */
 ipcMain.handle('stt:status', () => {
   const provider = sttProvider();
   const model = sttModelName();
-  const out = { provider, engineLabel: sttEngineLabel(), model };
+  const out = { provider, engineLabel: sttEngineLabel(), model, pref: String(settings.sttProvider || '') };
   if (provider !== 'local') { out.state = 'cloud'; return out; }
   const dir = path.join(APP_DIR, 'models', ...model.split('/'));
   let files = [];

@@ -2592,6 +2592,15 @@ async function renderTtsPane() {  const pane = $('#tab-tts');
     '<h2>' + _t('tts_h2') + '</h2><div class="sub">' + _t('tts_sub') + '</div>' +
     '<div class="sub" style="margin:10px 0 4px;font-weight:700;color:var(--accent)">STT (Ses → Yazı)</div>' +
     `<div class="sub" id="sttStatusTxt" style="margin-bottom:8px">${sttLine}</div>` +
+    `<div class="form-grid" style="grid-template-columns:auto 1fr;align-items:center;margin-bottom:8px">
+      <label style="grid-column:1">${_t('stt_engine')}</label>
+      <select id="sttEngine" class="inp" style="grid-column:2">
+        <option value="">${_t('stt_engine_auto')}</option>
+        <option value="local">${_t('stt_engine_local')}</option>
+        <option value="groq">${_t('stt_engine_groq')}</option>
+        <option value="openai">${_t('stt_engine_openai')}</option>
+      </select>
+    </div>` +
     `<button id="sttDlBtn" class="btn ghost" style="margin-bottom:14px">${_t('stt_download_now')}</button>` +
     '<div class="sub" style="margin:10px 0 4px;font-weight:700;color:var(--accent)">TTS (Yazı → Ses)</div>' +
     `<div class="form-grid" style="grid-template-columns:auto 1fr 1fr;align-items:center;margin-top:10px">
@@ -2647,6 +2656,10 @@ async function renderTtsPane() {  const pane = $('#tab-tts');
     $('#ttsVoice').value = tts.voice || 'alloy';
   } catch {}
 
+  /* STT motoru seçimi: '' = otomatik (bulut anahtarı varsa bulut, yoksa yerel) */
+  const sttEngineSel = $('#sttEngine');
+  if (sttEngineSel) sttEngineSel.value = (stt && stt.pref) || '';
+
   /* Piper durum satırı: runtime/ses modeli hazır mı (indirilince güncellenir) */
   const refreshPiperStatus = async () => {
     const v = $('#ttsPiperVoice') ? $('#ttsPiperVoice').value : '';
@@ -2696,6 +2709,16 @@ async function renderTtsPane() {  const pane = $('#tab-tts');
       const s = await refreshSttStatus();
       if (s && (s.state === 'ready' || s.state === 'cloud')) { clearInterval(poll); toast('STT hazır'); }
     }, 3000);
+  });
+  /* STT motoru: Whisper yerel / Groq / OpenAI-uyumlu — anında kaydedilir */
+  if (sttEngineSel) sttEngineSel.addEventListener('change', async () => {
+    const r = await beast.sttProviderSet(sttEngineSel.value).catch(() => null);
+    if (r && r.ok) {
+      await refreshSttStatus();
+      toast('STT motoru: ' + (r.engineLabel || 'otomatik'));
+    } else {
+      toast('STT motoru değiştirilemedi');
+    }
   });
   $('#ttsSave').addEventListener('click', async () => {
     await beast.waSetTts({

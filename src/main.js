@@ -3362,6 +3362,8 @@ function reloadBackend() {
          böylece ham cevap + önekli cevap çift gönderimi olmaz. */
       const cjob =
         ev.type === 'done' || ev.type === 'error' ? cronAnswerPendingTake(ev.sessionId) : null;
+      /* cron turu bitti → kuyruktaki sıradaki işi başlat (tek tek koşarlar) */
+      if (ev.type === 'done' || ev.type === 'error') cronJobFinished(ev.sessionId);
       // WhatsApp oturumlarının son cevabını geri gönder (metin + opsiyonel ses)
       if ((ev.type === 'done' || ev.type === 'error') && !cjob && wa && wa.connected) {
         const wajid = waReplyJid(ev.sessionId);
@@ -7035,6 +7037,94 @@ function cronMirrorTargets(cronSid) {
   return out;
 }
 
+/* ---------- CRON SIRASI (kuyruk) ----------
+   Aynı dakikada birden fazla iş tetiklenebilir. İşler AYNI taban oturumda
+   koştuğu için hepsini birden göndermek engine'in steer tamponunda birleşmeye
+   ve cron cevap kaydının üst üste yazılmasına yol açıyordu. Artık işler
+   sıraya girer: BİRİ bitmeden (done/error) diğeri gönderilmez; oturum
+   kullanıcı turuyla meşgulse sıradaki iş bekler. */
+const cronQueue = [];
+let cronRunning = false;
+let cronRunningSid = '';
+let cronPumpTimer = null;
+let cronWatchdog = null;
+
+function cronPumpSoon(ms) {
+  if (cronPumpTimer) return; // tek zamanlayıcı — üst üste birikmez
+  cronPumpTimer = setTimeout(() => {
+    cronPumpTimer = null;
+    cronPump();
+  }, ms);
+}
+
+/* Emniyet bekçisi: çalışıyor sanılan iş için done/error olayı kaçarsa
+   (oturum artık meşgul değilse) kuyruğu açar; iş hâlâ koşuyorsa izler. */
+function cronArmWatchdog() {
+  if (cronWatchdog) clearTimeout(cronWatchdog);
+  cronWatchdog = setTimeout(() => {
+    cronWatchdog = null;
+    if (!cronRunning) return;
+    let busy = false;
+    try { busy = !!cronRunningSid && engine.isBusy(cronRunningSid); } catch {}
+    if (busy) { cronArmWatchdog(); return; }
+    cronRunning = false;
+    cronRunningSid = '';
+    if (cronQueue.length) cronPumpSoon(50);
+  }, 60000);
+}
+
+/* sıradaki cron işini (oturum boşsa) başlatır */
+function cronPump() {
+  if (cronRunning || !cronQueue.length) return;
+  const job = cronQueue.shift();
+  let sid = '';
+  try { sid = cronBaseSession(); } catch {}
+  if (!sid || !engine) {
+    cronQueue.unshift(job); // oturum yok — sonra tekrar dene
+    cronPumpSoon(5000);
+    return;
+  }
+  if (engine.isBusy(sid)) {
+    cronQueue.unshift(job); // kullanıcı/başka tur koşuyor — bekle
+    cronPumpSoon(3000);
+    return;
+  }
+  cronRunning = true;
+  cronRunningSid = String(sid);
+  cronAnswerPendingSet(sid, job);
+  let sent = false;
+  try {
+    sent = engine.send(sid, {
+      text: `[cron: ${job.name}]\n${job.prompt}`,
+    });
+  } catch {}
+  if (!sent) {
+    /* gönderilemedi (ör. /stop kilidi) — kaydı bırakma, sıradakine geç */
+    cronRunning = false;
+    cronRunningSid = '';
+    cronAnswerPendingDrop(sid);
+    cronPumpSoon(1000);
+    cronEmit();
+    return;
+  }
+  toastNotify(
+    `Cron: ${job.name}`,
+    isReminderJob(job) ? 'Hatırlatma zamanı geldi' : String(job.prompt || '').slice(0, 160),
+    'cron'
+  );
+  cronArmWatchdog();
+  cronEmit();
+}
+
+/* iş turu bitti (done/error) — çalışan işi kapat, sıradakini başlat */
+function cronJobFinished(sid) {
+  if (cronRunning && String(sid) === cronRunningSid) {
+    cronRunning = false;
+    cronRunningSid = '';
+  }
+  if (cronQueue.length) cronPumpSoon(50); // ctrls temizlenmesini bekle
+}
+
 function cronFire(job) {
   /* BEAST FINANCE günlük rutin: plan/review job'ları trader'a özel gönderilir */
   if (job && (job.kind === 'finance-plan' || job.kind === 'finance-review')) {
@@ -7042,22 +7132,11 @@ function cronFire(job) {
     cronEmit();
     return;
   }
-  try {
-    /* OTURUMSUZ ÇALIŞTIRMA: taban oturum WA → TG → DC → masaüstü sırasıyla
-       seçilir; cevap done olayında TÜM bağlı entegrasyonlara yansıtılır. */
-    const sid = cronBaseSession();
-    cronAnswerPendingSet(sid, job);
-    const sent = engine.send(sid, {
-      text: `[cron: ${job.name}]\n${job.prompt}`,
-    });
-    toastNotify(
-      `Cron: ${job.name}`,
-      isReminderJob(job) ? 'Hatırlatma zamanı geldi' : String(job.prompt || '').slice(0, 160),
-      'cron'
-    );
-    if (!sent) cronAnswerPendingDrop(sid); // gönderilemedi — bayat bekleme bırakma
-  } catch {}
-  cronEmit();
+  /* OTURUMSUZ ÇALIŞTIRMA: taban oturum WA → TG → DC → masaüstü sırasıyla
+     seçilir; işler kuyrukta TEK TEK koşar, cevap done olayında TÜM bağlı
+     entegrasyonlara yansıtılır. */
+  cronQueue.push(job);
+  cronPump();
 }
 
 /* İzleyici tetiklendiğinde ilgili sohbete kullanıcı mesajı gibi düşer */

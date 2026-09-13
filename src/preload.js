@@ -203,6 +203,8 @@ contextBridge.exposeInMainWorld('beast', {
   setWaLockdown: (v) => ipcRenderer.invoke('wa:lockdown:set', v),
   waGetTts: () => ipcRenderer.invoke('wa:tts:get'),
   waSetTts: (cfg) => ipcRenderer.invoke('wa:tts:set', cfg),
+  piperStatus: (voice) => ipcRenderer.invoke('piper:status', voice),
+  piperInstall: (voice) => ipcRenderer.invoke('piper:install', voice),
   waGetGroups: () => ipcRenderer.invoke('wa:groups:get'),
   waSetGroups: (cfg) => ipcRenderer.invoke('wa:groups:set', cfg),
   tgGetStatus: () => ipcRenderer.invoke('tg:status:get'),

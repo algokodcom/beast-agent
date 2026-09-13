@@ -2580,6 +2580,14 @@ async function renderTtsPane() {  const pane = $('#tab-tts');
   ]
     .map(([v, n]) => `<option value="${v}">${n}</option>`)
     .join('');
+  const piperOpts = [
+    ['tr_TR-fahrettin-medium', 'Fahrettin — Türkçe (erkek)'],
+    ['tr_TR-fettah-medium', 'Fettah — Türkçe (erkek)'],
+    ['en_US-lessac-medium', 'Lessac — English (male)'],
+    ['en_US-amy-medium', 'Amy — English (female)'],
+  ]
+    .map(([v, n]) => `<option value="${v}">${n}</option>`)
+    .join('');
   pane.innerHTML =
     '<h2>' + _t('tts_h2') + '</h2><div class="sub">' + _t('tts_sub') + '</div>' +
     '<div class="sub" style="margin:10px 0 4px;font-weight:700;color:var(--accent)">STT (Ses → Yazı)</div>' +
@@ -2590,11 +2598,18 @@ async function renderTtsPane() {  const pane = $('#tab-tts');
       <label class="lock-row"><input type="checkbox" id="ttsOn" /><span>${_t('tts_active')}</span></label>
       <label style="grid-column:1">${_t('tts_engine')}</label>
       <select id="ttsEngine" class="inp" style="grid-column:2/4">
-        <option value="edge">Edge TTS — yerel & ücretsiz (Ahmet/Emel…)</option>
+        <option value="edge">Edge TTS — ücretsiz bulut (Ahmet/Emel…)</option>
+        <option value="piper">Piper — yerel & offline (Fahrettin/Fettah…)</option>
         <option value="openai">OpenAI-uyumlu API (tts-1, ses: alloy…)</option>
       </select>
       <label style="grid-column:1">${_t('tts_edge_voice')}</label>
       <select id="ttsEdgeVoice" class="inp" style="grid-column:2/4">${edgeOpts}</select>
+      <label style="grid-column:1">${_t('tts_piper_voice')}</label>
+      <select id="ttsPiperVoice" class="inp" style="grid-column:2/4">${piperOpts}</select>
+      <span id="piperStatusRow" style="grid-column:1/4;display:flex;gap:10px;align-items:center">
+        <span class="sub" id="piperStatusTxt" style="margin:0"></span>
+        <button id="piperDlBtn" class="btn ghost">${_t('tts_piper_download')}</button>
+      </span>
       <label class="lock-row" style="grid-column:1/4"><input type="checkbox" id="ttsChatAuto" /><span>${_t('tts_chat_auto')}</span></label>
       <span id="ttsOpenaiWrap" style="display:contents">
         <input id="ttsUrl" class="inp" placeholder="https://api.openai.com/v1" autocomplete="off" />
@@ -2608,25 +2623,62 @@ async function renderTtsPane() {  const pane = $('#tab-tts');
     '<div class="sub" style="margin-top:8px">' + _t('tts_note') + '</div>';
 
   const syncEngineUi = () => {
-    const isEdge = $('#ttsEngine').value === 'edge';
+    const eng = $('#ttsEngine').value;
+    const isEdge = eng === 'edge';
+    const isPiper = eng === 'piper';
     $('#ttsEdgeVoice').disabled = !isEdge;
-    $('#ttsOpenaiWrap').style.opacity = isEdge ? '0.35' : '1';
-    $('#ttsOpenaiWrap').querySelectorAll('input').forEach((i) => (i.disabled = isEdge));
+    $('#ttsPiperVoice').disabled = !isPiper;
+    $('#piperDlBtn').disabled = !isPiper;
+    $('#piperStatusTxt').style.opacity = isPiper ? '1' : '0.45';
+    $('#ttsOpenaiWrap').style.opacity = eng === 'openai' ? '1' : '0.35';
+    $('#ttsOpenaiWrap').querySelectorAll('input').forEach((i) => (i.disabled = eng !== 'openai'));
   };
 
   try {
     const tts = await beast.waGetTts();
     $('#ttsOn').checked = !!tts.enabled;
-    $('#ttsEngine').value = tts.engine === 'openai' ? 'openai' : 'edge';
+    $('#ttsEngine').value = ['edge', 'piper', 'openai'].includes(tts.engine) ? tts.engine : 'edge';
     $('#ttsEdgeVoice').value = tts.edgeVoice || 'tr-TR-AhmetNeural';
+    $('#ttsPiperVoice').value = tts.piperVoice || 'tr_TR-fahrettin-medium';
     $('#ttsChatAuto').checked = !!tts.chatAutoSpeak;
     $('#ttsUrl').value = tts.baseUrl || '';
     $('#ttsKey').value = tts.key || '';
     $('#ttsModel').value = tts.model || 'tts-1';
     $('#ttsVoice').value = tts.voice || 'alloy';
   } catch {}
+
+  /* Piper durum satırı: runtime/ses modeli hazır mı (indirilince güncellenir) */
+  const refreshPiperStatus = async () => {
+    const v = $('#ttsPiperVoice') ? $('#ttsPiperVoice').value : '';
+    try {
+      const st = await beast.piperStatus(v);
+      const el = $('#piperStatusTxt');
+      if (el && st) {
+        el.textContent = 'Piper: ' + (st.installed
+          ? 'hazır — yerel/offline'
+          : st.installing
+            ? 'indiriliyor…'
+            : st.runtime
+              ? 'ses modeli indirilecek (ilk kullanımda otomatik)'
+              : 'runtime + ses modeli indirilecek (ilk kullanımda otomatik)');
+      }
+      return st;
+    } catch { return null; }
+  };
+
   syncEngineUi();
-  $('#ttsEngine').addEventListener('change', syncEngineUi);
+  await refreshPiperStatus();
+  $('#ttsEngine').addEventListener('change', () => { syncEngineUi(); refreshPiperStatus(); });
+  $('#ttsPiperVoice').addEventListener('change', refreshPiperStatus);
+  $('#piperDlBtn').addEventListener('click', async () => {
+    const v = $('#ttsPiperVoice').value;
+    toast('Piper indiriliyor… (ilk seferde ~80MB)');
+    const poll = setInterval(refreshPiperStatus, 4000);
+    const r = await beast.piperInstall(v).catch((e) => ({ ok: false, error: String((e && e.message) || e) }));
+    clearInterval(poll);
+    await refreshPiperStatus();
+    toast(r && r.ok ? 'Piper hazır ✓ — artık çevrimdışı seslendirme yapılır' : 'Piper indirilemedi: ' + ((r && r.error) || '?'));
+  });
 
   /* STT durum satırı: yenile + şimdi indir (yüklenirken 3 sn'de bir güncellenir) */
   const refreshSttStatus = async () => {
@@ -2650,6 +2702,7 @@ async function renderTtsPane() {  const pane = $('#tab-tts');
       enabled: $('#ttsOn').checked,
       engine: $('#ttsEngine').value,
       edgeVoice: $('#ttsEdgeVoice').value,
+      piperVoice: $('#ttsPiperVoice').value,
       chatAutoSpeak: $('#ttsChatAuto').checked,
       baseUrl: $('#ttsUrl').value.trim(),
       key: $('#ttsKey').value.trim(),
@@ -2664,8 +2717,14 @@ async function renderTtsPane() {  const pane = $('#tab-tts');
   });
   $('#ttsTest').addEventListener('click', async () => {
     /* motor + IPC + çalma zincirini uçtan uca dener — sorun neredeyse görünür */
-    toast('TTS test ediliyor…');
-    const r = await beast.ttsSpeak('Merhaba kanka, Edge TTS testi. Ben Beast.').catch((e) => ({ ok: false, error: String((e && e.message) || e) }));
+    const eng = $('#ttsEngine').value;
+    const line = eng === 'piper'
+      ? 'Merhaba kanka, Piper yerel TTS testi. Ben Beast.'
+      : eng === 'openai'
+        ? 'Merhaba kanka, OpenAI TTS testi. Ben Beast.'
+        : 'Merhaba kanka, Edge TTS testi. Ben Beast.';
+    toast(eng === 'piper' ? 'TTS test ediliyor… (Piper ilk seferde indiriyorsa uzun sürebilir)' : 'TTS test ediliyor…');
+    const r = await beast.ttsSpeak(line).catch((e) => ({ ok: false, error: String((e && e.message) || e) }));
     if (!(r && r.ok)) { toast('TTS test HATA: ' + ((r && r.error) || '?')); return; }
     try {
       await playTtsB64(r);

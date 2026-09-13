@@ -26,6 +26,7 @@ const watchers = require('./agent/watchers');
 const usageMod = require('./agent/usage');
 const bus = require('./agent/bus');
 const computeruse = require('./agent/computeruse');
+const piper = require('./agent/piper');
 const fsguard = require('./agent/fsguard');
 const log = require('./agent/logger');
 const squeeze = require('./agent/squeeze');
@@ -1035,17 +1036,28 @@ async function transcribePcm(audio, langOverride) {
   }
 }
 
+/* TTS sentezi: dönen değer { audio: Buffer, mime } — motor seçilebilir.
+   - edge: ücretsiz Microsoft neural (MP3)
+   - piper: tamamen yerel/offline neural (WAV; ilk kullanımda indirilir)
+   - openai: OpenAI-uyumlu /audio/speech API (MP3) */
 async function synthesizeSpeech(text) {
   const cfg = settings.waTts || {};
   if (!cfg.enabled) return null;
   try {
+    const engine = cfg.engine || 'edge';
     /* EDGE TTS: ücretsiz yerel motor — baseUrl/key GEREKMEZ */
-    if ((cfg.engine || 'edge') === 'edge') {
+    if (engine === 'edge') {
       const edge = require('./agent/edgetts');
       const audio = await edge.synthesize(String(text).slice(0, 4000), {
         voice: cfg.edgeVoice || 'tr-TR-AhmetNeural',
       });
-      return audio;
+      return audio && { audio, mime: 'audio/mpeg' };
+    }
+    /* PIPER: yerel/offline — ilk kullanımda runtime + ses modeli indirilir */
+    if (engine === 'piper') {
+      return await piper.synthesize(String(text).slice(0, 4000), {
+        voice: cfg.piperVoice || piper.DEFAULT_VOICE,
+      });
     }
     if (!cfg.baseUrl || !cfg.key) return null;
     const url = String(cfg.baseUrl).replace(/\/+$/, '') + '/audio/speech';
@@ -1068,7 +1080,7 @@ async function synthesizeSpeech(text) {
       waLog(`tts http ${res.status}`);
       return null;
     }
-    return Buffer.from(await res.arrayBuffer());
+    return { audio: Buffer.from(await res.arrayBuffer()), mime: 'audio/mpeg' };
   } catch (e) {
     waLog('tts hata: ' + String((e && e.message) || e));
     return null;
@@ -3385,7 +3397,7 @@ function reloadBackend() {
                     return;
                   }
                   const voice = await synthesizeSpeech(txt);
-                  if (voice) await wa.sendAudio(wajid, voice).catch(() => {});
+                  if (voice && voice.audio) await wa.sendAudio(wajid, voice.audio).catch(() => {});
                 }
               }
             } catch {}
@@ -12857,11 +12869,14 @@ ipcMain.handle('wa:sessions', () => [...waChats.values()]);
 
 ipcMain.handle('wa:tts:get', () => settings.waTts || {});
 ipcMain.handle('wa:tts:set', (_e, cfg) => {
+  const eng = String((cfg && cfg.engine) || 'edge');
+  const pv = String((cfg && cfg.piperVoice) || '').trim();
   settings.waTts = {
     enabled: !!(cfg && cfg.enabled),
-    /* motor: 'edge' (ücretsiz yerel, varsayılan) | 'openai' (OpenAI-uyumlu API) */
-    engine: (cfg && cfg.engine) === 'openai' ? 'openai' : 'edge',
+    /* motor: 'edge' (ücretsiz bulut, varsayılan) | 'piper' (yerel/offline) | 'openai' (API) */
+    engine: ['edge', 'piper', 'openai'].includes(eng) ? eng : 'edge',
     edgeVoice: String((cfg && cfg.edgeVoice) || 'tr-TR-AhmetNeural').trim(),
+    piperVoice: piper.VOICES[pv] ? pv : piper.DEFAULT_VOICE,
     chatAutoSpeak: !!(cfg && cfg.chatAutoSpeak),
     baseUrl: String((cfg && cfg.baseUrl) || '').trim(),
     key: String((cfg && cfg.key) || '').trim(),
@@ -12872,6 +12887,15 @@ ipcMain.handle('wa:tts:set', (_e, cfg) => {
   return settings.waTts;
 });
 
+/* PIPER (yerel/offline TTS): durum + elle indirme (runtime + ses modeli) */
+ipcMain.handle('piper:status', (_e, voice) => {
+  try { return piper.status(String(voice || '')); } catch { return { installed: false, runtime: false, voice: false, installing: false }; }
+});
+ipcMain.handle('piper:install', async (_e, voice) => {
+  const r = await piper.install(String(voice || ''));
+  return { ...r, status: piper.status(String(voice || '')) };
+});
+
 /* CHAT TTS: masaüstü sohbetinde ajanın son yazısını seslendirir (base64 mp3).
    chatAutoSpeak açıkken renderer 'done' olayında bu kanalı çağırır. */
 ipcMain.handle('tts:synthesize', async (_e, text) => {
@@ -12879,13 +12903,14 @@ ipcMain.handle('tts:synthesize', async (_e, text) => {
   if (!cfg.enabled) return { ok: false, error: 'tts kapalı' };
   const t = String(text || '').trim();
   if (!t) return { ok: false, error: 'boş metin' };
-  const audio = await synthesizeSpeech(t.slice(0, 4000));
-  if (!audio) {
+  const out = await synthesizeSpeech(t.slice(0, 4000));
+  if (!out || !out.audio) {
     waLog('tts chat seslendirilemedi — motor: ' + (cfg.engine || 'edge'));
     return { ok: false, error: 'seslendirilemedi' };
   }
-  waLog('tts chat ok: ' + audio.length + ' bayt, motor: ' + (cfg.engine || 'edge') + ', ses: ' + (cfg.edgeVoice || '-'));
-  return { ok: true, audioB64: audio.toString('base64'), mime: 'audio/mpeg' };
+  const ses = cfg.engine === 'piper' ? (cfg.piperVoice || piper.DEFAULT_VOICE) : (cfg.edgeVoice || '-');
+  waLog('tts chat ok: ' + out.audio.length + ' bayt, motor: ' + (cfg.engine || 'edge') + ', ses: ' + ses);
+  return { ok: true, audioB64: out.audio.toString('base64'), mime: out.mime || 'audio/mpeg' };
 });
 
 /* ---------- Telegram IPC (FEATURE 3) ---------- */

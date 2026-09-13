@@ -7985,6 +7985,36 @@ function termSend(ev) {
   if (win && !win.isDestroyed()) win.webContents.send('agent:event', ev);
 }
 
+/* TERMİNAL ÇIKTI COALESCE: alt süreçten gelen data chunk'ları 80ms'de bir TEK
+   'term-batch' IPC'sinde birleştirilir. Aksi halde saniyede yüzlerce IPC +
+   renderer'da satır satır DOM/layout = "Yanıt vermiyor" donması. */
+const TERM_BATCH_MS = 80;
+const TERM_BATCH_BYTES = 48 * 1024;
+const termBatches = new Map(); // id -> { timer, bytes, events: [{stream,text}] }
+
+function termQueue(id, stream, text) {
+  const key = String(id || termShellId || '');
+  let b = termBatches.get(key);
+  if (!b) {
+    b = { timer: null, bytes: 0, events: [] };
+    termBatches.set(key, b);
+  }
+  b.events.push({ stream, chunk: String(text) });
+  b.bytes += String(text).length;
+  if (b.bytes >= TERM_BATCH_BYTES) return termFlush(key); // tampon taştı — hemen boşalt
+  if (!b.timer) b.timer = setTimeout(() => termFlush(key), TERM_BATCH_MS);
+}
+
+function termFlush(id) {
+  const key = String(id || '');
+  const b = termBatches.get(key);
+  if (!b) return;
+  if (b.timer) { clearTimeout(b.timer); b.timer = null; }
+  termBatches.delete(key);
+  if (!b.events.length) return;
+  termSend({ type: 'term-batch', id: key, events: b.events });
+}
+
 /* Kalıcı kabuğu başlat: cmd /q /k — girdi pipe'ından satır satır okur,
    prompt yazmaz. chcp 65001 → Türkçe yollar (Masaüstü vb.) doğru çözülür. */
 function termShellSpawn() {
@@ -8009,14 +8039,15 @@ function termShellSpawn() {
     if (termForwarded > TERM_FWD_CAP) {
       if (!termCapNotified) {
         termCapNotified = true;
+        termFlush(termShellId);
         termSend({ type: 'term-out', id: termShellId, stream: 'out', chunk: '\n[beast] çıktı çok büyük — iletim durduruldu (komut sürüyor)\n' });
       }
       return;
     }
-    termSend({ type: 'term-out', id: termShellId, stream: 'out', chunk: String(d) });
+    termQueue(termShellId, 'out', String(d));
   });
   child.stderr.on('data', (d) => {
-    termSend({ type: 'term-out', id: termShellId, stream: 'err', chunk: String(d) });
+    termQueue(termShellId, 'err', String(d));
   });
   child.on('exit', () => {
     if (termChild === child) termChild = null;
@@ -8041,6 +8072,7 @@ ipcMain.handle('terminal:run', (_e, payload) => {
     if (!termChild || !termChild.stdin.writable) termShellSpawn();
     if (!termChild) return { ok: false, error: 'kabuk başlatılamadı' };
     const id = 't' + Date.now().toString(36) + ++termShellSeq;
+    termFlush(termShellId); // önceki komuttan kalan çıktı sırayı bozmasın
     termShellId = id;
     termForwarded = 0;
     termCapNotified = false;
@@ -8073,12 +8105,14 @@ ipcMain.handle('terminal:run', (_e, payload) => {
   }
   child.stdout.setEncoding('utf8');
   child.stderr.setEncoding('utf8');
-  child.stdout.on('data', (d) => termSend({ type: 'term-out', id, stream: 'out', chunk: String(d) }));
-  child.stderr.on('data', (d) => termSend({ type: 'term-out', id, stream: 'err', chunk: String(d) }));
+  child.stdout.on('data', (d) => termQueue(id, 'out', String(d)));
+  child.stderr.on('data', (d) => termQueue(id, 'err', String(d)));
   child.on('error', (err) => {
+    termFlush(id);
     termSend({ type: 'term-end', id, code: -1, error: String((err && err.message) || err) });
   });
   child.on('close', (code) => {
+    termFlush(id);
     termSend({ type: 'term-end', id, code: code == null ? -1 : code });
   });
   return { ok: true, id };
@@ -8092,6 +8126,7 @@ ipcMain.handle('terminal:stop', () => {
     try { termChild.kill(); } catch {}
     termChild = null;
   }
+  termFlush(termShellId);
   termSend({ type: 'term-end', id: termShellId, code: 130, error: 'komut durduruldu — kalıcı CMD yeniden hazır' });
   termShellId = null;
   return { ok: true };

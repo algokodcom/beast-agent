@@ -6187,29 +6187,13 @@ function onEvent(ev) {
       if (!busy) break;
       setStatus(ev.status === 'idle' ? (busy ? 'düşünüyor…' : '') : ev.status === 'thinking' ? 'düşünüyor…' : ev.status + '…');
       break;
-    case 'term-out': {
-      /* KALICI CMD: her komutun sonunda marker satırı gelir —
-         __BEAST_EOF__<yol>__BEAST_EOF__  → yazdırılmaz, cwd güncellenir, kilit açılır */
-      const chunk = String(ev.chunk || '');
-      if (ev.stream === 'err') { termLine('t-err', chunk, false); break; }
-      termPendBuf += chunk;
-      const parts = termPendBuf.split(/\r?\n/);
-      termPendBuf = parts.pop(); /* son yarım satır bekler */
-      for (const line of parts) {
-        const m = /__BEAST_EOF__(.*)__BEAST_EOF__/.exec(line.trim());
-        if (m) {
-          const cwd2 = m[1].trim();
-          if (cwd2) {
-            els.termCwd.textContent = cwd2;
-            els.termCwd.title = cwd2;
-          }
-          termCmdDone({ code: 0, silent: true });
-          continue;
-        }
-        if (line.trim()) termLine('t-out', line, false);
-      }
+    case 'term-out':
+      termHandleOut(ev);
       break;
-    }
+    case 'term-batch':
+      /* main 80ms'de bir birleştirilmiş çıktı paketi gönderir (IPC/satır yükü azalır) */
+      for (const sub of (ev.events || [])) termHandleOut({ ...sub, id: ev.id });
+      break;
     case 'term-end':
       termCmdDone(ev);
       break;
@@ -6316,6 +6300,7 @@ function termSetHeight(h) {
 function termSetOpen(v) {
   termOpen = !!v;
   els.termPanel.hidden = !v;
+  if (v) termFlushLines(); // panel kapalıyken biriken satırlar şimdi basılır
   els.termResize.hidden = !v || ideModeOn(); /* IDE'de terminal bölme içi — boyutlandırma yok */
   document.body.classList.toggle('term-open', v);
   termSetShell(termShell);
@@ -6344,14 +6329,36 @@ function termScroll(force) {
   if (force || near) b.scrollTop = b.scrollHeight;
 }
 
-function termLine(cls, text, time = true) {
-  const el = document.createElement('div');
-  el.className = 't-line ' + (cls || '');
-  const ts = time ? '<span class="t-time">' + new Date().toTimeString().slice(0, 8) + '</span> ' : '';
-  el.innerHTML = ts + escapeHtml(String(text ?? ''));
-  els.termOut.appendChild(el);
+/* satır KUYRUĞU: komut çıktısı hızlı akarken satır satır DOM + scroll/layout
+   renderer'ı kilitliyordu ("Yanıt vermiyor"). Satırlar tampona girer, 100ms'de
+   bir TEK fragment ile DOM'a basılır; panel kapalıysa DOM'a hiç dokunulmaz. */
+let termLineBuf = [];
+let termLineTimer = null;
+
+function termFlushLines() {
+  if (termLineTimer) { clearTimeout(termLineTimer); termLineTimer = null; }
+  if (!termLineBuf.length || !els.termOut) return;
+  const items = termLineBuf.splice(0);
+  const frag = document.createDocumentFragment();
+  for (const it of items) {
+    const el = document.createElement('div');
+    el.className = 't-line ' + (it.cls || '');
+    const ts = it.time ? '<span class="t-time">' + new Date().toTimeString().slice(0, 8) + '</span> ' : '';
+    el.innerHTML = ts + escapeHtml(String(it.text ?? ''));
+    frag.appendChild(el);
+  }
+  els.termOut.appendChild(frag);
   while (els.termOut.childElementCount > TERM_MAX_LINES) els.termOut.removeChild(els.termOut.firstChild);
   termScroll();
+}
+
+function termLine(cls, text, time = true) {
+  termLineBuf.push({ cls, text, time });
+  const cap = TERM_MAX_LINES * 2;
+  if (termLineBuf.length > cap) termLineBuf.splice(0, termLineBuf.length - cap);
+  if (!termOpen) return; /* panel kapalı — açılınca termFlushLines ile basılır */
+  if (termLineBuf.length >= 300) termFlushLines();
+  else if (!termLineTimer) termLineTimer = setTimeout(termFlushLines, 100);
 }
 
 function termBanner(cwd) {
@@ -6389,6 +6396,29 @@ function termAgentEvent(ev) {
     const cap = shellish ? 1600 : 240;
     if (out) termLine(ev.ok ? 't-out' : 't-err', out.length > cap ? out.slice(0, cap) + ' …(kesildi)' : out, false);
     else if (!ev.ok) termLine('t-err', '(hata)', false);
+  }
+}
+
+/* KALICI CMD çıktısı: her komutun sonunda marker satırı gelir —
+   __BEAST_EOF__<yol>__BEAST_EOF__  → yazdırılmaz, cwd güncellenir, kilit açılır */
+function termHandleOut(ev) {
+  const chunk = String(ev.chunk || '');
+  if (ev.stream === 'err') { termLine('t-err', chunk, false); return; }
+  termPendBuf += chunk;
+  const parts = termPendBuf.split(/\r?\n/);
+  termPendBuf = parts.pop(); /* son yarım satır bekler */
+  for (const line of parts) {
+    const m = /__BEAST_EOF__(.*)__BEAST_EOF__/.exec(line.trim());
+    if (m) {
+      const cwd2 = m[1].trim();
+      if (cwd2) {
+        els.termCwd.textContent = cwd2;
+        els.termCwd.title = cwd2;
+      }
+      termCmdDone({ code: 0, silent: true });
+      continue;
+    }
+    if (line.trim()) termLine('t-out', line, false);
   }
 }
 
@@ -7712,7 +7742,7 @@ async function init() {
   try { termSetHeight(parseInt(localStorage.getItem('beast.termH')) || 180); } catch {}
   if (els.termCBtn) els.termCBtn.addEventListener('click', () => termToggle('cmd'));
   if (els.termClose) els.termClose.addEventListener('click', () => termSetOpen(false));
-  if (els.termClear) els.termClear.addEventListener('click', () => { els.termOut.innerHTML = ''; });
+  if (els.termClear) els.termClear.addEventListener('click', () => { els.termOut.innerHTML = ''; termLineBuf = []; });
   if (els.termStop) els.termStop.addEventListener('click', () => beast.terminalStop().catch(() => {}));
   if (els.termInput) els.termInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {

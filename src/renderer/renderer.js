@@ -2554,178 +2554,251 @@ function updateInstallPct(ev) {
   } catch {}
 }
 
-async function renderTtsPane() {  const pane = $('#tab-tts');
+async function renderTtsPane() {
+  const pane = $('#tab-tts');
   if (!pane) return;
   /* STT DURUMU: model indirildi mi / iniyor mu / hangi motor */
   let stt = null;
   try { stt = await beast.sttStatus(); } catch {}
-  const stateText = {
-    ready: 'HAZIR — model yüklü',
-    loading: 'İNİYOR / yükleniyor…',
-    downloaded: 'indirildi — ilk kullanımda yüklenir',
-    partial: 'kısmen indi — devam edecek',
-    missing: 'henüz indirilmedi',
-    cloud: 'bulut motoru — indirme gerekmez',
-  };
-  const sttLine = stt
-    ? stt.engineLabel + ' · ' + (stateText[stt.state] || stt.state) + (stt.mb ? ' · ' + stt.mb + ' MB' : '')
-    : (window.beast ? 'bilinmiyor' : '');
-  const edgeOpts = [
+  const EDGE_VOICES = [
     ['tr-TR-AhmetNeural', 'Ahmet — Türkçe (erkek)'],
     ['tr-TR-EmelNeural', 'Emel — Türkçe (kadın)'],
     ['en-US-GuyNeural', 'Guy — English (male)'],
     ['en-US-AriaNeural', 'Aria — English (female)'],
     ['de-DE-KatjaNeural', 'Katja — Deutsch'],
     ['ar-SA-HamedNeural', 'Hamed — العربية'],
-  ]
-    .map(([v, n]) => `<option value="${v}">${n}</option>`)
-    .join('');
-  const piperOpts = [
+  ];
+  const PIPER_VOICES = [
     ['tr_TR-fahrettin-medium', 'Fahrettin — Türkçe (erkek)'],
     ['tr_TR-fettah-medium', 'Fettah — Türkçe (erkek)'],
     ['en_US-lessac-medium', 'Lessac — English (male)'],
     ['en_US-amy-medium', 'Amy — English (female)'],
-  ]
-    .map(([v, n]) => `<option value="${v}">${n}</option>`)
-    .join('');
+  ];
+  const seg = (name, items) => '<div class="voice-seg" id="' + name + '">' +
+    items.map(([v, n]) => `<label><input type="radio" name="${name}" value="${v}"/><span>${n}</span></label>`).join('') +
+    '</div>';
   pane.innerHTML =
     '<h2>' + _t('tts_h2') + '</h2><div class="sub">' + _t('tts_sub') + '</div>' +
-    '<div class="sub" style="margin:10px 0 4px;font-weight:700;color:var(--accent)">STT (Ses → Yazı)</div>' +
-    `<div class="sub" id="sttStatusTxt" style="margin-bottom:8px">${sttLine}</div>` +
-    `<div class="form-grid" style="grid-template-columns:auto 1fr;align-items:center;margin-bottom:8px">
-      <label style="grid-column:1">${_t('stt_engine')}</label>
-      <select id="sttEngine" class="inp" style="grid-column:2">
-        <option value="">${_t('stt_engine_auto')}</option>
-        <option value="local">${_t('stt_engine_local')}</option>
-        <option value="groq">${_t('stt_engine_groq')}</option>
-        <option value="openai">${_t('stt_engine_openai')}</option>
-      </select>
-    </div>` +
-    `<button id="sttDlBtn" class="btn ghost" style="margin-bottom:14px">${_t('stt_download_now')}</button>` +
-    '<div class="sub" style="margin:10px 0 4px;font-weight:700;color:var(--accent)">TTS (Yazı → Ses)</div>' +
-    `<div class="form-grid" style="grid-template-columns:auto 1fr 1fr;align-items:center;margin-top:10px">
-      <label class="lock-row"><input type="checkbox" id="ttsOn" /><span>${_t('tts_active')}</span></label>
-      <label style="grid-column:1">${_t('tts_engine')}</label>
-      <select id="ttsEngine" class="inp" style="grid-column:2/4">
-        <option value="edge">Edge TTS — ücretsiz bulut (Ahmet/Emel…)</option>
-        <option value="piper">Piper — yerel & offline (Fahrettin/Fettah…)</option>
-        <option value="openai">OpenAI-uyumlu API (tts-1, ses: alloy…)</option>
-      </select>
-      <label style="grid-column:1">${_t('tts_edge_voice')}</label>
-      <select id="ttsEdgeVoice" class="inp" style="grid-column:2/4">${edgeOpts}</select>
-      <label style="grid-column:1">${_t('tts_piper_voice')}</label>
-      <select id="ttsPiperVoice" class="inp" style="grid-column:2/4">${piperOpts}</select>
-      <span id="piperStatusRow" style="grid-column:1/4;display:flex;gap:10px;align-items:center">
-        <span class="sub" id="piperStatusTxt" style="margin:0"></span>
-        <button id="piperDlBtn" class="btn ghost">${_t('tts_piper_download')}</button>
-      </span>
-      <label class="lock-row" style="grid-column:1/4"><input type="checkbox" id="ttsChatAuto" /><span>${_t('tts_chat_auto')}</span></label>
-      <span id="ttsOpenaiWrap" style="display:contents">
-        <input id="ttsUrl" class="inp" placeholder="https://api.openai.com/v1" autocomplete="off" />
-        <input id="ttsKey" class="inp" type="password" placeholder="API Key" autocomplete="off" />
-        <input id="ttsModel" class="inp" placeholder="tts-1" autocomplete="off" />
-        <input id="ttsVoice" class="inp" placeholder="ses: alloy" autocomplete="off" />
-      </span>
-      <button id="ttsSave" class="btn ghost" style="grid-column:1">${_t('tts_save')}</button>
-      <button id="ttsTest" class="btn ghost" style="grid-column:2;justify-self:start">${_t('tts_test')}</button>
-    </div>` +
-    '<div class="sub" style="margin-top:8px">' + _t('tts_note') + '</div>';
+    `<div class="voice-card" style="margin-top:14px">
+      <div class="voice-head">
+        <div class="voice-ico">🎤</div>
+        <div>
+          <div class="voice-title">${_t('tts_stt_title')}</div>
+          <div class="voice-sub">${_t('tts_stt_sub')}</div>
+        </div>
+      </div>
+      ${seg('sttEngine', [['', _t('stt_seg_auto')], ['local', _t('stt_seg_whisper')], ['groq', 'Groq'], ['openai', 'OpenAI']])}
+      <div class="voice-status">
+        <span id="sttDot" class="voice-dot"></span><span id="sttStatusTxt"></span>
+        <button id="sttDlBtn" class="btn ghost" style="margin-left:auto">${_t('stt_download_now')}</button>
+      </div>
+    </div>
+    <div class="voice-card">
+      <div class="voice-head">
+        <div class="voice-ico">🔊</div>
+        <div>
+          <div class="voice-title">${_t('tts_tts_title')}</div>
+          <div class="voice-sub">${_t('tts_tts_sub')}</div>
+        </div>
+        <label class="lock-row" style="margin-left:auto"><input type="checkbox" id="ttsOn" /><span>${_t('tts_active')}</span></label>
+      </div>
+      ${seg('ttsEngine', [['edge', 'Edge'], ['piper', 'Piper'], ['openai', 'OpenAI']])}
+      <div class="voice-row">
+        <select id="ttsVoiceSel" class="inp"></select>
+      </div>
+      <label class="lock-row" style="margin-top:10px"><input type="checkbox" id="ttsChatAuto" /><span>${_t('tts_chat_auto')}</span></label>
+      <div class="voice-status" id="piperStatusRow">
+        <span id="piperDot" class="voice-dot"></span><span id="piperStatusTxt"></span>
+        <button id="piperDlBtn" class="btn ghost" style="margin-left:auto">${_t('tts_piper_download')}</button>
+      </div>
+      <div class="voice-sliders" id="piperAdvWrap">
+        <div class="voice-slider"><span>${_t('tts_piper_speed')}</span><input id="piperSpeed" type="range" min="0.6" max="1.6" step="0.05" value="1"/><b id="piperSpeedVal">1.00x</b></div>
+        <div class="voice-slider"><span>${_t('tts_piper_silence')}</span><input id="piperSil" type="range" min="0" max="1" step="0.05" value="0.2"/><b id="piperSilVal">0.20s</b></div>
+        <div class="voice-slider"><span>${_t('tts_piper_noise')}</span><input id="piperNoise" type="range" min="0" max="1.2" step="0.05" value="0.667"/><b id="piperNoiseVal">0.67</b></div>
+      </div>
+      <div id="ttsOpenaiWrap" style="display:none">
+        <div class="voice-row" style="margin-top:10px">
+          <input id="ttsUrl" class="inp" placeholder="https://api.openai.com/v1" autocomplete="off" />
+          <input id="ttsKey" class="inp" type="password" placeholder="API Key" autocomplete="off" />
+        </div>
+        <div class="voice-row">
+          <input id="ttsModel" class="inp" placeholder="tts-1" autocomplete="off" />
+          <input id="ttsVoice" class="inp" placeholder="alloy" autocomplete="off" />
+        </div>
+      </div>
+      <div class="voice-actions">
+        <button id="ttsSave" class="btn">${_t('tts_save')}</button>
+        <button id="ttsTest" class="btn ghost">${_t('tts_test')}</button>
+      </div>
+      <div class="voice-note">${_t('tts_note')}</div>
+    </div>`;
 
-  const syncEngineUi = () => {
-    const eng = $('#ttsEngine').value;
-    const isEdge = eng === 'edge';
-    const isPiper = eng === 'piper';
-    $('#ttsEdgeVoice').disabled = !isEdge;
-    $('#ttsPiperVoice').disabled = !isPiper;
-    $('#piperDlBtn').disabled = !isPiper;
-    $('#piperStatusTxt').style.opacity = isPiper ? '1' : '0.45';
-    $('#ttsOpenaiWrap').style.opacity = eng === 'openai' ? '1' : '0.35';
-    $('#ttsOpenaiWrap').querySelectorAll('input').forEach((i) => (i.disabled = eng !== 'openai'));
+  /* ---------- yardımcılar ---------- */
+  const ttsEng = () => (document.querySelector('input[name="ttsEngine"]:checked') || {}).value || 'edge';
+  const setSeg = (name, val) => {
+    document.querySelectorAll('input[name="' + name + '"]').forEach((r) => {
+      r.checked = r.value === String(val);
+      const lab = r.closest('label');
+      if (lab) lab.classList.toggle('on', r.checked);
+    });
+  };
+  const refreshSeg = (name) => {
+    document.querySelectorAll('input[name="' + name + '"]').forEach((r) => {
+      const lab = r.closest('label');
+      if (lab) lab.classList.toggle('on', r.checked);
+    });
+  };
+  const sttName = (st) => (st.provider === 'groq' ? 'Groq Whisper' : st.provider === 'openai' ? 'Whisper (API)' : 'Whisper (yerel)');
+  const sttState = {
+    ready: 'hazır',
+    loading: 'iniyor…',
+    downloaded: 'hazır (ilk kullanımda yüklenir)',
+    partial: 'kısmen indi',
+    missing: 'indirilmedi',
+    cloud: 'bulut',
   };
 
+  /* ---------- ses listeleri (motor başına) ---------- */
+  let edgeVoice = 'tr-TR-AhmetNeural';
+  let piperVoice = 'tr_TR-fahrettin-medium';
+  const fillVoices = () => {
+    const eng = ttsEng();
+    const sel = $('#ttsVoiceSel');
+    if (!sel) return;
+    const list = eng === 'piper' ? PIPER_VOICES : EDGE_VOICES;
+    sel.innerHTML = list.map(([v, n]) => `<option value="${v}">${n}</option>`).join('');
+    sel.value = eng === 'piper' ? piperVoice : edgeVoice;
+    sel.style.display = eng === 'openai' ? 'none' : '';
+  };
+  const captureVoice = () => {
+    const eng = ttsEng();
+    const sel = $('#ttsVoiceSel');
+    if (!sel) return;
+    if (eng === 'piper') piperVoice = sel.value || piperVoice;
+    else if (eng === 'edge') edgeVoice = sel.value || edgeVoice;
+  };
+
+  const syncEngineUi = () => {
+    const eng = ttsEng();
+    const isPiper = eng === 'piper';
+    $('#piperStatusRow').style.display = isPiper ? '' : 'none';
+    $('#piperAdvWrap').style.display = isPiper ? '' : 'none';
+    $('#ttsOpenaiWrap').style.display = eng === 'openai' ? '' : 'none';
+  };
+
+  /* Piper ince ayar etiketleri (hız/duraklama/ifade) */
+  const syncPiperLabels = () => {
+    const sv = $('#piperSpeedVal'), lv = $('#piperSilVal'), nv = $('#piperNoiseVal');
+    if (sv) sv.textContent = Number($('#piperSpeed').value).toFixed(2) + 'x';
+    if (lv) lv.textContent = Number($('#piperSil').value).toFixed(2) + 's';
+    if (nv) nv.textContent = Number($('#piperNoise').value).toFixed(2);
+  };
+
+  /* ---------- durum satırları ---------- */
+  const refreshPiperStatus = async () => {
+    try {
+      const st = await beast.piperStatus(piperVoice);
+      const txt = $('#piperStatusTxt'), dot = $('#piperDot'), btn = $('#piperDlBtn');
+      if (!st) return null;
+      if (txt) txt.textContent = st.installed ? 'Hazır — yerel/offline' : st.installing ? 'İndiriliyor…' : 'İndirilmedi (~80MB)';
+      if (dot) dot.className = 'voice-dot' + (st.installed ? ' ok' : st.installing ? ' warn' : '');
+      if (btn) btn.disabled = !!st.installed;
+      return st;
+    } catch { return null; }
+  };
+  const refreshSttStatus = async () => {
+    try {
+      stt = await beast.sttStatus();
+      const txt = $('#sttStatusTxt'), dot = $('#sttDot');
+      if (txt && stt) txt.textContent = sttName(stt) + ' · ' + (sttState[stt.state] || stt.state) + (stt.mb ? ' · ' + stt.mb + ' MB' : '');
+      if (dot && stt) {
+        dot.className = 'voice-dot' + (
+          ['ready', 'cloud', 'downloaded'].includes(stt.state) ? ' ok' :
+          ['loading', 'partial'].includes(stt.state) ? ' warn' : ''
+        );
+      }
+      return stt;
+    } catch { return null; }
+  };
+
+  /* ---------- ayarları yükle ---------- */
   try {
     const tts = await beast.waGetTts();
     $('#ttsOn').checked = !!tts.enabled;
-    $('#ttsEngine').value = ['edge', 'piper', 'openai'].includes(tts.engine) ? tts.engine : 'edge';
-    $('#ttsEdgeVoice').value = tts.edgeVoice || 'tr-TR-AhmetNeural';
-    $('#ttsPiperVoice').value = tts.piperVoice || 'tr_TR-fahrettin-medium';
+    edgeVoice = tts.edgeVoice || edgeVoice;
+    piperVoice = tts.piperVoice || piperVoice;
+    $('#piperSpeed').value = Number.isFinite(Number(tts.piperSpeed)) ? tts.piperSpeed : 1;
+    $('#piperSil').value = Number.isFinite(Number(tts.piperSilence)) ? tts.piperSilence : 0.2;
+    $('#piperNoise').value = Number.isFinite(Number(tts.piperNoise)) ? tts.piperNoise : 0.667;
     $('#ttsChatAuto').checked = !!tts.chatAutoSpeak;
     $('#ttsUrl').value = tts.baseUrl || '';
     $('#ttsKey').value = tts.key || '';
     $('#ttsModel').value = tts.model || 'tts-1';
     $('#ttsVoice').value = tts.voice || 'alloy';
+    setSeg('ttsEngine', ['edge', 'piper', 'openai'].includes(tts.engine) ? tts.engine : 'edge');
   } catch {}
-
-  /* STT motoru seçimi: '' = otomatik (bulut anahtarı varsa bulut, yoksa yerel) */
-  const sttEngineSel = $('#sttEngine');
-  if (sttEngineSel) sttEngineSel.value = (stt && stt.pref) || '';
-
-  /* Piper durum satırı: runtime/ses modeli hazır mı (indirilince güncellenir) */
-  const refreshPiperStatus = async () => {
-    const v = $('#ttsPiperVoice') ? $('#ttsPiperVoice').value : '';
-    try {
-      const st = await beast.piperStatus(v);
-      const el = $('#piperStatusTxt');
-      if (el && st) {
-        el.textContent = 'Piper: ' + (st.installed
-          ? 'hazır — yerel/offline'
-          : st.installing
-            ? 'indiriliyor…'
-            : st.runtime
-              ? 'ses modeli indirilecek (ilk kullanımda otomatik)'
-              : 'runtime + ses modeli indirilecek (ilk kullanımda otomatik)');
-      }
-      return st;
-    } catch { return null; }
-  };
-
+  setSeg('sttEngine', (stt && stt.pref) || '');
+  syncPiperLabels();
+  fillVoices();
   syncEngineUi();
   await refreshPiperStatus();
-  $('#ttsEngine').addEventListener('change', () => { syncEngineUi(); refreshPiperStatus(); });
-  $('#ttsPiperVoice').addEventListener('change', refreshPiperStatus);
+  await refreshSttStatus();
+
+  /* ---------- olaylar ---------- */
+  ['piperSpeed', 'piperSil', 'piperNoise'].forEach((id) => {
+    const el = $('#' + id);
+    if (el) el.addEventListener('input', syncPiperLabels);
+  });
+  document.querySelectorAll('input[name="ttsEngine"]').forEach((r) => {
+    r.addEventListener('change', () => {
+      captureVoice();
+      refreshSeg('ttsEngine');
+      fillVoices();
+      syncEngineUi();
+      refreshPiperStatus();
+    });
+  });
+  document.querySelectorAll('input[name="sttEngine"]').forEach((r) => {
+    r.addEventListener('change', async () => {
+      refreshSeg('sttEngine');
+      const res = await beast.sttProviderSet(r.value).catch(() => null);
+      if (res && res.ok) {
+        await refreshSttStatus();
+        toast('STT motoru: ' + sttName(res));
+      } else {
+        toast('STT motoru değiştirilemedi');
+      }
+    });
+  });
   $('#piperDlBtn').addEventListener('click', async () => {
-    const v = $('#ttsPiperVoice').value;
+    captureVoice();
     toast('Piper indiriliyor… (ilk seferde ~80MB)');
     const poll = setInterval(refreshPiperStatus, 4000);
-    const r = await beast.piperInstall(v).catch((e) => ({ ok: false, error: String((e && e.message) || e) }));
+    const r = await beast.piperInstall(piperVoice).catch((e) => ({ ok: false, error: String((e && e.message) || e) }));
     clearInterval(poll);
     await refreshPiperStatus();
     toast(r && r.ok ? 'Piper hazır ✓ — artık çevrimdışı seslendirme yapılır' : 'Piper indirilemedi: ' + ((r && r.error) || '?'));
   });
-
-  /* STT durum satırı: yenile + şimdi indir (yüklenirken 3 sn'de bir güncellenir) */
-  const refreshSttStatus = async () => {
-    try {
-      stt = await beast.sttStatus();
-      const el = $('#sttStatusTxt');
-      if (el && stt) el.textContent = stt.engineLabel + ' · ' + (stateText[stt.state] || stt.state) + (stt.mb ? ' · ' + stt.mb + ' MB' : '');
-      return stt;
-    } catch { return null; }
-  };
   $('#sttDlBtn').addEventListener('click', async () => {
+    const s0 = await refreshSttStatus();
+    if (s0 && s0.state === 'cloud') { toast('Bulut motoru seçili — indirme gerekmez'); return; }
     await beast.sttPrefetchNow().catch(() => {});
     toast('STT modeli indiriliyor/yükleniyor…');
     const poll = setInterval(async () => {
-      const s = await refreshSttStatus();
-      if (s && (s.state === 'ready' || s.state === 'cloud')) { clearInterval(poll); toast('STT hazır'); }
+      const s2 = await refreshSttStatus();
+      if (s2 && (s2.state === 'ready' || s2.state === 'cloud')) { clearInterval(poll); toast('STT hazır ✓'); }
     }, 3000);
   });
-  /* STT motoru: Whisper yerel / Groq / OpenAI-uyumlu — anında kaydedilir */
-  if (sttEngineSel) sttEngineSel.addEventListener('change', async () => {
-    const r = await beast.sttProviderSet(sttEngineSel.value).catch(() => null);
-    if (r && r.ok) {
-      await refreshSttStatus();
-      toast('STT motoru: ' + (r.engineLabel || 'otomatik'));
-    } else {
-      toast('STT motoru değiştirilemedi');
-    }
-  });
   $('#ttsSave').addEventListener('click', async () => {
+    captureVoice();
     await beast.waSetTts({
       enabled: $('#ttsOn').checked,
-      engine: $('#ttsEngine').value,
-      edgeVoice: $('#ttsEdgeVoice').value,
-      piperVoice: $('#ttsPiperVoice').value,
+      engine: ttsEng(),
+      edgeVoice,
+      piperVoice,
+      piperSpeed: Number($('#piperSpeed').value),
+      piperSilence: Number($('#piperSil').value),
+      piperNoise: Number($('#piperNoise').value),
       chatAutoSpeak: $('#ttsChatAuto').checked,
       baseUrl: $('#ttsUrl').value.trim(),
       key: $('#ttsKey').value.trim(),
@@ -2740,7 +2813,7 @@ async function renderTtsPane() {  const pane = $('#tab-tts');
   });
   $('#ttsTest').addEventListener('click', async () => {
     /* motor + IPC + çalma zincirini uçtan uca dener — sorun neredeyse görünür */
-    const eng = $('#ttsEngine').value;
+    const eng = ttsEng();
     const line = eng === 'piper'
       ? 'Merhaba kanka, Piper yerel TTS testi. Ben Beast.'
       : eng === 'openai'

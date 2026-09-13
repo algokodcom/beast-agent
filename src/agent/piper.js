@@ -195,6 +195,29 @@ async function install(voiceId) {
   }
 }
 
+/* ---------- sentez ayarları (hız/duraklama/ifade) ----------
+   speed:       1.0 normal; >1 hızlı, <1 yavaş → CLI'da --length_scale 1/speed
+                (piper'da length_scale büyükse konuşma YAVAŞLAR)
+   silence:     cümle sonu duraklama sn (--sentence_silence, varsayılan 0.2)
+   noiseScale:  ifade/doğallık (--noise_scale, varsayılan 0.667; düşük=daha
+                stabil/robotik, yüksek=daha canlı ama artefakt riski) */
+function clampNum(n, lo, hi) {
+  return Math.max(lo, Math.min(hi, n));
+}
+
+function tuningArgs(opts = {}) {
+  const args = [];
+  const speed = Number(opts.speed);
+  if (Number.isFinite(speed) && Math.abs(speed - 1) > 0.001) {
+    args.push('--length_scale', String(+(1 / clampNum(speed, 0.5, 2)).toFixed(3)));
+  }
+  const sil = Number(opts.sentenceSilence);
+  if (Number.isFinite(sil)) args.push('--sentence_silence', String(+(clampNum(sil, 0, 2)).toFixed(3)));
+  const noise = Number(opts.noiseScale);
+  if (Number.isFinite(noise)) args.push('--noise_scale', String(+(clampNum(noise, 0, 1.5)).toFixed(3)));
+  return args;
+}
+
 /* ---------- sentez: metin → { audio: WAV buffer, mime } ----------
    DİKKAT: piper'ı ASLA stdout'a yazdırmıyoruz (--output_file -). Windows'ta
    binary stdout akışı bozuluyor — çıktı gürültülü/cızırtılı geliyor
@@ -215,6 +238,7 @@ function synthesize(text, opts = {}) {
           '--model', voicePath(vid),
           '--config', voiceJsonPath(vid),
           '--output_file', outFile,
+          ...tuningArgs(opts),
           '-q',
         ];
         const p = spawn(exePath(), args, { windowsHide: true, cwd: binDir() });
@@ -250,6 +274,7 @@ module.exports = {
   synthesize,
   install,
   status,
+  tuningArgs,
   ensureRuntime,
   ensureVoice,
   runtimeInstalled,

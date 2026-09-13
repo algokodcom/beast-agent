@@ -1060,6 +1060,9 @@ async function synthesizeSpeech(text) {
     if (engine === 'piper') {
       return await piper.synthesize(String(text).slice(0, 4000), {
         voice: cfg.piperVoice || piper.DEFAULT_VOICE,
+        speed: cfg.piperSpeed,
+        sentenceSilence: cfg.piperSilence,
+        noiseScale: cfg.piperNoise,
       });
     }
     if (!cfg.baseUrl || !cfg.key) return null;
@@ -12879,6 +12882,13 @@ ipcMain.handle('wa:queue:get', () => mqueue.stats());
 
 ipcMain.handle('wa:sessions', () => [...waChats.values()]);
 
+/* TTS sayısal ayar kelepçesi: geçersiz/boş değerde varsayılana döner */
+function clampTtsNum(v, lo, hi, def) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return def;
+  return Math.max(lo, Math.min(hi, n));
+}
+
 ipcMain.handle('wa:tts:get', () => settings.waTts || {});
 ipcMain.handle('wa:tts:set', (_e, cfg) => {
   const eng = String((cfg && cfg.engine) || 'edge');
@@ -12889,6 +12899,10 @@ ipcMain.handle('wa:tts:set', (_e, cfg) => {
     engine: ['edge', 'piper', 'openai'].includes(eng) ? eng : 'edge',
     edgeVoice: String((cfg && cfg.edgeVoice) || 'tr-TR-AhmetNeural').trim(),
     piperVoice: piper.VOICES[pv] ? pv : piper.DEFAULT_VOICE,
+    /* Piper ince ayar: hız (0.6-1.6), cümle sonu duraklama (0-1 sn), ifade (0-1.2) */
+    piperSpeed: clampTtsNum(cfg && cfg.piperSpeed, 0.6, 1.6, 1),
+    piperSilence: clampTtsNum(cfg && cfg.piperSilence, 0, 1, 0.2),
+    piperNoise: clampTtsNum(cfg && cfg.piperNoise, 0, 1.2, 0.667),
     chatAutoSpeak: !!(cfg && cfg.chatAutoSpeak),
     baseUrl: String((cfg && cfg.baseUrl) || '').trim(),
     key: String((cfg && cfg.key) || '').trim(),

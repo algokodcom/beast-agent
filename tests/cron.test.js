@@ -126,3 +126,47 @@ test('removeIf: koşula uyan görevleri toplu siler, kind alanı saklanır', () 
   assert.equal(cron.list().some((j) => j.name === 'rapor'), true);
   assert.equal(cron.list().some((j) => j.kind === 'reminder'), false);
 });
+
+/* ---------- oturumsuz altyapı: sessionId/oturum kodu tutulmaz ---------- */
+
+test('add/update: sessionId ve sessionCode kayda GEÇMEZ', () => {
+  const a = cron.add({ name: 'oturumsuz', schedule: '*/5 * * * *', prompt: 'p', sessionId: 'abc123' });
+  assert.equal(a.ok, true);
+  assert.equal('sessionId' in a.job, false);
+  assert.equal('sessionCode' in a.job, false);
+
+  const u = cron.update(a.job.id, { name: 'oturumsuz-2', sessionId: 'zzz999' });
+  assert.equal(u.ok, true);
+  assert.equal('sessionId' in u.job, false);
+  assert.equal('sessionCode' in u.job, false);
+});
+
+test('init: eski kayıtlardaki sessionId göçte temizlenir', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const { beastRoot } = require('../src/agent/memory');
+  fs.mkdirSync(beastRoot(), { recursive: true });
+  fs.writeFileSync(
+    path.join(beastRoot(), 'cron.json'),
+    JSON.stringify({
+      jobs: [
+        {
+          id: 'old1',
+          name: 'eski',
+          schedule: '0 9 * * *',
+          prompt: 'p',
+          enabled: true,
+          nextRunAt: Date.now() + 3600000,
+          sessionId: 'sid-xyz',
+          sessionCode: 'ABCDEF',
+        },
+      ],
+    })
+  );
+  cron.init({ onFire: () => {} });
+  const j = cron.list().find((x) => x.id === 'old1');
+  assert.ok(j);
+  assert.equal('sessionId' in j, false);
+  assert.equal('sessionCode' in j, false);
+  cron.stop();
+});

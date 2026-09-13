@@ -2,7 +2,9 @@
 
 /* Beast cron: zamanlanmış görevler (%APPDATA%\beast\cron.json).
    5 alanlı cron ifadeleri: dakika saat ayGunu ay haftaGunu
-   Desteklenen sözdizimi: * , - / sayılar.  Saat geldiğinde onFire tetiklenir. */
+   Desteklenen sözdizimi: * , - / sayılar.  Saat geldiğinde onFire tetiklenir.
+   DİKKAT: görevler OTURUMA BAĞLI DEĞİLDİR — sessionId/oturum kodu tutulmaz;
+   çalıştırma ve teslimat her kanalın TEK oturumu üzerinden yapılır (main). */
 
 const fs = require('fs');
 const path = require('path');
@@ -24,6 +26,14 @@ function load() {
   try {
     const raw = JSON.parse(fs.readFileSync(file(), 'utf8'));
     jobs = Array.isArray(raw.jobs) ? raw.jobs : [];
+    /* ESKİ KAYIT GÖÇÜ: görevler artık oturuma bağlı değil — eski sessionId
+       (ve varsa oturum kodu) diskte kalırsa görev yanlışlıkla bir oturuma
+       çakılı sanılır; yükleme sırasında temizlenir. */
+    for (const j of jobs) {
+      if (!j || typeof j !== 'object') continue;
+      delete j.sessionId;
+      delete j.sessionCode;
+    }
   } catch {
     jobs = [];
   }
@@ -136,7 +146,7 @@ function list() {
   return jobs.map((j) => ({ ...j }));
 }
 
-function add({ name, schedule, prompt, once, sessionId, kind }) {
+function add({ name, schedule, prompt, once, kind }) {
   const n = String(name || '').trim().slice(0, 80) || 'Görev';
   const s = String(schedule || '').trim();
   const p = String(prompt || '').trim().slice(0, 4000);
@@ -148,7 +158,6 @@ function add({ name, schedule, prompt, once, sessionId, kind }) {
     name: n,
     schedule: s,
     prompt: p,
-    sessionId: sessionId || null,
     once: !!once,
     enabled: true,
     ...(k ? { kind: k } : {}),
@@ -164,7 +173,8 @@ function add({ name, schedule, prompt, once, sessionId, kind }) {
 function update(id, patch) {
   const job = jobs.find((j) => j.id === id);
   if (!job) return { ok: false, error: 'görev bulunamadı' };
-  if (patch.sessionId !== undefined) job.sessionId = patch.sessionId;
+  delete job.sessionId;
+  delete job.sessionCode;
   if (patch.name !== undefined) job.name = String(patch.name).trim().slice(0, 80) || job.name;
   if (patch.prompt !== undefined) {
     const p = String(patch.prompt).trim().slice(0, 4000);

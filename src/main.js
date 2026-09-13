@@ -1944,7 +1944,8 @@ function ensureWaSession(jid) {
     waChats.set(String(jid), waSingleSid);
     dirty = true;
   }
-  waRememberSession(String(jid), waSingleSid);
+  /* jid'siz çağrı (cron taban oturumu) sohbet geçmişini kirletmez */
+  if (jid != null) waRememberSession(String(jid), waSingleSid);
   if (dirty) {
     saveWaChats();
     if (wa) wa.setWatchJids([...waChats.keys()]);
@@ -2194,7 +2195,6 @@ function scheduleReminder({ when, message, sessionId, repeat }) {
         schedule: s.schedule,
         prompt: `[TEKRARLI HATIRLATMA] Kullanıcıya şunu hatırlat: "${msg}". Kısaca ve nazikçe bildir.`,
         kind: 'reminder',
-        sessionId: sessionId || undefined,
       });
       if (!r.ok) return r;
       waLog(`tekrarlı hatırlatma kuruldu id=${r.job.id} schedule=${s.schedule} sid=${sessionId || '-'}`);
@@ -2210,7 +2210,6 @@ function scheduleReminder({ when, message, sessionId, repeat }) {
       prompt: `[HATIRLATMA ZAMANI] Kullanıcıya şunu hatırlat: "${msg}". Kısaca ve nazikçe bildir.`,
       kind: 'reminder',
       once: true,
-      sessionId: sessionId || undefined,
     });
     if (!r.ok) return r;
     waLog(`reminder kuruldu id=${r.job.id} at=${d.toISOString()} sid=${sessionId || '-'}`);
@@ -3357,8 +3356,14 @@ function reloadBackend() {
           });
         } catch {}
       }
+      /* CRON CEVABI AYRIMI: bu done/error cron işine aitse bekleme kaydını
+         BURADA düş. Cron cevabı normal kanal akışından DEĞİL, aşağıdaki tek
+         noktadan TÜM bağlı entegrasyonlara (WA base + TG + DC) yansıtılır —
+         böylece ham cevap + önekli cevap çift gönderimi olmaz. */
+      const cjob =
+        ev.type === 'done' || ev.type === 'error' ? cronAnswerPendingTake(ev.sessionId) : null;
       // WhatsApp oturumlarının son cevabını geri gönder (metin + opsiyonel ses)
-      if ((ev.type === 'done' || ev.type === 'error') && wa && wa.connected) {
+      if ((ev.type === 'done' || ev.type === 'error') && !cjob && wa && wa.connected) {
         const wajid = waReplyJid(ev.sessionId);
         if (wajid) {
           (async () => {
@@ -3417,7 +3422,7 @@ function reloadBackend() {
         }
       }
       // Telegram oturumlarının son cevabını geri gönder (WA ile aynı akış)
-      if ((ev.type === 'done' || ev.type === 'error') && tg && tg.connected) {
+      if ((ev.type === 'done' || ev.type === 'error') && !cjob && tg && tg.connected) {
         const hitT = [...tgChats.entries()].find(([, s]) => s === ev.sessionId);
         if (hitT) {
           const tgid = hitT[0];
@@ -3438,7 +3443,7 @@ function reloadBackend() {
         }
       }
       // Discord oturumlarının son cevabını geri gönder (TG ile aynı akış)
-      if ((ev.type === 'done' || ev.type === 'error') && dc && dc.connected) {
+      if ((ev.type === 'done' || ev.type === 'error') && !cjob && dc && dc.connected) {
         const hitD = [...dcChats.entries()].find(([, s]) => s === ev.sessionId);
         if (hitD) {
           const dchid = hitD[0];
@@ -3458,31 +3463,29 @@ function reloadBackend() {
           })();
         }
       }
-      /* CRON → TÜM AKTİF ENTEGRASYONLAR: cron işi bittiğinde cevap (ya da
-         hata) sahibin bağlı olduğu her kanala yansıtılır — WA + Telegram +
-         Discord. Aynı kanal hem cron oturumuna bağlıysa TEK cevap alır.
-         Bayat (TTL aşımı) bekleme kaydı Take ile düşer, yansıtılmaz. */
-      if (ev.type === 'done' || ev.type === 'error') {
-        const cjob = cronAnswerPendingTake(ev.sessionId);
-        if (cjob && !ev.aborted) {
-          (async () => {
-            try {
-              let txt = '';
-              if (ev.type === 'error') {
-                txt = '⚠️ [cron: ' + String((cjob && cjob.name) || 'görev') + ']\nHata: ' + String(ev.error || '').slice(0, 200);
-              } else {
-                const s = engine.openSession(ev.sessionId);
-                const lastA = [...s.messages].reverse().find((m) => m.role === 'assistant' && m.content);
-                txt = typeof (lastA && lastA.content) === 'string' ? lastA.content : '';
-                if (txt.trim()) txt = '⏰ [cron: ' + String((cjob && cjob.name) || 'görev') + ']\n' + txt;
-              }
-              if (!txt.trim()) return;
-              for (const m of cronMirrorTargets(String(ev.sessionId))) {
-                try { await m.send(txt); } catch {}
-              }
-            } catch {}
-          })();
-        }
+      /* CRON → TÜM BAĞLI ENTEGRASYONLAR: cron işi bittiğinde cevap (ya da
+         hata) WhatsApp (base) + Telegram + Discord'un hepsine yansıtılır.
+         Yansıtma yalnız cron oturumunun KENDİ kanalına yapılmaz (orası ham
+         cevabı normal akıştan alır). Bayat (TTL aşımı) kayıt Take ile
+         düşer, yansıtılmaz. */
+      if (cjob && !ev.aborted) {
+        (async () => {
+          try {
+            let txt = '';
+            if (ev.type === 'error') {
+              txt = '⚠️ [cron: ' + String((cjob && cjob.name) || 'görev') + ']\nHata: ' + String(ev.error || '').slice(0, 200);
+            } else {
+              const s = engine.openSession(ev.sessionId);
+              const lastA = [...s.messages].reverse().find((m) => m.role === 'assistant' && m.content);
+              txt = typeof (lastA && lastA.content) === 'string' ? lastA.content : '';
+              if (txt.trim()) txt = '⏰ [cron: ' + String((cjob && cjob.name) || 'görev') + ']\n' + txt;
+            }
+            if (!txt.trim()) return;
+            for (const m of cronMirrorTargets(String(ev.sessionId))) {
+              try { await m.send(txt); } catch {}
+            }
+          } catch {}
+        })();
       }
     },
   });
@@ -6943,7 +6946,7 @@ function cronAnswerPendingTake(sid) {
   return job;
 }
 
-/* OTOMATİK YENİ SOHBET YOK: cron/izleyici/fallout tetiklendiğinde oturum
+/* OTOMATİK YENİ SOHBET YOK: izleyici/fallout tetiklendiğinde oturum
    seçimi — kayıtlı id'nin DOSYASI hâlâ duruyorsa O, değilse EN GÜNCEL
    (meşgul olmayan) oturum kullanılır; hiç oturum yoksa (ilk kurulum) yeni
    açılır. Böylece soldaki sohbet geçmişine "+ Yeni Sohbet" olmadan hayalet
@@ -6951,7 +6954,7 @@ function cronAnswerPendingTake(sid) {
    DİKKAT: _load(id) silinmiş oturum için bile boş bir hayalet nesne
    üretip truthy döner — canlılık kontrolü MUTLAKA sessionFileAlive ile
    yapılır (ensureWa/Tg/DcSession ile aynı kural). Ayrıca meşgul oturuma
-   send() mesajı DÜŞÜRÜR (false döner, cron cevabı kaybolur) — o yüzden
+   send() mesajı DÜŞÜRÜR (false döner, cevap kaybolur) — o yüzden
    meşgul oturumlar da atlanır. */
 function reuseOrLatestSession(preferredId) {
   const sid = String(preferredId || '');
@@ -6969,9 +6972,38 @@ function reuseOrLatestSession(preferredId) {
   return engine.createSession().id;
 }
 
-/* Yansıtma hedefleri: bağlı WA (owner numarası), Telegram ve Discord
-   (owner işaretli kayıt; tek kayıt varsa o). Cron oturumunun KENDİ
-   kanalına yansıtmayız — cevabı zaten kendi akışından alır (çift yok). */
+/* CRON TABAN OTURUMU: cron işleri hiçbir oturuma/sessionId'ye BAĞLI DEĞİL.
+   Her kanalın TEK oturumu vardır — taban sırası: bağlı WhatsApp → bağlı
+   Telegram → bağlı Discord → en güncel masaüstü oturumu. WhatsApp
+   kullanılmayan kurulumlarda cron altyapısı Telegram/Discord üzerinden
+   yaşar; hiçbiri yoksa masaüstü sohbete düşer. */
+function cronBaseSession() {
+  try {
+    if (wa && wa.connected) {
+      if (waSingleSid && sessionFileAlive(waSingleSid)) return waSingleSid;
+      return ensureWaSession();
+    }
+  } catch {}
+  try {
+    if (tg && tg.connected) {
+      if (tgSingleSid && sessionFileAlive(tgSingleSid)) return tgSingleSid;
+      return ensureTgSession();
+    }
+  } catch {}
+  try {
+    if (dc && dc.connected) {
+      if (dcSingleSid && sessionFileAlive(dcSingleSid)) return dcSingleSid;
+      return ensureDcSession();
+    }
+  } catch {}
+  return reuseOrLatestSession('');
+}
+
+/* Yansıtma hedefleri: cron cevabı BAĞLI TÜM entegrasyonlara dağıtılır —
+   WhatsApp (base) + Telegram + Discord. Her kanalın TEK oturumu vardır;
+   hedef önce o oturuma bağlı sohbet, yoksa kayıtlı sahip/sahipleridir.
+   Cron oturumunun KENDİ kanalına yansıtılmaz — cevabı zaten kendi normal
+   akışından alır (çift gönderim olmaz). */
 function tgOwnerIds() {
   const list = settings.tgAllow || [];
   const objs = list.filter((e) => e && typeof e === 'object' && e.id && e.id !== '*');
@@ -6985,30 +7017,39 @@ function dcOwnerIds() {
   return owner ? [String(owner.id)] : [];
 }
 function cronMirrorTargets(cronSid) {
+  const sid = String(cronSid || '');
   const out = [];
+  /* WHATSAPP (base): normal akış cron oturumuna bağlı sohbete gönderir;
+     bağlı sohbet yoksa (normal akış gönderemez) base sohbet/sahip numarası
+     hedeflenir — cevap kaybolmaz. */
   try {
-    if (wa && wa.connected) {
+    if (wa && wa.connected && !waReplyJid(sid)) {
       const own = waOwnerNum();
-      if (own) {
-        const jid = own + '@s.whatsapp.net';
-        const bound = [...waChats.entries()].some(([j, s]) => j === jid && String(s) === String(cronSid));
-        if (!bound) out.push({ kind: 'wa', send: (t) => sendWaSafe(jid, t) });
+      const jid = waReplyJid(waSingleSid) || (own ? own + '@s.whatsapp.net' : '');
+      if (jid) out.push({ kind: 'wa', send: (t) => sendWaSafe(jid, t) });
+    }
+  } catch {}
+  /* TELEGRAM: normal akış cron oturumuna bağlı sohbete gönderir; o yoksa
+     kanalın tek oturumuna bağlı sohbet(ler), yoksa sahip kaydı hedeflenir */
+  try {
+    if (tg && tg.connected && ![...tgChats.values()].some((s) => String(s) === sid)) {
+      const bound = [...tgChats.entries()]
+        .filter(([, s]) => String(s) === String(tgSingleSid))
+        .map(([c]) => c);
+      for (const id of (bound.length ? bound : tgOwnerIds())) {
+        out.push({ kind: 'tg', send: (t) => sendTgSafe(id, t) });
       }
     }
   } catch {}
+  /* DISCORD: normal akış cron oturumuna bağlı kanala gönderir; o yoksa
+     kanalın tek oturumuna bağlı kanal(lar), yoksa sahip kaydı hedeflenir */
   try {
-    if (tg && tg.connected) {
-      for (const id of tgOwnerIds()) {
-        const bound = [...tgChats.entries()].some(([c, s]) => String(c) === String(id) && String(s) === String(cronSid));
-        if (!bound) out.push({ kind: 'tg', send: (t) => sendTgSafe(id, t) });
-      }
-    }
-  } catch {}
-  try {
-    if (dc && dc.connected) {
-      for (const id of dcOwnerIds()) {
-        const bound = [...dcChats.entries()].some(([c, s]) => String(c) === String(id) && String(s) === String(cronSid));
-        if (!bound) out.push({ kind: 'dc', send: (t) => sendDcSafe(id, t) });
+    if (dc && dc.connected && ![...dcChats.values()].some((s) => String(s) === sid)) {
+      const bound = [...dcChats.entries()]
+        .filter(([, s]) => String(s) === String(dcSingleSid))
+        .map(([c]) => c);
+      for (const id of (bound.length ? bound : dcOwnerIds())) {
+        out.push({ kind: 'dc', send: (t) => sendDcSafe(id, t) });
       }
     }
   } catch {}
@@ -7023,10 +7064,9 @@ function cronFire(job) {
     return;
   }
   try {
-    const sid = reuseOrLatestSession(job.sessionId);
-    if (sid !== String(job.sessionId || '')) {
-      cron.update(job.id, { sessionId: sid });
-    }
+    /* OTURUMSUZ ÇALIŞTIRMA: taban oturum WA → TG → DC → masaüstü sırasıyla
+       seçilir; cevap done olayında TÜM bağlı entegrasyonlara yansıtılır. */
+    const sid = cronBaseSession();
     cronAnswerPendingSet(sid, job);
     const sent = engine.send(sid, {
       text: `[cron: ${job.name}]\n${job.prompt}`,
@@ -7328,7 +7368,8 @@ function ensureTgSession(chatId) {
     tgChats.set(String(chatId), tgSingleSid);
     dirty = true;
   }
-  tgRememberSession(String(chatId), tgSingleSid);
+  /* id'siz çağrı (cron taban oturumu) sohbet geçmişini kirletmez */
+  if (chatId != null) tgRememberSession(String(chatId), tgSingleSid);
   if (dirty) saveTgChats();
   return tgSingleSid;
 }
@@ -7362,7 +7403,8 @@ function ensureDcSession(channelId) {
     dcChats.set(String(channelId), dcSingleSid);
     dirty = true;
   }
-  dcRememberSession(String(channelId), dcSingleSid);
+  /* id'siz çağrı (cron taban oturumu) sohbet geçmişini kirletmez */
+  if (channelId != null) dcRememberSession(String(channelId), dcSingleSid);
   if (dirty) saveDcChats();
   return dcSingleSid;
 }

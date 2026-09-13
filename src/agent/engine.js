@@ -2006,7 +2006,7 @@ class Engine {
       '- mt5_ea action:"note": grafiğe kısa plan metni + yatay seviye çizgileri yazar (destek/direnç/SL/TP) — sonra tool__mt5_shot ile çekip seviyelerin doğru yerde olduğunu GÖRSEL doğrula.\n' +
       '- computer_look: tüm masaüstü ekranı (MT5 dışı pencereler dahil); browser_screenshot: web grafikleri (TradingView/Investing) — browser_open ile aç.\n' +
       '- Görsel göremiyorsan (metin-model) ocr_read (source:"screen"/"browser") ile grafikteki fiyat/seviyeleri metne çevir.\n' +
-      '- Grafikte gezinme/ölçek: computer_act ile timeframe, scroll, zoom (arka planda çalışır — kullanıcının faresini çalmaz).\n' +
+      '- Grafikte gezinme/ölçek: computer_act ile timeframe, scroll, zoom (yerel fare/klavye sürer — imleci oynatır; kısa tut).\n' +
       '- EKİPLE GÖRSEL PAYLAŞIM: chart PNG\'sini agent_dm image:true (son görüntün) ya da image:"<dosya yolu>" (ör. tool__mt5_shot dönen path) ile trader/ekibe gönder — karşı ajan görüntüyü GERÇEKTEN görür, AJAN DM panelinde açılır. Ortak kararlarda grafiği paylaşmak zorunlu disiplindir.\n' +
       '- PARALEL EKİP AKIŞI: teknik ajan seviyeleri hesaplar → mt5_ea note ile grafiğe çizer; görsel ajan tool__mt5_shot ile çekip TEYİT eder ve agent_dm ile görseli trader\'a atar; risk ajanı aynı görsel üzerinden SL/TP yerleşimini denetler; trader kararı işleme çevirir. Aynı sembolde koşan ajanlar tek DM grubunda (agent_dm group) toplanır — çelişen hareket etme.\n' +
       '- EKSİK ARAÇ: özel grafik aracı gerekiyorsa (ör. çoklu timeframe tek görüntü, indikatör paneli okuma) VAR SAYMA — tool_request ile TOOL botuna yazdır (asenkron çalışır; rapor sohbete düşer, araç doğrulanınca tool__<ad> olarak ANINDA çağrılır); küçük aracı skill("tool-yazma") prosedürüyle kendin de yazabilirsin.\n' +
@@ -6412,36 +6412,19 @@ const TOOLS = [
     function: {
       name: 'computer_act',
       description:
-        'Drive the user\u2019s Windows desktop in the BACKGROUND via cua-driver: your clicks/typing do NOT move the user\u2019s cursor or steal focus. Canonical flow: 1) capture (mode=som \u2192 screenshot + numbered element index), 2) act by element index (much more reliable than pixels), 3) verify with capture_after=true. Pixel x/y are window-local pixels read from the LATEST capture of that window \u2014 re-capture before clicking. Escalate only on returned signals: effect:"suspected_noop" \u2192 retry pixel, then delivery_mode="foreground". Never type passwords/secrets; never click permission dialogs, 2FA or payment UI \u2014 ask the user instead.',
+        'Control mouse/keyboard on the user\u2019s Windows desktop (GUI automation). Ops: click{x,y}, dblclick{x,y}, rightclick{x,y}, move{x,y}, type{text}, key{combo e.g. "ctrl+s","enter","alt+tab"}, scroll{x,y,dy}. Look first with computer_look, act step by step, look again after acting.',
       parameters: {
         type: 'object',
         properties: {
           op: {
             type: 'string',
-            enum: ['capture', 'click', 'dblclick', 'rightclick', 'type', 'key', 'scroll', 'drag', 'wait', 'list_apps', 'focus_app', 'move'],
-            description: 'capture first (som/vision/ax); click/type/etc act by element or window-local pixel; wait pauses; list_apps enumerates windows; focus_app selects input target (raise_window=true steals focus \u2014 only on explicit request); move = legacy real-cursor move',
+            enum: ['click', 'dblclick', 'rightclick', 'move', 'type', 'key', 'scroll'],
           },
-          app: { type: 'string', description: 'target app by name/title substring (scopes capture and input)' },
-          element: { type: 'number', description: 'element index from the latest capture \u2014 preferred over x/y' },
-          x: { type: 'number', description: 'window-local pixel (from the latest capture of that window)' },
-          y: { type: 'number', description: 'window-local pixel (from the latest capture of that window)' },
-          button: { type: 'string', enum: ['left', 'right', 'middle'] },
-          text: { type: 'string', description: 'for op=type (max 2000 chars); NEVER type passwords or secrets' },
-          keys: { type: 'string', description: 'for op=key: "enter", "ctrl+s", "alt+tab"' },
-          direction: { type: 'string', enum: ['up', 'down', 'left', 'right'], description: 'for op=scroll' },
-          amount: { type: 'number', description: 'for op=scroll: wheel notches 1..50 (default 3)' },
-          from_element: { type: 'number', description: 'for op=drag' },
-          to_element: { type: 'number', description: 'for op=drag' },
-          from_x: { type: 'number', description: 'for op=drag (window-local pixels)' },
-          from_y: { type: 'number', description: 'for op=drag (window-local pixels)' },
-          to_x: { type: 'number', description: 'for op=drag (window-local pixels)' },
-          to_y: { type: 'number', description: 'for op=drag (window-local pixels)' },
-          seconds: { type: 'number', description: 'for op=wait (max 30)' },
-          mode: { type: 'string', enum: ['som', 'vision', 'ax'], description: 'for op=capture: som = screenshot + numbered elements (default), vision = screenshot only, ax = element tree only' },
-          capture_after: { type: 'boolean', description: 're-capture the target right after this action (verify in the same call)' },
-          delivery_mode: { type: 'string', enum: ['background', 'foreground'], description: 'background (default) never raises the window; foreground is the last-resort rung \u2014 use ONLY after effect:"suspected_noop" or background_unavailable' },
-          dy: { type: 'number', description: 'legacy scroll fallback: positive = down (-10..10)' },
-          combo: { type: 'string', description: 'legacy alias for keys' },
+          x: { type: 'number' },
+          y: { type: 'number' },
+          text: { type: 'string', description: 'for op=type (max 2000 chars)' },
+          combo: { type: 'string', description: 'for op=key: "enter", "ctrl+s", "alt+tab", "win"' },
+          dy: { type: 'number', description: 'for op=scroll: positive = down (-10..10)' },
         },
         required: ['op'],
       },

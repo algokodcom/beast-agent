@@ -36,5 +36,10 @@ test('#5 nerede kaldım: son oturum + yarım todo döner', async () => {
   assert.equal(w.doneCount, 1);
   assert.ok(w.lastUser.includes('rapor'));
 
+  /* kanal izolasyonu: hariç tutulan (kişi sohbeti) oturum özete girmez */
+  const w2 = eng.lastWhereWasI(new Set([act.id]));
+  assert.ok(w2, 'hariç tutulan oturumla da özet gelir');
+  assert.equal(w2.sessionId, old1.id);
+
   fs.rmSync(dir, { recursive: true, force: true });
 });

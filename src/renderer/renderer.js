@@ -1020,11 +1020,29 @@ async function renderSessions(list) {
   await loadSessionOrder();
   let waSet = new Set();
   let tgSet = new Set();
+  let dcSet = new Set();
+  /* KANAL ETİKETLERİ: oturumun hangi numaraya/grupa ait olduğu listede görünür */
+  const chanLabel = new Map();
   try {
-    waSet = new Set(await beast.waListSessions());
+    for (const it of (await beast.waSessionsInfo()) || []) {
+      if (!it || !it.sid) continue;
+      waSet.add(it.sid);
+      if (it.label) chanLabel.set(String(it.sid), it.label);
+    }
   } catch {}
   try {
-    tgSet = new Set(await beast.tgListSessions());
+    for (const it of (await beast.tgSessionsInfo()) || []) {
+      if (!it || !it.sid) continue;
+      tgSet.add(it.sid);
+      if (it.label) chanLabel.set(String(it.sid), it.label);
+    }
+  } catch {}
+  try {
+    for (const it of (await beast.dcSessionsInfo()) || []) {
+      if (!it || !it.sid) continue;
+      dcSet.add(it.sid);
+      if (it.label) chanLabel.set(String(it.sid), it.label);
+    }
   } catch {}
   els.sessList.innerHTML = '';
   /* BEAST FINANCE izolasyonu: finance modunda YALNIZ finance sohbetleri,
@@ -1044,10 +1062,14 @@ async function renderSessions(list) {
     row.dataset.sid = s.id; /* en üstteki sohbeti otomatik aktif etmek için */
     row.title = _t('sess_drag');
     row.draggable = true;
+    const chan = chanLabel.get(String(s.id)) || '';
     row.innerHTML =
       (waSet.has(s.id) ? '<span class="sess-wa" title="WhatsApp">W</span>' : '') +
       (tgSet.has(s.id) ? '<span class="sess-tg" title="Telegram">T</span>' : '') +
-      `<span class="sess-title">${escapeHtml(s.title || 'Yeni Sohbet')}</span>` +
+      (dcSet.has(s.id) ? '<span class="sess-dc" title="Discord">D</span>' : '') +
+      (chan
+        ? `<span class="sess-main"><span class="sess-chan">${escapeHtml(chan)}</span><span class="sess-title">${escapeHtml(s.title || 'Yeni Sohbet')}</span></span>`
+        : `<span class="sess-title">${escapeHtml(s.title || 'Yeni Sohbet')}</span>`) +
       `<span class="sess-code" title="Oturum kodu">${escapeHtml(s.code || '')}</span>` +
       `<button class="sess-del" title="Sil">×</button>`;
     row.addEventListener('click', () => openSession(s.id));

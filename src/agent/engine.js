@@ -1522,9 +1522,13 @@ class Engine {
   }
 
   /* "Nerede kaldım?" (#5): en son aktif oturumun özeti + yarım kalan todolar.
-     Saf toplama — gönderim/otomatik-devam main'e aittir. */  lastWhereWasI() {
+     Saf toplama — gönderim/otomatik-devam main'e aittir. exclude: bu id'ler
+     (kanal kişi sohbetleri) atlanır — özet yanlış kişiye gitmez. */
+  lastWhereWasI(exclude) {
+    const skip = exclude instanceof Set ? exclude : null;
     let latest = null;
     for (const v of this.listSessions()) {
+      if (skip && skip.has(String(v.id))) continue;
       if (!latest || String(v.updatedAt) > String(latest.updatedAt)) latest = v;
     }
     if (!latest) return null;

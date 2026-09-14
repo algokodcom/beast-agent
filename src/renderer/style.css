@@ -234,6 +234,30 @@ body:not(.ide-mode):not(.studio-mode):not(.sandbox-mode) #watchPane { display: f
   align-items: center;
   justify-content: center;
 }
+.sess-dc {
+  width: 15px;
+  height: 15px;
+  border-radius: 4px;
+  background: #5865f2;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 800;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+/* kanal sohbeti etiketi: hangi numara/grup olduğu + mesaj başlığı alt satırda */
+.sess-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.sess-chan {
+  font-size: 10.5px;
+  font-weight: 700;
+  color: var(--accent);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sess-main .sess-title { font-size: 11.5px; color: var(--muted); }
+.sess.active .sess-main .sess-title { color: var(--text); }
 .sess-title { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 13px; }
 .sess-code {
   color: var(--muted);

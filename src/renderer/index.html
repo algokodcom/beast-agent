@@ -455,6 +455,24 @@
         </div>
 
         <div id="mcpRow">
+          <section id="mcpChat">
+            <div id="mcpChatHead">
+              <span id="mcpChatTitle">MCP SOHBET</span>
+              <select id="mcpChatHist" title="MCP sohbet geçmişi — ana sohbetten ayrıdır"></select>
+              <span class="file-spacer"></span>
+              <button id="mcpChatNew" title="Yeni sohbet (mevcut sohbet geçmişte kalır)">＊</button>
+            </div>
+            <div id="mcpChatOut"></div>
+            <div id="mcpChatStatus" hidden></div>
+            <div id="mcpChatInputRow">
+              <textarea id="mcpChatInput" rows="1" spellcheck="false" autocomplete="off" placeholder="MCP sohbeti — sunucu araçları ajanın emrinde…"></textarea>
+              <button id="mcpChatSend" title="Gönder (Enter)"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg></button>
+              <button id="mcpChatStop" title="Çalışan mesajı durdur" hidden data-i18n-title="bc_stop"><svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor" stroke="none"><rect x="6" y="6" width="12" height="12" rx="2"/></svg></button>
+            </div>
+          </section>
+
+          <div id="mcpSplit" title="Sürükleyerek boyutlandır"></div>
+
           <section id="mcpPanel">
             <div id="mcpHead">
               <span id="mcpTitle">BEAST MCP</span>
@@ -481,24 +499,6 @@
                 <button id="mcpSave">Kaydet</button>
               </div>
               <textarea id="mcpJson" spellcheck="false"></textarea>
-            </div>
-          </section>
-
-          <div id="mcpSplit" title="Sürükleyerek boyutlandır"></div>
-
-          <section id="mcpChat">
-            <div id="mcpChatHead">
-              <span id="mcpChatTitle">MCP SOHBET</span>
-              <select id="mcpChatHist" title="MCP sohbet geçmişi — ana sohbetten ayrıdır"></select>
-              <span class="file-spacer"></span>
-              <button id="mcpChatNew" title="Yeni sohbet (mevcut sohbet geçmişte kalır)">＊</button>
-            </div>
-            <div id="mcpChatOut"></div>
-            <div id="mcpChatStatus" hidden></div>
-            <div id="mcpChatInputRow">
-              <textarea id="mcpChatInput" rows="1" spellcheck="false" autocomplete="off" placeholder="MCP sohbeti — sunucu araçları ajanın emrinde…"></textarea>
-              <button id="mcpChatSend" title="Gönder (Enter)"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg></button>
-              <button id="mcpChatStop" title="Çalışan mesajı durdur" hidden data-i18n-title="bc_stop"><svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor" stroke="none"><rect x="6" y="6" width="12" height="12" rx="2"/></svg></button>
             </div>
           </section>
         </div>

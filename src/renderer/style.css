@@ -4765,7 +4765,7 @@ body.mcp-mode #mcpRow { display: flex; flex-direction: row; }
   white-space: pre;
 }
 
-/* MCP sağ sohbet paneli: ana sohbetten TAMAMEN AYRI oturum (bgTitle 'Beast MCP') */
+/* MCP sol sohbet paneli: ana sohbetten TAMAMEN AYRI oturum (bgTitle 'Beast MCP') */
 #mcpChat {
   display: flex;
   flex-direction: column;

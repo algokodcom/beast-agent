@@ -12674,7 +12674,7 @@ if (els.mcpAddBtn) els.mcpAddBtn.addEventListener('click', () => {
   } catch {}
 });
 
-/* ---------- MCP SOHBETİ (sağ panel): ana sohbetten AYRI oturum ----------
+/* ---------- MCP SOHBETİ (sol panel): ana sohbetten AYRI oturum ----------
    Oturum main'de bgTitle 'Beast MCP' ile yaşar; olaylar sessionId eşleşmesiyle
    yalnız bu panele akar (onEvent yönlendirmesi). Geçmiş seçici eski MCP
    sohbetlerini açar; '＊' taze sohbet başlatır (eskisi geçmişte kalır). */
@@ -12906,7 +12906,7 @@ if (els.mcpChatInput) {
   });
 }
 
-/* ---------- MCP sohbet/detay ayırıcı (sandbox deseni, sohbet SAĞDA) ----------
+/* ---------- MCP sohbet/detay ayırıcı (sandbox deseni, sohbet SOLDA) ----------
    Kaydedilen değer sohbet panelinin mcpRow içindeki payı (0-1). */
 let mcpSplitFrac = 0;
 
@@ -12933,10 +12933,10 @@ if (els.mcpSplit) {
   els.mcpSplit.addEventListener('mousedown', (e) => {
     e.preventDefault();
     els.mcpSplit.classList.add('dragging');
-    const rightEdge = els.mcpChat ? els.mcpChat.getBoundingClientRect().right : window.innerWidth;
+    const leftEdge = els.mcpChat ? els.mcpChat.getBoundingClientRect().left : 0;
     const rowW = Math.max(600, els.mcpRow && els.mcpRow.clientWidth ? els.mcpRow.clientWidth : window.innerWidth - 250);
     const move = (ev) => {
-      const w = Math.max(300, Math.min(rightEdge - ev.clientX, rowW - 240));
+      const w = Math.max(300, Math.min(ev.clientX - leftEdge, rowW - 240));
       mcpSplitFrac = Math.max(0.2, Math.min(w / rowW, 0.85));
       document.body.style.setProperty('--mcpSplit', Math.round(w) + 'px');
     };

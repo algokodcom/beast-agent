@@ -3311,6 +3311,7 @@ function reloadBackend() {
       bcFlushOnDone(ev); /* Beast Code kuyruğunu iş bitiminde boşalt */
       stFlushOnDone(ev); /* Beast Studio kuyruğunu iş bitiminde boşalt */
       sbFlushOnDone(ev); /* Sandbox kuyruğunu iş bitiminde boşalt */
+      mcpChatFlushOnDone(ev); /* MCP sohbet kuyruğunu iş bitiminde boşalt */
       finFlushOnDone(ev); /* Finance trader döngüsü: iş bitince sıradaki turu planla */
       /* BC canlı önizleme: ajan bir dev server başlattıysa adresi yakala —
          preview butonu ve otomatik açılış DAİMA bu sunucuyu öncelikli kullanır */
@@ -6632,6 +6633,211 @@ ipcMain.handle('mcp:refresh', async (_e, name) => {
     return { ok, status: mcpMod.status() };
   } catch (e) {
     return { ok: false, error: String((e && e.message) || e) };
+  }
+});
+
+/* ---------------- BEAST MCP SOHBETİ (MCP modu SAĞ panel) ----------------
+   MCP moduna özel, ANA SOHBETTEN TAMAMEN AYRI oturum: bgTitle 'Beast MCP'
+   (listSessions gizler, listMcpSessions listeler; geçmiş seçici eski
+   oturumları açabilir). MCP sunucu araçları zaten tüm engine turlarına
+   enjekte edilir; panel yalnız oturum yaşam döngüsünü yönetir.
+   Gönderim main chat disiplininin aynısı: boşta kısa debounce (ard arda
+   mesajlar birleşir), meşgulken steer (koşan tura anında eklenir). */
+let mcpChatSid = ''; /* aktif MCP sohbet oturumu */
+let mcpChatFresh = false; /* 'Yeni' istendi: eski sohbete DÖNME, taze aç */
+const mcpChatQueue = new Map(); /* 'mcp' → { timer, msgs[] } */
+const MCP_CHAT_DEBOUNCE_MS = 900;
+
+function mcpChatCreate() {
+  const s = engine._load(engine.createSession().id);
+  s.messages = s.messages || [];
+  s.bgTitle = 'Beast MCP'; /* _view.isBg → ana sohbet geçmişi listesinde gizli */
+  try {
+    fs.appendFileSync(
+      engine._file(s.id),
+      JSON.stringify({ t: 'meta2', bgOf: '', title: 'Beast MCP', at: new Date().toISOString() }) + '\n'
+    );
+  } catch {}
+  engine.cache.set(s.id, s);
+  mcpChatSid = s.id;
+  mcpChatFresh = false;
+  return s;
+}
+
+function mcpChatSession() {
+  if (mcpChatSid) {
+    try {
+      const s = engine.cache.get(mcpChatSid) || engine._load(mcpChatSid);
+      if (s && s.bgTitle === 'Beast MCP') return s;
+    } catch {}
+    mcpChatSid = '';
+  }
+  /* 'Yeni' istenmediyse son MCP sohbetine dön: uygulama yeniden açıldığında
+     sohbet kaldığı yerden sürer (geçmiş seçiciden eski oturumlar açılabilir) */
+  if (!mcpChatFresh) {
+    try {
+      const last = engine.listMcpSessions(50).find((it) => it.count > 0);
+      if (last) {
+        const s = engine._load(last.id);
+        if (s && s.bgTitle === 'Beast MCP') {
+          engine.cache.set(s.id, s);
+          mcpChatSid = s.id;
+          return s;
+        }
+      }
+    } catch {}
+  }
+  return mcpChatCreate();
+}
+
+/* geçmiş yükü: yalnız metin mesajları (tool çağrıları panele basılmaz) */
+function mcpChatMessages(s) {
+  const msgs = [];
+  for (const m of s.messages || []) {
+    if (m.tool_calls) continue;
+    const txt = bcMsgText(m);
+    if (!txt) continue;
+    msgs.push({ role: m.role === 'assistant' ? 'assistant' : 'user', text: txt.slice(0, 4000) });
+  }
+  return msgs.slice(-200);
+}
+
+/* geçmiş listesi: boş oturumlar gizlenir (aktif olan daima görünür) */
+function mcpChatHistory() {
+  let items = [];
+  try { items = engine.listMcpSessions(100); } catch {}
+  return items.filter((it) => it.id === mcpChatSid || it.count > 0);
+}
+
+function mcpChatQueuePush(text, attachments) {
+  let q = mcpChatQueue.get('mcp');
+  if (!q) {
+    q = { timer: null, msgs: [] };
+    mcpChatQueue.set('mcp', q);
+  }
+  q.msgs.push({
+    text,
+    attachments: Array.isArray(attachments) && attachments.length ? attachments : undefined,
+  });
+  return q;
+}
+
+function mcpChatFlush() {
+  const q = mcpChatQueue.get('mcp');
+  if (!q || !q.msgs.length) return;
+  const s = mcpChatSession();
+  if (engine.isBusy(s.id)) return; /* hâlâ çalışıyor — steer yolu mesajı zaten aldı */
+  let merged = '';
+  let mergedAtts = null;
+  for (const m of q.msgs) {
+    if (m.text) merged += (merged ? '\n' : '') + m.text;
+    if (!mergedAtts && Array.isArray(m.attachments) && m.attachments.length) mergedAtts = m.attachments;
+  }
+  mcpChatQueue.delete('mcp');
+  clearTimeout(q.timer);
+  if (!merged.trim() && !mergedAtts) return;
+  try {
+    engine.send(s.id, mergedAtts ? { text: merged, attachments: mergedAtts } : merged, { userAction: true });
+  } catch (e) {
+    /* senkron patlama: panel busy'de kilitlenmesin — hata olayı düş */
+    try {
+      if (win && !win.isDestroyed()) {
+        win.webContents.send('agent:event', { sessionId: s.id, type: 'error', error: String((e && e.message) || e) });
+      }
+    } catch {}
+  }
+}
+
+function mcpChatFlushOnDone(ev) {
+  if (!ev || (ev.type !== 'done' && ev.type !== 'error') || !ev.sessionId) return;
+  if (mcpChatQueue.has('mcp') && String(ev.sessionId) === String(mcpChatSid)) {
+    setTimeout(() => { try { mcpChatFlush(); } catch {} }, 150);
+  }
+}
+
+ipcMain.handle('mcp:chat:open', async (_e, payload) => {
+  if (!engine) return { ok: false, error: 'ajan hazır değil' };
+  /* bekleyen debounce kuyruğu varsa ÖNCE eski oturuma teslim et (mesaj kaybolmaz) */
+  try {
+    if (mcpChatQueue.has('mcp') && mcpChatSid) mcpChatFlush();
+  } catch {}
+  const q = mcpChatQueue.get('mcp');
+  if (q) {
+    clearTimeout(q.timer);
+    mcpChatQueue.delete('mcp');
+  }
+  const id = String((payload && payload.id) || '');
+  let s;
+  if (id) {
+    try { s = engine._load(id); } catch { return { ok: false, error: 'oturum açılamadı' }; }
+    if (s.bgTitle !== 'Beast MCP') return { ok: false, error: 'bu oturum MCP sohbeti değil' };
+    mcpChatSid = id;
+    mcpChatFresh = false;
+  } else {
+    s = mcpChatSession();
+  }
+  engine.cache.set(s.id, s);
+  return {
+    ok: true,
+    sessionId: s.id,
+    busy: !!engine.isBusy(s.id),
+    messages: mcpChatMessages(s),
+    items: mcpChatHistory(),
+  };
+});
+
+ipcMain.handle('mcp:chat:send', async (_e, payload) => {
+  const text = String((payload && payload.msg) || '').trim();
+  const attachments = Array.isArray(payload && payload.attachments) ? payload.attachments : [];
+  if (!text && !attachments.length) return { ok: false, error: 'boş mesaj' };
+  if (!engine) return { ok: false, error: 'ajan hazır değil' };
+  if (!engine.publicState().hasModel) return { ok: false, error: 'model yok — Ayarlar → Provider sekmesinden ekle' };
+  const s = mcpChatSession();
+  if (engine.isBusy(s.id)) {
+    /* MAIN CHAT STEER: koşan tur varken mesaj ANINDA konuşmaya eklenir */
+    engine.send(s.id, attachments.length ? { text, attachments } : text, { userAction: true });
+    return { ok: true, sessionId: s.id, steered: true };
+  }
+  const q = mcpChatQueuePush(text, attachments);
+  clearTimeout(q.timer);
+  q.timer = setTimeout(() => { try { mcpChatFlush(); } catch {} }, MCP_CHAT_DEBOUNCE_MS);
+  return { ok: true, sessionId: s.id, pending: true };
+});
+
+ipcMain.handle('mcp:chat:stop', async () => {
+  const q = mcpChatQueue.get('mcp');
+  if (q) {
+    clearTimeout(q.timer);
+    mcpChatQueue.delete('mcp');
+  }
+  const sid = mcpChatSid;
+  const wasBusy = sid ? engine.isBusy(sid) : false;
+  let r = false;
+  if (wasBusy) {
+    try { r = engine.interrupt(sid, 'kullanıcı MCP sohbet panelinden ■ ile durdurdu'); } catch {}
+  }
+  return { ok: true, wasBusy, interrupted: r };
+});
+
+ipcMain.handle('mcp:chat:new', async () => {
+  if (!engine) return { ok: false, error: 'ajan hazır değil' };
+  const sid = mcpChatSid;
+  if (sid && engine.isBusy(sid)) return { ok: false, error: 'mesaj sürüyor — önce ■ ile durdur' };
+  const q = mcpChatQueue.get('mcp');
+  if (q) {
+    clearTimeout(q.timer);
+    mcpChatQueue.delete('mcp');
+  }
+  mcpChatSid = '';
+  mcpChatFresh = true; /* sonraki oturum TAZE açılır; eski sohbet geçmişte kalır */
+  return { ok: true, sessionId: '', messages: [], items: mcpChatHistory() };
+});
+
+ipcMain.handle('mcp:chat:history', async () => {
+  try {
+    return { ok: true, items: mcpChatHistory() };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e), items: [] };
   }
 });
 

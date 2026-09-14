@@ -1428,10 +1428,10 @@ class Engine {
     return out.slice(0, 100);
   }
 
-  /* Beast Code panel oturumları: bgTitle 'Beast Code' olan gizli oturumlar.
-     Soldaki dosya panelinin sohbet geçmişi listesi bunları gösterir —
-     ana sohbet listesinden (listSessions) TAMAMEN AYRIDIR. */
-  listBcSessions(limit = 100) {
+  /* Panel oturumları: belirli bir bgTitle taşıyan gizli oturumlar (Beast Code,
+     Beast MCP…) — ana sohbet listesinden (listSessions) TAMAMEN AYRIDIR. */
+  _listTitledSessions(title, limit = 100) {
+    const wanted = String(title || '');
     let files = [];
     try {
       files = fs.readdirSync(this.sessionsDir).filter((f) => f.endsWith('.jsonl'));
@@ -1441,7 +1441,7 @@ class Engine {
       const id = f.replace(/\.jsonl$/, '');
       let s;
       try { s = this._load(id); } catch { continue; }
-      if (s.bgTitle !== 'Beast Code') continue; // yalnız Beast Code oturumları
+      if (s.bgTitle !== wanted) continue;
       let title = '';
       for (const m of s.messages) {
         if (m.role !== 'user') continue;
@@ -1453,7 +1453,7 @@ class Engine {
       }
       out.push({
         id,
-        title: title || 'Beast Code oturumu',
+        title: title || wanted + ' oturumu',
         updatedAt: s.updatedAt,
         createdAt: s.createdAt,
         count: s.messages.length,
@@ -1462,6 +1462,16 @@ class Engine {
     }
     out.sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
     return out.slice(0, Math.max(1, Math.min(200, Number(limit) || 100)));
+  }
+
+  /* Beast Code panel oturumları: soldaki dosya panelinin geçmiş listesi gösterir */
+  listBcSessions(limit = 100) {
+    return this._listTitledSessions('Beast Code', limit);
+  }
+
+  /* Beast MCP sohbet oturumları: MCP modundaki sağ sohbet paneli gösterir */
+  listMcpSessions(limit = 100) {
+    return this._listTitledSessions('Beast MCP', limit);
   }
 
   createSession() {

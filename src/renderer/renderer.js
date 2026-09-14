@@ -162,6 +162,15 @@ const els = {
   mcpJsonPath: $('#mcpJsonPath'),
   mcpSave: $('#mcpSave'),
   mcpMsg: $('#mcpMsg'),
+  mcpSplit: $('#mcpSplit'),
+  mcpChat: $('#mcpChat'),
+  mcpChatOut: $('#mcpChatOut'),
+  mcpChatStatus: $('#mcpChatStatus'),
+  mcpChatHist: $('#mcpChatHist'),
+  mcpChatNew: $('#mcpChatNew'),
+  mcpChatInput: $('#mcpChatInput'),
+  mcpChatSend: $('#mcpChatSend'),
+  mcpChatStop: $('#mcpChatStop'),
   stPanel: $('#stPanel'),
   stTitle: $('#stTitle'),
   stCwd: $('#stCwd'),
@@ -5951,6 +5960,12 @@ function onEvent(ev) {
       bcLine('t-dim', '⏳ onay bekleniyor: ' + (ev.tool || '?') + ' — IDE modundan çıkıp sohbetteki kartı onayla');
       return;
     }
+    /* Beast MCP sohbet oturumunun onayı: panelde ipucu + kart sohbete düşer */
+    if (mcpChatSid && ev.sessionId === mcpChatSid) {
+      showApprovalCard(ev);
+      mcpLine('t-dim', '⏳ onay bekleniyor: ' + (ev.tool || '?') + ' — ana sohbetteki kartı onayla');
+      return;
+    }
     if (ev.sessionId && ev.sessionId !== activeId) return;
     showApprovalCard(ev);
     return;
@@ -5961,6 +5976,12 @@ function onEvent(ev) {
   if (ev.type === 'permission.asked') {
     const req = ev.request || {};
     const isBc = bcSessionId && ev.sessionId === bcSessionId;
+    /* Beast MCP sohbet oturumunun izni: kart sohbete düşer, panelde ipucu */
+    if (mcpChatSid && ev.sessionId === mcpChatSid) {
+      showPermissionCard(req, false);
+      mcpLine('t-dim', '⏳ izin bekleniyor: ' + (req.permission || '?') + ' — ana sohbetteki kartı yanıtla');
+      return;
+    }
     if (!isBc && ev.sessionId && ev.sessionId !== activeId) return;
     showPermissionCard(req, isBc);
     return;
@@ -6062,6 +6083,12 @@ function onEvent(ev) {
   /* Sandbox ÇALIŞTIRICI süreç akışı: sessionId'siz global olaylar */
   if (ev.type === 'sb-run' || ev.type === 'sb-run-url' || ev.type === 'sb-run-end') {
     sbRunIngest(ev);
+    return;
+  }
+  /* Beast MCP sohbeti: olaylar SADECE MCP modundaki sağ sohbete akar — ana
+     sohbeti ve Code/Studio/Sandbox panellerini kirletmez (dünyalar ayrı) */
+  if (mcpChatSid && ev.sessionId === mcpChatSid) {
+    mcpIngest(ev);
     return;
   }
   /* Beast Sandbox oturumu: olaylar SADECE Sandbox paneline akar — ana sohbeti
@@ -12514,6 +12541,8 @@ async function setMcpMode(on) {
   if (brandSub) brandSub.textContent = on ? 'MCP' : 'Agent';
   if (on) {
     await renderMcpPanel();
+    mcpSplitRestore(); /* sohbet/detay oranı */
+    mcpChatEnsure(); /* ayrı MCP sohbet oturumu (yoksa aç/geçmişten sürdür) */
     if (!mcpTimer) {
       mcpTimer = setInterval(() => { if (mcpModeOn()) renderMcpPanel(); }, 5000);
     }
@@ -12644,6 +12673,284 @@ if (els.mcpAddBtn) els.mcpAddBtn.addEventListener('click', () => {
     }
   } catch {}
 });
+
+/* ---------- MCP SOHBETİ (sağ panel): ana sohbetten AYRI oturum ----------
+   Oturum main'de bgTitle 'Beast MCP' ile yaşar; olaylar sessionId eşleşmesiyle
+   yalnız bu panele akar (onEvent yönlendirmesi). Geçmiş seçici eski MCP
+   sohbetlerini açar; '＊' taze sohbet başlatır (eskisi geçmişte kalır). */
+let mcpChatSid = '';
+let mcpChatBusy = false;
+let mcpChatOpening = false;
+let mcpChatItems = [];
+let mcpStreamEl = null;
+let mcpStreamRaw = '';
+
+function mcpLine(cls, text) {
+  if (!els.mcpChatOut) return null;
+  const div = document.createElement('div');
+  div.className = cls || 't-out';
+  div.textContent = String(text || '');
+  els.mcpChatOut.appendChild(div);
+  els.mcpChatOut.scrollTop = els.mcpChatOut.scrollHeight;
+  return div;
+}
+
+function mcpStreamDelta(delta) {
+  if (!els.mcpChatOut) return;
+  if (!mcpStreamEl) mcpStreamEl = mcpLine('t-out', '');
+  mcpStreamRaw += String(delta || '');
+  mcpStreamEl.textContent = mcpStreamRaw;
+  els.mcpChatOut.scrollTop = els.mcpChatOut.scrollHeight;
+}
+
+function mcpFlushStream() {
+  mcpStreamEl = null;
+  mcpStreamRaw = '';
+}
+
+function mcpSetBusy(b) {
+  mcpChatBusy = !!b;
+  if (els.mcpChatStop) els.mcpChatStop.hidden = !mcpChatBusy;
+}
+
+function mcpStatusShow(text) {
+  if (els.mcpChatStatus) {
+    els.mcpChatStatus.hidden = false;
+    els.mcpChatStatus.textContent = text;
+  }
+}
+
+function mcpStatusHide() {
+  if (els.mcpChatStatus) els.mcpChatStatus.hidden = true;
+}
+
+/* MCP oturumunun engine olayları → panel (sbIngest'in MCP karşılığı) */
+function mcpIngest(ev) {
+  if (!mcpChatSid || ev.sessionId !== mcpChatSid) return;
+  switch (ev.type) {
+    case 'token':
+      mcpStreamDelta(ev.delta);
+      break;
+    case 'message': {
+      const m = ev.message;
+      if (!m) break;
+      /* kullanıcı echo basılmaz — gönderirken 'sen>' satırı düştü */
+      if (m.role === 'assistant') {
+        mcpFlushStream();
+        const hasTools = Array.isArray(m.tool_calls) && m.tool_calls.length > 0;
+        const txt = typeof m.content === 'string' ? m.content.trim() : '';
+        if (txt && !hasTools) mcpLine('t-out', txt);
+      }
+      break;
+    }
+    case 'tool-start':
+      mcpSetBusy(true);
+      mcpLine('t-dim', '\u2692 ' + (ev.name || '?') + (sbArgsSummary(ev.args) ? ' \u00B7 ' + sbArgsSummary(ev.args) : ''));
+      break;
+    case 'tool-end': {
+      const ok = ev.ok !== false;
+      mcpLine(ok ? 't-dim' : 't-err', (ok ? '  \u2713 ' : '  \u2717 ') + String(ev.result || '').replace(/\s+/g, ' ').slice(0, 160));
+      break;
+    }
+    case 'status':
+      if (ev.status === 'idle') {
+        mcpSetBusy(false);
+        mcpStatusHide();
+      } else {
+        mcpSetBusy(true);
+        mcpStatusShow(ev.status === 'thinking' ? 'düşünüyor…' : String(ev.status || ''));
+      }
+      break;
+    case 'done':
+      mcpFlushStream();
+      mcpSetBusy(false);
+      mcpStatusHide();
+      mcpLine('t-dim', ev.aborted ? '[durduruldu' + (ev.reason ? ' — ' + ev.reason : '') + ']' : '(tamamlandı)');
+      mcpHistRefresh();
+      break;
+    case 'error':
+      mcpFlushStream();
+      mcpSetBusy(false);
+      mcpStatusHide();
+      mcpLine('t-err', '[hata] ' + (ev.error || ''));
+      break;
+  }
+}
+
+function mcpHistFill(items) {
+  if (!els.mcpChatHist) return;
+  mcpChatItems = Array.isArray(items) ? items : [];
+  const sel = mcpChatSid || '';
+  els.mcpChatHist.innerHTML = '';
+  if (!mcpChatItems.length) {
+    const o = document.createElement('option');
+    o.value = '';
+    o.textContent = 'Geçmiş yok';
+    els.mcpChatHist.appendChild(o);
+    els.mcpChatHist.value = '';
+    return;
+  }
+  for (const it of mcpChatItems) {
+    const o = document.createElement('option');
+    o.value = it.id;
+    o.textContent = (it.title || 'MCP sohbeti').slice(0, 64) + (it.count ? ' · ' + it.count : '');
+    els.mcpChatHist.appendChild(o);
+  }
+  if (sel && mcpChatItems.some((x) => x.id === sel)) els.mcpChatHist.value = sel;
+}
+
+async function mcpHistRefresh() {
+  const r = await beast.mcpChatHistory().catch(() => null);
+  if (r && r.ok) mcpHistFill(r.items || []);
+}
+
+async function mcpChatOpen(id) {
+  if (mcpChatBusy || mcpChatOpening) return;
+  mcpChatOpening = true;
+  const r = await beast.mcpChatOpen(id ? { id } : undefined).catch(() => null);
+  mcpChatOpening = false;
+  if (!r || !r.ok) {
+    mcpLine('t-err', (r && r.error) || 'MCP sohbet oturumu açılamadı');
+    return;
+  }
+  mcpChatSid = r.sessionId || '';
+  if (els.mcpChatOut) els.mcpChatOut.innerHTML = '';
+  mcpFlushStream();
+  for (const m of r.messages || []) {
+    mcpLine(m.role === 'assistant' ? 't-out' : 't-cmd', (m.role === 'assistant' ? '' : 'sen> ') + m.text);
+  }
+  if (!(r.messages || []).length) {
+    mcpLine('t-dim', 'MCP sohbeti hazır — MCP sunucu araçlarını kullanabilen ajanla konuş.');
+  }
+  mcpHistFill(r.items || []);
+  mcpSetBusy(!!r.busy);
+  mcpStatusHide();
+}
+
+/* moda girişte: mevcut oturum yoksa aç (çalışan sohbeti ASLA yeniden yükleme) */
+async function mcpChatEnsure() {
+  if (!mcpChatSid && !mcpChatBusy) await mcpChatOpen();
+}
+
+function mcpInputResize() {
+  const ta = els.mcpChatInput;
+  if (!ta) return;
+  ta.style.height = 'auto';
+  ta.style.height = Math.min(ta.scrollHeight, 140) + 'px';
+  ta.classList.toggle('expand', ta.scrollHeight > 140);
+}
+
+function mcpRunCurrent() {
+  const msg = els.mcpChatInput.value.trim();
+  if (!msg || mcpChatOpening) return;
+  els.mcpChatInput.value = '';
+  mcpInputResize();
+  mcpLine('t-cmd', 'sen> ' + msg);
+  mcpSetBusy(true);
+  beast.mcpChatSend({ msg }).then((r) => {
+    if (r && r.ok) {
+      if (r.sessionId) mcpChatSid = r.sessionId;
+      if (r.steered) mcpLine('t-dim', '\u23E9 koşan tura eklendi');
+      if (r.queued) mcpLine('t-dim', '\u23F3 kuyrukta (' + r.count + ') — iş bitince gönderilir');
+    } else {
+      mcpSetBusy(false);
+      mcpLine('t-err', (r && r.error) || 'gönderilemedi');
+    }
+  }).catch((e) => {
+    mcpSetBusy(false);
+    mcpLine('t-err', String((e && e.message) || e));
+  });
+}
+
+if (els.mcpChatSend) els.mcpChatSend.addEventListener('click', () => {
+  mcpRunCurrent();
+  if (els.mcpChatInput) els.mcpChatInput.focus();
+});
+if (els.mcpChatStop) els.mcpChatStop.addEventListener('click', () => {
+  beast.mcpChatStop().then((r) => {
+    if (r && r.ok && r.wasBusy === false) {
+      mcpSetBusy(false);
+      mcpStatusHide();
+    }
+  }).catch(() => {});
+});
+if (els.mcpChatNew) els.mcpChatNew.addEventListener('click', async () => {
+  const r = await beast.mcpChatNew().catch(() => null);
+  if (!r || !r.ok) { toast((r && r.error) || 'yeni sohbet açılamadı'); return; }
+  mcpChatSid = '';
+  if (els.mcpChatOut) els.mcpChatOut.innerHTML = '';
+  mcpFlushStream();
+  mcpSetBusy(false);
+  mcpStatusHide();
+  mcpLine('t-dim', 'yeni MCP sohbeti — ilk mesajla başlar');
+  mcpHistFill(r.items || []);
+  if (els.mcpChatInput) els.mcpChatInput.focus();
+});
+if (els.mcpChatHist) els.mcpChatHist.addEventListener('change', () => {
+  const id = String(els.mcpChatHist.value || '');
+  if (!id || id === mcpChatSid) return;
+  if (mcpChatBusy) {
+    mcpHistFill(mcpChatItems);
+    toast('mesaj sürüyor — önce ■ ile durdur');
+    return;
+  }
+  mcpChatOpen(id);
+});
+if (els.mcpChatInput) {
+  els.mcpChatInput.addEventListener('input', mcpInputResize);
+  els.mcpChatInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      mcpRunCurrent();
+    }
+  });
+}
+
+/* ---------- MCP sohbet/detay ayırıcı (sandbox deseni, sohbet SAĞDA) ----------
+   Kaydedilen değer sohbet panelinin mcpRow içindeki payı (0-1). */
+let mcpSplitFrac = 0;
+
+function mcpSplitApplyFrac() {
+  const rowW = els.mcpRow && els.mcpRow.clientWidth ? els.mcpRow.clientWidth : window.innerWidth - 250;
+  if (!mcpSplitFrac) {
+    const w = Math.max(320, Math.min(520, Math.round(rowW * 0.34)));
+    document.body.style.setProperty('--mcpSplit', w + 'px');
+    return;
+  }
+  mcpSplitFrac = Math.max(0.2, Math.min(mcpSplitFrac, 0.85));
+  const w = Math.max(300, Math.min(Math.round(rowW * mcpSplitFrac), Math.max(320, rowW - 240)));
+  document.body.style.setProperty('--mcpSplit', w + 'px');
+}
+
+function mcpSplitRestore() {
+  let saved = 0;
+  try { saved = parseFloat(localStorage.getItem('beast.mcpSplit')) || 0; } catch {}
+  mcpSplitFrac = saved > 0.05 && saved < 0.95 ? saved : 0;
+  mcpSplitApplyFrac();
+}
+
+if (els.mcpSplit) {
+  els.mcpSplit.addEventListener('mousedown', (e) => {
+    e.preventDefault();
+    els.mcpSplit.classList.add('dragging');
+    const rightEdge = els.mcpChat ? els.mcpChat.getBoundingClientRect().right : window.innerWidth;
+    const rowW = Math.max(600, els.mcpRow && els.mcpRow.clientWidth ? els.mcpRow.clientWidth : window.innerWidth - 250);
+    const move = (ev) => {
+      const w = Math.max(300, Math.min(rightEdge - ev.clientX, rowW - 240));
+      mcpSplitFrac = Math.max(0.2, Math.min(w / rowW, 0.85));
+      document.body.style.setProperty('--mcpSplit', Math.round(w) + 'px');
+    };
+    const up = () => {
+      document.removeEventListener('mousemove', move);
+      document.removeEventListener('mouseup', up);
+      els.mcpSplit.classList.remove('dragging');
+      try { localStorage.setItem('beast.mcpSplit', String(mcpSplitFrac)); } catch {}
+    };
+    document.addEventListener('mousemove', move);
+    document.addEventListener('mouseup', up);
+  });
+  window.addEventListener('resize', () => { if (mcpModeOn()) mcpSplitApplyFrac(); });
+}
 
 /* ---------- ÇALIŞTIRICI v2: butonlar DETERMİNİSTİK ----------
    Proje tipi algılanır (package.json/requirements.txt/pyproject/Cargo.toml/

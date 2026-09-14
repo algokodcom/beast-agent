@@ -1,6 +1,6 @@
 'use strict';
 
-const { app, BrowserWindow, WebContentsView, ipcMain, shell, dialog, Tray, Menu, nativeImage, desktopCapturer, session, net: electronNet, clipboard, Notification } = require('electron');
+const { app, BrowserWindow, WebContentsView, ipcMain, shell, dialog, Tray, Menu, nativeImage, desktopCapturer, screen, session, net: electronNet, clipboard, Notification } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const http = require('http');
@@ -2292,7 +2292,7 @@ function botToolSet(cfg) {
   ]);
   if (s.web_search) { set.add('web_search'); set.add('http_fetch'); set.add('webfetch'); set.add('deep_search'); }
   if (s.browser) {
-    for (const t of ['browser_open', 'browser_read', 'browser_screenshot', 'browser_snapshot', 'browser_click', 'browser_type', 'browser_press', 'browser_scroll', 'browser_select', 'ocr_read', 'computer_look']) set.add(t);
+    for (const t of ['browser_open', 'browser_read', 'browser_screenshot', 'browser_snapshot', 'browser_click', 'browser_type', 'browser_press', 'browser_scroll', 'browser_select', 'browser_wait', 'ocr_read', 'computer_look']) set.add(t);
   }
   if (s.email) { set.add('email_list'); set.add('email_read'); set.add('email_send'); }
   if (s.run_command) {
@@ -3259,7 +3259,7 @@ function reloadBackend() {
     },
     computer: {
       look: captureScreenDataUrl,
-      act: (op, args) => computeruse.act(op, args),
+      act: (op, args) => computerActScaled(op, args),
     },
     ocr: (o) => ocrRead(o),
     email: { list: emailList, read: emailRead, send: emailSend },
@@ -3270,6 +3270,7 @@ function reloadBackend() {
       screenshot: (s) => browserScreenshot(s),
       snapshot: (s) => browserSnapshot(s),
       act: (k, a, s) => browserAct(k, a, s),
+      wait: (a, s) => browserWait(a, s),
     },
     research: {
       /* deep_search'ün "sayfayı GİZLİ tarayıcıda açıp oku" parçası (Electron-only).
@@ -4135,6 +4136,26 @@ function ensureBrowser() {
     if (/^https?:\/\//i.test(url)) wc.loadURL(url).catch(() => {});
     return { action: 'deny' };
   });
+  /* JS DİYALOGLARI (alert/confirm/prompt/beforeunload): CDP ile OTOMATİK
+     onaylanır/kapatılır — aksi halde renderer kilitlenir ve TÜM tarayıcı
+     araçları askıda kalır (executeJavaScript diyalog kapanana dek dönmez). */
+  try {
+    if (!wc.debugger.isAttached()) wc.debugger.attach('1.3');
+    wc.debugger.sendCommand('Page.enable').catch(() => {});
+    wc.debugger.on('message', (_ev, method, params) => {
+      if (method === 'Page.javascriptDialogOpening') {
+        browser.lastDialog = {
+          type: String((params && params.type) || 'alert'),
+          message: String((params && params.message) || ''),
+          at: Date.now(),
+        };
+        try { wc.debugger.sendCommand('Page.handleJavaScriptDialog', { accept: true }).catch(() => {}); } catch {}
+        blog('dialog', browser.lastDialog.type + ': ' + browser.lastDialog.message.slice(0, 80));
+      }
+    });
+  } catch (e) {
+    waLog('tarayıcı diyalog köprüsü kurulamadı: ' + String((e && e.message) || e).slice(0, 120));
+  }
   // Tarayıcı kapalıyken olayların UI'ı geri açmamasını garantile
   const notify = (extra) => {
     if (browser.open && win && !win.isDestroyed()) {
@@ -4251,6 +4272,61 @@ async function browserNavigate(raw, signal, ctx) {
   });
 }
 
+/* JS diyalogları (alert/confirm/prompt) CDP ile OTOMATİK yönetilir;
+   bu yardımcı çağrı SIRASINDA oluşan diyaloğu yanıta ekler. */
+function browserDialogNote(sinceAt) {
+  const d = browser.lastDialog;
+  if (!d || !d.at || d.at <= (sinceAt || 0)) return {};
+  const verb = d.type === 'alert' || d.type === 'prompt' ? 'kapatıldı' : 'onaylandı';
+  return {
+    dialog: { type: d.type, message: d.message },
+    dialogNote: 'JS diyaloğu otomatik ' + verb + ': "' + String(d.message || '').slice(0, 120) + '"',
+  };
+}
+
+/* SPA/DOM oturması: readyState complete + içerik uzunluğu İKİ turdur sabitse
+   dön (en çok maxMs). Böylece hidrasyon bitmeden snapshot/okuma yapılmaz. */
+async function browserSettle(wc, signal, maxMs = 4000) {
+  const t0 = Date.now();
+  let lastLen = -1;
+  let stable = 0;
+  while (Date.now() - t0 < maxMs) {
+    if (signal && signal.aborted) return;
+    let info = null;
+    try {
+      info = await wc.executeJavaScript(
+        '({rs: document.readyState, len: (document.body ? ((document.body.innerText || "").trim().length) : 0)})',
+        true
+      );
+    } catch {
+      return;
+    }
+    if (!info) return;
+    const rs = String(info.rs || '');
+    const len = Number(info.len) || 0;
+    if (rs === 'complete') {
+      if (len > 0 && len === lastLen) stable++;
+      else stable = 0;
+      if (stable >= 2) return;
+      /* boş/az metinli sayfa (canvas/SPA shell): yine de kısa bir hidrasyon penceresi bırak */
+      if (len === 0 && Date.now() - t0 > 1500) return;
+    }
+    lastLen = len;
+    await new Promise((r) => setTimeout(r, 300));
+  }
+}
+
+/* snapshot al (hatayı yut) — navigate/act yanıtlarına gömmek için */
+async function browserSnapshotNow(wc) {
+  try {
+    const raw = await wc.executeJavaScript(BROWSER_SNAPSHOT_JS, true);
+    const obj = JSON.parse(raw);
+    return obj && typeof obj.count === 'number' ? obj : null;
+  } catch {
+    return null;
+  }
+}
+
 async function browserNavigateNow(raw, signal, ctx) {
   let url = String(raw || '').trim();
   if (!url) return { ok: false, error: 'boş adres' };
@@ -4262,11 +4338,27 @@ async function browserNavigateNow(raw, signal, ctx) {
   }
   setBrowserOpenForAgent();
   const wc = browser.view.webContents;
+  const dlgAt = browser.lastDialog ? browser.lastDialog.at : 0;
+  let failInfo = null;
+  let timedOut = false;
   await new Promise((resolve) => {
     let settled = false;
-    const finish = () => { settled = true; clearTimeout(timer); cleanup(); resolve(); };
-    const timer = setTimeout(finish, 25000);
-    const onFail = (_e, code, desc) => { if (code !== -3 && !settled) finish(); };
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      cleanup();
+      resolve();
+    };
+    const timer = setTimeout(() => { timedOut = true; finish(); }, 25000);
+    /* did-fail-load: ANA kare hatasını YAKALA ve rapora koy. kod -3 (ABORTED)
+       yönlendirme/SPA geçişlerinde normaldir; alt kare hataları sayılmaz. */
+    const onFail = (_e, code, desc, validatedURL, isMainFrame) => {
+      if (isMainFrame === false) return;
+      if (code === -3) return;
+      failInfo = { code, desc: String(desc || ''), url: String(validatedURL || url) };
+      finish();
+    };
     function cleanup() {
       clearTimeout(timer);
       wc.removeListener('did-finish-load', finish);
@@ -4274,24 +4366,44 @@ async function browserNavigateNow(raw, signal, ctx) {
     }
     wc.once('did-finish-load', finish);
     wc.on('did-fail-load', onFail);
-    wc.loadURL(url).catch(() => {});
+    wc.loadURL(url).catch((e) => {
+      failInfo = { code: null, desc: String((e && e.message) || e) };
+      finish();
+    });
   });
   let title = '';
   let finalUrl = url;
   try { title = wc.getTitle(); finalUrl = wc.getURL() || url; } catch {}
   browserEmit({ open: true, width: browserShownWidth(browserW()), url: finalUrl });
   flushBrowserStorage(); // oturum çerezleri diske — ani kapanışta kaybolmasın
-  /* açılışta snapshot da göm — model ayrı snapshot çağırmadan ref'lere başlar */
-  let snap = null;
-  try {
-    const sraw = await wc.executeJavaScript(BROWSER_SNAPSHOT_JS, true);
-    const sobj = JSON.parse(sraw);
-    if (sobj && typeof sobj.count === 'number') snap = sobj;
-  } catch {}
+  /* YÜKLEME HATASI: artık "açıldı" denmez — kod/açıklama + çözüm ipucu döner */
+  if (failInfo) {
+    const codeTxt = failInfo.code != null ? ' kod ' + failInfo.code : '';
+    const hint = /ERR_NAME_NOT_RESOLVED|ERR_INTERNET_DISCONNECTED/i.test(failInfo.desc)
+      ? ' (DNS/ağ: internet bağlantısını ve adresi kontrol et)'
+      : /ERR_CONNECTION_REFUSED|ERR_CONNECTION_TIMED_OUT|ERR_EMPTY_RESPONSE/i.test(failInfo.desc)
+        ? ' (sunucu yanıt vermiyor — adres/port doğru mu?)'
+        : '';
+    return {
+      ok: false,
+      error: 'sayfa yüklenemedi' + codeTxt + ': ' + failInfo.desc + hint,
+      url: failInfo.url || finalUrl,
+      ...browserDialogNote(dlgAt),
+    };
+  }
+  /* SPA hidrasyonu: içerik oturmadan snapshot alınmaz (timeout'ta bekleme yok) */
+  await browserSettle(wc, signal, timedOut ? 0 : 4000);
+  const snap = await browserSnapshotNow(wc);
+  let stillLoading = false;
+  try { stillLoading = wc.isLoading(); } catch {}
   return {
     ok: true,
+    ...(timedOut
+      ? { warning: 'yükleme 25 sn içinde tamamlanmadı — sayfa kısmen yüklü olabilir; browser_wait/browser_read ile kontrol et', loading: stillLoading }
+      : {}),
     url: finalUrl,
     title,
+    ...browserDialogNote(dlgAt),
     ...(snap
       ? { snapshot: snap.snapshot, refCount: snap.count, note: 'sayfa acildi — güncel snapshot hazır (' + snap.count + ' ref); ref numarasıyla browser_click/browser_type ile devam et' }
       : { note: 'sayfa acildi — etkileşimli elemanlar için browser_snapshot al' }),
@@ -4691,21 +4803,70 @@ async function browserSearchNow(query, signal, ctx) {
   }
 }
 
-async function browserScreenshot(signal) {
+/* Ekran görüntüsü üzerine ref numaralarını ÇİZ: vision modeli kutuları ve
+   numaraları görür, koordinatı tahmin etmek yerine okur. Ref'ler snapshot ile
+   AYNI numaralandırmayı kullanır (snapshot hemen önce alınır). */
+async function annotateBrowserShot(img, snap) {
+  const lib = canvasLib();
+  if (!lib || !snap || !snap.boxes) return null;
+  const im = await lib.loadImage(img.toPNG());
+  const canvas = lib.createCanvas(im.width, im.height);
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(im, 0, 0);
+  const vw = Number(snap.vw) || im.width;
+  const k = im.width / Math.max(1, vw);
+  let drawn = 0;
+  for (const [ref, b] of Object.entries(snap.boxes)) {
+    const x = Number(b[0]) * k;
+    const y = Number(b[1]) * k;
+    const w = Number(b[2]) * k;
+    const h = Number(b[3]) * k;
+    if (!(w >= 6 && h >= 6)) continue;
+    if (y > im.height || x > im.width || y + h < 0 || x + w < 0) continue;
+    ctx.strokeStyle = 'rgba(0,190,255,0.95)';
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(x + 0.5, y + 0.5, Math.max(2, w), Math.max(2, h));
+    const label = String(ref);
+    ctx.font = 'bold 13px Segoe UI, sans-serif';
+    const tw = Math.ceil(ctx.measureText(label).width);
+    const by = y - 16 < 0 ? y + 1 : y - 16;
+    ctx.fillStyle = 'rgba(0,0,0,0.78)';
+    ctx.fillRect(x, by, tw + 8, 16);
+    ctx.fillStyle = '#00d8ff';
+    ctx.fillText(label, x + 4, by + 12.5);
+    if (++drawn >= 90) break;
+  }
+  return canvas.toBuffer('image/jpeg', 78);
+}
+
+async function browserScreenshot(signal, opts) {
   if (!browser.view || !browser.open) return { ok: false, error: 'tarayıcı açık değil' };
   const wc = browser.view.webContents;
+  const annotate = !(opts && opts.annotate === false);
+  const dlgAt = browser.lastDialog ? browser.lastDialog.at : 0;
   try {
+    /* ref numaraları görselle eşleşsin: önce taze snapshot */
+    let snap = null;
+    if (annotate) snap = await browserSnapshotNow(wc);
     const img = await wc.capturePage();
     let out = img;
     const sz = img.getSize();
     const maxW = 1000; // vision bütçesi için küçült
     if (sz.width > maxW) out = img.resize({ width: maxW });
-    const jpeg = out.toJPEG(72);
+    let jpeg = null;
+    if (annotate) {
+      try { jpeg = await annotateBrowserShot(out, snap); } catch {}
+    }
+    if (!jpeg || !jpeg.length) jpeg = out.toJPEG(72);
     if (!jpeg || !jpeg.length) return { ok: false, error: 'görüntü alınamadı' };
     return {
       ok: true,
-      note: 'ekran görüntüsü bir sonraki adımda sana gösterilecek',
+      note: snap
+        ? 'ekran görüntüsü bir sonraki adımda gösterilecek — üzerindeki numaralar snapshot ref\'leriyle AYNIDIR; tıklamak için o ref\'i kullan'
+        : 'ekran görüntüsü bir sonraki adımda sana gösterilecek',
       __injectImage: 'data:image/jpeg;base64,' + jpeg.toString('base64'),
+      ...(snap ? { snapshot: snap.snapshot, refCount: snap.count } : {}),
+      ...browserDialogNote(dlgAt),
       url: wc.getURL(),
       title: wc.getTitle(),
       bytes: jpeg.length,
@@ -4754,6 +4915,7 @@ const BROWSER_SNAPSHOT_JS = `(function(){
   window.__beMap={};
   const seen=new Set();
   const lines=[];
+  const boxes={};
   let i=0;
   function add(e){
     if(!e||seen.has(e)) return;
@@ -4761,6 +4923,8 @@ const BROWSER_SNAPSHOT_JS = `(function(){
     if(!__vis(e)||e.disabled||e.getAttribute('aria-disabled')==='true') return;
     i++;
     window.__beMap[i]=e;
+    const rb=e.getBoundingClientRect();
+    boxes[i]=[Math.round(rb.left),Math.round(rb.top),Math.round(rb.width),Math.round(rb.height)];
     const tag=e.tagName.toLowerCase();
     const type=(e.getAttribute&&e.getAttribute('type'))||'';
     let s='['+i+'] <'+tag+(type?' type='+type:'')+'>';
@@ -4776,7 +4940,7 @@ const BROWSER_SNAPSHOT_JS = `(function(){
     lines.push('--- SAYFA ---');
   }
   for(const e of document.querySelectorAll(sel)){ if(i>=100) break; add(e); }
-  return JSON.stringify({count:i,title:document.title,url:location.href,snapshot:lines.join('\\n')});
+  return JSON.stringify({count:i,title:document.title,url:location.href,snapshot:lines.join('\\n'),boxes:boxes,vw:window.innerWidth,vh:window.innerHeight});
 })()`;
 
 function browserActionJs(kind, args) {
@@ -4953,6 +5117,10 @@ async function browserSnapshot(signal) {
 async function browserAct(kind, args, signal) {
   if (!browser.view || !browser.open) return { ok: false, error: 'tarayıcı açık değil' };
   const wc = browser.view.webContents;
+  const dlgAt = browser.lastDialog ? browser.lastDialog.at : 0;
+  /* DOĞRULAMA: eylem öncesi görsel parmak izi (yalnız anlamlı eylemlerde) */
+  const verify = ['click', 'type', 'select', 'press'].includes(kind) && !(args && args.verify === false);
+  const sigBefore = verify ? await pageSignature(wc) : null;
   try {
     const raw = await wc.executeJavaScript(browserActionJs(kind, args || {}), true);
     let obj = {};
@@ -4969,6 +5137,20 @@ async function browserAct(kind, args, signal) {
         wc.on('did-navigate', onNav);
       });
     }
+    /* SPA: sayfa değiştiyse DOM oturmadan snapshot alınmaz */
+    if (navigated) await browserSettle(wc, signal, 2500);
+
+    /* DOĞRULAMA: eylem sonrası değişim oranı — "tıkladım ama bir şey olmadı" tuzağını yakalar */
+    let changed = null;
+    let changeRatio = null;
+    if (sigBefore) {
+      const sigAfter = await pageSignature(wc);
+      const ratio = computeruse.signatureDiff(sigBefore, sigAfter);
+      if (ratio != null) {
+        changed = ratio >= 0.02;
+        changeRatio = Number(ratio.toFixed(3));
+      }
+    }
 
     blog(
       kind,
@@ -4981,12 +5163,7 @@ async function browserAct(kind, args, signal) {
     );
 
     /* HIZ: eylem cevabına taze snapshot göm — model ayrı browser_snapshot çağırmaz (tur sayısı yarıya iner) */
-    let freshSnap = null;
-    try {
-      const sraw = await wc.executeJavaScript(BROWSER_SNAPSHOT_JS, true);
-      const sobj = JSON.parse(sraw);
-      if (sobj && typeof sobj.count === 'number') freshSnap = sobj;
-    } catch {}
+    const freshSnap = await browserSnapshotNow(wc);
 
     return {
       ok: true,
@@ -4995,6 +5172,16 @@ async function browserAct(kind, args, signal) {
       url: wc.getURL(),
       title: wc.getTitle(),
       navigated,
+      ...(changed != null ? { changed, changeRatio } : {}),
+      ...(changed === false && ['click', 'type', 'select'].includes(kind)
+        ? {
+            warning:
+              'görünür değişiklik yok (changeRatio ' + changeRatio + ') — eylem etkisiz olabilir: ' +
+              'ref bayat olabilir (browser_snapshot al ve güncel ref ile tekrar dene), öğe kapalı/gizli olabilir ' +
+              'ya da tıklama sayfa tarafından engellenmiş olabilir. browser_wait ile kısa bekleme dene.',
+          }
+        : {}),
+      ...browserDialogNote(dlgAt),
       ...(freshSnap ? { snapshot: freshSnap.snapshot, refCount: freshSnap.count } : {}),
       ...(navigated
         ? { note: 'sayfa degisti — yanıtta güncel snapshot var; refler eskiyse yeni browser_snapshot al' }
@@ -5006,6 +5193,61 @@ async function browserAct(kind, args, signal) {
   } catch (e) {
     return { ok: false, action: kind, error: String((e && e.message) || e), recent: recentLog() };
   }
+}
+
+/* BEKLE: selector/text/ref görünene (gone:true ise kaybolana) kadar ya da ms
+   kadar bekle. SPA'lar, gecikmeli açılan menüler ve ağ yavaşlığı için —
+   körlemesine tekrar denemek yerine deterministik bekleme. */
+async function browserWait(args, signal) {
+  if (!browser.view || !browser.open) return { ok: false, error: 'tarayıcı açık değil' };
+  const wc = browser.view.webContents;
+  const a = args || {};
+  const timeout = Math.max(200, Math.min(30000, Number(a.timeout_ms) || 10000));
+  const ms = Math.max(0, Math.min(10000, Number(a.ms) || 0));
+  const hasCond = a.selector != null || a.text != null || a.ref != null;
+  if (!hasCond) {
+    if (!ms) return { ok: false, error: 'selector, text, ref ya da ms ver' };
+    await new Promise((r) => setTimeout(r, ms));
+    return { ok: true, waited_ms: ms, url: wc.getURL(), title: wc.getTitle() };
+  }
+  const gone = !!a.gone;
+  const t0 = Date.now();
+  /* ms verildiyse koşul taramasından ÖNCE sabit bekleme (extra delay) */
+  if (ms) await new Promise((r) => setTimeout(r, ms));
+  const refJs = a.ref != null ? `!!__resolveRef(${JSON.stringify(Number(a.ref))})` : '';
+  const selJs = a.selector != null ? `(function(){try{var el=document.querySelector(${JSON.stringify(String(a.selector))});return !!(el&&__vis(el));}catch(e){return false;}})()` : '';
+  const txtJs = a.text != null ? `((document.body?document.body.innerText:'').toLowerCase().includes(${JSON.stringify(String(a.text).toLowerCase())}))` : '';
+  const probe = `(function(){${BROWSER_JS_HELPERS};try{return !!(${refJs || selJs || txtJs});}catch(e){return false;}})()`;
+  while (Date.now() - t0 < timeout) {
+    if (signal && signal.aborted) return { ok: false, error: 'bekleme iptal edildi' };
+    let found = false;
+    try { found = !!(await wc.executeJavaScript(probe, true)); } catch { found = false; }
+    if (gone ? !found : found) {
+      return {
+        ok: true,
+        waited_ms: Date.now() - t0,
+        ...(gone ? { gone: true } : { found: true }),
+        ...(a.selector != null ? { selector: String(a.selector) } : {}),
+        ...(a.text != null ? { text: String(a.text).slice(0, 60) } : {}),
+        ...(a.ref != null ? { ref: Number(a.ref) } : {}),
+        url: wc.getURL(),
+        title: wc.getTitle(),
+        note: 'koşul sağlandı — şimdi eyleme geç; ref lazımsa browser_snapshot ile güncel ref al',
+      };
+    }
+    await new Promise((r) => setTimeout(r, 300));
+  }
+  return {
+    ok: false,
+    error:
+      'bekleme zaman aşımı (' + timeout + ' ms): ' +
+      (a.selector != null ? 'selector bulunamadı: ' + String(a.selector).slice(0, 60)
+        : a.text != null ? 'metin bulunamadı: ' + String(a.text).slice(0, 60)
+          : 'ref mevcut değil: ' + Number(a.ref)) +
+      (gone ? ' (hâlâ görünüyor)' : ''),
+    url: wc.getURL(),
+    title: wc.getTitle(),
+  };
 }
 
 /* oturum açılışında --hidden ile başlarsa pencere gösterme, tepside yaşa */
@@ -13077,8 +13319,131 @@ ipcMain.handle('email:send', (_e, msg) => emailSend(msg || {}));
 
 /* ---------- ekran görüntüsü ---------- */
 
-/* Ana ekrandan JPEG dataURL yakalar (computer_use ve screen:capture ortak) */
-async function captureScreenDataUrl() {
+/* Son ekran görüntüsünün kaynak ekran sınırları + görüntü boyutu — computer_act
+   koordinat dönüşümü buradan yapılır (görüntü 1280px'e ölçeklenir). */
+let lastScreenCapture = null;
+
+/* Canvas (görüntü üzerine çizim) — yoksa annotasyon sessizce atlanır */
+let _canvasLib;
+function canvasLib() {
+  if (_canvasLib !== undefined) return _canvasLib;
+  try {
+    _canvasLib = require('@napi-rs/canvas');
+  } catch {
+    _canvasLib = null;
+  }
+  return _canvasLib;
+}
+
+/* Gerçek imleç konumu (400 ms önbellek) — computer_look işaretçisi için */
+let _cursorCache = { at: 0, x: 0, y: 0 };
+function cursorPosition() {
+  return new Promise((resolve) => {
+    if (Date.now() - _cursorCache.at < 400) return resolve({ x: _cursorCache.x, y: _cursorCache.y });
+    let out = '';
+    try {
+      const p = spawn(
+        'powershell.exe',
+        ['-NoProfile', '-NonInteractive', '-Command', 'Add-Type -AssemblyName System.Windows.Forms; $p=[System.Windows.Forms.Cursor]::Position; "$($p.X),$($p.Y)"'],
+        { windowsHide: true }
+      );
+      const t = setTimeout(() => { try { p.kill(); } catch {} resolve(null); }, 4000);
+      p.stdout.on('data', (d) => { out += String(d); });
+      p.on('error', () => { clearTimeout(t); resolve(null); });
+      p.on('close', () => {
+        clearTimeout(t);
+        const m = /(\d+)\s*,\s*(\d+)/.exec(out);
+        if (m) {
+          _cursorCache = { at: Date.now(), x: Number(m[1]), y: Number(m[2]) };
+          resolve({ x: _cursorCache.x, y: _cursorCache.y });
+        } else resolve(null);
+      });
+    } catch {
+      resolve(null);
+    }
+  });
+}
+
+/* Ekran görüntüsü üzerine 128px ızgara + imleç işareti çiz: model koordinatı
+   görselden okuyabilir. Izgara çizgileri yarı saydam — içeriği boğmaz. */
+async function annotateScreenShot(img) {
+  const lib = canvasLib();
+  if (!lib) return null;
+  const im = await lib.loadImage(img.toPNG());
+  const canvas = lib.createCanvas(im.width, im.height);
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(im, 0, 0);
+  const step = 128;
+  ctx.lineWidth = 1;
+  ctx.font = 'bold 12px Segoe UI, sans-serif';
+  for (let x = step; x < im.width; x += step) {
+    ctx.strokeStyle = 'rgba(0,200,255,0.28)';
+    ctx.beginPath();
+    ctx.moveTo(x + 0.5, 0);
+    ctx.lineTo(x + 0.5, im.height);
+    ctx.stroke();
+    const t = String(x);
+    const tw = ctx.measureText(t).width;
+    ctx.fillStyle = 'rgba(0,0,0,0.62)';
+    ctx.fillRect(x + 1, 1, tw + 7, 15);
+    ctx.fillStyle = '#00d8ff';
+    ctx.fillText(t, x + 4, 12.5);
+  }
+  for (let y = step; y < im.height; y += step) {
+    ctx.strokeStyle = 'rgba(0,200,255,0.28)';
+    ctx.beginPath();
+    ctx.moveTo(0, y + 0.5);
+    ctx.lineTo(im.width, y + 0.5);
+    ctx.stroke();
+    const t = String(y);
+    const tw = ctx.measureText(t).width;
+    ctx.fillStyle = 'rgba(0,0,0,0.62)';
+    ctx.fillRect(1, y + 1, tw + 7, 15);
+    ctx.fillStyle = '#00d8ff';
+    ctx.fillText(t, 4, y + 12.5);
+  }
+  try {
+    /* imleç sorgusu en çok 1.5 sn bekletir — look hızlı kalmalı */
+    const cur = await Promise.race([
+      cursorPosition(),
+      new Promise((r) => setTimeout(() => r(null), 1500)),
+    ]);
+    const cap = lastScreenCapture;
+    if (cur && cap && cap.w > 0 && cap.h > 0) {
+      const kx = cap.imgW / cap.w;
+      const ky = cap.imgH / cap.h;
+      const cx = (cur.x - cap.x) * kx;
+      const cy = (cur.y - cap.y) * ky;
+      if (cx >= -24 && cy >= -24 && cx <= im.width + 24 && cy <= im.height + 24) {
+        ctx.strokeStyle = '#ff3b5c';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(cx, cy, 14, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(cx - 22, cy);
+        ctx.lineTo(cx + 22, cy);
+        ctx.moveTo(cx, cy - 22);
+        ctx.lineTo(cx, cy + 22);
+        ctx.stroke();
+        const label = 'imlec (' + Math.round(cx) + ',' + Math.round(cy) + ')';
+        const tw = ctx.measureText(label).width;
+        const bx = Math.min(Math.max(2, cx + 18), Math.max(2, im.width - tw - 12));
+        const by = Math.min(Math.max(16, cy - 34), im.height - 6);
+        ctx.fillStyle = 'rgba(0,0,0,0.78)';
+        ctx.fillRect(bx - 3, by - 13, tw + 8, 16);
+        ctx.fillStyle = '#ff8ba0';
+        ctx.fillText(label, bx, by);
+      }
+    }
+  } catch {}
+  return canvas.toBuffer('image/jpeg', 78);
+}
+
+/* Ana ekrandan JPEG dataURL yakalar (computer_use ve screen:capture ortak).
+   opts.annotate: ızgara + imleç işareti (yalnız ajan computer_look kullanır;
+   OCR/komut yolları düz görüntü ister). */
+async function captureScreenDataUrl(opts) {
   try {
     const sources = await desktopCapturer.getSources({
       types: ['screen'],
@@ -13092,12 +13457,108 @@ async function captureScreenDataUrl() {
       if (a.width * a.height > b.width * b.height) best = s;
     }
     const img = best.thumbnail.resize({ width: 1280 });
-    const jpeg = img.toJPEG(72);
+    /* KAYNAK EKRAN SINIRLARI: ajan görüntüyü 1280px tabanlı okur; act çağrısı
+       bu sınırlara göre gerçek ekran koordinatına çevrilir (çok monitörde ofset dahil) */
+    try {
+      const all = screen.getAllDisplays();
+      const disp = all.find((d) => String(d.id) === String(best.display_id)) || screen.getPrimaryDisplay();
+      const b = (disp && disp.bounds) || { x: 0, y: 0, width: 1280, height: 720 };
+      const size = img.getSize();
+      lastScreenCapture = { x: b.x, y: b.y, w: b.width, h: b.height, imgW: size.width, imgH: size.height };
+    } catch {
+      lastScreenCapture = null;
+    }
+    let jpeg = null;
+    if (opts && opts.annotate) {
+      try { jpeg = await annotateScreenShot(img); } catch {}
+    }
+    if (!jpeg || !jpeg.length) jpeg = img.toJPEG(72);
     if (!jpeg || !jpeg.length) return null;
     return 'data:image/jpeg;base64,' + jpeg.toString('base64');
   } catch {
     return null;
   }
+}
+
+/* ---- görsel parmak izi: aksiyon "işe yaradı mı" (verify) ---- */
+function imageSignature(img) {
+  try {
+    if (!img) return null;
+    const small = img.getSize().width > 64 ? img.resize({ width: 64 }) : img;
+    const sz = small.getSize();
+    return computeruse.bitmapSignature(small.toBitmap(), sz.width, sz.height);
+  } catch {
+    return null;
+  }
+}
+
+async function pageSignature(wc) {
+  try {
+    return imageSignature(await wc.capturePage());
+  } catch {
+    return null;
+  }
+}
+
+/* Ekran değişim imzası — küçük thumbnail ile hızlı (computer_act verify) */
+async function screenSignature() {
+  try {
+    const sources = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 128, height: 72 } });
+    if (!sources.length) return null;
+    let best = sources[0];
+    for (const s of sources) {
+      const a = s.thumbnail.getSize();
+      const b = best.thumbnail.getSize();
+      if (a.width * a.height > b.width * b.height) best = s;
+    }
+    return imageSignature(best.thumbnail);
+  } catch {
+    return null;
+  }
+}
+
+const CU_VERIFY_OPS = new Set(['click', 'dblclick', 'rightclick', 'type', 'key', 'drag']);
+
+/* computer_act köprüsü: model 1280px tabanlı görüntü koordinatı verir —
+   gerçek ekran koordinatına ölçekle (1280'den geniş her ekranda tıklamalar
+   yanlış yere gidiyordu). Aksiyon sonrası görsel değişimi de raporlar. */
+async function computerActScaled(op, args) {
+  const a = { ...(args || {}) };
+  let cap = lastScreenCapture;
+  if (!cap) {
+    try {
+      const b = screen.getPrimaryDisplay().bounds;
+      const imgH = Math.max(1, Math.round((1280 * b.height) / b.width));
+      cap = { x: b.x, y: b.y, w: b.width, h: b.height, imgW: 1280, imgH };
+    } catch {
+      cap = null;
+    }
+  }
+  const opName = String(op || '').toLowerCase();
+  const scaled = cap && cap.imgW > 0 ? computeruse.scaleArgs(a, cap) : a;
+  const verify = CU_VERIFY_OPS.has(opName) && a.verify !== false;
+  const before = verify ? await screenSignature() : null;
+  let r;
+  try {
+    r = await computeruse.act(opName, scaled);
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+  if (before && r && r.ok) {
+    await new Promise((res) => setTimeout(res, 350)); /* UI tepkisi otursun */
+    const after = await screenSignature();
+    const ratio = computeruse.signatureDiff(before, after);
+    if (ratio != null) {
+      r.changed = ratio >= 0.02;
+      r.changeRatio = Number(ratio.toFixed(3));
+      if (!r.changed && ['click', 'dblclick', 'rightclick', 'type'].includes(opName)) {
+        r.warning =
+          'ekranda görünür değişiklik yok — aksiyon etkisiz olabilir (yanlış pencere/hedef ya da odak kaybı). ' +
+          'computer_look ile durumu kontrol et; focus ile pencereyi öne getirip tekrar dene.';
+      }
+    }
+  }
+  return r;
 }
 
 ipcMain.handle('screen:capture', async () => {

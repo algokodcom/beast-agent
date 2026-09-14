@@ -155,11 +155,12 @@ const PERM_TOOL_SETS = {
     'web_search', 'http_fetch', 'webfetch', 'deep_search',
     'browser_open', 'browser_read', 'browser_snapshot', 'browser_screenshot',
     'browser_click', 'browser_type', 'browser_press', 'browser_scroll', 'browser_select',
+    'browser_wait',
     'ocr_read', 'tool_request',
   ]),
   read: new Set([
     'web_search', 'http_fetch', 'webfetch', 'deep_search',
-    'browser_open', 'browser_read', 'browser_snapshot',
+    'browser_open', 'browser_read', 'browser_snapshot', 'browser_wait',
     'list_dir', 'read_file', 'grep', 'glob',
     'git_diff_review', 'repo_map', 'repo_symbols', 'xlsx_read',
     'tool_request',
@@ -191,6 +192,7 @@ const CEO_EXEC_TOOLS = new Set([
   'web_search', 'http_fetch', 'webfetch', 'deep_search',
   'browser_open', 'browser_read', 'browser_screenshot', 'browser_snapshot',
   'browser_click', 'browser_type', 'browser_press', 'browser_scroll', 'browser_select',
+  'browser_wait',
   'computer_look', 'computer_act',
   'ocr_read',
   'channel_send', // dış kişilere mesaj: CEO devreder, kendisi atmaz
@@ -2125,6 +2127,7 @@ class Engine {
         [
           'Basit soruları araç kullanmadan doğrudan cevapla — hız önceliklidir.',
           'Kod/dosya işlerinde: içerik araması grep (regex), dosya adı araması glob, VAR OLAN dosyayı değiştirme edit_file (write_file yalnız yeni dosya/tam yeniden yazım). read_file satır numaralı döner; büyük dosyada devamını offset parametresiyle oku, ASLA baştan okuma; bir dosyayı aynı oturumda BİR KEZ okumak yeter — okunan içerik oturum sonuna kadar bağlamda kalır, dosyayı tekrar okuma. Dosya işlemlerinde özel araçları kullan (edit_file/write_file/read_file/grep/glob); run_command terminal işlerindir (build, git, kurulum, paket) — dosya düzenlemeyi komutla değil edit_file ile yap. edit_file/write_file sonucu additions/deletions döner ve değişiklik diske ANINDA uygulanır — doğrulamak için dosyayı TEKRAR OKUMA; önceki okuduğun içerik + kendi değişikliklerin üzerinden devam et.',
+          'TERMİNAL DİSİPLİNİ: run_command komutları ETKİLEŞİMSİZDİR — REPL/editör/pager (`node`, `python`, `vi`, `notepad`) ve girdi bekleyen komutlar (mesajsız `git commit`, -y\'siz `npm init`, BatchMode\'suz `ssh`) otomatik reddedilir ya da kilitlenmeden kesilir. Etkileşimsiz bayrakları kullan (-y, -m, --yes, --accept-*), uzun betikleri dosyaya yazıp çalıştır. Uzun süreli sunucuları (`npm run dev/start`, `vite`, `uvicorn`, `flask run`...) run_command ile BAŞLATMA — 10 sn içinde kesilir; Sandbox\'ta panel_run, diğer yerlerde arka plan (`Start-Process ... -RedirectStandardOutput log.txt`) kullan, çıktıyı sonra dosyadan oku.',
           'Kullanıcı bir tarihte/saatte hatırlatılmasını isterse set_reminder kullan; when değerini ORTAMdaki bugüne göre hesapla (yerel saat). "Her sabah/gün/hafta" gibi tekrarlı isteklerde repeat alanını da ver (daily/weekly/monthly/weekdays veya cron).',
           'İLK MESAJ (channel_send): kullanıcı "X kişiye yaz / haber ver / duyur" derse channel_send ile SEN ilk mesajı at — karşıdan mesaj gelmesini BEKLEME. Yalnız allow listteki kişiler hedeflenebilir: isim (kısmi), telefon numarası, Telegram/Discord ID, @kullanıcı adı, "sahip" ya da "all". Kişi listede yoksa gönderme, kullanıcıya söyle. Telegram/Discord\'da karşı taraf bota daha önce hiç yazmadıysa gönderim başarısız olabilir; sonucu dürüstçe bildir.',
                     'Kullanıcı kalıcı bir arka plan takibi isterse (fiyat eşiği, pil seviyesi, sayfa değişikliği) watcher_add ile izleyici kur; kurduktan sonra watcher_list ile doğrula ve kullanıcıya koşulu + kontrol sıklığını kısaca bildir.',
@@ -3711,6 +3714,7 @@ class Engine {
       `Ortam: Windows + PowerShell; çalışma klasörü: ${this.workspace}\n` +
       `GENEL AJAN DİSİPLİNİ: görevi A'dan Z'ye yürüt — bağlam topla, uygula, DOĞRULA; yarım bırakma; doğrulama sonucunu rapora yaz.\n` +
       `DOSYA KURALI: dosya işlemlerinde özel araçları kullan — VAR OLAN dosyayı edit_file ile düzenle, yeniyi write_file ile yaz, okuma/arama read_file/grep/glob; run_command terminal işlerindir (build, git, kurulum). Bir dosyayı BİR KEZ oku — içerik bağlamda kalır, tekrar okuma.\n` +
+      `TERMİNAL DİSİPLİNİ: komutlar ETKİLEŞİMSİZ koşar — REPL/editör/pager ve girdi bekleyen komutlar (mesajsız git commit, -y'siz npm init) reddedilir/kesilir; -y, -m, --yes, --accept-* bayraklarını kullan. Uzun süreli sunucuları run_command ile BAŞLATMA (10 sn'de kesilir) — arka planda başlat (panel_run ya da Start-Process + çıktıyı log dosyasına yönlendir).\n` +
       (proj ? `PROJE TALİMATLARI (workspace AGENTS/CLAUDE/CONTEXT — daima uy):\n${proj}\n` : '') +
       `HIZ KURALLARI:\n` +
       `- TOOL İSTEĞİ (CEPHANE): ihtiyacın olan araç yoksa/bozuksa tool_request ile TOOL botuna yazdır (asenkron: istek anında döner, Tool botu arka planda yazar; araç doğrulanınca tool__<ad> olarak anında çağrılır, rapor sohbete düşer); küçük aracı skill("tool-yazma") ile kendin de yaz ve run_command ile doğrula.\n` +
@@ -5139,7 +5143,8 @@ const skills = require('./skills');
         if (!this.browser || typeof this.browser.screenshot !== 'function') {
           return { ok: false, error: 'dahili tarayıcı kullanılamıyor' };
         }
-        const shot = await this.browser.screenshot(signal, { sessionId });
+        /* OCR düz görüntü ister — ref etiketleri metni kirletmesin */
+        const shot = await this.browser.screenshot(signal, { sessionId, annotate: false });
         if (!shot || !shot.ok) return { ok: false, error: (shot && shot.error) || 'görüntü alınamadı' };
         image = shot.__injectImage || shot.image || null;
       } else if (src === 'screen') {
@@ -5147,7 +5152,8 @@ const skills = require('./skills');
         if (!this.computer || typeof this.computer.look !== 'function') {
           return { ok: false, error: 'ekran erişimi yok' };
         }
-        const shot = await this.computer.look();
+        /* OCR düz görüntü ister — ızgara/imleç etiketleri OCR'a girmesin */
+        const shot = await this.computer.look({ annotate: false });
         image = typeof shot === 'string' ? shot : (shot && (shot.image || shot.dataUrl)) || null;
       } else {
         const abs = path.isAbsolute(src) ? src : path.join(this.workspace, src);
@@ -5737,12 +5743,14 @@ const skills = require('./skills');
           return JSON.stringify({ ok: false, error: 'ekran erişimi yok' });
         }
         emitSafe(this, sessionId, { type: 'status', status: 'ekrana bakıyor' });
-        const shot = await this.computer.look();
+        const shot = await this.computer.look({ annotate: true });
         if (!shot) return JSON.stringify({ ok: false, error: 'ekran görüntüsü alınamadı' });
         /* görsel sonraki tura vision mesajı olarak enjekte edilir */
         return JSON.stringify({
           ok: true,
-          note: 'ekran görüntüsü alındı — görsel aşağıda; koordinatlar 1280x720 tabanlı',
+          note:
+            'ekran görüntüsü alındı — görsel aşağıda; 128px ızgara + kırmızı imleç işareti çizili (etiketli koordinatlar görüntü tabanlı). ' +
+            'computer_act koordinatları 1280px görüntü tabanlı alır ve gerçek ekrana otomatik çevirir',
           __injectImage: shot,
         });
       }
@@ -5815,6 +5823,13 @@ const skills = require('./skills');
           return JSON.stringify({ ok: false, error: 'dahili tarayıcı kullanılamıyor' });
         }
         const r = await this.browser.act(name.slice(8), args, signal, { sessionId });
+        return JSON.stringify(r);
+      }
+      if (name === 'browser_wait') {
+        if (!this.browser || typeof this.browser.wait !== 'function') {
+          return JSON.stringify({ ok: false, error: 'dahili tarayıcı kullanılamıyor' });
+        }
+        const r = await this.browser.wait(args || {}, signal, { sessionId });
         return JSON.stringify(r);
       }
       /* Beast Apps: app__<id>__<tool> → apps host'a dispatch */
@@ -6403,7 +6418,7 @@ const TOOLS = [
     function: {
       name: 'computer_look',
       description:
-        'Take a screenshot of the user\u2019s screen and receive it as an image. Use before computer_act to see the GUI; coordinates are on a 1280x720 basis.',
+        'Take a screenshot of the user\u2019s screen and receive it as an image. Use before computer_act to see the GUI; coordinates are on a 1280px-wide image basis — computer_act converts them to real screen coordinates automatically (multi-monitor offsets included).',
       parameters: { type: 'object', properties: {} },
     },
   },
@@ -6412,19 +6427,23 @@ const TOOLS = [
     function: {
       name: 'computer_act',
       description:
-        'Control mouse/keyboard on the user\u2019s Windows desktop (GUI automation). Ops: click{x,y}, dblclick{x,y}, rightclick{x,y}, move{x,y}, type{text}, key{combo e.g. "ctrl+s","enter","alt+tab"}, scroll{x,y,dy}. Look first with computer_look, act step by step, look again after acting.',
+        'Control mouse/keyboard on the user\u2019s Windows desktop (GUI automation). Ops: click{x,y}, dblclick{x,y}, rightclick{x,y}, move{x,y}, hover{x,y} (opens hover menus), drag{x,y,x2,y2}, focus{title} (bring a window whose title contains the text to front), type{text}, key{combo e.g. "ctrl+s","enter","alt+tab"}, scroll{x,y,dy}. Coordinates are 1280px-wide image based (as seen in computer_look) — converted automatically. After click/type/key/drag the response reports changed/changeRatio (visual verification); if changed:false a warning means the action probably had no effect — do NOT assume success, re-check with computer_look / focus the right window. Look first with computer_look, act step by step, look again after acting.',
       parameters: {
         type: 'object',
         properties: {
           op: {
             type: 'string',
-            enum: ['click', 'dblclick', 'rightclick', 'move', 'type', 'key', 'scroll'],
+            enum: ['click', 'dblclick', 'rightclick', 'move', 'hover', 'drag', 'focus', 'type', 'key', 'scroll'],
           },
           x: { type: 'number' },
           y: { type: 'number' },
+          x2: { type: 'number', description: 'for op=drag: end x' },
+          y2: { type: 'number', description: 'for op=drag: end y' },
+          title: { type: 'string', description: 'for op=focus: window title substring (case-insensitive)' },
           text: { type: 'string', description: 'for op=type (max 2000 chars)' },
           combo: { type: 'string', description: 'for op=key: "enter", "ctrl+s", "alt+tab", "win"' },
           dy: { type: 'number', description: 'for op=scroll: positive = down (-10..10)' },
+          verify: { type: 'boolean', description: 'set false to skip the visual change check' },
         },
         required: ['op'],
       },
@@ -6537,12 +6556,13 @@ const TOOLS = [
     function: {
       name: 'browser_click',
       description:
-        'Click an element in the built-in browser. Prefer ref from the latest snapshot (e.g. {"ref":3}); CSS selector or text=X also accepted. The response includes a FRESH snapshot with new refs — continue with those directly instead of calling browser_snapshot again.',
+        'Click an element in the built-in browser. Prefer ref from the latest snapshot (e.g. {"ref":3}); CSS selector or text=X also accepted. The response includes a FRESH snapshot with new refs — continue with those directly instead of calling browser_snapshot again. It also reports changed/changeRatio: if changed is false the click probably had no effect (stale ref/hidden element) — take a fresh snapshot and retry, do NOT assume success.',
       parameters: {
         type: 'object',
         properties: {
           ref: { type: 'number', description: 'element number from browser_snapshot' },
           selector: { type: 'string', description: 'CSS selector or text=X alternative' },
+          verify: { type: 'boolean', description: 'set false to skip the visual change check' },
         },
       },
     },
@@ -6552,7 +6572,7 @@ const TOOLS = [
     function: {
       name: 'browser_type',
       description:
-        'Type text into an input/textarea/contenteditable in the built-in browser (prefer ref). Set submit=true to press Enter afterwards. Date/time fields (input type=date/time/month/datetime-local) are set PROGRAMMATICALLY — just send the date as text in any common format ("2026-03-15", "15.03.2026", "15 Mart 2026"); do NOT click the calendar popup. The response includes a FRESH snapshot with new refs.',
+        'Type text into an input/textarea/contenteditable in the built-in browser (prefer ref). Set submit=true to press Enter afterwards. Date/time fields (input type=date/time/month/datetime-local) are set PROGRAMMATICALLY — just send the date as text in any common format ("2026-03-15", "15.03.2026", "15 Mart 2026"); do NOT click the calendar popup. The response includes a FRESH snapshot with new refs and changed/changeRatio (visual verification).',
       parameters: {
         type: 'object',
         properties: {
@@ -6560,6 +6580,7 @@ const TOOLS = [
           selector: { type: 'string' },
           text: { type: 'string' },
           submit: { type: 'boolean' },
+          verify: { type: 'boolean', description: 'set false to skip the visual change check' },
         },
         required: ['text'],
       },
@@ -6570,12 +6591,13 @@ const TOOLS = [
     function: {
       name: 'browser_press',
       description:
-        'Press a key (Enter, Tab, Escape, ArrowDown…) on the focused element in the built-in browser; optionally focus a ref first. The response includes a FRESH snapshot with new refs.',
+        'Press a key (Enter, Tab, Escape, ArrowDown…) on the focused element in the built-in browser; optionally focus a ref first. The response includes a FRESH snapshot with new refs and changed/changeRatio (visual verification).',
       parameters: {
         type: 'object',
         properties: {
           key: { type: 'string' },
           ref: { type: 'number', description: 'optional element to focus first' },
+          verify: { type: 'boolean', description: 'set false to skip the visual change check' },
         },
         required: ['key'],
       },
@@ -6602,15 +6624,35 @@ const TOOLS = [
     function: {
       name: 'browser_select',
       description:
-        'Pick an <option> of a dropdown (<select>) in the built-in browser by value/text (prefer ref). The response includes a FRESH snapshot with new refs. For CUSTOM (JS) dropdowns that are not <select>, click the trigger, then click the [role=option] ref from the snapshot (popups are listed first).',
+        'Pick an <option> of a dropdown (<select>) in the built-in browser by value/text (prefer ref). The response includes a FRESH snapshot with new refs and changed/changeRatio (visual verification). For CUSTOM (JS) dropdowns that are not <select>, click the trigger, then click the [role=option] ref from the snapshot (popups are listed first).',
       parameters: {
         type: 'object',
         properties: {
           ref: { type: 'number' },
           selector: { type: 'string' },
           value: { type: 'string' },
+          verify: { type: 'boolean', description: 'set false to skip the visual change check' },
         },
         required: ['value'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'browser_wait',
+      description:
+        'Wait in the built-in browser until a condition is met (or timeout): selector appears (or disappears with gone:true), visible text appears, or a ref becomes valid; ms only = fixed sleep. Use this on SPAs / slow pages AFTER an action instead of blind retries — then act on the fresh snapshot. Timeout default 10000ms (max 30000).',
+      parameters: {
+        type: 'object',
+        properties: {
+          selector: { type: 'string', description: 'CSS selector to wait for' },
+          text: { type: 'string', description: 'visible page text/substring to wait for' },
+          ref: { type: 'number', description: 'ref from snapshot that should become valid' },
+          gone: { type: 'boolean', description: 'wait until selector/text/ref DISAPPEARS instead' },
+          ms: { type: 'number', description: 'fixed wait in ms (max 10000); used alone or as extra delay' },
+          timeout_ms: { type: 'number', description: 'condition timeout, default 10000 (max 30000)' },
+        },
       },
     },
   },

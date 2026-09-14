@@ -127,3 +127,26 @@ test('opencode shell portu: negatif timeout reddi + (no output)', async () => {
   const empty = JSON.parse(await tools.exec('run_command', { command: '$null | Out-Null' }, { cwd }));
   assert.ok(empty.output === '(no output)', empty.output);
 });
+
+/* ---------- terminal takılma savunması ---------- */
+
+test('etkileşimli komutlar fail-fast reddedilir (REPL/editör/prompt)', async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'beast-tools-'));
+  for (const cmd of ['node', 'python', 'cmd', 'vi', 'Read-Host "x"', 'git commit', 'npm init', 'findstr abc']) {
+    const r = JSON.parse(await tools.exec('run_command', { command: cmd, timeout_ms: 5000 }, { cwd }));
+    assert.ok(!r.ok, cmd + ' reddedilmeliydi: ' + JSON.stringify(r));
+  }
+  /* etkileşimsiz formlar serbest */
+  for (const cmd of ['python -c "print(1)"', 'git commit -m "x"', 'npm init -y', 'findstr abc dosya.txt', 'npx --yes vite build']) {
+    assert.equal(tools.interactiveCommandReason(cmd), null, cmd + ' engellenmemeliydi');
+  }
+});
+
+test('shell: Türkçe karakterler base64 köprüsüyle bozulmaz', async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'beast-tools-'));
+  const r = JSON.parse(
+    await tools.exec('run_command', { command: "Write-Output 'türkçe ğüşıöç'", timeout_ms: 20000 }, { cwd })
+  );
+  assert.ok(r.ok && r.output.includes('türkçe ğüşıöç'), JSON.stringify(r));
+  tools.disposeShellSessions();
+});

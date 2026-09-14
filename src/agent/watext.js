@@ -49,6 +49,8 @@ const TOOL_LABELS = {
   browser_screenshot: () => 'Ekran görüntüsü',
   browser_snapshot: () => 'Sayfa yapısı',
   browser_read_text: () => 'Sayfa metni',
+  browser_wait: (a) =>
+    `Bekliyor${a.text ? ': "' + String(a.text).slice(0, 40) + '"' : a.selector ? ': ' + String(a.selector).slice(0, 40) : a.ms ? ' (' + a.ms + ' ms)' : ''}`,
   email_list: () => 'E-posta listesi',
   email_read: (a) => `E-posta oku: ${a.uid ?? ''}`,
   email_send: () => 'E-posta gönder',

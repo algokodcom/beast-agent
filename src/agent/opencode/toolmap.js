@@ -60,7 +60,9 @@ After ensuring proper quoting, execute the command.
     - If the commands depend on each other and must run sequentially, avoid '&&' in this shell because Windows PowerShell (5.1) does not support it. Use PowerShell conditionals such as \`cmd1; if ($?) { cmd2 }\` when later commands must depend on earlier success.
     - DO NOT use newlines to separate commands (newlines are ok in quoted strings)
   - The shell is PERSISTENT: working directory and environment variables are preserved between calls.
-  - Commands run in Windows PowerShell (5.1).`;
+  - Commands run in Windows PowerShell (5.1).
+  - Commands are NON-INTERACTIVE: no REPLs/editors/pagers (\`node\`, \`python\`, \`vi\`, \`notepad\`), no input-waiting commands (\`git commit\` without -m, \`npm init\` without -y, \`ssh\` without BatchMode). They are rejected or aborted to avoid stalling. Use non-interactive flags (-y, -m, --yes) and write scripts to files instead.
+  - NEVER start long-running servers (npm run dev/start, vite, uvicorn, flask run...) with this tool — they are aborted after 10s. Use panel_run (run panel) or a background process (Start-Process with output redirected to a log file).`;
 }
 
 /* opencode tool şemaları — Schema.Struct karşılığı JSON Schema'lar */

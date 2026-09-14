@@ -72,6 +72,19 @@ function boundToolOutput(text) {
    başına sıraya girer (opencode ile aynı: oturum başına sıralı yürütme). */
 const SHELL_QUEUE_CAP = 6; /* en fazla bu kadar ayrı workspace oturumu */
 const SHELL_IDLE_MS = 10 * 60 * 1000; /* 10 dk boşta kalan oturum kapatılır */
+/* TAKILMA SAVUNMASI:
+   - PROMPT_STALL_MS: komut bu süre HİÇ çıktı üretmediyse ve çıktı kuyruğu
+     etkileşimli prompt'a benziyorsa (y/n, "Ok to proceed?", parola...) komut
+     beklemeden kesilir — 120 sn timeout'u beklemek "takılma" gibi görünür.
+   - LONG_RUNNING_MS: dev server / uzun süreç kalıbı taşıyan komut bu süre
+     içinde bitmezse kesilir; ajan turu kilitlenmez. */
+const PROMPT_STALL_MS = 3500;
+const PROMPT_WATCH_MS = 1200;
+const LONG_RUNNING_MS = 10000;
+const PROMPT_STALL_RE =
+  /(?:\(y\/n\)|\[y\/n\]|\[Y\/n\]|\[y\/N\]|\(yes\/no\)|ok to proceed\?|do you want to (?:proceed|continue|allow)|are you sure|press any key|press enter|enter (?:the )?(?:password|passphrase|username|otp|verification code)|password:\s*$|passphrase:\s*$|username for [^\n]*:\s*$|(?:^|\n)\s*>>?\s*$)/i;
+const LONG_RUNNING_RE =
+  /\b(?:(?:npm|yarn|pnpm|bun)\s+(?:run\s+)?(?:dev|start|serve)\b|(?:npm|yarn|pnpm|bun)\s+run\s+\S*(?:dev|watch|serve)\S*|\bvite\b(?!\s+build)|next\s+dev|nuxt\s+dev|ng\s+serve|nodemon|live-server|http-server|(?:python|py|python3)\s+-m\s+http\.server|uvicorn|gunicorn|flask\s+run|streamlit\s+run|manage\.py\s+runserver|hugo\s+server|jekyll\s+serve|(?:cargo|dotnet)\s+watch|docker[ -]compose\s+up\b(?!.*\s-d\b))/i;
 const _shSessions = new Map(); // cwd → session
 
 /* boşta reaper: unref'li zamanlayıcı — event loop'u tek başına tutmaz */
@@ -85,6 +98,142 @@ const _shellReaper = setInterval(() => {
   }
 }, 60000);
 if (_shellReaper.unref) _shellReaper.unref();
+
+/* prompt watchdog: çıktı akmıyorsa ve son satırlar girdi/onay prompt'una
+   benziyorsa komutu (ve yalnız onu) kes; sıradaki komutlar taze oturumda sürer */
+const _shellPromptWatch = setInterval(() => {
+  const now = Date.now();
+  for (const sess of _shSessions.values()) {
+    if (!sess.busy || sess.dead || !sess.queue.length) continue;
+    const w = sess.queue[0];
+    if (!w || !w.dispatched) continue;
+    if (now - (sess.lastDataAt || sess.dispatchAt || 0) < PROMPT_STALL_MS) continue;
+    const tail = sess.buf.slice(-300);
+    if (!tail.trim() || !PROMPT_STALL_RE.test(tail)) continue;
+    _shellAbortCurrent(sess, 'komut girdi/onay bekliyor görünüyor (etkileşimli prompt)');
+  }
+}, PROMPT_WATCH_MS);
+if (_shellPromptWatch.unref) _shellPromptWatch.unref();
+
+/* süren komutu kes, kuyruktakileri TAZE oturumda sürdür: tur kilitlenmez,
+   paralel çağrılar kaybolmaz. Diske/oturuma yazılan değişkenler sıfırlanır. */
+function _shellAbortCurrent(sess, reason) {
+  const w = sess.queue.shift();
+  if (!w) return;
+  clearTimeout(w.timer);
+  clearTimeout(w.longTimer);
+  if (w.onAbort && w.signal) {
+    try { w.signal.removeEventListener('abort', w.onAbort); } catch {}
+  }
+  const out = sess.buf.slice(-1500);
+  sess.buf = '';
+  sess.err = '';
+  const pending = sess.queue.splice(0);
+  _shellDispose(sess);
+  if (_shSessions.get(sess.cwd) === sess) _shSessions.delete(sess.cwd);
+  try {
+    w.resolve({
+      ok: false,
+      code: null,
+      output:
+        (out.trim() ? out.trim() + '\n' : '') +
+        '[beast] ' + reason +
+        ' — komut durduruldu. Etkileşimsiz yeniden dene (ör. -y / -m / --yes / --accept-*) ya da kalıcı girdi gerektiren programı ajan terminalinde çalıştırma.',
+    });
+  } catch {}
+  if (!pending.length) return;
+  let fresh = null;
+  try {
+    fresh = _spawnShell(sess.cwd);
+    _shSessions.set(sess.cwd, fresh);
+  } catch {}
+  if (!fresh) {
+    for (const p of pending) {
+      clearTimeout(p.timer);
+      clearTimeout(p.longTimer);
+      p.resolve({ ok: false, code: null, output: '[beast] kabuk oturumu yenilendi — komut çalıştırılamadı' });
+    }
+    return;
+  }
+  fresh.busy = true;
+  fresh.queue = pending;
+  _shellDispatch(fresh);
+}
+
+/* etkileşimli/REPL komutlar kalıcı kabuğun stdin işaret protokolünü bozar
+   (Read-Host işaret satırını yer) ya da 120 sn boyunca asılı kalır. Bilinen
+   kalıplar daha spawn edilmeden net hata + düzeltme önerisiyle geri çevrilir.
+   null dönerse komut güvenli sayılır. */
+function interactiveCommandReason(command) {
+  const raw = String(command || '').trim();
+  if (!raw) return null;
+  const chain = raw.split(/[;&|]+/)[0].trim().replace(/^&\s*/, '');
+  /* ilk token: tırnaklı yol da olabilir (ör. "C:\Program Files\Git\python.exe") */
+  const qm = /^(["'])(.+?)\1/.exec(chain);
+  const firstTok = qm ? qm[2] : (chain.split(/\s+/)[0] || '');
+  const rest = (qm ? chain.slice(qm[0].length) : chain.slice(firstTok.length)).trim();
+  const base = path.basename(firstTok.replace(/\.(exe|cmd|bat)$/i, '')).toLowerCase();
+  const bare = !rest;
+  /* çıplak REPL / iç içe kabuk: ajan oraya ASLA yazamaz */
+  if (bare && /^(python[23]?|py|node|deno|bun|cmd|powershell|pwsh|bash|sh|wsl|mysql|psql|sqlite3|mongosh|redis-cli|irb|ruby|php|lua|r)$/.test(base)) {
+    return (
+      '`' + firstTok + '` çıplak bir REPL/kabuktur — etkileşimli girdi bekler ve ajan turunu kilitler. ' +
+      'Betiği dosyaya yazıp çalıştır (ör. `python script.py`, `node script.js`) ya da tek satır komut kullan (ör. `python -c "..."`).'
+    );
+  }
+  /* editörler: pencere açar ve kapanana kadar bekler */
+  if (/^(vi|vim|nvim|nano|emacs|notepad|code)$/.test(base)) {
+    return (
+      '`' + base + '` etkileşimli editör — ajan terminalinde asılı kalır. Dosyayı write_file/edit_file araçlarıyla düzenle.'
+    );
+  }
+  /* pager: dosya argümanı yoksa stdin bekler */
+  if (/^(less|more)$/.test(base) && !/[<|]|\S+\.\S{1,6}\b/.test(rest)) {
+    return (
+      '`' + base + '` girdi dosyası olmadan stdin bekler. Dosyayı doğrudan belirt (ör. `more dosya.txt`) ya da read_file aracını kullan.'
+    );
+  }
+  /* stdin filtreleri: dosya/pipe yoksa pipe'tan okumaya çalışır ve asılır */
+  if (/^(findstr|sort|clip|tee)$/.test(base) && !/[<|]|\S+\.\S{1,6}\b/.test(rest)) {
+    return (
+      '`' + base + '` girdi belirtilmeden stdin bekler. Girdiyi dosya/pipe ile ver ya da grep/read_file araçlarını kullan.'
+    );
+  }
+  /* PowerShell onay/girdi cmdlet'leri */
+  if (/\b(Read-Host|Get-Credential|Out-GridView|Wait-Event|Wait-Input)\b/i.test(raw)) {
+    return (
+      '`Read-Host`/`Get-Credential` benzeri etkileşimli cmdlet ajan terminalinde çalışmaz — girdiyi parametre olarak ver.'
+    );
+  }
+  if (/(?:^|[;&|]\s*|\/c\s+)pause(?:\s|$)/i.test(raw)) {
+    return '`pause` girdi bekler — ajan terminalinde çalışmaz; beklemeyi kaldır.';
+  }
+  /* git: editör açan / interaktif alt komutlar */
+  if (/\bgit\s+commit\b/i.test(raw) && !/(\s-[a-zA-Z]*m\b|\s--message\b|\s-F\b|\s--file\b|--no-edit\b|--fixup\b|--squash\b)/i.test(raw)) {
+    return '`git commit` mesaj bayrağı olmadan editör açar — `git commit -m "mesaj"` kullan (gerekiyorsa `-F dosya`).';
+  }
+  if (/\bgit\s+merge\b/i.test(raw) && !/(\s-[a-zA-Z]*m\b|\s--message\b|--no-edit\b|--abort\b|--continue\b|--quit\b)/i.test(raw)) {
+    return '`git merge` düzenleyici açabilir — `git merge --no-edit` ya da `-m "mesaj"` kullan.';
+  }
+  if (/\bgit\s+(?:rebase\s+(?:-i|--interactive)|add\s+(?:-i|-p|--interactive|--patch))\b/i.test(raw)) {
+    return '`git rebase -i` / `git add -p` interaktiftir — ajan terminalinde çalışmaz; otomatik/`-m` formunu kullan.';
+  }
+  /* kurulum sihirbazları: soru sorar */
+  if (/\bnpm\s+init\b/i.test(raw) && !/(\s-y\b|\s--yes\b)/i.test(raw)) {
+    return '`npm init` sihirbazı soru sorar — `npm init -y` kullan ya da package.json\'u write_file ile yaz.';
+  }
+  if (/\b(?:choco|chocolatey)\s+install\b/i.test(raw) && !/(\s-y\b|\s--yes\b)/i.test(raw)) {
+    return '`choco install` onay sorar — `-y` ekle.';
+  }
+  /* çıplak `npx` paket yoksa "Ok to proceed? (y)" ile asılır: --yes öner */
+  if (bare && base === 'npx') {
+    return '`npx` paket kurulum onayı isteyebilir — `npx --yes <paket>` kullan.';
+  }
+  if (base === 'ssh' && !/BatchMode/i.test(raw)) {
+    return '`ssh` parola sorabilir ve asılır — `ssh -o BatchMode=yes` kullan ya da anahtar tabanlı oturum kur.';
+  }
+  return null;
+}
 
 function _shellDispose(sess) {
   try {
@@ -104,7 +253,7 @@ function disposeShellSessions() {
 function _spawnShell(cwd) {
   const proc = spawn(
     'powershell.exe',
-    ['-NoProfile', '-NoExit', '-Command', '-'],
+    ['-NoProfile', '-NonInteractive', '-NoExit', '-ExecutionPolicy', 'Bypass', '-Command', '-'],
     { cwd: cwd || process.cwd(), windowsHide: true, env: envWithPathPrefix() }
   );
   const sess = {
@@ -114,9 +263,23 @@ function _spawnShell(cwd) {
     err: '',
     seq: 0,
     busy: false,
-    queue: [], // {command, resolve, timer, signal, onAbort}
+    queue: [], // {command, resolve, timer, longTimer, signal, onAbort}
     dead: false,
+    lastDataAt: 0,
+    dispatchAt: 0,
   };
+  /* TAKILMA SAVUNMASI: prompter/prefs kapatılır — Read-Host, -Confirm gibi
+     girdi bekleyen cmdlet'ler asılmak yerine ANINDA hata verir.
+     Çıkış UTF-8: Türkçe çıktı (Write-Output, dosya adları) bozulmaz.
+     Giriş kodlaması ÖNEMSİZ: komutlar base64 (ASCII) ile gönderilir. */
+  try {
+    proc.stdin.write(
+      "$ConfirmPreference='None'\n" +
+      "$ProgressPreference='SilentlyContinue'\n" +
+      "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8\n" +
+      "$OutputEncoding=[System.Text.Encoding]::UTF8\n"
+    );
+  } catch {}
   /* Node 22: child + stdio stream'leri event loop'a bağlanmaz — test/CLI'da
      bekleyen oturum sürecin çıkmasını ENGELLEMEZ; uygulama kapanışında
      disposeShellSessions() yine de temiz kapatır */
@@ -130,10 +293,12 @@ function _spawnShell(cwd) {
   proc.stdout.setEncoding('utf8');
   proc.stderr.setEncoding('utf8');
   proc.stdout.on('data', (d) => {
+    sess.lastDataAt = Date.now();
     sess.buf += d;
     _shellPump(sess);
   });
   proc.stderr.on('data', (d) => {
+    sess.lastDataAt = Date.now();
     sess.err += d;
     if (sess.err.length > MAX_CMD_OUTPUT * 4) sess.err = sess.err.slice(-MAX_CMD_OUTPUT * 2);
   });
@@ -143,6 +308,7 @@ function _spawnShell(cwd) {
     while (sess.queue.length) {
       const w = sess.queue.shift();
       clearTimeout(w.timer);
+      clearTimeout(w.longTimer);
       w.resolve({ ok: false, code: null, output: sess.buf.slice(-2000) + '\n[beast] shell oturumu kapandı' });
     }
     sess.busy = false;
@@ -168,6 +334,10 @@ function _shellPump(sess) {
   sess.queue.shift();
   sess.busy = sess.queue.length > 0;
   clearTimeout(w.timer);
+  clearTimeout(w.longTimer);
+  if (w.onAbort && w.signal) {
+    try { w.signal.removeEventListener('abort', w.onAbort); } catch {}
+  }
   const codeM = /_(\-?\d+)\s*$/.exec(markerLine);
   const exitCode = codeM ? Number(codeM[1]) : null;
   if (out.length > MAX_CMD_OUTPUT * 4) out = out.slice(-MAX_CMD_OUTPUT * 2);
@@ -193,23 +363,58 @@ function _shellDispatch(sess) {
   w.n = ++sess.seq;
   const cmd = w.command;
   const marker = `${SHELL_MARKER_PREFIX}${w.n}_$LASTEXITCODE`;
-  /* $LASTEXITCODE sıfırlanır: yalnız cmdlet koşan komutlar da ok:true dönsün;
-     native exe hata verirse gerçek kod işaret satırına yazılır */
-  sess.proc.stdin.write(`$global:LASTEXITCODE = 0\n${cmd}${cmd.endsWith('\n') ? '' : '\n'}Write-Output "${marker}"\n`);
+  /* KOMUT base64 ile taşınır: PowerShell'ın stdin okuyucusu oturum açılışında
+     sabit (eski) codepage ile kurulur; UTF-8 komut metni Türkçe karakterlerde
+     bozulurdu. base64 ASCII'dir → kod sayfası ne olursa olsun metin birebir
+     çözülür. Tüm satır TEK satır olarak yazılır: PowerShell tüm ifadeyi
+     okuyup öyle çalıştırır — stdin okuyan bir program protokolü yiyemez. */
+  const b64 = Buffer.from(String(cmd), 'utf8').toString('base64');
+  sess.dispatchAt = Date.now();
+  sess.lastDataAt = sess.dispatchAt;
+  try {
+    sess.proc.stdin.write(
+      `$__beastB64='${b64}'; $global:LASTEXITCODE=0; ` +
+      `Invoke-Expression ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($__beastB64))); ` +
+      `Write-Output "${marker}"\n`
+    );
+  } catch {
+    sess.dead = true;
+    return;
+  }
   const finishTimeout = () => {
     _shellDispose(sess);
     if (_shSessions.get(sess.cwd) === sess) _shSessions.delete(sess.cwd);
     sess.busy = false;
+    const secs = Math.round((w.timeoutMs || 0) / 1000);
     while (sess.queue.length) {
       const x = sess.queue.shift();
       clearTimeout(x.timer);
-      x.resolve({ ok: false, code: null, output: '[beast] shell komutu zaman aşımı — oturum tazelendi' });
+      clearTimeout(x.longTimer);
+      x.resolve({
+        ok: false,
+        code: null,
+        output:
+          '[beast] shell komutu zaman aşımı (' + secs + ' sn) — komut girdi bekliyor olabilir ' +
+          'ya da çok uzun sürdü. Etkileşimsiz bayraklarla dene (-y / -m / --yes); uzun süreçleri ' +
+          'arka planda başlat (panel_run ya da Start-Process + çıktıyı dosyaya yönlendir). Oturum tazelendi.',
+      });
     }
   };
   w.timer = setTimeout(finishTimeout, w.timeoutMs);
+  /* UZUN SÜRELİ SÜREÇ: dev server/serving kalıbı turu kilitlemesin — makul
+     süre içinde bitmezse erken kes, ajana nasıl başlatacağını söyle. */
+  if (LONG_RUNNING_RE.test(cmd)) {
+    w.longTimer = setTimeout(() => {
+      _shellAbortCurrent(
+        sess,
+        'uzun süreli süreç (dev server/serving) ' + Math.round(LONG_RUNNING_MS / 1000) + ' sn içinde bitmedi — turu kilitlememek için durduruldu'
+      );
+    }, LONG_RUNNING_MS);
+  }
   if (w.signal) {
     if (w.signal.aborted) return finishTimeout();
-    w.signal.addEventListener('abort', finishTimeout, { once: true });
+    w.onAbort = finishTimeout;
+    w.signal.addEventListener('abort', w.onAbort, { once: true });
   }
 }
 
@@ -269,6 +474,8 @@ function runBashCommand(command, cwd, timeoutMs = 90000, signal) {
       child = spawn(gitbash(), ['-lc', command], {
         cwd: cwd || process.cwd(),
         windowsHide: true,
+        /* stdin KAPALI: etkileşimli programlar girdi bekleyip asılmaz, hemen çıkar */
+        stdio: ['ignore', 'pipe', 'pipe'],
         env: envWithPathPrefix(),
       });
     } catch {
@@ -277,7 +484,9 @@ function runBashCommand(command, cwd, timeoutMs = 90000, signal) {
     }
     const timer = setTimeout(() => {
       try { spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true }); } catch {}
-      err += '\n[beast] command timed out';
+      err +=
+        '\n[beast] komut zaman aşımı (' + Math.round(timeoutMs / 1000) + ' sn) — girdi bekliyor olabilir ' +
+        'ya da çok uzun sürdü; etkileşimsiz bayraklarla dene, uzun süreçleri arka planda başlat.';
       finish(null, true);
     }, timeoutMs);
     if (signal) {
@@ -329,16 +538,23 @@ function runCommand(command, cwd, timeoutMs = 90000, signal) {
     const child = spawn(
       'powershell.exe',
       ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', command],
-      { cwd: cwd || process.cwd(), windowsHide: true, env: envWithPathPrefix() }
+      {
+        cwd: cwd || process.cwd(),
+        windowsHide: true,
+        /* stdin KAPALI: etkileşimli programlar girdi bekleyip asılmaz, hemen çıkar */
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: envWithPathPrefix(),
+      }
     );
 
     const timer = setTimeout(() => {
       try {
         spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true });
       } catch {}
+      err +=
+        '\n[beast] komut zaman aşımı (' + Math.round(timeoutMs / 1000) + ' sn) — girdi bekliyor olabilir ' +
+        'ya da çok uzun sürdü; etkileşimsiz bayraklarla dene, uzun süreçleri arka planda başlat.';
       finish(null, true);
-      // append notice
-      err += '\n[beast] command timed out';
     }, timeoutMs);
 
     if (signal) {
@@ -1587,7 +1803,9 @@ const definitions = [
     function: {
       name: 'run_command',
       description:
-        'Executes a given PowerShell command on the user\'s Windows machine in the workspace directory and returns combined stdout/stderr. Use this tool for terminal operations like builds, git, npm installs, docker, etc. DO NOT use it for file operations (reading, writing, editing, searching, finding files) - use the specialized tools for this instead: read_file, write_file, edit_file, grep, glob.',
+        'Executes a given PowerShell command on the user\'s Windows machine in the workspace directory and returns combined stdout/stderr. Use this tool for terminal operations like builds, git, npm installs, docker, etc. DO NOT use it for file operations (reading, writing, editing, searching, finding files) - use the specialized tools for this instead: read_file, write_file, edit_file, grep, glob.\n' +
+        'NON-INTERACTIVE: Komutlar girdi alamaz — REPL/editör/pager başlatma (`node`, `python`, `vi`, `notepad`), girdi bekleyen komut çalıştırma (`git commit` mesajsız, `npm init -y`siz, `ssh` BatchMode olmadan) — bunlar otomatik reddedilir/kilitlenmeden kesilir. Etkileşimsiz bayrak kullan (-y, -m, --yes, --accept-*), betikleri dosyaya yazıp çalıştır.\n' +
+        'UZUN SÜRELİ SÜREÇ: dev server/serving komutlarını (npm run dev/start, vite, uvicorn, flask run...) bu araçla BAŞLATMA — 10 sn içinde kesilir; panel_run (ÇALIŞTIR paneli) ya da arka plan (Start-Process + çıktıyı log dosyasına yönlendir) kullan.',
       parameters: {
         type: 'object',
         properties: {
@@ -1884,11 +2102,18 @@ async function exec(name, args, ctx) {
           return JSON.stringify({ ok: false, error: `Invalid timeout value: ${tRaw}. Timeout must be a positive number.` });
         }
         const t = Number.isFinite(tRaw) && tRaw > 0 ? tRaw : 120000;
+        const cmdStr = String(args.command || '');
+        /* TAKILMA SAVUNMASI: etkileşimli komutlar stdin beklerken turu kilitler
+           (Read-Host işaret satırını yer, REPL/editör asılı kalır) — başlamadan reddet */
+        const interact = interactiveCommandReason(cmdStr);
+        if (interact) {
+          return JSON.stringify({ ok: false, code: null, output: '[beast] ' + interact });
+        }
         const shell = String(args.shell || 'powershell').toLowerCase();
         const r =
           shell === 'bash' || shell === 'sh'
-            ? await runBashCommand(String(args.command || ''), cwd, t, ctx.signal)
-            : await runShellCommand(String(args.command || ''), cwd, t, ctx.signal);
+            ? await runBashCommand(cmdStr, cwd, t, ctx.signal)
+            : await runShellCommand(cmdStr, cwd, t, ctx.signal);
         const b = boundToolOutput((r && r.output) || '');
         return JSON.stringify({
           ok: !!(r && r.ok),
@@ -2360,6 +2585,11 @@ function banBrowser(minutes = 10) {
   _browserBanUntil = Date.now() + minutes * 60 * 1000;
 }
 
+/* test/teşhis: ban bitimine kalan süre */
+function browserBanRemainingMs() {
+  return Math.max(0, _browserBanUntil - Date.now());
+}
+
 /* Zinciri sırayla koştur: her motor boş/hata dönerse sıradakine geç.
    browser motoru yalnız engine'den gelir (hook); araç-bağımsız çağrılarda atlanır. */
 async function searchChainWeb(query, maxResults, { signal, browser } = {}) {
@@ -2384,7 +2614,10 @@ async function searchChainWeb(query, maxResults, { signal, browser } = {}) {
         if (typeof browser !== 'function' || banned) continue;
         out = await browser();
         if (!out || !out.ok || !(out.results || []).length) {
-          banBrowser(); /* tarayıcı sorunlu — 10 dk atla, alternatifler devrede */
+          /* GERÇEK engel (CAPTCHA / olağandışı trafik) → 10 dk; geçici hata
+             (ağ, zaman aşımı, boş yanıt) → yalnızca 1 dk bekleme — eskiden
+             her geçici hatada tarayıcı 10 dk boyunca devre dışı kalıyordu. */
+          banBrowser(out && out.blocked ? 10 : 1);
           out = null;
         }
       } else if (row.id === 'stealth') {
@@ -2404,7 +2637,7 @@ async function searchChainWeb(query, maxResults, { signal, browser } = {}) {
     if (out && out.ok && !(out.results || []).length) out = null; /* boş → sıradaki motor */
   }
   if (out && out.ok && banned && (out.results || []).length) {
-    out.note = 'dahili tarayıcı 10 dk askıda (CAPTCHA/trafik) — alternatif motor kullanıldı';
+    out.note = 'dahili tarayıcı kısa süre askıda (CAPTCHA/trafik ya da geçici hata) — alternatif motor kullanıldı';
   }
   return out || { ok: false, error: 'web arama başarısız — tüm motorlar boş döndü' };
 }
@@ -2474,6 +2707,7 @@ module.exports = {
   runCommand,
   runShellCommand,
   runBashCommand,
+  interactiveCommandReason,
   gitbash,
   disposeShellSessions,
   boundToolOutput,
@@ -2498,6 +2732,7 @@ module.exports = {
   searchChainWeb,
   browserBanned,
   banBrowser,
+  browserBanRemainingMs,
   setTinyfishKey,
   tinyfishSearch,
   stealthSearch,

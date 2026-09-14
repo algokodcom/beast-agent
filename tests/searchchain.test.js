@@ -42,3 +42,29 @@ test('setSearchChain: bilinmeyen id (eski obscura dahil) elenir', () => {
   assert.deepEqual(c.map((x) => x.id), ['browser', 'python', 'searxng', 'stealth', 'tinyfish']);
   tools.setSearchChain(tools.DEFAULT_SEARCH_CHAIN);
 });
+
+test('arama zinciri: tarayıcı geçici hatada 1 dk, gerçek CAPTCHA engelinde 10 dk askıya alınır', async () => {
+  const only = [
+    { id: 'browser', on: true },
+    { id: 'searxng', on: false },
+    { id: 'stealth', on: false },
+    { id: 'tinyfish', on: false },
+    { id: 'python', on: false },
+  ];
+  tools.setSearchChain(only);
+
+  /* geçici hata: null dönüş — uzun ban OLMAMALI */
+  tools.banBrowser(0);
+  await tools.searchChainWeb('test-sorgu', 3, { browser: async () => null });
+  const transient = tools.browserBanRemainingMs();
+  assert.ok(transient > 0 && transient <= 61000, 'geçici hata kısa askı: ' + transient + ' ms');
+
+  /* GERÇEK engel: blocked:true — 10 dk ban */
+  tools.banBrowser(0);
+  await tools.searchChainWeb('test-sorgu', 3, { browser: async () => ({ ok: false, blocked: true }) });
+  const blocked = tools.browserBanRemainingMs();
+  assert.ok(blocked > 5 * 60 * 1000, 'CAPTCHA uzun askı: ' + blocked + ' ms');
+
+  tools.banBrowser(0);
+  tools.setSearchChain(tools.DEFAULT_SEARCH_CHAIN);
+});

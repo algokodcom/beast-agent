@@ -521,6 +521,76 @@ test('agent_dm: koşan ajanlara DM gider, kayıt kalıcı listeye düşer', asyn
   eng.agentDmsClear();
 });
 
+test('agent_dm: düz sohbet oturumuna DM GERÇEKTEN teslim edilir (kuyruk + flush)', async () => {
+  const eng = makeEngine();
+  const delivered = [];
+  eng.flushPendingReports = (sid) => delivered.push(sid);
+  const chat = eng._load(eng.createSession().id);
+  eng._bgJobs.set('a1', { id: 'a1', code: 'AAA', title: 'Kod İşçisi', status: 'running' });
+  /* eski hâlde teslim yalnız bg işlerine yapılıyordu: chat hedefi panelde kalıyordu */
+  const r = JSON.parse(await eng._execTool('agent_dm', { to: chat.code, message: 'rapor hazır' }, null, 'a1'));
+  assert.equal(r.ok, true);
+  assert.equal(r.to, chat.id);
+  const rec = (eng._pendingReports || []).find((x) => x.parentId === chat.id);
+  assert.ok(rec, 'DM pendingReports kuyruğuna düşmeli');
+  assert.match(rec.text, /rapor hazır/);
+  assert.ok(delivered.includes(chat.id), 'flushPendingReports çağrılmalı');
+});
+
+test('agent_dm: bot oturumu adıyla bulunur, DM bot oturumuna düşer (Tool botu)', async () => {
+  const eng = makeEngine({
+    resolveBot: (id) =>
+      id === 'tool'
+        ? { id: 'tool', name: 'Tool', admin: false }
+        : id === 'beast'
+          ? { id: 'beast', name: 'Beast', admin: true }
+          : null,
+  });
+  const delivered = [];
+  eng.flushPendingReports = (sid) => delivered.push(sid);
+  const beastSess = eng._load(eng.createSession().id);
+  eng.setSessionBot(beastSess.id, 'beast');
+  const toolSess = eng._load(eng.createSession().id);
+  eng.setSessionBot(toolSess.id, 'tool');
+  const r = JSON.parse(await eng._execTool('agent_dm', { to: 'Tool', message: 'mt5_shot bozuk, bak' }, null, beastSess.id));
+  assert.equal(r.ok, true);
+  assert.equal(r.to, toolSess.id);
+  assert.equal(r.toTitle, 'Tool · ' + toolSess.code);
+  const rec = (eng._pendingReports || []).find((x) => x.parentId === toolSess.id);
+  assert.ok(rec, 'Tool botuna DM teslim edilmeli');
+  assert.ok(delivered.includes(toolSess.id));
+  const last = eng.agentDmsList().dms.slice(-1)[0];
+  assert.equal(last.fromTitle, 'Beast · ' + beastSess.code);
+  assert.equal(last.toTitle, 'Tool · ' + toolSess.code);
+  /* cevap aynı başlıkla geri yazılabilir: Tool → "Beast · KOD" */
+  const back = JSON.parse(await eng._execTool('agent_dm', { to: last.fromTitle, message: 'düzeltiyorum' }, null, toolSess.id));
+  assert.equal(back.ok, true);
+  assert.equal(back.to, beastSess.id);
+});
+
+test('agent_dm: bot↔bot DM bütçesi dolunca yeni tur açılmaz, mesaj sepete düşer', async () => {
+  const eng = makeEngine({
+    resolveBot: (id) =>
+      id === 'tool'
+        ? { id: 'tool', name: 'Tool', admin: false }
+        : id === 'beast'
+          ? { id: 'beast', name: 'Beast', admin: true }
+          : null,
+  });
+  eng.flushPendingReports = () => {};
+  const a = eng._load(eng.createSession().id);
+  eng.setSessionBot(a.id, 'beast');
+  const b = eng._load(eng.createSession().id);
+  eng.setSessionBot(b.id, 'tool');
+  for (let i = 0; i < 12; i++) {
+    const r = JSON.parse(await eng._execTool('agent_dm', { to: 'Tool', message: 'mesaj ' + i }, null, a.id));
+    assert.equal(r.ok, true);
+  }
+  const backlog = (eng._agentDmBacklog && eng._agentDmBacklog.get(b.id)) || [];
+  assert.equal(backlog.length, 2, 'ilk 10 uyandırma sonrası kalanlar sepete düşmeli');
+  assert.equal(eng.agentDmsList().dms.length, 12, 'panel kaydı yine tam olmalı');
+});
+
 test('agent_dm: grup sohbeti kurulur, tüm üyelere düşer, iş bitince kapanır', async () => {
   const eng = makeEngine();
   eng.flushPendingReports = () => {};

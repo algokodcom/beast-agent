@@ -2858,37 +2858,45 @@ class Engine {
       }
     }
 
-    /* SÜREKLİ ajan DM INBOX (bkz. flushPendingReports): tur aralığında biriken
-       DM'ler yeni tur AÇMAZ; sıradaki planlı turun mesajına tek blok olarak
-       eklenir — ajan-ajan sonsuz DM ping-pong'u ve bağlam şişmesi engellenir. */
+    /* SÜREKLİ ajan DM INBOX + BOT DM SEPETİ (bkz. flushPendingReports ve
+       _agentDmDeliver): tur aralığında biriken DM'ler yeni tur AÇMAZ; sıradaki
+       mesajın önüne tek blok olarak eklenir — ajan-ajan sonsuz DM ping-pong'u,
+       tur fırtınası ve bağlam şişmesi engellenir. */
     try {
+      const pendingDm = [];
       const jobRec = this._bgJobs && this._bgJobs.get(String(sessionId));
       if (jobRec && Array.isArray(jobRec.dmInbox) && jobRec.dmInbox.length) {
-        const inbox = jobRec.dmInbox.splice(0);
-        const boxText = inbox
+        for (const x of jobRec.dmInbox.splice(0)) pendingDm.push(x);
+      }
+      if (this._agentDmBacklog && this._agentDmBacklog.size) {
+        const q = this._agentDmBacklog.get(String(sessionId));
+        if (q && q.length) for (const x of q.splice(0)) pendingDm.push(x);
+      }
+      if (pendingDm.length) {
+        const boxText = pendingDm
           .map((x) => (typeof x === 'string' ? x : String((x && x.text) || '')))
           .join('\n\n')
           .slice(0, 6000);
         /* görselli DM'ler: son 2 görsel bu turun mesajına vision olarak eklenir */
-        const inboxImgs = inbox
+        const dmImgs = pendingDm
           .map((x) => (x && typeof x === 'object' && /^data:image\//i.test(String(x.image || '')) ? String(x.image) : ''))
           .filter(Boolean)
           .slice(-2);
         const prefix =
-          `[BEKLEYEN AJAN DM'LERİ — ${inbox.length} mesaj]\n${boxText}\n` +
+          `[BEKLEYEN AJAN DM'LERİ — ${pendingDm.length} mesaj]\n${boxText}\n` +
           `(Tur aralığında biriken DM'ler. Bu turda değerlendir; yalnızca aksiyon/cevap GEREKİYORSA agent_dm ile TEK kısa cevap ver — teşekkür/onay/ack mesajı YAZMA.)\n\n`;
         if (typeof msg.content === 'string') {
-          msg.content = inboxImgs.length
+          msg.content = dmImgs.length
             ? [
                 { type: 'text', text: prefix + msg.content },
-                ...inboxImgs.map((u) => ({ type: 'image_url', image_url: { url: u } })),
+                ...dmImgs.map((u) => ({ type: 'image_url', image_url: { url: u } })),
               ]
             : prefix + msg.content;
         } else if (Array.isArray(msg.content)) {
           if (msg.content[0] && typeof msg.content[0].text === 'string') {
             msg.content[0] = { ...msg.content[0], text: prefix + msg.content[0].text };
           }
-          for (const u of inboxImgs) msg.content.push({ type: 'image_url', image_url: { url: u } });
+          for (const u of dmImgs) msg.content.push({ type: 'image_url', image_url: { url: u } });
         }
       }
     } catch {}
@@ -3843,14 +3851,11 @@ class Engine {
         );
         if (skillDef) toolsList = [...toolsList, skillDef];
       }
-      /* AJAN DM: koşan ajan oturumlarına (arka plan işleri + finance
-         ajanları) VE ana sohbete verilir — chat Beast'i de ajana DM atabilir;
-         müşteri bot oturumları (botId ≠ beast) ve botlar arası DM hariç */
-      if (
-        session &&
-        !session.isBotDm &&
-        (session.bgJob || session.finance || !session.botId || session.botId === 'beast')
-      ) {
+      /* AJAN DM: koşan ajanlara (arka plan işleri + finance), ana sohbete VE
+         bot sohbetlerine verilir — botlar birbirine iş atar/cevap verir
+         (ör. Beast → Tool botu; Tool botu da sonucu DM ile geri yazar).
+         Yalnız botlar arası DM pair oturumunda kapalı (döngü koruması). */
+      if (session && !session.isBotDm) {
         toolsList = [...toolsList, AGENT_DM_DEF];
       }
       /* TOOL İSTEĞİ (cephane): tool botu hariç TÜM oturumlar — müşteri bot
@@ -3919,6 +3924,15 @@ class Engine {
       /* özel ajan araç beyaz listesi — tanımda olmayan araç görünmez */
       const allow = new Set(adef.tools);
       activeTools = activeTools.filter((t) => allow.has(t.function.name));
+    }
+    /* KİŞİSEL/VARSAYILAN TOOLLAR (tool__*) CEPHANE KURALI: bot skill
+       whitelist'i (toolLimit) ve ajan beyaz listesi bunları düşürmesin —
+       Tool botu onardığı aracı kendi oturumunda test edebilsin, diğer
+       botlar da kullanabilsin. Kısıtlı izinli (chat/web) ve Beast Code
+       oturumları hariç; tam izinli ('all') her oturuma açılır. */
+    if (!bcAgent && perms.includes('all')) {
+      const have = new Set(activeTools.map((t) => t.function.name));
+      activeTools = [...activeTools, ...customtools.definitions().filter((t) => !have.has(t.function.name))];
     }
     if (perms.length === 1 && perms[0] === 'chat') {
       system +=
@@ -4929,6 +4943,7 @@ const skills = require('./skills');
         const s = this._load(sid);
         if (s && !s.isBotDm) {
           if (String(s.botId || '') !== want) this.setSessionBot(sid, want);
+          this._toolSessionId = sid;
           return sid;
         }
       }
@@ -4937,6 +4952,7 @@ const skills = require('./skills');
     const sid = String(created.id);
     this.setSessionBot(sid, want);
     this.setSessionPerm(sid, target.perm || 'all');
+    this._toolSessionId = sid;
     try {
       fs.writeFileSync(this._toolSessionFile, JSON.stringify({ id: sid, botId: want, at: nowIso() }));
     } catch {}
@@ -6013,11 +6029,11 @@ const AGENT_DM_DEF = {
   function: {
     name: 'agent_dm',
     description:
-      'Send a short DM to another running agent (parallel agents / finance agents) to coordinate: share findings, ask status, warn about risk, hand off work, and MAKE JOINT DECISIONS. `to` = target session id OR a keyword from the agent title (e.g. "GOLD", "Trader"). `topic` = short subject label — replies to the same topic stay in the SAME conversation thread, so ALWAYS reuse the topic you were DMed with when replying. `group` = optional group-chat name (e.g. "GOLD EKIP"): creates or reuses a group conversation, adds the target agent as a member, and your message is delivered to EVERY member — use groups when a decision needs multiple agents. `image` shares a chart/screen as an attachment the receiving agent REALLY sees and the AJAN DM panel shows: true = your last screenshot (fresh capture if none); a file path (e.g. the tool__mt5_shot "path") or a data URL = that exact image.',
+      'Send a short DM to another agent or BOT (parallel agents, finance agents, bot chats like "Tool") to coordinate: share findings, ask status, warn about risk, hand off work, and MAKE JOINT DECISIONS. `to` = target session id, a bot name/id (e.g. "Tool", "Trader"), or a keyword from the agent title (e.g. "GOLD"). `topic` = short subject label — replies to the same topic stay in the SAME conversation thread, so ALWAYS reuse the topic you were DMed with when replying. `group` = optional group-chat name (e.g. "GOLD EKIP"): creates or reuses a group conversation, adds the target agent as a member, and your message is delivered to EVERY member — use groups when a decision needs multiple agents. `image` shares a chart/screen as an attachment the receiving agent REALLY sees and the AJAN DM panel shows: true = your last screenshot (fresh capture if none); a file path (e.g. the tool__mt5_shot "path") or a data URL = that exact image.',
     parameters: {
       type: 'object',
       properties: {
-        to: { type: 'string', description: 'Target agent session id or a title keyword' },
+        to: { type: 'string', description: 'Target session id, bot name/id (e.g. "Tool") or a title keyword' },
         topic: { type: 'string', description: 'Short subject label for the conversation thread, e.g. "GOLD pozisyon riski"' },
         message: { type: 'string', description: 'Short message (1-3 sentences)' },
         group: { type: 'string', description: 'Optional group-chat name — send to ALL members of that group (creates it on first use, adds the target agent)' },
@@ -6889,7 +6905,7 @@ Engine.prototype._agentDmSend = async function (fromSid, args) {
       fromJob && fromJob.title
         ? String(fromJob.title)
         : fromSess
-          ? 'Beast · ' + String(fromSess.bgTitle || fromSess.title || fromSess.code || '')
+          ? this._agentDmSessionTitle(fromSess)
           : 'Ajan';
     /* hedef çöz: oturum id YA DA başlık anahtar kelimesi (koşan ajanlar +
        ANA OTURUM FALLBACK: chat oturumları this.cache'te yaşar — finance
@@ -6909,19 +6925,12 @@ Engine.prototype._agentDmSend = async function (fromSid, args) {
       }
       if (!target) {
         const q = to.toLowerCase();
-        for (const [sid, s] of this.cache) {
-          if (sid === String(fromSid)) continue;
-          if (!s || s.bgJob || s.isBotDm) continue;
-          if (s.botId && s.botId !== 'beast') continue;
-          /* tam başlık da eşleşir: ajan DM'den gelen "Beast · KOD" başlığıyla
-             cevap verir — fromTitle formatı birebir tanınmalı */
-          const hay = [s.bgTitle, s.title, s.code, s.code ? 'beast · ' + s.code : ''].map((x) =>
-            String(x || '').toLowerCase()
-          );
-          if (hay.some((x) => x && x.includes(q))) {
-            target = sid;
-            break;
-          }
+        target = this._agentDmFindSession(q, fromSid);
+        if (!target) {
+          /* CACHE SOĞUK OLABİLİR (uygulama yeni açıldı): oturum dosyalarını
+             yükleyip bir kez daha ara — bot oturumu diskte olsa da bulunur. */
+          try { this.listSessions(); } catch {}
+          target = this._agentDmFindSession(q, fromSid);
         }
       }
       if (String(target) === String(fromSid)) return { ok: false, error: 'kendine DM atılamaz' };
@@ -6943,7 +6952,7 @@ Engine.prototype._agentDmSend = async function (fromSid, args) {
     const toTitle = target
       ? toJob
         ? String((toJob && toJob.title) || 'Ajan')
-        : String((mainChatSess && (mainChatSess.bgTitle || mainChatSess.title)) || 'Beast')
+        : this._agentDmSessionTitle(mainChatSess, 'Beast')
       : '';
     /* konu etiketi: aynı konudaki DM'ler panelde AYNI oturumda toplanır */
     const topic = String((args && args.topic) || '').replace(/\s+/g, ' ').trim().slice(0, 60) || '(genel)';
@@ -7010,19 +7019,10 @@ Engine.prototype._agentDmSend = async function (fromSid, args) {
       /* canlı event TEK SEFER — üye başına emit edilirse panelde çoğalır */
       emitSafe(this, target || g.members[0], { type: 'agent-dm', ...dm });
       for (const m of g.members) {
-        if (m === String(fromSid) || !jobs.has(m)) continue;
-        (this._pendingReports = this._pendingReports || []).push({
-          parentId: m,
-          text:
-            `[AJAN DM (grup: "${g.title}") — ${dm.fromTitle} · konu: "${topic}"]\n${text}\n` +
-            `(Cevap yalnızca aksiyon/karar GEREKİYORSA ver — agent_dm group: "${g.title}", to: "${dm.fromTitle}", topic: "${topic}"; teşekkür/onay yazma.)`,
-          ...(image ? { image } : {}),
-          /* dm: AJAN DM'i; wake: gönderen koşan bir ajan DEĞİL (kullanıcı/chat) —
-             sürekli ajan boştaysa turu beklemeden uyandırılır (ping-pong koruması) */
-          dm: true,
-          wake: !fromJob,
-        });
-        this.flushPendingReports(m);
+        if (m === String(fromSid)) continue;
+        /* wake: gönderen koşan bir ajan DEĞİL (kullanıcı/chat) —
+           sürekli ajan boştaysa turu beklemeden uyandırılır */
+        this._agentDmDeliver(dm, m, { groupTitle: g.title, wake: !fromJob });
       }
       this._persistAgentDms();
       return {
@@ -7040,27 +7040,77 @@ Engine.prototype._agentDmSend = async function (fromSid, args) {
     this._pushAgentDm(dm);
     this._persistAgentDms();
     emitSafe(this, target, { type: 'agent-dm', ...dm });
-    if (jobs.has(target)) {
-      (this._pendingReports = this._pendingReports || []).push({
-        parentId: target,
-        text:
-          `[AJAN DM — ${dm.fromTitle} · konu: "${topic}"]\n${text}\n` +
-          `(Cevap yalnızca aksiyon/karar GEREKİYORSA ver — agent_dm to: "${dm.fromTitle}", topic: "${topic}"; teşekkür/onay yazma.)`,
-        ...(image ? { image } : {}),
-        dm: true,
-        wake: !fromJob,
-      });
-      this.flushPendingReports(target);
-    }
+    this._agentDmDeliver(dm, target, { wake: !fromJob });
     return { ok: true, to: target, toTitle: dm.toTitle, topic };
   } catch (e) {
     return { ok: false, error: String((e && e.message) || e) };
   }
 };
 
+/* AJAN DM TESLİMİ: hedef ister koşan ajan (bg işi) ister düz/bot sohbet
+   oturumu olsun mesaj GERÇEKTEN ulaşır. _pendingReports kuyruğu hedef
+   meşgulse tur bitiminde düşer, boştaysa yeni tur açar. ESKİ HÂLDE yalnız
+   bg işlerine teslim ediliyordu: bot sohbetine (ör. Tool) giden DM panelde
+   kalıyor, bot hiç görmüyordu. Bot↔bot tur fırtınasına karşı çift başına
+   pencere bütçesi vardır; bütçe dolunca mesaj yeni tur AÇMAZ, hedefin bir
+   sonraki turunda önüne eklenir (sepet) — sonsuz ping-pong maliyeti olmaz. */
+Engine.prototype._agentDmDeliver = function (dm, target, opts = {}) {
+  try {
+    const m = String(target || '');
+    if (!m || !dm) return false;
+    const jobs = this._bgJobs || new Map();
+    const job = jobs.get(m);
+    const sess = job ? null : this.cache.get(m) || null;
+    /* kayıtlı olmayan hedefe teslim yok — panelde kalır, sahte kuyruk birikmez */
+    if (!job && !sess && !fs.existsSync(this._file(m))) return false;
+    const groupTag = opts.groupTitle ? ` (grup: "${opts.groupTitle}")` : '';
+    const replyTo = opts.groupTitle
+      ? `agent_dm group: "${opts.groupTitle}", to: "${dm.fromTitle}", topic: "${dm.topic}"`
+      : `agent_dm to: "${dm.fromTitle}", topic: "${dm.topic}"`;
+    const text =
+      `[AJAN DM${groupTag} — ${dm.fromTitle} · konu: "${dm.topic}"]\n${dm.text}\n` +
+      `(Cevap yalnızca aksiyon/karar GEREKİYORSA ver — ${replyTo}; teşekkür/onay yazma.)`;
+    const rec = {
+      parentId: m,
+      text,
+      ...(dm.image ? { image: String(dm.image) } : {}),
+      dm: true,
+      wake: !!opts.wake,
+    };
+    /* bot↔bot sigorta: boş bot oturumunu her DM'de yeni turla uyandırma */
+    if (sess && sess.botId && !this.isBusy(m) && !this._agentDmWakeAllowed(dm.from, m)) {
+      this._agentDmBacklog = this._agentDmBacklog || new Map();
+      const q = this._agentDmBacklog.get(m) || [];
+      q.push({ text, ...(dm.image ? { image: String(dm.image) } : {}) });
+      if (q.length > 20) q.splice(0, q.length - 20);
+      this._agentDmBacklog.set(m, q);
+      return true;
+    }
+    (this._pendingReports = this._pendingReports || []).push(rec);
+    this.flushPendingReports(m);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+/* Bot-ajan DM ping-pong sigortası: aynı çift 10 dk içinde 10 otomatik
+   uyandırmayı aşarsa yeni tur AÇILMAZ (BEAST_DM_WAKE_LIMIT=0 kapatır). */
+Engine.prototype._agentDmWakeAllowed = function (a, b) {
+  if (process.env.BEAST_DM_WAKE_LIMIT === '0') return true;
+  const key = [String(a || ''), String(b || '')].sort().join('|');
+  this._dmWakeLog = this._dmWakeLog || new Map();
+  const now = Date.now();
+  const arr = (this._dmWakeLog.get(key) || []).filter((t) => now - t < 10 * 60 * 1000);
+  if (arr.length >= 10) { this._dmWakeLog.set(key, arr); return false; }
+  arr.push(now);
+  this._dmWakeLog.set(key, arr);
+  return true;
+};
+
 /* AJAN DM görseli (dosyadan): png/jpg/webp/gif dosyasını data URL'e çevirir.
    Send_file kapısına takılmadan (ör. tool__mt5_shot path'i) görsel paylaşımı;
-   2.5MB üstü DM kaydını şişirmesin diye atlanır. */
+   2.5MB üstü DM kaydını şişmesin diye atlanır. */
 Engine.prototype._agentDmImageFromFile = function (p) {
   try {
     const fp = String(p || '').trim();
@@ -7108,6 +7158,51 @@ Engine.prototype._agentDmCaptureImage = async function (sid) {
   }
   if (!found || found.length > 2500000) return '';
   return found;
+};
+
+/* Oturum önbelleğinde DM hedefi ara (q küçük harf anahtar). Skor:
+   tam id > bot adı/kimliği ya da tam kod > başlık/kod içerir.
+   Eşitlikte KOŞAN oturum > Tool botunun kalıcı istek oturumu tercih edilir. */
+Engine.prototype._agentDmFindSession = function (q, fromSid) {
+  let best = '';
+  let bestScore = 0;
+  for (const [sid, s] of this.cache) {
+    if (sid === String(fromSid)) continue;
+    if (!s || s.bgJob || s.isBotDm) continue;
+    /* BOT OTURUMLARI DA HEDEF OLABİLİR: bot adı/kimliği ile eşleşir
+       (ör. "Tool"); böylece Tool botuna DM gerçekten ulaşır — eski hâlde
+       yalnız panelde kalıyordu. */
+    const bot = s.botId && typeof this.resolveBot === 'function' ? this.resolveBot(s.botId) : null;
+    const title = this._agentDmSessionTitle(s, '').toLowerCase();
+    const hay = [s.bgTitle, s.title, s.code, title, bot ? bot.name : '', bot ? bot.id : '']
+      .map((x) => String(x || '').toLowerCase())
+      .filter(Boolean);
+    let score = 0;
+    if (String(sid).toLowerCase() === q) score = 4;
+    else if (bot && (String(bot.id).toLowerCase() === q || String(bot.name).toLowerCase() === q)) score = 3;
+    else if (s.code && String(s.code).toLowerCase() === q) score = 3;
+    else if (hay.some((x) => x && x.includes(q))) score = 1;
+    if (!score) continue;
+    let pick = score * 10;
+    if (this.ctrls.has(String(sid))) pick += 2;
+    if (s.botId === 'tool' && String(this._toolSessionId || '') === String(sid)) pick += 1;
+    if (pick > bestScore) { bestScore = pick; best = sid; }
+  }
+  return best;
+};
+
+/* Oturumun AJAN DM başlığı: bot oturumunda bot adı (ör. "Tool"), düz sohbette
+   "Beast · KOD". Başlık hem panelde kimin konuştuğunu netleştirir hem de cevap
+   adreslemesinde kullanılır (karşı taraf bu başlıkla geri yazar). */
+Engine.prototype._agentDmSessionTitle = function (sess, fallback = 'Ajan') {
+  if (!sess) return String(fallback);
+  const code = String(sess.code || '');
+  if (sess.botId && typeof this.resolveBot === 'function') {
+    const b = this.resolveBot(sess.botId);
+    if (b && b.name) return code ? String(b.name) + ' · ' + code : String(b.name);
+  }
+  const tail = String(sess.bgTitle || sess.title || code || '');
+  return tail ? 'Beast · ' + tail : 'Beast';
 };
 
 /* İki ajanın ORTAK üyesi olduğu AÇIK grup var mı — 1:1 DM'leri grup içine

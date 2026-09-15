@@ -2355,6 +2355,7 @@ function botToolSet(cfg) {
     'watcher_add', 'watcher_list', 'watcher_remove',
     'tool_request', /* CEPHANE: eksik aracı TOOL botuna yazdırma hakkı HER botta */
     'channel_send', /* İLK MESAJ: allow listteki kişilere kendiliğinden yazma hakkı HER botta */
+    'agent_dm',     /* BOTLAR ARASI DM: botlar birbirine iş atar/cevap verir (ör. Beast → Tool) */
   ]);
   if (s.web_search) { set.add('web_search'); set.add('http_fetch'); set.add('webfetch'); set.add('deep_search'); }
   if (s.browser) {

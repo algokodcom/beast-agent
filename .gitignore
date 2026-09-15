@@ -25,3 +25,8 @@ desktop.ini
 # Python derleme önbelleği
 __pycache__/
 *.pyc
+
+# mt5_shot çalışma zamanı (kaynak ağacından koşulursa oluşur)
+src/agent/defaulttools/mt5_shot/last-args.json
+src/agent/defaulttools/mt5_shot/.shot.lock
+src/agent/defaulttools/mt5_shot/shots/

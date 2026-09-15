@@ -20,8 +20,10 @@
    Notlar:
    - beast_cmd.json'a {id, ts, cmd, params} yazılır (UTF-16 BOM; EA FILE_UNICODE okur).
    - Ack dosyası POLL edilir; PNG MQL5\Files altında belirene kadar beklenir.
-   - EA v1.20 şu şablonu işler: {"id":"..","ts":..,"cmd":"shot","params":{file,width,height,symbol?,timeframe?,template?}}
+   - EA v1.22 şu şablonu işler: {"id":"..","ts":..,"cmd":"shot","params":{file,width,height,symbol?,timeframe?,template?}}
      symbol/timeframe aktif grafikten farklıysa EA ChartOpen+ChartSetSymbolPeriod ile geçici grafik açar.
+     EA ack'i PNG üretimini BEKLEMEDEN yazar (ChartScreenShot asenkron; geçici grafik kapatma
+     bir sonraki timer turuna ertelenir) — ack = "komut işlendi", PNG ayrıca beklenir.
    - PNG, send_file'ın engellediği %APPDATA%\beast altından çıkarılıp kullanıcı klasörüne
      (varsayılan <home>\beast_shots) kopyalanır; dönen "path" doğrudan send_file'a verilebilir.
    - GÖRSEL ENJEKSİYONU: başarılı sonuçta PNG data URL olarak __injectImage alanına gömülür;
@@ -39,10 +41,12 @@ const LOCK_STALE_MS = 45000;
 const HARD_MS = 80000;
 const DEFAULT_TIMEOUT_SEC = 20;
 
-/* ---------------- temel yardımcılar ---------------- */
-function syncSleep(ms) {
-  try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); }
-  catch (e) { const t = Date.now(); while (Date.now() - t < ms) { /* busy wait */ } }
+/* ---------------- temel yardımcılar ----------------
+   ÖNEMLİ: beklemeler ASENKRON olmalı — Atomics.wait tabanlı senkron uyku ana
+   thread'i kilitler, watchdog ZAMANLAYICISI ateşlenemez ve araç 80 sn yerine
+   customtools'un 90 sn kill'ine takılırdı ("tool zaman aşımı" + ack kaybı). */
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
 }
 
 let CTX = { cmdId: null, filesDir: null, started: Date.now() };
@@ -74,7 +78,7 @@ function fail(code, msg, extra) {
 /* ---------------- kilit (eşzamanlı çağrılar ack'i ezmesin) ---------------- */
 function releaseLock() { try { fs.unlinkSync(LOCK_FILE); } catch (e) {} }
 
-function acquireLock(waitMs) {
+async function acquireLock(waitMs) {
   const deadline = Date.now() + waitMs;
   for (;;) {
     try { fs.writeFileSync(LOCK_FILE, JSON.stringify({ pid: process.pid, at: Date.now() }), { flag: 'wx' }); return true; }
@@ -83,7 +87,7 @@ function acquireLock(waitMs) {
       try { st = fs.statSync(LOCK_FILE); } catch (x) {
         // kilit kayboldu/kilitli kaldı: kısa bekle, sonsuz döngüye girme
         if (Date.now() >= deadline) return false;
-        syncSleep(200);
+        await sleep(200);
         continue;
       }
       if (Date.now() - st.mtimeMs > LOCK_STALE_MS) {                 // ölü kilit: devral
@@ -91,7 +95,7 @@ function acquireLock(waitMs) {
         continue;
       }
       if (Date.now() >= deadline) return false;
-      syncSleep(400);
+      await sleep(400);
     }
   }
 }
@@ -154,7 +158,7 @@ function tfName(p) {
 }
 
 /* ack yoksa: kanal sağlam mı? kısa bir ping ile ayırt et */
-function eaPing(filesDir, budgetMs) {
+async function eaPing(filesDir, budgetMs) {
   const id = 'P' + Date.now().toString(36);
   const cmdFile = path.join(filesDir, 'beast_cmd.json');
   const ackFile = path.join(filesDir, 'beast_cmd_ack.json');
@@ -163,7 +167,7 @@ function eaPing(filesDir, budgetMs) {
   catch (e) { return { ok: false, error: 'ping yazılamadı: ' + e.message }; }
   const dl = Date.now() + budgetMs;
   while (Date.now() < dl) {
-    syncSleep(300);
+    await sleep(300);
     const a = readJson(ackFile);
     if (a && a.id === id) return { ok: true, ack: a, ms: Date.now() - t0 };
   }
@@ -231,7 +235,7 @@ function sanitizeFile(name, fallback) {
 }
 
 /* tek kare: EA'ya shot komutu yaz → ack bekle → PNG'yi bekle */
-function captureOne(o) {
+async function captureOne(o) {
   CTX.cmdId = o.id;
   const payload = { id: o.id, ts: Date.now(), cmd: 'shot', params: o.params };
   try { if (fs.existsSync(o.ackFile)) fs.unlinkSync(o.ackFile); } catch (e) {}
@@ -242,7 +246,7 @@ function captureOne(o) {
   let ack = null, cmdConsumed = false;
   const ackDeadline = Date.now() + o.timeoutSec * 1000;
   while (Date.now() < ackDeadline) {
-    syncSleep(250);
+    await sleep(250);
     const a = readJson(o.ackFile);
     if (a && a.id === o.id) { ack = a; break; }
     try {
@@ -265,7 +269,7 @@ function captureOne(o) {
       extra.diagnostic = cmdConsumed
         ? 'EA komutu aldı ama ack yazmadı (shot işleyicisi hata verdi / PNG üretimi bloke)'
         : 'EA komutu hiç almadı (zamanlayıcı durmuş ya da komut dosyası okunamadı)';
-      extra.ping = eaPing(o.filesDir, 6000);
+      extra.ping = await eaPing(o.filesDir, 6000);
     }
     return { ok: false, err: 'ea_no_ack', error: 'EA ' + o.timeoutSec + ' sn içinde ack vermedi (id=' + o.id + ', heartbeat ' +
       (extra.heartbeat_age_sec === null ? '?' : extra.heartbeat_age_sec) + ' sn, cmd tüketildi=' + cmdConsumed + ')', extra };
@@ -279,11 +283,11 @@ function captureOne(o) {
   const shotFile = (ack.result && ack.result.file) ? path.basename(String(ack.result.file)) : o.params.file;
   const src = path.join(o.filesDir, shotFile);
   let size = 0;
-  const pngDeadline = Math.max(ackDeadline, Date.now() + 8000);
+  const pngDeadline = Math.max(ackDeadline, Date.now() + 10000);
   for (;;) {
     try { if (fs.existsSync(src)) { size = fs.statSync(src).size; if (size > 1500) break; } } catch (e) {}
     if (Date.now() >= pngDeadline) break;
-    syncSleep(250);
+    await sleep(250);
   }
   if (size <= 1500) {
     return { ok: false, err: 'png_yok', error: 'PNG oluşmadı ya da çok küçük (' + size + ' byte): ' + shotFile, extra: { ack, expected_file: shotFile, bytes: size } };
@@ -353,7 +357,7 @@ async function runPanels(plan, filesDir, cmdFile, ackFile, beatFile, timeoutSec,
     if (symArg) params.symbol = symArg;
     if (ARGS.template !== undefined) params.template = String(ARGS.template);
     cmdIds.push(id);
-    const r = captureOne({ id, file: params.file, params, filesDir, cmdFile, ackFile, beatFile, timeoutSec: perAck, diag });
+    const r = await captureOne({ id, file: params.file, params, filesDir, cmdFile, ackFile, beatFile, timeoutSec: perAck, diag });
     if (!r.ok) {
       return {
         err: r.err,
@@ -452,7 +456,7 @@ async function run() {
       { heartbeat_age_sec: beatAge });
   }
 
-  const locked = acquireLock(Math.min(15000, timeoutSec * 500));
+  const locked = await acquireLock(Math.min(15000, timeoutSec * 500));
   if (!locked) console.error('[mt5_shot] uyarı: kilit alınamadı, yine de devam ediliyor');
 
   /* ÇOKLU KARE: symbols:["GOLD","EURUSD"] ve/veya timeframes:["M1","M15"]
@@ -476,7 +480,7 @@ async function run() {
   params.width = Number(ARGS.width) > 0 ? Math.min(10000, Math.round(Number(ARGS.width))) : 1600;
   params.height = Number(ARGS.height) > 0 ? Math.min(10000, Math.round(Number(ARGS.height))) : 900;
 
-  const cap = captureOne({ id, file, params, filesDir, cmdFile, ackFile, beatFile, timeoutSec, diag });
+  const cap = await captureOne({ id, file, params, filesDir, cmdFile, ackFile, beatFile, timeoutSec, diag });
   if (!cap.ok) return fail(cap.err, cap.error, cap.extra);
 
   const cp = copyOut(cap.src, cap.shotFile, ARGS.outdir);
@@ -576,11 +580,15 @@ function loadArgs(rawStdin) {
       const st = fs.fstatSync(0);
       f0 = { isFIFO: st.isFIFO(), isCharacterDevice: st.isCharacterDevice(), isFile: st.isFile(), size: st.size };
     } catch (e) { f0 = { error: String(e && e.message) }; }
-    try {
-      const { execSync } = require('child_process');
-      pcmd = execSync('powershell -NoProfile -Command "(Get-CimInstance Win32_Process -Filter \\"ProcessId=' +
-        process.ppid + '\\").CommandLine"', { timeout: 5000 }).toString().trim();
-    } catch (e) { pcmd = 'okunamadı: ' + String(e && e.message).slice(0, 120); }
+    /* Parent komut satırı teşhisi pahalıdır (PowerShell ~1-5 sn) — yalnız
+       BEAST_TOOL_DIAG=1 iken koşar; normal çekimlerde sn cinsinden hız kazandırır. */
+    if (process.env.BEAST_TOOL_DIAG === '1') {
+      try {
+        const { execSync } = require('child_process');
+        pcmd = execSync('powershell -NoProfile -Command "(Get-CimInstance Win32_Process -Filter \\"ProcessId=' +
+          process.ppid + '\\").CommandLine"', { timeout: 5000 }).toString().trim();
+      } catch (e) { pcmd = 'okunamadı: ' + String(e && e.message).slice(0, 120); }
+    }
     const envJson = {};
     for (const k of Object.keys(process.env)) {
       if (/key|token|secret|pass|auth|credential/i.test(k)) continue;

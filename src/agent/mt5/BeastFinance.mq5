@@ -1,24 +1,23 @@
 //+------------------------------------------------------------------+
-//| BeastFinance.mq5 — Beast Finance köprü EA'sı (v1.21)             |
+//| BeastFinance.mq5 — Beast Finance köprü EA'sı (v1.22)             |
 //| - Heartbeat: MQL5\Files\beast_ea.json (durum + izinler + equity) |
 //| - Komut köprüsü: beast_cmd.json (Beast yazar) → beast_cmd_ack.json|
 //| - Entegrasyon/Screenshot: grafik üstü pano (Comment) + seviye     |
 //|   çizgileri — Beast beast_note.json ile besler; görsel ajan      |
 //|   computer_look ile chart screenshot'ında bu panoyu görür.       |
+//| NOT: Trade işlemleri Python köprüsünden yürür — bu EA emir AÇMAZ;|
+//|      bu yüzden <Trade\Trade.mqh> bağımlılığı YOKTUR (standart     |
+//|      include klasörü eksik kurulumlarda EA derlenemiyordu).      |
 //+------------------------------------------------------------------+
 #property copyright "Beast Agent"
 #property link      "https://github.com/algokodcom/beast-agent"
-#property version   "1.21"
+#property version   "1.22"
 #property description "Beast Finance köprü EA'sı — heartbeat + komut köprüsü + grafik panosu."
-
-#include <Trade\Trade.mqh>
 
 input string InpTag       = "BeastFinance"; // Etiket
 input int    InpHeartbeat = 5;             // Kalp atışı (sn)
 input bool   InpVerbose   = true;          // Grafik panosunu yaz
-input long   InpMagic     = 20260910;      // Magic number
-
-CTrade gTrade;
+input long   InpMagic     = 20260910;      // Magic number (Python köprüsü kullanır)
 
 string BeatFile = "beast_ea.json";
 string CmdFile  = "beast_cmd.json";
@@ -29,10 +28,33 @@ string LvlPrefix = "BeastLvl_";
 string gNoteText = "";
 string gNoteSymbol = "";
 
+/* BEKLEYEN GÖRSEL İŞLERİ: ChartScreenShot ASENKRON üretir — komut bitince
+   hemen grafiği kapatmak/boyamak çekimi iptal edebiliyor. Bu yüzden geçici
+   grafiğin kapatılması ve aktif grafiğin shift ayarının geri yazılması bir
+   sonraki timer turuna ertelenir (PNG'nin diske yazılmasına süre tanınır). */
+long   gPendCloseChart   = 0;
+long   gPendRestoreChart = 0;
+long   gPendShiftPrev    = 0;
+double gPendShiftSizePrev = 0;
+
+void FlushPendingShot()
+{
+   if(gPendCloseChart != 0)
+   {
+      ChartClose(gPendCloseChart);      /* kapanmışsa zararsız (false döner) */
+      gPendCloseChart = 0;
+   }
+   if(gPendRestoreChart != 0)
+   {
+      ChartSetInteger(gPendRestoreChart, CHART_SHIFT, gPendShiftPrev != 0);
+      ChartSetDouble(gPendRestoreChart, CHART_SHIFT_SIZE, gPendShiftSizePrev);
+      ChartRedraw(gPendRestoreChart);
+      gPendRestoreChart = 0;
+   }
+}
+
 int OnInit()
 {
-   gTrade.SetExpertMagicNumber(InpMagic);
-   gTrade.SetTypeFillingBySymbol(_Symbol);
    EventSetTimer(MathMax(1, InpHeartbeat));
    WriteBeat("init");
    RefreshPanel();
@@ -43,6 +65,7 @@ int OnInit()
 void OnDeinit(const int reason)
 {
    EventKillTimer();
+   FlushPendingShot();
    WriteBeat("deinit");
    ClearLevels();
    Comment("");
@@ -50,6 +73,11 @@ void OnDeinit(const int reason)
 
 void OnTimer()
 {
+   /* ÖNEMLİ SIRA: önce ÖNCEKİ shot'un artıkları toparlanır (geçici grafik
+      kapatılır, aktif grafiğin shift'i geri yazılır); sonra yeni komut işlenir.
+      Ters sırada olsaydı yeni açılan geçici grafik aynı turda kapatılıp
+      screenshot kaybolurdu. */
+   FlushPendingShot();
    ReadNote();
    WriteBeat("beat");
    ProcessCommands();
@@ -72,7 +100,7 @@ void WriteBeat(const string stage)
 {
    int h = FileOpen(BeatFile, FILE_WRITE|FILE_TXT|FILE_UNICODE);
    if(h == INVALID_HANDLE) return;
-   string js = StringFormat("{\"ok\":true,\"ea\":\"BeastFinance\",\"version\":\"1.21\",\"tag\":\"%s\",\"stage\":\"%s\",\"time\":%d,\"server_time\":\"%s\",\"symbol\":\"%s\",\"period\":%d,\"equity\":%.2f,\"balance\":%.2f,\"terminal_trade_allowed\":%s,\"mql_trade_allowed\":%s,\"positions\":%d,\"note\":\"%s\"}",
+   string js = StringFormat("{\"ok\":true,\"ea\":\"BeastFinance\",\"version\":\"1.22\",\"tag\":\"%s\",\"stage\":\"%s\",\"time\":%d,\"server_time\":\"%s\",\"symbol\":\"%s\",\"period\":%d,\"equity\":%.2f,\"balance\":%.2f,\"terminal_trade_allowed\":%s,\"mql_trade_allowed\":%s,\"positions\":%d,\"note\":\"%s\"}",
                             JStr(InpTag), stage, (int)TimeCurrent(), TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS),
                             _Symbol, (int)Period(),
                             AccountInfoDouble(ACCOUNT_EQUITY), AccountInfoDouble(ACCOUNT_BALANCE),
@@ -93,7 +121,7 @@ void RefreshPanel()
       Comment("");
       return;
    }
-   string lines = "Beast Finance — BeastFinance v1.21\n";
+   string lines = "Beast Finance — BeastFinance v1.22\n";
    lines += _Symbol + " · " + EnumToString((ENUM_TIMEFRAMES)Period()) + " · " + TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS) + "\n";
    lines += StringFormat("Equity: %.2f · Balance: %.2f · Acik pozisyon: %d\n",
                          AccountInfoDouble(ACCOUNT_EQUITY), AccountInfoDouble(ACCOUNT_BALANCE), PositionsTotal());
@@ -198,6 +226,7 @@ void ApplyLevels(const string raw)
       }
       if(price > 0)
       {
+         if(n >= ArraySize(names)) break;   /* taşma koruması: sınırı aşan seviye atlanır */
          string name = LvlPrefix + IntegerToString(n);
          names[n] = name;
          if(ObjectFind(0, name) < 0) ObjectCreate(0, name, OBJ_HLINE, 0, 0, price);
@@ -238,6 +267,22 @@ void WriteAck(const string id, const string cmd, const bool ok, const string err
    js += "}";
    FileWriteString(h, js);
    FileClose(h);
+}
+
+/* Komut dosyasını YALNIZ hâlâ bizim id'mizi taşıyorsa sil — EA işlerken
+   yazılmış YENİ bir komutun yanlışlıkla silinmesi komut kaybı (ea_no_ack)
+   üretiyordu. */
+void DeleteCmdIfId(const string id)
+{
+   if(!FileIsExist(CmdFile)) return;
+   int h = FileOpen(CmdFile, FILE_READ|FILE_TXT|FILE_UNICODE);
+   if(h == INVALID_HANDLE) return;
+   string raw = "";
+   while(!FileIsEnding(h)) raw += FileReadString(h);
+   FileClose(h);
+   if(StringLen(raw) == 0) return;
+   string cur = JsonGet(raw, "id");
+   if(StringLen(cur) == 0 || StringCompare(cur, id) == 0) FileDelete(CmdFile);
 }
 
 void ProcessCommands()
@@ -352,15 +397,17 @@ void ProcessCommands()
       }
 
       /* SON MUM SAĞ KENARA YAPIŞMASIN: grafik "shift" payı (%12 sağ boşluk).
+         CHART_SHIFT integer, CHART_SHIFT_SIZE ise DOUBLE özelliktir (10-50) —
+         yanlış API (ChartGet/SetInteger) EA'yı derlenmez hale getiriyordu.
          Aktif grafikte önceki ayar çekimden SONRA geri yazılır — kullanıcının
-         grafiği kalıcı değişmez; geçici grafik zaten kapanır. */
-      long shiftPrev = ChartGetInteger(cid, CHART_SHIFT);
-      long shiftSizePrev = ChartGetInteger(cid, CHART_SHIFT_SIZE);
+         grafiği kalıcı değişmez; geçici grafik PNG yazılana kadar AÇIK kalır. */
+      long   shiftPrev     = ChartGetInteger(cid, CHART_SHIFT);
+      double shiftSizePrev = ChartGetDouble(cid, CHART_SHIFT_SIZE);
 
       if(ok)
       {
          ChartSetInteger(cid, CHART_SHIFT, true);
-         ChartSetInteger(cid, CHART_SHIFT_SIZE, 12);
+         ChartSetDouble(cid, CHART_SHIFT_SIZE, 12.0);
          ChartRedraw(cid);
          Sleep(1200);            /* mumlar/olcek otursun */
          ChartRedraw(cid);
@@ -375,14 +422,24 @@ void ProcessCommands()
             result = StringFormat("{\"file\":\"%s\",\"width\":%d,\"height\":%d,\"symbol\":\"%s\",\"period\":%d,\"temp_chart\":%s,\"template_applied\":%s,\"theme_ok\":%s,\"bg\":%d}",
                                   JStr(file), w, hh, symWant, (int)tfUse, (tempChart ? "true" : "false"), (tplApplied ? "true" : "false"), (themeOk ? "true" : "false"), bgNow);
          }
-         if(!tempChart)
-         {
-            ChartSetInteger(cid, CHART_SHIFT, shiftPrev != 0);
-            ChartSetInteger(cid, CHART_SHIFT_SIZE, shiftSizePrev);
-            ChartRedraw(cid);
-         }
       }
-      if(tempChart) ChartClose(cid);
+      /* ACK GARANTİSİ: ChartScreenShot görüntüyü ASENKRON üretir; ack'i
+         geciktirmek tool tarafında sahte "ea_no_ack" hatalarına yol açıyordu.
+         Ack burada hemen yazılır; PNG'yi tool ayrıca bekler. Geçici grafik ve
+         aktif grafiğin shift ayarı bir sonraki timer turunda toparlanır. */
+      WriteAck(id, cmd, ok, err, result);
+      DeleteCmdIfId(id);
+      if(tempChart)
+      {
+         gPendCloseChart = cid;
+      }
+      else
+      {
+         gPendRestoreChart = cid;
+         gPendShiftPrev = shiftPrev;
+         gPendShiftSizePrev = shiftSizePrev;
+      }
+      return;   /* ack bu yolda yazıldı — ortak kuyruğa tekrar girmesin */
    }
    else
    {
@@ -390,7 +447,7 @@ void ProcessCommands()
       err = "bilinmeyen komut: " + cmd;
    }
    WriteAck(id, cmd, ok, err, result);
-   FileDelete(CmdFile);
+   DeleteCmdIfId(id);
 }
 
 /* BeastFinance.tpl acik tema renklerini grafige uygular (sablon bulunamazsa da garanti) */

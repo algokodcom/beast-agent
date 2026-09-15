@@ -596,6 +596,16 @@ function startEventBus() {
       notify: (sub, text) => {
         try {
           waLog(`olay bildirimi → sid=${sub.sessionId} (${sub.type})`);
+          /* FINANCE AJANI: olay aboneliği alarmı AJAN DM'i olarak düşer ve
+             boştaki ajanı tur beklemeden uyandırır; diğer oturumlar aynı. */
+          if (financeState.agents.has(String(sub.sessionId))) {
+            finWakeAgentDm(
+              sub.sessionId,
+              `[FİNANS OLAYI — OLAY ABONELİĞİ (${sub.type})]\n${String(text || '')}\n` +
+                `Şimdi yap: aboneliği kurma nedenini hatırla; durumu değerlendir, gerekiyorsa işlem/uyarı üret. Kısa rapor ver.`
+            );
+            return;
+          }
           engine.send(sub.sessionId, { text });
         } catch {}
       },
@@ -7673,6 +7683,17 @@ function watcherFire(w, value) {
         ? 'izlenen değer değişti'
         : `kural sağlandı (son değer ${value}, koşul ${w.op} ${w.value ?? ''})`;
     toastNotify(`İzleyici: ${w.name}`, target, 'watchers');
+    /* FINANCE AJANI: izleyici alarmı AJAN DM'i olarak düşer ve boştaki ajanı
+       tur beklemeden uyandırır (main.js finWakeAgentDm). Diğer oturumlarda
+       eski davranış: mesaj doğrudan sohbete iner. */
+    if (financeState.agents.has(String(sid))) {
+      finWakeAgentDm(
+        sid,
+        `[FİNANS OLAYI — İZLEYİCİ ALARMI: ${w.name}]\n- ${target}\n` +
+          `Şimdi yap: izleyiciyi kurma nedenini hatırla; durumu değerlendir, gerekiyorsa işlem/uyarı üret. Kısa rapor ver.`
+      );
+      return;
+    }
     engine.send(sid, {
       text:
         `[IZLEYICI: ${w.name}] ${target}. ` +
@@ -9237,19 +9258,11 @@ const financeState = {
   pendingOrders: new Map(), /* ticket -> bekleyen emir (son başarılı okuma) */
   pendingReady: false, /* emir tabanı kuruldu mu (ilk tur sessiz; köprü kopunca sıfırlanır) */
   posVolume: new Map(), /* ticket -> hacim (netting hesapta artış = yeni dolum) */
-  pendingWarnings: [], /* tur saniyesi beklenmeden gönderilemeyen uyarılar sıradaki tura */
   excDirty: false,
   excSavedAt: 0,
   watchTimer: null,
   watchBusy: false,
   watchTickAt: 0,
-  /* TUR DÖNGÜSÜ (ekip → trader): rol ajanlarının turları bitince asıl trader
-     tetiklenir; trader turu bitince interval sonra yeni ekip turu başlar */
-  teamPending: new Set(), /* bu döngüde rapor beklenen rol ajanları */
-  cyclePhase: 'idle', /* idle: sıradaki ekip turu bekleniyor · team: raporlar toplanıyor · trader: trader turda */
-  cycleTimer: null, /* trader turundan sonra ekip turlarını başlatan zamanlayıcı */
-  cycleGuardTimer: null, /* ekip raporları takılırsa trader'ı zorlayan emniyet zamanlayıcısı */
-  traderWaitTimer: null, /* ekip bitince trader'ı tetikleyen kısa gecikme */
   alerts: [], /* fiyat alarmları (kalıcı: finance/alerts.json) */
   stats: null, /* son performans özeti (kalıcı: finance/stats.json) */
   statsAt: 0,
@@ -9777,6 +9790,7 @@ function finAlertsLoad() {
       price: Number(a && a.price) || 0,
       direction: String((a && a.direction) || 'above').toLowerCase(),
       note: String((a && a.note) || '').slice(0, 200),
+      sid: String((a && a.sid) || ''), /* alarmı kuran ajan oturumu (uyandırma hedefi) */
       at: Number(a && a.at) || Date.now(),
     }))
     .filter((a) => a.id && a.symbol && a.price > 0);
@@ -9799,6 +9813,7 @@ function finAlertApi() {
         price,
         direction: String((a && a.direction) || 'above').toLowerCase() === 'below' ? 'below' : 'above',
         note: String((a && a.note) || '').slice(0, 200),
+        sid: String((a && a.sid) || ''),
         at: Date.now(),
       };
       financeState.alerts.push(alarm);
@@ -9952,17 +9967,72 @@ async function finStatsRefresh(force) {
   }
 }
 
+/* ---- FİNANS OLAY → AJAN DM UYANDIRMA ----
+   Stop/TP/bekleyen emir aktivasyonu/fiyat alarmı gibi olaylar koşan finance
+   ajanlarına AJAN DM'i olarak düşer ve BOŞTAKİ ajanı TUR SANİYESİNİ
+   BEKLEMEDEN uyandırır: dm+wake kaydı engine._pendingReports'a girer;
+   flushPendingReports bunu continuous ajanın dmInbox'ına yazar ve
+   onDmQueued → finWakeAgent turu hemen başlatır. Ajan meşgulse mesaj
+   KAYBOLMAZ — tur biter bitmez (interval beklenmeden) yeni turda okunur
+   (finWakeAgent.wakePending → finFlushOnDone).
+   Olay ayrıca ekip DM grubuna sistem postu düşer (panelde canlı görünür). */
+function finWakeAgentDm(sid, text) {
+  const id = String(sid || '');
+  const agent = financeState.agents.get(id);
+  if (!agent || !engine) return false;
+  try {
+    const body = agent.role
+      ? String(text || '') + "\n(ROL HATIRLATMASI: işlem AÇMA — durumu analiz et; gerekiyorsa agent_dm ile ANA TRADER'a bildir.)"
+      : String(text || '');
+    (engine._pendingReports = engine._pendingReports || []).push({
+      parentId: id,
+      text: body,
+      dm: true,
+      wake: true,
+    });
+    engine.flushPendingReports(id);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/* Tüm koşan finance ajanlarını olayla uyandır. Dönüş: uyandırılan ajan sayısı. */
+function finWakeAgents(text, meta) {
+  const body = String(text || '').trim();
+  if (!body || !engine) return 0;
+  if (!financeState.agents.size) {
+    financeLog('[olay] koşan finance ajanı yok — uyarı yalnız günlük/bildirimde' + (meta && meta.kind ? ' (' + meta.kind + ')' : ''));
+    return 0;
+  }
+  /* Panel görünürlüğü: olay ekip DM grubuna sistem postu olarak düşer */
+  try {
+    if (typeof engine._agentTeamPost === 'function') {
+      engine._agentTeamPost('team:finance', 'finance', 'Beast Finance', body);
+    }
+  } catch {}
+  let sent = 0;
+  for (const [sid] of financeState.agents) {
+    if (finWakeAgentDm(sid, body)) sent += 1;
+  }
+  return sent;
+}
+
 /* ---- işlem günlüğü (görülen/kapanan pozisyonlar) ---- */
 async function finRecordClose(ticket, st) {
   let net = null;
   let symbol = (st && st.symbol) || '';
+  let closeReason = null; /* kapanışı yapan son deal'in nedeni (4=SL, 5=TP, 6=stop-out) */
   try {
     const r = await mt5bridge.call('deals', { days: 3 }, 12000);
     const deals = (r && r.ok && r.data && r.data.deals) || [];
     const mine = deals.filter((d) => String(d.position_id) === String(ticket));
     if (mine.length) {
       net = 0;
-      for (const d of mine) net += (Number(d.profit) || 0) + (Number(d.swap) || 0) + (Number(d.commission) || 0);
+      for (const d of mine) {
+        net += (Number(d.profit) || 0) + (Number(d.swap) || 0) + (Number(d.commission) || 0);
+        if (Number(d.entry) === 1) closeReason = Number(d.reason);
+      }
       symbol = String(mine[0].symbol || symbol);
     }
   } catch {}
@@ -9974,12 +10044,26 @@ async function finRecordClose(ticket, st) {
   financeState.excursions.delete(String(ticket));
   finExcSave();
   finExcFlush(true);
-  finJournal({ kind: 'close', ticket, symbol, net: rounded, side: (st && st.side) || '', mfe, mae });
+  const kind = finwatch.closeKind(closeReason);
+  finJournal({ kind: 'close', ticket, symbol, net: rounded, side: (st && st.side) || '', mfe, mae, reason: kind || '' });
   const pl = rounded == null ? '' : ` · K/Z ${rounded >= 0 ? '+' : ''}${rounded.toFixed(2)}`;
   const line = `🏁 Pozisyon kapandı: ${symbol || '?'} #${ticket}${pl}`;
   financeLog('[watchdog] ' + line);
   if (finCfg().notifyTrades !== false) financeNotify(line, 'close');
   if (rounded != null) finStatsRefresh(true);
+  /* STOP / TP / STOP-OUT: koşan tüm finance ajanları TUR BEKLEMEDEN uyanır
+     (ajan DM kutusu + boştaysa anında tur) — manuel kapanışta uyandırma yok. */
+  if (kind) {
+    const label = kind === 'stop' ? 'STOP OLDU' : kind === 'tp' ? 'TP OLDU' : 'STOP-OUT (teminat)';
+    const how = kind === 'tp' ? 'take-profit' : kind === 'stop' ? 'stop-loss' : 'stop-out';
+    const netTxt = rounded == null ? '?' : `${rounded >= 0 ? '+' : ''}${rounded.toFixed(2)}`;
+    finWakeAgents(
+      `[FİNANS OLAYI — ${label}, TUR SANİYESİ BEKLENMEDEN İLETİLDİ]\n` +
+        `- ${symbol || '?'}${st && st.side ? ' ' + String(st.side).toUpperCase() : ''} #${ticket} ${how} ile kapandı · net ${netTxt}\n` +
+        `Şimdi yap: pozisyon kapandı — hesabı, risk durumunu (kayıp serisi/günlük limit) ve planını HEMEN değerlendir; gerekiyorsa yeni emir aç ya da BEKLE. Kısa rapor ver.`,
+      { kind, ticket, symbol }
+    );
+  }
 }
 
 /* ---- risk otomasyonu (watchdog) ---- */
@@ -10027,21 +10111,26 @@ async function finCheckAlerts() {
     financeLog('[alarm] ' + line);
     financeNotify(line, 'alert');
     finJournal({ kind: 'alert', symbol: a.symbol, price: a.price, direction: a.direction, note: a.note || '' });
+    /* ALARM SAHİBİ AJAN: alarmı kuran koşan finance ajanı DM'den uyanır;
+       sahip koşmuyor/biliniyorsa koşan tüm finance ajanlarına düşer. */
+    const wakeTxt =
+      `[FİNANS OLAYI — FİYAT ALARMI, TUR SANİYESİ BEKLENMEDEN İLETİLDİ]\n` +
+      `- ${a.symbol} ${a.direction === 'below' ? '≤' : '≥'} ${a.price} tetiklendi (şimdi ${p.bid})${a.note ? ' — ' + a.note : ''}\n` +
+      `Şimdi yap: alarmı kurma nedenini hatırla; fiyat seviyesini ve planını değerlendir, gerekiyorsa işlem/uyarı üret. Kısa rapor ver.`;
+    if (!finWakeAgentDm(a.sid, wakeTxt)) finWakeAgents(wakeTxt, { kind: 'alarm', symbol: a.symbol });
   }
   if (changed) finAlertsSave();
 }
 
 /* ---- BEKLEYEN EMİR HABERLERİ ----
-   Aktifleşme uyarısı: günlük + panel/kanal bildirimi + koşan TÜM finance
-   ajanlarına TUR SANİYESİ BEKLEMEDEN mesaj. Oturum koşuyorsa engine steer
-   tamponuna girer (koşan turun güvenli noktasında okunur), boştaysa anında
-   yeni tur başlatır; sonraki turlar normal aralıkla devam eder. Gönderim
-   başarısızsa (durdurma kilidi/meşguliyet) uyarı sıradaki tur mesajına eklenir. */
+   Aktifleşme: günlük + panel/kanal bildirimi + koşan TÜM finance ajanlarına
+   AJAN DM'i — boştaki ajan tur saniyesini beklemeden uyanır, meşgul olan
+   mesajı sıradaki güvenli noktada okur (finWakeAgents). İptal/süre doldu:
+   yalnız günlük + bildirim (uyandırma yok). */
 function finNotifyPendingActivated(list) {
   const items = (Array.isArray(list) ? list : []).filter((x) => x && x.order && x.position);
   if (!items.length) return;
   const f = finCfg();
-  const heads = [];
   const detail = [];
   for (const { order: o, position: p } of items) {
     const symbol = String(o.symbol || p.symbol || '?');
@@ -10049,7 +10138,6 @@ function finNotifyPendingActivated(list) {
     const line =
       `⚡ BEKLEYEN EMİR AKTİFLEŞTİ: ${symbol} ${finwatch.orderTypeLabel(o)} ${finwatch.orderVolume(o)}` +
       ` → pozisyon #${String(p.ticket)} @ ${Number(p.price_open) || '?'}`;
-    heads.push(line);
     detail.push(
       `- ${symbol} · ${side === 'buy' ? 'ALIŞ' : 'SATIŞ'} · emir #${String(o.ticket || '?')}` +
       ` (${finwatch.orderTypeLabel(o)} @ ${Number(o.price_open) || '?'}) → pozisyon #${String(p.ticket)}` +
@@ -10074,30 +10162,12 @@ function finNotifyPendingActivated(list) {
     }
   }
   const body = [
-    '[ACİL UYARI — BEKLEYEN EMİR AKTİFLEŞTİ, TUR SANİYESİ BEKLENMEDEN İLETİLDİ]',
+    '[FİNANS OLAYI — BEKLEYEN EMİR AKTİFLEŞTİ, TUR SANİYESİ BEKLENMEDEN İLETİLDİ]',
     ...detail,
     'Şimdi yap: yeni pozisyonu HEMEN değerlendir — SL/TP yerinde mi, korumasız mı, planına uygun mu; gerekiyorsa SL/TP güncelle ya da kapat. Kısa rapor ver.',
     'NOT: Bu bir ara uyarıdır; tur düzenin bu turdan sonra normal aralığıyla devam eder (tur sayacı/aralık değişmez).',
   ].join('\n');
-  let sent = 0;
-  for (const [sid, a] of financeState.agents) {
-    if (!a || !engine) continue;
-    const text = a.role
-      ? body + '\n(ROL HATIRLATMASI: işlem AÇMA — pozisyonu analiz et; gerekiyorsa agent_dm ile ANA TRADER\u2019a bildir.)'
-      : body;
-    try {
-      if (engine.send(String(sid), text, { userAction: false })) {
-        sent += 1;
-      } else {
-        financeState.pendingWarnings.push({ sid: String(sid), text, at: Date.now() });
-        if (financeState.pendingWarnings.length > 20) {
-          financeState.pendingWarnings.splice(0, financeState.pendingWarnings.length - 20);
-        }
-      }
-    } catch {}
-  }
-  if (!financeState.agents.size) financeLog('[bekleyen] koşan finance ajanı yok — uyarı yalnız günlük/bildirimde');
-  else if (!sent) financeLog('[bekleyen] uyarı hemen gönderilemedi — sıradaki turlara iliştirildi');
+  finWakeAgents(body, { kind: 'pending-active' });
 }
 
 /* Aktifleşmeden listeden düşen emir (iptal/süre doldu): günlük + bildirim */
@@ -10220,9 +10290,10 @@ async function finWatchTick() {
     }
     /* ---- BEKLEYEN EMİR AKTİFLİĞİ ----
        Emir listesi her tur karşılaştırılır; listeden düşen emir için aynı anda
-       yeni/eşleşen bir pozisyon oluştuysa emir AKTİFLEŞTİ → ajanlar TUR
-       SANİYESİNİ BEKLEMEDEN uyarılır; tur döngüsü sonra normal aralıkla sürer.
-       (Köprü kesintisinde taban sıfırlanır — yanlış "aktifleşti" uyarısı yok.) */
+       yeni/eşleşen bir pozisyon oluştuysa emir AKTİFLEŞTİ → koşan finance
+       ajanları TUR SANİYESİNİ BEKLEMEDEN ajan DM'iyle uyandırılır; tur düzeni
+       sonra normal aralıkla sürer. (Köprü kesintisinde taban sıfırlanır —
+       yanlış "aktifleşti" uyarısı yok.) */
     try {
       if (!(ordersOk && positionsOk)) {
         financeState.pendingReady = false;
@@ -10878,20 +10949,6 @@ function finAgentStop(sid, reason) {
   if (!agent) return false;
   clearTimeout(agent.timer);
   financeState.agents.delete(sid);
-  /* TUR DÖNGÜSÜ temizliği: trader gidince döngü tamamen durur; ekip ajanı
-     gidince raporu bekleyen döngü kalanlarla tamamlanır (bekleme boşa düşmez) */
-  try {
-    if (agent.main) {
-      clearTimeout(financeState.cycleTimer); financeState.cycleTimer = null;
-      clearTimeout(financeState.cycleGuardTimer); financeState.cycleGuardTimer = null;
-      clearTimeout(financeState.traderWaitTimer); financeState.traderWaitTimer = null;
-      financeState.teamPending = new Set();
-      financeState.cyclePhase = 'idle';
-    } else if (agent.role) {
-      financeState.teamPending.delete(sid);
-      finMaybeTraderAfterTeam(false);
-    }
-  } catch {}
   if (sid === String(financeState.traderSid || '')) financeState.traderSid = null;
   try {
     if (engine && engine.isBusy(sid)) {
@@ -11044,116 +11101,6 @@ async function finConsultPlan(f, agent, sid) {
   }
 }
 
-/* ---- TUR DÖNGÜSÜ: EKİP TURU → ASIL TRADER ----
-   Ekip (rol) ajanları sırayla değil AYNI ANDA turlar; HEPSİ bitince asıl
-   trader'ın turu tetiklenir — böylece teknik/görsel/haber raporları TAZEYKEN
-   karar verir (finTeamDigest aynı turda enjekte edilir). Trader turu bitince
-   `intervalSec` sonra yeni ekip turu başlar. Ekip yoksa trader kendi
-   aralığıyla koşar (eski davranış). Sembol işçileri döngüye girmez. */
-
-function finRoleSids() {
-  const out = [];
-  for (const [sid, a] of financeState.agents) if (a && a.role) out.push(String(sid));
-  return out;
-}
-
-function finMainAgentRef() {
-  for (const [sid, a] of financeState.agents) if (a && a.main) return { sid: String(sid), agent: a };
-  return null;
-}
-
-/* Ekip turları için EMNİYET: raporlar takılır/döngü koparsa trader zorlanır */
-function finArmCycleGuard() {
-  clearTimeout(financeState.cycleGuardTimer);
-  const iv = Math.max(30, Number(finCfg().intervalSec) || 120) * 1000;
-  const guard = Math.max(10 * 60 * 1000, iv * 5);
-  financeState.cycleGuardTimer = setTimeout(() => {
-    financeState.cycleGuardTimer = null;
-    if (financeState.cyclePhase !== 'team') return;
-    financeLog('[tur] ekip raporları zaman aşımı — trader turu zorlanıyor');
-    financeState.teamPending = new Set();
-    financeState.cyclePhase = 'idle';
-    finMaybeTraderAfterTeam(true);
-  }, guard);
-}
-
-/* Ekip turlarını başlat (yeni döngü): rol ajanları hafif gecikmeyle sıraya girer */
-function finTeamKickCycle() {
-  clearTimeout(financeState.cycleTimer);
-  financeState.cycleTimer = null;
-  clearTimeout(financeState.traderWaitTimer);
-  financeState.traderWaitTimer = null;
-  const roles = finRoleSids();
-  if (!roles.length) {
-    financeState.cyclePhase = 'idle';
-    return;
-  }
-  financeState.teamPending = new Set(roles);
-  financeState.cyclePhase = 'team';
-  finArmCycleGuard();
-  roles.forEach((sid, i) => {
-    const a = financeState.agents.get(sid);
-    if (!a) return;
-    clearTimeout(a.timer);
-    a.timer = setTimeout(() => {
-      a.timer = null;
-      try { finAgentRound(sid); } catch {}
-    }, 400 + i * 1200);
-  });
-  financeLog('[tur] ekip turları başladı (' + roles.length + ' ajan) — bitince trader tetiklenecek');
-}
-
-/* Ekip ajanı turu bitti: HEPSİ bittiyse asıl trader'ı tetikle.
-   force=true (emniyet): bekleyen raporlar boş sayılır. */
-function finMaybeTraderAfterTeam(force) {
-  if (!force && financeState.cyclePhase !== 'team') return;
-  const p = financeState.teamPending || new Set();
-  financeState.teamPending = p;
-  for (const s of [...p]) if (!financeState.agents.has(s)) p.delete(s);
-  if (!force && p.size) return;
-  financeState.teamPending = new Set();
-  const main = finMainAgentRef();
-  if (!main || !engine) {
-    financeState.cyclePhase = 'idle';
-    return;
-  }
-  financeState.cyclePhase = 'trader';
-  clearTimeout(financeState.cycleGuardTimer);
-  financeState.cycleGuardTimer = null;
-  clearTimeout(financeState.traderWaitTimer);
-  const fire = () => {
-    financeState.traderWaitTimer = null;
-    if (!financeState.agents.has(main.sid)) return;
-    if (engine.isBusy(main.sid)) {
-      /* trader başka turda (DM uyandırması vb.) — kısa süre sonra yeniden dene */
-      financeState.traderWaitTimer = setTimeout(fire, 5000);
-      return;
-    }
-    financeLog('[tur] ekip raporları tamam — trader turu tetiklendi');
-    finAgentRound(main.sid);
-  };
-  financeState.traderWaitTimer = setTimeout(fire, 1200);
-}
-
-/* Trader turu bitti → interval sonra yeni ekip turu (ekip varsa) */
-function finCycleAfterTrader() {
-  const f = finCfg();
-  const iv = Math.max(30, Number(f.intervalSec) || 120) * 1000;
-  clearTimeout(financeState.cycleTimer);
-  financeState.cycleTimer = null;
-  clearTimeout(financeState.traderWaitTimer);
-  financeState.traderWaitTimer = null;
-  clearTimeout(financeState.cycleGuardTimer);
-  financeState.cycleGuardTimer = null;
-  financeState.teamPending = new Set();
-  financeState.cyclePhase = 'idle';
-  if (!finRoleSids().length) return;
-  financeState.cycleTimer = setTimeout(() => {
-    financeState.cycleTimer = null;
-    try { finTeamKickCycle(); } catch {}
-  }, iv);
-}
-
 /* Bir ajanın TEK turu: (opsiyonel) ana ajan planı + tur emri */
 function finAgentRound(sid) {
   const agent = financeState.agents.get(String(sid));
@@ -11183,26 +11130,9 @@ function finAgentRound(sid) {
       : 'İşlem açabilirsin — limitlere uy, SL\u2019siz pozisyon bırakma.';
   const focus = agent.symbols.length ? `Odak: ${agent.symbols.join(', ')}. ` : '';
   const round = `FINANCE TUR #${agent.round}: ${focus}hesap + pozisyonlar + fiyatları çek; ${roleDef ? 'rolüne uygun analiz yap (mt5_rates/mt5_indicators ile) ve öneri ver.' : 'açık pozisyonları yönet (SL/TP güncelle, hedefe ulaşanı kapat); mt5_rates/mt5_indicators ile yeni fırsatları değerlendir.'} ${auto} Önemli kararların gerekçesini mt5_note ile günlüğe yaz. Kısa rapor ver.`;
-  /* TUR SANİYESİNİ BEKLEMEDEN gönderilemeyen uyarılar (bekleyen emir
-     aktivasyonu): sıradaki tur mesajına en başta iliştirilir. */
-  let warnPrefix = '';
-  try {
-    const q = financeState.pendingWarnings || [];
-    if (q.length) {
-      const mine = q.filter((w) => w && String(w.sid) === String(sid));
-      if (mine.length) {
-        financeState.pendingWarnings = q.filter((w) => mine.indexOf(w) === -1);
-        warnPrefix = mine.map((w) => String(w.text || '')).join('\n\n') + '\n\n';
-      } else {
-        /* yaşlı kayıtları buda (duran/silinmiş ajanlar için birikmesin) */
-        const now = Date.now();
-        financeState.pendingWarnings = q.filter((w) => w && now - Number(w.at || 0) < 15 * 60000);
-      }
-    }
-  } catch {}
   const launch = (planBlock) => {
     if (!financeState.agents.has(String(sid))) return;
-    const ok = engine.send(sid, warnPrefix + planBlock + round, { userAction: false });
+    const ok = engine.send(sid, planBlock + round, { userAction: false });
     if (ok) {
       financeState.lastRoundAt = Date.now();
       if (agent.main) finPush('trader', { state: 'running', round: agent.round });
@@ -11237,7 +11167,12 @@ function finWakeAgent(sid) {
   const id = String(sid || '');
   const agent = financeState.agents.get(id);
   if (!agent || !engine) return;
-  if (engine.isBusy(id)) return;
+  if (engine.isBusy(id)) {
+    /* tur sürüyor: olay dmInbox'ta bekler — tur bitince finFlushOnDone
+       BEKLEMEDEN yeni tur açar (interval beklenmez) */
+    agent.wakePending = true;
+    return;
+  }
   clearTimeout(agent.timer);
   agent.timer = setTimeout(() => { try { finAgentRound(id); } catch {} }, 300);
 }
@@ -11254,30 +11189,20 @@ function finFlushOnDone(ev) {
     return;
   }
   clearTimeout(agent.timer);
-  agent.timer = null;
+  /* TUR SIRASINDA GELEN OLAY/DM: tur bitti → interval BEKLENMEDEN yeni tur
+     (dmInbox'taki olay mesajı bu turda okunur) */
+  if (agent.wakePending) {
+    agent.wakePending = false;
+    financeState.lastRoundAt = Date.now();
+    agent.timer = setTimeout(() => { try { finAgentRound(sid); } catch {} }, 800);
+    return;
+  }
   const f = finCfg();
   const iv = Math.max(30, Number(f.intervalSec) || 120) * 1000;
   financeState.lastRoundAt = Date.now();
   if (agent.main) {
     finPush('trader', { state: 'idle', round: agent.round, nextInSec: iv / 1000 });
-    /* TUR DÖNGÜSÜ: ekip varsa trader KENDİ KENDİNE zamanlanmaz — interval
-       sonra ekip turları başlar, hepsi bitince trader yeniden tetiklenir.
-       (Ekip turu hâlâ sürüyorsa veya trader tetiği bekliyorsa dokunma.) */
-    if (finRoleSids().length) {
-      if (financeState.cyclePhase !== 'team' && !financeState.traderWaitTimer) finCycleAfterTrader();
-    } else {
-      agent.timer = setTimeout(() => { try { finAgentRound(sid); } catch {} }, iv);
-    }
-    return;
   }
-  if (agent.role) {
-    /* EKİP AJANI turu bitti → raporlar tamamlanınca asıl trader tetiklenir.
-       Trader koşmuyorsa (nadir) rol ajanı kendi aralığıyla devam eder. */
-    finMaybeTraderAfterTeam(false);
-    if (!finMainAgentRef()) agent.timer = setTimeout(() => { try { finAgentRound(sid); } catch {} }, iv);
-    return;
-  }
-  /* SEMBOL İŞÇİSİ: döngü dışı — kendi aralığıyla koşar */
   agent.timer = setTimeout(() => { try { finAgentRound(sid); } catch {} }, iv);
 }
 
@@ -11338,7 +11263,6 @@ ipcMain.handle('finance:snapshot', async () => {
 });
 
 ipcMain.handle('finance:mode', async (_e, payload) => {
-  const wasMode = financeState.mode;
   financeState.mode = !!(payload && payload.on);
   /* BEAST FINANCE = MT5 KAPISI:
      - mod AÇILINCA köprü + MT5 terminali OTOMATİK başlar (watchdog dahil) —
@@ -11392,23 +11316,8 @@ ipcMain.handle('finance:mode', async (_e, payload) => {
       }
     } catch {}
   }
-  /* TRADER OTOMATİK BAŞLAT: Beast Finance moduna GEÇİLİNCE (kapalıyken
-     açılınca) TRADE AJANI kendiliğinden koşar — ▶ Ajanı Başlat beklenmez;
-     analiz ekibi de aynı akışta başlar. Zaten koşuyorsa sessizce onaylanır.
-     /stop kilidi açıkken kendiliğinden başlatılmaz (kilit yalnız açık bir
-     başlat eylemiyle — /start ya da ▶ — açılır). */
-  if (financeState.mode && !wasMode && engine && !engine._stopped) {
-    financeTraderStart()
-      .then((r) => {
-        if (r && r.ok) {
-          if (!r.already) financeLog('[trader] otomatik başlatıldı (finance modu açıldı)');
-        } else if (r && r.error) {
-          financeLog('[trader] otomatik başlatılamadı: ' + r.error);
-          try { financeNotify('⚠️ Trader otomatik başlatılamadı: ' + r.error, 'risk'); } catch {}
-        }
-      })
-      .catch(() => {});
-  }
+  /* OTOMATİK TRADER KAPALI: finance moduna geçmek trader'ı KENDİLİĞİNDEN
+     başlatmaz — kullanıcı TRADE AJANI kartındaki ▶ ile elle başlatır */
   return { ok: true, mode: financeState.mode, needNew, resumeSid };
 });
 
@@ -11443,22 +11352,13 @@ ipcMain.handle('finance:settings', async (_e, patch) => {
   }
   if (p.intervalSec !== undefined) f.intervalSec = Math.max(30, Math.min(3600, Math.round(Number(p.intervalSec) || 120)));
   /* TUR ARALIĞI CANLI: bekleyen zamanlayıcılar yeni aralıkla yeniden kurulur —
-     koşan tur bitince zaten finFlushOnDone yeni aralığı okur. TUR DÖNGÜSÜ
-     yönetimindeki trader/rol ajanları kendi zamanlayıcısını KULLANMAZ —
-     döngü zamanlayıcısı aşağıda yeni aralıkla kurulur. */
+     koşan tur bitince zaten finFlushOnDone yeni aralığı okur. */
   if (p.intervalSec !== undefined && financeState.agents) {
     const iv = Math.max(30, Math.round(Number(f.intervalSec) || 120)) * 1000;
-    const hasTeam = finRoleSids().length > 0;
     for (const [sid, a] of financeState.agents) {
       if (!a || !engine || engine.isBusy(sid)) continue;
-      if (a.main && hasTeam) continue;
-      if (a.role && finMainAgentRef()) continue;
       clearTimeout(a.timer);
       a.timer = setTimeout(() => { try { finAgentRound(String(sid)); } catch {} }, iv);
-    }
-    if (financeState.cycleTimer) {
-      clearTimeout(financeState.cycleTimer);
-      financeState.cycleTimer = setTimeout(() => { try { finTeamKickCycle(); } catch {} }, iv);
     }
   }
   if (p.maxLot !== undefined) f.maxLot = Math.max(0.01, Math.min(100, Number(p.maxLot) || 0.1));
@@ -11594,19 +11494,6 @@ async function financeTraderStart() {
   finPush('trader', { state: 'running', round: mainAgent.round });
   /* ANALİZ EKİBİ: seçili roller için ayrı sürekli ajanlar (koşmıyorsa) */
   finTeamStart(f);
-  /* TUR DÖNGÜSÜ başlangıcı: ilk ekip raporları bitince trader karar turuna
-     geçer; trader brief turu bitince de yeni ekip turu interval ile başlar */
-  try {
-    const roles = finRoleSids();
-    if (roles.length) {
-      financeState.teamPending = new Set(roles);
-      financeState.cyclePhase = 'team';
-      finArmCycleGuard();
-    } else {
-      financeState.teamPending = new Set();
-      financeState.cyclePhase = 'idle';
-    }
-  } catch {}
   return { ok: true, sid: mainSid };
 }
 

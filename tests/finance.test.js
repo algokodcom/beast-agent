@@ -236,6 +236,18 @@ test('disiplin: yönlü kur maruziyeti (korelasyon) limiti uygular', () => {
   assert.deepStrictEqual(risk.symbolLegs('VOLX'), []);
 });
 
+/* ---------------- finwatch: kapanış nedeni (SL/TP uyandırma) ---------------- */
+
+test('kapanış nedeni: SL/TP/stop-out sınıflanır, manuel kapanış uyandırmaz', () => {
+  assert.strictEqual(watch.closeKind(4), 'stop');
+  assert.strictEqual(watch.closeKind(5), 'tp');
+  assert.strictEqual(watch.closeKind(6), 'stopout');
+  assert.strictEqual(watch.closeKind(0), '', 'manuel (client) kapanış → uyandırma yok');
+  assert.strictEqual(watch.closeKind(3), '', 'EA kapanışı → uyandırma yok');
+  assert.strictEqual(watch.closeKind(undefined), '');
+  assert.strictEqual(watch.closeKind(null), '');
+});
+
 /* ---------------- finwatch: bekleyen emir aktivasyonu ---------------- */
 
 function ord(over) {

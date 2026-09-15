@@ -107,6 +107,18 @@ function plan(pos, meta, st, cfg) {
   return out;
 }
 
+/* ---- kapanış nedeni (MT5 deal reason) ----
+   İşlem SL/TP ile mi kapandı? Saf sınıflandırma: 4 = stop-loss,
+   5 = take-profit, 6 = stop-out (teminat). Diğerleri (manuel/EA/broker)
+   BOŞ döner — bu olaylarda ajan uyandırılmaz. */
+function closeKind(reason) {
+  const n = Number(reason);
+  if (n === 4) return 'stop';
+  if (n === 5) return 'tp';
+  if (n === 6) return 'stopout';
+  return '';
+}
+
 /* ---- bekleyen emir (pending) → pozisyon eşleştirme ----
    Watchdog turu emir listesini karşılaştırır: listeden DÜŞEN emir için aynı
    turda YENİ açılan (ya da netting hesapta hacmi artan) eşleşen bir pozisyon
@@ -176,4 +188,4 @@ function matchPendingDelta(goneOrders, freshPositions) {
   return out;
 }
 
-module.exports = { plan, roundTo, stepRound, orderSide, orderTypeLabel, orderVolume, matchPendingDelta };
+module.exports = { plan, roundTo, stepRound, closeKind, orderSide, orderTypeLabel, orderVolume, matchPendingDelta };

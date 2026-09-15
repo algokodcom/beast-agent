@@ -396,7 +396,7 @@ const handlers = {
       deals: deals.slice(-60),
     };
   },
-  async mt5_alerts(args) {
+  async mt5_alerts(args, ctx) {
     const action = String(args.action || 'list').toLowerCase();
     if (action === 'list') {
       const list = alertsApi.list();
@@ -415,9 +415,9 @@ const handlers = {
       if (!symbol) return { ok: false, error: 'symbol gerekli' };
       if (!isFinite(price) || price <= 0) return { ok: false, error: 'price gerekli (pozitif sayı)' };
       if (direction !== 'above' && direction !== 'below') return { ok: false, error: "direction 'above' veya 'below' olmalı" };
-      const alarm = alertsApi.set({ symbol, price, direction, note: String(args.note || '').slice(0, 200) });
+      const alarm = alertsApi.set({ symbol, price, direction, note: String(args.note || '').slice(0, 200), sid: ctx && ctx.sessionId ? String(ctx.sessionId) : '' });
       if (!alarm) return { ok: false, error: 'alarm kurulamadı' };
-      noteTrade('alert-set', { symbol, price, direction, id: alarm.id, note: alarm.note }, {});
+      noteTrade('alert-set', { symbol, price, direction, id: alarm.id, note: alarm.note }, ctx || {});
       return { ok: true, alert: alarm };
     }
     return { ok: false, error: "action: list|set|remove" };

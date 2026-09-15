@@ -10162,6 +10162,7 @@ function finOnEvent(ev) {
     finSetDot(ev.connected ? true : 'busy', { error: ev.error });
   } else if (ev.fn === 'trader') {
     if (ev.state === 'running') finLogLine('[trader] tur #' + (ev.round || 0) + ' başladı');
+    else if (ev.state === 'team') finLogLine('[trader] ekip raporları bekleniyor — ' + (ev.waiting || 0) + ' ajan turunu bitirsin (max ' + (ev.maxSec || '?') + ' sn)');
     else if (ev.state === 'idle') finLogLine('[trader] tur #' + (ev.round || 0) + ' bitti — sıradaki tur ~' + (ev.nextInSec || '?') + ' sn');
     else if (ev.state === 'hours') finLogLine('[trader] trade saatleri dışı — ajan askıda (kontrol ~' + (ev.nextInSec || 60) + ' sn)');
     else if (ev.state === 'stopped') finLogLine('[trader] durduruldu');

@@ -7,6 +7,7 @@
    - Aynı allow list mantığı: main tarafındaki tgFind() listesindeki kişilere cevap verir */
 
 const https = require('https');
+const crypto = require('crypto');
 
 const API_BASE = 'https://api.telegram.org/bot';
 const SEND_CHUNK = 3800; // Telegram mesaj sınırı 4096 — güvenli pay
@@ -30,16 +31,15 @@ class TelegramBridge {
     this.emit({ type: 'status', status, user: user || null });
   }
 
-  /* Bot API çağrısı — JSON POST, promise sarmalı */
-  api(method, body = {}, opts = {}) {
+  /* Ham POST — JSON ve multipart (görsel) aynı iskeleti kullanır */
+  _post(method, payload, headers, timeoutMs) {
     return new Promise((resolve, reject) => {
-      const payload = JSON.stringify(body);
       const req = https.request(
         `${API_BASE}${this.token}/${method}`,
         {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) },
-          timeout: opts.timeout || 15000,
+          headers: { ...headers, 'Content-Length': Buffer.byteLength(payload) },
+          timeout: timeoutMs || 15000,
         },
         (res) => {
           let data = '';
@@ -62,6 +62,16 @@ class TelegramBridge {
       req.write(payload);
       req.end();
     });
+  }
+
+  /* Bot API çağrısı — JSON POST, promise sarmalı */
+  api(method, body = {}, opts = {}) {
+    return this._post(
+      method,
+      JSON.stringify(body),
+      { 'Content-Type': 'application/json' },
+      opts.timeout || 15000
+    );
   }
 
   async start() {
@@ -155,6 +165,44 @@ class TelegramBridge {
       });
     }
     return true;
+  }
+
+  /* GÖRSEL gönder — data URL (base64) multipart ile yüklenir. PNG/JPG/WEBP
+     sendPhoto, GIF sendDocument; caption 1024, dosya 9.5MB üstü atlanır.
+     threadId verilirse forum konusuna gider. */
+  async sendPhoto(chatId, dataUrl, caption, threadId) {
+    try {
+      const m = /^data:image\/(png|jpe?g|webp|gif);base64,([A-Za-z0-9+/=\s]+)$/i.exec(String(dataUrl || '').trim());
+      if (!m) return false;
+      const isJpg = /^jpe?g$/i.test(m[1]);
+      const ext = isJpg ? 'jpg' : m[1].toLowerCase();
+      const mime = isJpg ? 'image/jpeg' : 'image/' + ext;
+      const buf = Buffer.from(m[2].replace(/\s+/g, ''), 'base64');
+      if (!buf.length || buf.length > 9.5 * 1024 * 1024) return false;
+      const gif = ext === 'gif';
+      const method = gif ? 'sendDocument' : 'sendPhoto';
+      const field = gif ? 'document' : 'photo';
+      const boundary = '----Beast' + crypto.randomBytes(10).toString('hex');
+      const parts = [];
+      const addField = (name, value) => {
+        parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${String(value)}\r\n`));
+      };
+      addField('chat_id', String(chatId));
+      if (caption) addField('caption', String(caption).slice(0, 1024));
+      if (threadId) addField('message_thread_id', String(Number(threadId)));
+      parts.push(
+        Buffer.from(
+          `--${boundary}\r\nContent-Disposition: form-data; name="${field}"; filename="beast.${ext}"\r\nContent-Type: ${mime}\r\n\r\n`
+        )
+      );
+      parts.push(buf);
+      parts.push(Buffer.from('\r\n'));
+      parts.push(Buffer.from(`--${boundary}--\r\n`));
+      await this._post(method, Buffer.concat(parts), { 'Content-Type': 'multipart/form-data; boundary=' + boundary }, 60000);
+      return true;
+    } catch {
+      return false;
+    }
   }
 }
 

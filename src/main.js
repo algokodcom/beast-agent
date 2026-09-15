@@ -2944,6 +2944,7 @@ async function handleTgIncoming(chatId, payload) {
       const allowed = tgFind(payload.senderId, payload.username);
       if (!allowed) {
         tgLog(`skip: grup mesajı chat=${chatId} — gönderici izin listesinde değil`);
+        if (String(dmTg.chat) === String(chatId)) finDmTgNotAllowed(chatId);
         return;
       }
       if (!dmTg.chat) {
@@ -10122,12 +10123,33 @@ function finDmTgBind(chatId, title) {
           id,
           '✅ Beast Finance AJAN DM bu gruba bağlandı.\n' +
             'Bundan sonra ajanların/alarmların mesajları buraya düşer; buraya yazdıkların AJAN DM grubunda görünür ve ajanları uyandırır.\n' +
-            'NOT: Grup Konular (Topics) destekliyorsa her AJAN DM grubu ayrı başlık olarak canlı akar — botu yönetici yapıp Konuları Yönet izni ver.'
+            'ÖNEMLİ: Normal mesajlarını görebilmem için beni bu grupta YÖNETİCİ yap (Konuları Yönet izniyle) ya da BotFather → /setprivacy → Disable yap. ' +
+            'Aksi halde yalnız /komutları ve bana yanıtları görebilirim.\n' +
+            'Grup Konular (Topics) destekliyorsa her AJAN DM grubu ayrı başlık olarak canlı akar.'
         )
       ).catch(() => {});
     }
   } catch {}
   return true;
+}
+
+/* İzin listesi dışı gönderici bağlı gruba yazdıysa sessiz kalma: 10 dk'da bir
+   gruba kısa uyarı — kullanıcı mesajının neden ajanlara gitmediğini anlasın. */
+const finDmTgWarnAt = new Map();
+function finDmTgNotAllowed(chatId) {
+  const id = String(chatId || '');
+  const last = finDmTgWarnAt.get(id) || 0;
+  if (!id || Date.now() - last < 10 * 60 * 1000) return;
+  finDmTgWarnAt.set(id, Date.now());
+  try {
+    Promise.resolve(
+      tg.send(
+        id,
+        '⚠️ Bu Telegram hesabı izin listesinde yok — mesajın ajanlara iletilemedi.\n' +
+          'Beast → Entegrasyonlar → Telegram bölümünde bu hesabı (ID ya da @kullanıcı adı) izin listesine ekle.'
+      )
+    ).catch(() => {});
+  } catch {}
 }
 
 /* ---- TELEGRAM KONU (TOPIC) EŞLEMESİ ----
@@ -10238,18 +10260,35 @@ function finAgentDmToTelegram(dm) {
     const title = String(dm.groupTitle || (gid === FIN_TEAM_GID ? FIN_TEAM_TITLE : gid));
     const who = String(dm.fromTitle || (dm.system ? 'SİSTEM' : 'Ajan'));
     const text = String(dm.text || '').slice(0, 3800);
+    const img = String(dm.image || '');
+    const hasImg = /^data:image\//i.test(img);
     finDmTgQueue(async () => {
       const tid = await finDmTgThreadEnsure(c.chat, gid, title);
-      const plain = `👥 [${title}] ${who}:\n${text}`;
-      if (tid > 0) {
+      const target = tid > 0 ? Number(tid) : undefined;
+      const full = `${who}:\n${text}`;
+      /* GÖRSEL: Telegram'a FOTO olarak gider (caption = gönderen + metin);
+         metnin caption'a sığmayan kalanı ayrı mesajla gider. */
+      if (hasImg) {
+        const cap = full.slice(0, 1000);
+        let ok = false;
+        try { ok = await tg.sendPhoto(c.chat, img, cap, target); } catch { ok = false; }
+        if (ok) {
+          const rest = full.slice(1000);
+          if (rest.trim()) await tg.send(c.chat, '…' + rest, target).catch(() => {});
+          return;
+        }
+        /* foto gönderilemedi (bozuk/büyük) → metne düş, görsel notuyla */
+      }
+      const head = hasImg ? `${who}: (görsel gönderilemedi)\n${text}` : full;
+      if (target) {
         try {
-          await tg.send(c.chat, `${who}:\n${text}`, tid);
+          await tg.send(c.chat, head, target);
           return;
         } catch {
           /* konu silinmiş/erişim yok → genel akışa düş (mesaj kaybolmasın) */
         }
       }
-      await tg.send(c.chat, plain);
+      await tg.send(c.chat, `👥 [${title}] ${head}`);
     });
   } catch {}
 }

@@ -10311,7 +10311,7 @@ function finDmTgPaint() {
   if (els.finDmTgHint) {
     els.finDmTgHint.textContent =
       'Her AJAN DM grubu (Beast Finance EKİP, sembol ekipleri vb.) Telegram\u2019da AYRI BAŞLIK (topic) olarak canlı akar. ' +
-      'Telegram grubunda Konular (Topics) açık ve bot yönetici (Konuları Yönet) olmalı — Konular kapalıysa mesajlar tek akışa grup etiketiyle düşer. ' +
+      'Telegram grubunda Konular (Topics) açık ve bot YÖNETİCİ (Konuları Yönet) olmalı — yönetici değilse normal mesajlarını bot göremez (BotFather → /setprivacy → Disable da olur); Konular kapalıysa mesajlar tek akışa grup etiketiyle düşer. ' +
       'Bir başlığa yazdığın mesaj ilgili AJAN DM grubunda görünür ve o grubun ajanları uyanır.';
   }
 }

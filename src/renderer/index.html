@@ -800,7 +800,7 @@
           </div>
           <div class="mini-add-row">
             <input id="wAddCd" class="inp" type="number" min="0" max="10080" value="60" title="soğuma (dk): koşul sürdükçe en fazla bu aralıkta bir bildirir — 0 = yalnız koşul yeniden sağlanınca" style="width:70px" />
-            <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--muted);white-space:nowrap"><input id="wAddOnce" type="checkbox" /> tek seferlik</label>
+            <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--muted);white-space:nowrap"><input id="wAddOnce" type="checkbox" /> tek seferlik <i style="font-style:normal;opacity:.75">(tetiklenince listeden silinir)</i></label>
           </div>
         </div>
         <div id="watchList" class="mini-list"></div>
@@ -892,14 +892,14 @@
         </label>
         <div class="fin-set-note">RİSK OTOMASYONU gizliyken koruma döngüsü (watchdog) kapatılır; tekrar gösterdiğinde ilgili kutucuktan açabilirsin.</div>
         <div class="fin-set-sep"></div>
-        <label class="fin-set-row" title="Açıkken Beast Finance AJAN DM grubundaki mesajlar (alarm/sistem postları dahil) seçtiğin Telegram grubuna düşer; o gruba yazdığın mesaj AJAN DM grubunda görünür ve koşan finance ajanları tur beklemeden uyanır.">
+        <label class="fin-set-row" title="Açıkken botu eklediğin Telegram grubuna yazılan ilk mesaj o grubu AJAN DM aynası yapar: AJAN DM'de konuşulanlar (alarmlar dahil) gruba düşer, grupta yazdıkların AJAN DM'de görünür ve finance ajanları uyanır. Grup seçmene gerek yok.">
           <input id="finDmTgOn" type="checkbox" />
-          <span class="fsr-main"><b>AJAN DM ↔ TELEGRAM</b><i>Ajan DM grubu Telegram'da canlı — iki yönlü köprü</i></span>
+          <span class="fsr-main"><b>AJAN DM ↔ TELEGRAM</b><i>Ajan DM grubu Telegram'da canlı — otomatik bağlanır</i></span>
         </label>
         <div id="finDmTgWrap" class="fin-set-sub" hidden>
           <span class="fin-set-lbl">TELEGRAM GRUBU</span>
-          <select id="finDmTgChat" title="Botu eklediğin Telegram grubunu seç — liste, bottan mesaj alınan grupları gösterir"></select>
-          <button id="finDmTgRefresh" class="fin-set-btn" title="Grup listesini yenile — bottan mesaj alan gruplar listelenir">&#x27F3; Listeyi yenile</button>
+          <div id="finDmTgState" class="fin-dm-tg-state">—</div>
+          <button id="finDmTgUnbind" class="fin-set-btn" title="Bağlantıyı kopar — sonra gruba yazılan ilk mesaj yeni grup olarak otomatik bağlanır">&#x2715;&#xFE0E; Bağlantıyı kopar</button>
           <div id="finDmTgHint" class="fin-set-note" style="margin:2px 0 0"></div>
         </div>
       </div>

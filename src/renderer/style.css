@@ -5882,7 +5882,7 @@ body.finance-mode #composerWrap { margin-right: var(--finW, 400px); }
 }
 .fin-set-sub[hidden] { display: none; }
 .fin-set-lbl { font-size: 10.5px; color: var(--muted); letter-spacing: 0.5px; }
-.fin-set-sub select { width: 100%; }
+.fin-dm-tg-state { font-size: 11.5px; color: var(--text); line-height: 1.4; word-break: break-word; }
 .fin-set-btn {
   align-self: flex-start;
   font-size: 10.5px;

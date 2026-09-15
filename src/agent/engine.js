@@ -6178,7 +6178,7 @@ const TOOLS = [
           everyMin: { type: 'number', description: 'Check interval in minutes (default 15, min 1, max 1440)' },
           everySec: { type: 'number', description: 'Check interval in SECONDS (10-8640) — overrides everyMin for fast watchers (e.g. 30 = every 30s)' },
           cooldownMin: { type: 'number', description: 'İki bildirim arası en az dakika (varsayılan 60). >0 ise alarm TEKRARLIDIR: koşul sürdükçe soğuma dolduğunda yeniden bildirir (ör. 5 = 5 dakikada bir hatırlat). 0 = yalnız koşul yeniden sağlandığında (kenar tetikleme).' },
-          once: { type: 'boolean', description: 'true = tek seferlik izleyici: ilk tetiklemede kapanır (varsayılan false = tekrarlı)' },
+          once: { type: 'boolean', description: 'true = tek seferlik izleyici: ilk tetiklemede listeden OTOMATİK SİLİNİR (varsayılan false = tekrarlı)' },
         },
         required: ['name', 'kind'],
       },

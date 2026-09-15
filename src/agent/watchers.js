@@ -194,7 +194,7 @@ function normalize(input) {
       everyMin: Math.max(1, Math.round(everySec / 60)), // geriye dönük uyum
       everySec,
       cooldownMin,
-      once: !!i.once, /* tek seferlik: ilk tetiklemede kapanır */
+      once: !!i.once, /* tek seferlik: ilk tetiklemede listeden OTOMATİK SİLİNİR */
       prompt,
       sessionId: i.sessionId || null,
       enabled: true,
@@ -378,10 +378,11 @@ async function tickOnce(deps = {}) {
       w.lastError = '';
       pushLog(w.id, r.triggered ? 'trigger' : 'ok', value);
       if (r.triggered) {
-        /* TEK SEFERLİK: ilk tetiklemede izleyici kapanır (yeniden etkinleştirilebilir) */
-        if (w.once) w.enabled = false;
         if (typeof hooks.onTrigger === 'function') hooks.onTrigger({ ...w }, value);
         events.push({ id: w.id, name: w.name, value });
+        /* TEK SEFERLİK: ilk tetiklemede izleyici listeden OTOMATİK SİLİNİR —
+           pasif olarak listede kalmaz (logları da temizlenir). */
+        if (w.once) remove(w.id);
       }
     } catch (e) {
       w.lastCheckAt = new Date(now).toISOString();

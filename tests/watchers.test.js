@@ -116,7 +116,7 @@ test('applyCheck: tekrarlı alarm — koşul sürerken cooldown dolunca yeniden 
   assert.ok(!c2.triggered, 'changed → koşul sürerken tekrar yok');
 });
 
-test('tickOnce: tek seferlik (once) izleyici ilk tetiklemede kapanır', async () => {
+test('tickOnce: tek seferlik (once) izleyici ilk tetiklemede listeden SİLİNİR', async () => {
   for (const w of watchers.list()) watchers.remove(w.id);
   const r = watchers.add({
     name: 'tek seferlik',
@@ -133,9 +133,8 @@ test('tickOnce: tek seferlik (once) izleyici ilk tetiklemede kapanır', async ()
   const evs = await watchers.tickOnce(deps);
   assert.equal(evs.length, 1);
   const w = watchers.list().find((x) => x.id === r.watcher.id);
-  assert.equal(w.enabled, false, 'tetiklenince kapanır');
-  /* kapalı izleyici yeniden tetiklenmez */
-  await watchers.patch(r.watcher.id, { lastCheckAt: new Date(Date.now() - 5 * 60000).toISOString() });
+  assert.equal(w, undefined, 'tetiklenince listeden otomatik silinir');
+  /* silindiği için sonraki turlarda yeniden tetiklenmez */
   assert.equal((await watchers.tickOnce(deps)).length, 0);
   for (const id of watchers.list().map((x) => x.id)) watchers.remove(id);
 });

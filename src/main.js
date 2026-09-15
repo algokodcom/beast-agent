@@ -2931,20 +2931,35 @@ async function handleTgIncoming(chatId, payload) {
   try {
     if (!engine) return;
     /* GRUP: normal grup desteği kapalı; ancak AJAN DM ↔ TELEGRAM köprüsünde
-       seçili grupsa mesaj AJAN DM grubuna düşer ve finance ajanları uyanır. */
+       köprü AÇIKKEN gruba yazılan ilk mesaj o grubu OTOMATİK bağlar —
+       grup seçme adımı yok. Bağlı gruptan gelen mesaj AJAN DM grubuna düşer
+       ve finance ajanları uyanır. */
     if (payload.isGroup) {
       tgRememberGroup(chatId, payload.chatTitle);
       const dmTg = finDmTgCfg();
-      if (dmTg.on && String(dmTg.chat) === String(chatId)) {
-        const allowed = tgFind(payload.senderId, payload.username);
-        tgLog(
-          `grup(ajan dm) chat=${chatId} sender=${payload.senderId || '?'} user=${payload.username || '-'} allowed=${!!allowed}`
-        );
-        if (!allowed) return; /* izin listesi dışı yoksay */
+      if (!dmTg.on) {
+        tgLog(`skip: grup mesajı chat=${chatId} (köprü kapalı)`);
+        return;
+      }
+      const allowed = tgFind(payload.senderId, payload.username);
+      if (!allowed) {
+        tgLog(`skip: grup mesajı chat=${chatId} — gönderici izin listesinde değil`);
+        return;
+      }
+      if (!dmTg.chat) {
+        /* İLK MESAJ = BAĞLAMA: /start gibi kısa komutlar yalnız bağlar,
+           normal mesaj hem bağlar hem AJAN DM'e düşer. */
+        finDmTgBind(chatId, payload.chatTitle);
+        const boot = /^\/(start|baglan|bağlan)\b/i.test(String(payload.text || '').trim());
+        if (boot) return;
         finTelegramToAgentDm(payload);
         return;
       }
-      tgLog(`skip: grup mesajı chat=${chatId} (grup desteği kapalı)`);
+      if (String(dmTg.chat) === String(chatId)) {
+        finTelegramToAgentDm(payload);
+        return;
+      }
+      tgLog(`skip: grup mesajı chat=${chatId} (bağlı grup ${dmTg.chat})`);
       return;
     }
     const hit = tgFind(payload.senderId, payload.username);
@@ -10067,24 +10082,51 @@ async function finStatsRefresh(force) {
 const FIN_TEAM_GID = 'team:finance';
 const FIN_TEAM_TITLE = 'Beast Finance EKİP';
 
-/* Köprü ayarı (tek nokta): açık + grup seçili mi? */
+/* Köprü ayarı: açık mı + bağlı grup (chatId). Grup SEÇİLMEZ — köprü açıkken
+   gruba yazılan ilk mesaj o grubu otomatik bağlar (finDmTgBind). */
 function finDmTgCfg() {
   let f = {};
   try { f = finCfg(); } catch {}
   return {
-    on: !!(f && f.dmTelegram && f.dmTelegramChat),
+    on: !!(f && f.dmTelegram),
     chat: String((f && f.dmTelegramChat) || ''),
     title: String((f && f.dmTelegramTitle) || ''),
   };
 }
 
-/* Giden: AJAN DM grubu → Telegram (Telegram'dan gelenler geri gönderilmez). */
+/* Otomatik bağlama: gelen grup mesajı (izinli gönderici) AJAN DM aynası olur. */
+function finDmTgBind(chatId, title) {
+  const id = String(chatId || '');
+  if (!id) return false;
+  const f = finCfg();
+  const t = String(title || '').trim();
+  f.dmTelegramChat = id;
+  f.dmTelegramTitle = t || f.dmTelegramTitle || id;
+  try { saveSettings(); } catch {}
+  tgLog(`ajan dm telegram grubu OTOMATİK bağlandı: ${id}${t ? ' (' + t + ')' : ''}`);
+  /* gruba onay: kullanıcı bağlandığını net görsün */
+  try {
+    if (tg && tg.connected) {
+      Promise.resolve(
+        tg.send(
+          id,
+          '✅ Beast Finance AJAN DM bu gruba bağlandı.\n' +
+            'Bundan sonra ajanların/alarmların mesajları burada; buraya yazdıkların AJAN DM grubunda görünür ve ajanları uyandırır.'
+        )
+      ).catch(() => {});
+    }
+  } catch {}
+  return true;
+}
+
+/* Giden: AJAN DM grubu → Telegram (Telegram'dan gelenler geri gönderilmez;
+   grup henüz otomatik bağlanmadıysa sessizce beklenir). */
 function finAgentDmToTelegram(dm) {
   try {
     if (!dm || dm.viaTelegram) return;
     if (String(dm.group || '') !== FIN_TEAM_GID) return;
     const c = finDmTgCfg();
-    if (!c.on || !tg || !tg.connected) return;
+    if (!c.on || !c.chat || !tg || !tg.connected) return;
     const who = String(dm.fromTitle || (dm.system ? 'SİSTEM' : 'Ajan'));
     const body =
       `👥 *${String(dm.groupTitle || FIN_TEAM_TITLE)}* · ${who}\n` +
@@ -11613,13 +11655,21 @@ ipcMain.handle('finance:settings', async (_e, patch) => {
   if (p.notifyTrades !== undefined) f.notifyTrades = !!p.notifyTrades;
   if (p.notifyWatchdog !== undefined) f.notifyWatchdog = !!p.notifyWatchdog;
   if (p.notifyTradeOnly !== undefined) f.notifyTradeOnly = !!p.notifyTradeOnly;
-  /* AJAN DM ↔ TELEGRAM köprüsü ayarları */
+  /* AJAN DM ↔ TELEGRAM köprüsü ayarları (grup SEÇİLMEZ — otomatik bağlanır) */
   if (p.dmTelegram !== undefined) f.dmTelegram = !!p.dmTelegram;
   if (p.dmTelegramChat !== undefined) {
     f.dmTelegramChat = String(p.dmTelegramChat || '').trim().slice(0, 64);
-    if (!f.dmTelegramChat) f.dmTelegram = false;
+    if (!f.dmTelegramChat) f.dmTelegramTitle = ''; /* koparıldı → başlık da gitsin */
   }
   if (p.dmTelegramTitle !== undefined) f.dmTelegramTitle = String(p.dmTelegramTitle || '').trim().slice(0, 80);
+  /* köprü yeni açıldı ve botun gördüğü TEK grup varsa hemen bağla */
+  if (p.dmTelegram === true && !f.dmTelegramChat) {
+    const known = tgGroupsList();
+    if (known.length === 1) {
+      f.dmTelegramChat = String(known[0].id);
+      f.dmTelegramTitle = String(known[0].title || known[0].id);
+    }
+  }
   if (p.maxDailyLossPct !== undefined) f.maxDailyLossPct = Math.max(0, Math.min(50, Number(p.maxDailyLossPct) || 0));
   if (p.dailyLossAction !== undefined) {
     const v = String(p.dailyLossAction || 'warn').toLowerCase();
@@ -14024,8 +14074,6 @@ ipcMain.handle('tg:allow:set', (_e, list) => {
   saveSettings();
   return settings.tgAllow;
 });
-/* Botun gördüğü gruplar (AJAN DM ↔ TELEGRAM grup seçicisi) */
-ipcMain.handle('tg:groups:list', () => tgGroupsList());
 ipcMain.handle('tg:sessions', () => [...tgChats.values()]);
 
 /* Sohbet geçmişi etiketi (Telegram): "Telegram <ad|chatId>" */

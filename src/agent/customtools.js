@@ -161,9 +161,15 @@ function call(name, args, sid) {
     }, TOOL_TIMEOUT_MS);
     try {
       /* Araç ortamı: BEAST_* değişkenleri — tool'lar köprü/python yolunu ve
-         argümanları buradan güvenle çözebilir (stdin yanı sıra yedek kanal). */
+         argümanları buradan güvenle çözebilir (stdin yanı sıra yedek kanal).
+         ELECTRON_RUN_AS_NODE: uygulama Electron olduğu için process.execPath
+         electron.exe'dir; bu değişken olmadan çocuk süreç Node yerine GUI
+         modunda açılır, run.js HİÇ başlamaz ve 90 sn zaman aşımı düşer.
+         Çocuğu Node moduna zorla (gerçek node.exe üzerinde etkisizdir) —
+         tool'lar bunu last-args/diag izlerinde de doğrular. */
       const env = {
         ...process.env,
+        ELECTRON_RUN_AS_NODE: '1',
         BEAST_ROOT: beastRoot(),
         BEAST_APP_DIR: path.join(__dirname, '..', '..'), // tool'lar uygulama node_modules'ına (ör. @napi-rs/canvas) buradan erişir
         BEAST_TOOL_ID: id,

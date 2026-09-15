@@ -589,6 +589,8 @@ function loadArgs(rawStdin) {
     }
     fs.writeFileSync(path.join(__dirname, 'last-args.json'), JSON.stringify({
       at: new Date().toISOString(), source: src,
+      run_as_node: process.env.ELECTRON_RUN_AS_NODE || null,   // engine electron'u node modunda mı başlattı (1 = evet; CLI'da null)
+      electron: process.versions.electron || null,
       stdin_raw: String(rawStdin || '').slice(0, 1500),
       stdin_fd0: f0, ppid: process.ppid, parent_cmd: pcmd,
       argv: process.argv.slice(2), env_json: envJson, parsed, final

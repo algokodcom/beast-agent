@@ -70,6 +70,19 @@ test('customtools: tool KENDİ klasöründe koşar (cwd = tools/<slug>)', async 
   customtools.remove('test_cwd');
 });
 
+test('customtools: çocuk süreç node modunda koşar (ELECTRON_RUN_AS_NODE — electron GUI asılması)', async () => {
+  customtools.save({
+    name: 'test_node_mode',
+    description: 'electron node modu kontrolü',
+    parameters: { type: 'object', properties: {} },
+    code: "console.log(JSON.stringify({ ok: true, runAsNode: process.env.ELECTRON_RUN_AS_NODE || null }));",
+  });
+  const out = await customtools.call('tool__test_node_mode', {});
+  assert.equal(out.ok, true);
+  assert.equal(out.runAsNode, '1', 'çocuk sürece ELECTRON_RUN_AS_NODE=1 verilmeli');
+  customtools.remove('test_node_mode');
+});
+
 test('customtools: trade hook başarılı çağrıda (id, args, sonuç, sid) ile tetiklenir', async () => {
   customtools.save({
     name: 'test_hook',

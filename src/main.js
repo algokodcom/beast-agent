@@ -3901,6 +3901,7 @@ app.whenReady().then(() => {
     app.on('before-quit', () => {
       app.isQuitting = true;
       try { finWatchStop(); } catch {} // finance watchdog zamanlayıcısını kapat
+      try { finHoursStop(); } catch {} // trade saatleri denetim zamanlayıcısını kapat
       flushBrowserStorage(); // x.com/google oturumları (cookies) diske yazılsın
       try { toolsMod.disposeShellSessions(); } catch {} // kalıcı shell oturumlarını kapat
       try { require('./agent/mcp').stopAll(); } catch {} // MCP server süreçlerini kapat
@@ -9333,6 +9334,8 @@ const financeState = {
   watchTimer: null,
   watchBusy: false,
   watchTickAt: 0,
+  hoursTimer: null, /* trade saatleri otomatik duraklatma denetimi (10 sn) */
+  hoursPaused: null, /* pencere kapanınca durdurulan ajanların planı — açılınca geri gelir */
   alerts: [], /* fiyat alarmları (kalıcı: finance/alerts.json) */
   stats: null, /* son performans özeti (kalıcı: finance/stats.json) */
   statsAt: 0,
@@ -9474,6 +9477,130 @@ function finTradeHoursBlockedLog(what) {
   const th = finCfg().tradeHours || {};
   financeLog(`[saat] trade saatleri dışı (${th.start || '09:00'}-${th.end || '22:00'} yerel) — ${what} ertelendi`);
   return true;
+}
+
+/* ---------- TRADE SAATLERİ OTOMATİK DURAKLATMA ----------
+   Pencere kapanınca TÜM finance ajanları (trader + ekip + sembol işçileri)
+   Durdur butonuna basılmış gibi otomatik durdurulur; pencere açılınca
+   duraklatılanlar AYNEN geri başlatılır. Kullanıcı duraklama sırasında bir
+   ajanı elle durdurursa o ajan plandan düşer; "Ajanı Durdur"a basılırsa
+   plandan tamamen vazgeçilir (otomatik başlatma iptal). */
+function finHoursPlanSnapshot() {
+  const plan = { main: false, roles: [], symbols: [] };
+  try {
+    for (const [, a] of financeState.agents) {
+      if (!a) continue;
+      if (a.main) plan.main = true;
+      else if (a.role) plan.roles.push(String(a.role));
+      else if (Array.isArray(a.symbols) && a.symbols.length) plan.symbols.push(a.symbols.slice(0, 8));
+    }
+  } catch {}
+  return plan;
+}
+
+function finHoursPlanEmpty(p) {
+  return !p || (!p.main && !(p.roles || []).length && !(p.symbols || []).length);
+}
+
+function finHoursPlanDrop(agent) {
+  const p = financeState.hoursPaused;
+  if (!p || !agent) return;
+  if (agent.main) p.main = false;
+  else if (agent.role) p.roles = (p.roles || []).filter((r) => r !== String(agent.role));
+  else if (Array.isArray(agent.symbols) && agent.symbols.length) {
+    const key = String(agent.symbols[0] || '').toUpperCase();
+    p.symbols = (p.symbols || []).filter((s) => String((s && s[0]) || '').toUpperCase() !== key);
+  }
+  if (finHoursPlanEmpty(p)) financeState.hoursPaused = null;
+}
+
+/* Pencere kapandı: koşan her finance ajanını durdur, planı sakla. */
+function finHoursPause(reason) {
+  const plan = finHoursPlanSnapshot();
+  if (finHoursPlanEmpty(plan)) return false;
+  financeState.hoursPaused = plan;
+  const sids = [];
+  for (const [sid, a] of financeState.agents) if (a) sids.push(String(sid));
+  for (const sid of sids) {
+    try { finAgentStop(sid, reason, { keepHoursPlan: true }); } catch {}
+  }
+  financeState.traderOn = false;
+  const th = finCfg().tradeHours || {};
+  const n = (plan.main ? 1 : 0) + (plan.roles || []).length + (plan.symbols || []).length;
+  financeLog(`[saat] trade saatleri kapandı (${th.start || '09:00'}-${th.end || '22:00'} yerel) — ${n} ajan otomatik durduruldu; pencere açılınca geri başlayacak`);
+  finPush('trader', { state: 'hours-stop', count: n });
+  return true;
+}
+
+/* Duraklatılan tek ajanı geri aç (ekip rolü ya da sembol işçisi). */
+function finHoursSpawn(role, symbol) {
+  if (!engine) return false;
+  const f = finCfg();
+  try {
+    const created = role ? finAgentCreate([], false, role) : finAgentCreate([symbol], false);
+    try { engine.setSessionModel(created.s.id, f.traderSel || null); } catch {}
+    const ok = engine.send(created.s.id, finTraderBrief(created.agent), { userAction: true });
+    if (!ok) {
+      finAgentStop(String(created.s.id), 'saat açılışı — oturum meşgul');
+      return false;
+    }
+    const roleDef = role ? finRoleDef(role) : null;
+    financeLog('[saat] ' + (roleDef ? roleDef.label : symbol) + ' geri başlatıldı');
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/* Pencere açıldı: duraklatılanları geri başlat. */
+function finHoursResume() {
+  const p = financeState.hoursPaused;
+  financeState.hoursPaused = null;
+  if (finHoursPlanEmpty(p) || !engine) return false;
+  const th = finCfg().tradeHours || {};
+  financeLog(`[saat] trade saatleri açıldı (${th.start || '09:00'}-${th.end || '22:00'} yerel) — duraklatılan ajanlar geri başlatılıyor`);
+  if (p.main) { try { financeTraderStart(); } catch {} }
+  for (const role of p.roles || []) {
+    if (!finRoleDef(role)) continue;
+    let running = false;
+    for (const [, a] of financeState.agents) if (a && a.role === role) { running = true; break; }
+    if (!running) finHoursSpawn(role, '');
+  }
+  for (const syms of p.symbols || []) {
+    const symbol = String((syms && syms[0]) || '').toUpperCase();
+    if (!symbol) continue;
+    let running = false;
+    for (const [, a] of financeState.agents) {
+      if (a && !a.main && !a.role && a.symbols.length === 1 && a.symbols[0] === symbol) { running = true; break; }
+    }
+    if (!running) finHoursSpawn('', symbol);
+  }
+  finPush('trader', { state: 'hours-resume' });
+  return true;
+}
+
+/* Saat geçişi denetimi: pencere dışındaysa duraklat, içindeyse geri başlat. */
+function finHoursSync() {
+  if (!engine) return;
+  if (!finTradeHoursOpen()) {
+    if (financeState.agents.size) finHoursPause('trade saatleri kapandı — ajan otomatik durduruldu');
+    return;
+  }
+  if (financeState.hoursPaused) finHoursResume();
+}
+
+/* Otomatik saat denetimi zamanlayıcısı (10 sn; MT5 köprüsünden bağımsız) */
+function finHoursStart() {
+  if (financeState.hoursTimer) return;
+  financeState.hoursTimer = setInterval(() => { try { finHoursSync(); } catch {} }, 10000);
+  try { finHoursSync(); } catch {}
+}
+
+function finHoursStop() {
+  if (financeState.hoursTimer) {
+    clearInterval(financeState.hoursTimer);
+    financeState.hoursTimer = null;
+  }
 }
 
 /* ANALİZ EKİBİ: trader'ın yanında koşan uzman ajan rolleri — seçilen her rol
@@ -11096,6 +11223,7 @@ async function financeEnsureBridge() {
     terminal: String(f.terminalPath || '').trim(),
   });
   finWatchStart(); /* risk otomasyonu + bildirimler köprü açılırken başlar */
+  try { finHoursStart(); } catch {} /* trade saatleri otomatik duraklatma denetimi */
   return mt5bridge.status();
 }
 
@@ -11290,6 +11418,7 @@ mt5bridge.on('bridge', (m) => {
     financeLog('[MT5] terminal bağlı: ' + ((m.terminal && (m.terminal.name + ' @ ' + m.terminal.company)) || 'MT5'));
     if (m.account) financeLog(`[MT5] hesap ${m.account.login} · bakiye ${m.account.balance} ${m.account.currency}`);
     finWatchStart();
+    try { finHoursStart(); } catch {} /* trade saatleri otomatik duraklatma denetimi */
     finStatsRefresh(true).catch(() => {});
     /* İLK ENTEGRASYON: EA + AutoTrading + grafik kurulumu otomatik */
     finMt5SetupEnsure(false)
@@ -11444,10 +11573,13 @@ function finAgentCreate(symbols, isMain, role) {
 }
 
 /* Ajanı durdur: timer kapat + oturumu kes + paralel ajan kaydını 'aborted' yaz */
-function finAgentStop(sid, reason) {
+function finAgentStop(sid, reason, opts) {
   sid = String(sid || '');
   const agent = financeState.agents.get(sid);
   if (!agent) return false;
+  /* ELLE DURDURULDU: saat duraklama planından düş — pencere açılınca geri
+     gelmesin (otomatik duraklatma keepHoursPlan ile planı korur) */
+  if (!(opts && opts.keepHoursPlan)) { try { finHoursPlanDrop(agent); } catch {} }
   clearTimeout(agent.timer);
   if (agent.waitPoll) { clearTimeout(agent.waitPoll); agent.waitPoll = null; }
   agent.waitingTeam = false;
@@ -11910,6 +12042,8 @@ ipcMain.handle('finance:alerts:remove', async (_e, id) => {
 
 ipcMain.handle('finance:mode', async (_e, payload) => {
   financeState.mode = !!(payload && payload.on);
+  /* SAAT DENETİMİ: pencere kapanınca ajanlar otomatik durur, açılınca geri başlar */
+  try { finHoursStart(); } catch {}
   /* BEAST FINANCE = MT5 KAPISI:
      - mod AÇILINCA köprü + MT5 terminali OTOMATİK başlar (watchdog dahil) —
        panel açılır açılmaz bağlantı kurulur, snapshot'ı beklemez.
@@ -12146,6 +12280,13 @@ ipcMain.handle('finance:settings', async (_e, patch) => {
 async function financeTraderStart() {
   if (!engine) return { ok: false, error: 'ajan hazır değil' };
   const f = finCfg();
+  try { finHoursStart(); } catch {}
+  /* TRADE SAATLERİ KAPISI: pencere dışında elle başlatma da reddedilir —
+     pencere açılınca duraklatılan ajanlar otomatik geri başlar */
+  if (!finTradeHoursOpen()) {
+    const th = f.tradeHours || {};
+    return { ok: false, error: `trade saatleri dışı (${th.start || '09:00'}-${th.end || '22:00'} yerel) — pencere açılınca ajanlar otomatik başlar` };
+  }
   if (!engine.publicState().hasModel && !f.traderSel) return { ok: false, error: 'model yok — Ayarlar → Provider' };
   try { finSyncScheduleJobs(); } catch {} /* plan/review saatleri trader açılışında garantiye alınır */
   /* ANA trader: varsa aynen sürdür, yoksa yeni sürekli ajan aç */
@@ -12222,6 +12363,8 @@ ipcMain.handle('finance:trader:start', () => financeTraderStart());
 
 ipcMain.handle('finance:trader:stop', async () => {
   financeState.traderOn = false;
+  /* ELLE DURDURMA: saat planı iptal — pencere açılınca otomatik geri başlatma yok */
+  financeState.hoursPaused = null;
   /* ANA trader + ANALİZ EKİBİ durdurulur (sembol işçileri rail × ile ayrı durdurulur) */
   let mainSid = '';
   const teamSids = [];
@@ -12242,6 +12385,12 @@ ipcMain.handle('finance:trader:stop', async () => {
 ipcMain.handle('finance:agent:spawn', async (_e, payload) => {
   if (!engine) return { ok: false, error: 'ajan hazır değil' };
   const f = finCfg();
+  try { finHoursStart(); } catch {}
+  /* TRADE SAATLERİ: pencere dışında sembol işçisi de başlatılamaz */
+  if (!finTradeHoursOpen()) {
+    const th = f.tradeHours || {};
+    return { ok: false, error: `trade saatleri dışı (${th.start || '09:00'}-${th.end || '22:00'} yerel) — pencere açılınca ajanlar otomatik başlar` };
+  }
   if (!engine.publicState().hasModel && !f.traderSel) return { ok: false, error: 'model yok — Ayarlar → Provider' };
   const symbol = String((payload && payload.symbol) || '').trim().toUpperCase();
   if (!symbol) return { ok: false, error: 'sembol gerekli' };

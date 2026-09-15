@@ -10167,6 +10167,8 @@ function finOnEvent(ev) {
     else if (ev.state === 'team') finLogLine('[trader] ekip raporları bekleniyor — ' + (ev.waiting || 0) + ' ajan turunu bitirsin (max ' + (ev.maxSec || '?') + ' sn)');
     else if (ev.state === 'idle') finLogLine('[trader] tur #' + (ev.round || 0) + ' bitti — sıradaki tur ~' + (ev.nextInSec || '?') + ' sn');
     else if (ev.state === 'hours') finLogLine('[trader] trade saatleri dışı — ajan askıda (kontrol ~' + (ev.nextInSec || 60) + ' sn)');
+    else if (ev.state === 'hours-stop') finLogLine('[trader] trade saatleri kapandı — ' + (ev.count || 0) + ' finance ajanı otomatik durduruldu; pencere açılınca geri başlar');
+    else if (ev.state === 'hours-resume') finLogLine('[trader] trade saatleri açıldı — duraklatılan ajanlar geri başlatıldı');
     else if (ev.state === 'stopped') finLogLine('[trader] durduruldu');
   } else if (ev.fn === 'install') {
     finLogLine('[MT5] paket kurulumu tamamlandı (kod ' + ev.code + ')');

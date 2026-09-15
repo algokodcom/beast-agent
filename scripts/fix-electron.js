@@ -23,15 +23,43 @@ function electronDir() {
   }
 }
 
+/* binary ÇALIŞIYOR mu? — kesik/bozuk indirmede dosya VAR görünür ama
+   CreateProcess "bad EXE format" (EFTYPE) verir; varlık kontrolü yetmez.
+   `electron --version` ile gerçekten çalıştığını doğrularız (kısa timeout).
+   Sonuç (yol+boyut+mtime) önbelleklenir — aynı süreçte tekrar spawn edilmez. */
+let verifyCache = null;
+function exeWorks(exeAbs) {
+  let key = '';
+  try {
+    const st = fs.statSync(exeAbs);
+    key = exeAbs + '|' + st.size + '|' + st.mtimeMs;
+  } catch {
+    return false;
+  }
+  if (verifyCache && verifyCache.key === key) return verifyCache.ok;
+  let ok = false;
+  try {
+    const r = spawnSync(exeAbs, ['--version'], { timeout: 20000, windowsHide: true, stdio: 'ignore' });
+    ok = !r.error && r.status === 0;
+  } catch {
+    ok = false;
+  }
+  verifyCache = { key, ok };
+  return ok;
+}
+
 /* binary sağlam mı? electron/index.js'in beklentisiyle aynı kontrol:
-   path.txt + dist/<exe> varlığı */
+   path.txt + dist/<exe> varlığı — ARTIK + exe'nin gerçekten çalışması */
 function status() {
   const dir = electronDir();
   if (!dir) return { ok: false, missing: true };
   const exe = process.platform === 'win32' ? 'electron.exe' : 'electron';
-  const distOk = fs.existsSync(path.join(dir, 'dist', exe));
+  const exeAbs = path.join(dir, 'dist', exe);
+  const distOk = fs.existsSync(exeAbs);
   const txtOk = fs.existsSync(path.join(dir, 'path.txt'));
-  return distOk && txtOk ? { ok: true, dir } : { ok: false, dir };
+  if (!(distOk && txtOk)) return { ok: false, dir };
+  if (!exeWorks(exeAbs)) return { ok: false, dir, broken: true };
+  return { ok: true, dir };
 }
 
 /* platforma göre dist içindeki çalıştırılabilirin göreli yolu (electron/index.js ile aynı) */

@@ -107,23 +107,28 @@ if (process.argv[2] === 'searxng') {
 
 /* detached launcher + self-healing electron:
    on fresh machines the electron binary download during npm postinstall
-   may have silently failed → it is repaired automatically here. */
+   may have silently failed OR been truncated → it is repaired automatically here.
+   Varlık kontrolü YETMEZ: kesik dosya "var" görünür ama spawn EFTYPE verir —
+   fix-electron.status binary'yi `--version` ile çalıştırarak doğrular. */
 function launchDetached(extraArgs) {
   let electron = null;
   try { electron = require('electron'); } catch {}
-  if (typeof electron !== 'string') {
-    let fix = null;
-    try { fix = require('../scripts/fix-electron'); } catch {}
-    if (fix) {
-      console.log('\u27F3 electron runtime files are missing \u2014 repairing automatically\u2026');
-      const r = fix.repair({ quiet: false });
-      if (r.ok && !r.skipped) console.log('\u2713 electron repaired');
-      if (r.ok) {
-        try { electron = require('electron'); } catch {}
-      }
+  let fix = null;
+  try { fix = require('../scripts/fix-electron'); } catch {}
+  const usable = () => {
+    if (typeof electron !== 'string') return false;
+    if (fix && typeof fix.status === 'function') return !!fix.status().ok;
+    try { return fs.existsSync(electron); } catch { return false; }
+  };
+  if (!usable() && fix) {
+    console.log('\u27F3 electron runtime is missing or corrupted \u2014 repairing automatically\u2026');
+    const r = fix.repair({ quiet: false });
+    if (r.ok && !r.skipped) console.log('\u2713 electron repaired');
+    if (r.ok) {
+      try { electron = require('electron'); } catch {}
     }
   }
-  if (typeof electron !== 'string') {
+  if (!usable()) {
     console.log('\n\u2717 Electron runtime could not be installed.');
     console.log('  Manual fix \u2014 run these 2 commands:');
     console.log('    npm config set ignore-scripts false');

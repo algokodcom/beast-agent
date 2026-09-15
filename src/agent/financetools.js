@@ -262,25 +262,26 @@ const definitions = NAMES.map((name) => {
     },
     mt5_trade: {
       description:
-        'EMİR AÇAR — TÜM TİPLER: mt5_trade {symbol, side:"buy"|"sell", volume, type?, sl?, tp?, comment?, reason?}. type: "buy"|"sell" (piyasa/anlık) ya da "buy_market"|"sell_market"|"buy_limit"|"sell_limit"|"buy_stop"|"sell_stop" — limit/stop tipleri otomatik bekleyen emre (mt5_pending) yönlenir ve price gerekir. Lot limiti ve max pozisyon sayısı sistem tarafından zorlanır. Otomatik işlem anahtarı kapalıysa reddedilir. SL/TP vermek ŞİDDETLİ önerilir. reason: kararın tek cümlelik tezi (günlüğe yazılır, performans değerlendirmesinde kullanılır).',
+        'ANLIK PİYASA EMRİ AÇAR — ⚡HIZLI AKSİYON; bekleyen emir vermek ZORUNLU DEĞİL: mt5_trade {symbol, side:"buy"|"sell", volume?|riskPct?, sl?, tp?, type?, comment?, reason?}. Fırsat anıksa / teyitli kırılım-momentum-haber anında market buy/sell ile HEMEN gir — side:"buy"|"sell" yeter (type gerekmez; type:"market"|"buy_market"|"sell_market" de anlıktır). BEKLEYEN emir yalnız fiyatın bir seviyeye gelmesini beklemek gerçekten mantıklıysa kurulur: type:"buy_limit"|"sell_limit"|"buy_stop"|"sell_stop" + price (bu tipler otomatik mt5_pending hattına gider). LOT: volume ver ya da volume yerine riskPct + sl ver — sistem SL mesafesinden lotu hesaplar (tek çağrıda giriş; ayardaki işlem riski % varsayılan). Lot limiti, max pozisyon, marj ve yoğunluk sistemce zorlanır. SL vermek ŞİDDETLİ önerilir. reason: kararın tek cümlelik tezi (günlüğe yazılır).',
       parameters: {
         type: 'object',
         properties: {
           symbol: { type: 'string', description: 'Örn: EURUSD' },
-          side: { type: 'string', enum: ['buy', 'sell'], description: 'Yön (type ile birlikte ya da tek başına: piyasa emri)' },
+          side: { type: 'string', enum: ['buy', 'sell'], description: 'Yön — piyasa emri için tek başına yeterli (type gerekmez)' },
           type: {
             type: 'string',
             enum: ['market', 'buy_market', 'sell_market', 'buy_limit', 'sell_limit', 'buy_stop', 'sell_stop'],
-            description: 'Emir tipi. Boş/side verilirse piyasa emri; limit/stop verilirse bekleyen emir (price zorunlu olur).',
+            description: 'Emir tipi. Boş/side verilirse piyasa (anlık); limit/stop verilirse bekleyen emir (price zorunlu olur).',
           },
-          volume: { type: 'number', description: 'Lot (max lot sınırına tabi)' },
+          volume: { type: 'number', description: 'Lot (max lot sınırına tabi) — boşsa riskPct + sl ile OTOMATİK hesaplanır' },
+          riskPct: { type: 'number', description: 'İşlem riski % (ör. 0.5-2) — volume yerine ver: SL mesafesinden lot hesaplanır (sl zorunlu)' },
           price: { type: 'number', description: 'Limit/stop emirlerinde tetik fiyatı (piyasa emrinde gerekmez)' },
-          sl: { type: 'number', description: 'Stop loss fiyatı (0 = yok)' },
+          sl: { type: 'number', description: 'Stop loss fiyatı (0 = yok) — şiddetle önerilir' },
           tp: { type: 'number', description: 'Take profit fiyatı (0 = yok)' },
           comment: { type: 'string', description: 'Kısa işlem notu' },
           reason: { type: 'string', description: 'Kararın tezi/gerekçesi (tek cümle)' },
         },
-        required: ['symbol', 'volume'],
+        required: ['symbol'],
       },
     },
     mt5_close: {
@@ -312,7 +313,7 @@ const definitions = NAMES.map((name) => {
     },
     mt5_pending: {
       description:
-        'EMİR AÇAR (6 tip): mt5_pending {symbol, type:"buy_limit"|"sell_limit"|"buy_stop"|"sell_stop"|"buy_market"|"sell_market", volume, price?, sl?, tp?, reason?}. Limit/stop = bekleyen emir (price zorunlu); buy_market/sell_market = ANLIK piyasa emri. Otomatik işlem anahtarına tabidir. reason: kararın tezi (günlüğe yazılır).',
+        'BEKLEYEN EMİR (limit/stop) AÇAR: mt5_pending {symbol, type:"buy_limit"|"sell_limit"|"buy_stop"|"sell_stop", volume, price, sl?, tp?, reason?}. Fiyatın seviyeye gelmesini beklemek için kullanılır. ⚡ANLIK giriş (hızlı aksiyon) için bunu kullanma — mt5_trade {symbol, side} ile market gir (buy_market/sell_market tipleri burada da kabul edilir ve anlık emre yönlenir). Otomatik işlem anahtarına tabidir. reason: kararın tezi (günlüğe yazılır).',
       parameters: {
         type: 'object',
         properties: {
@@ -320,6 +321,7 @@ const definitions = NAMES.map((name) => {
           type: {
             type: 'string',
             enum: ['buy_limit', 'sell_limit', 'buy_stop', 'sell_stop', 'buy_market', 'sell_market'],
+            description: 'Limit/stop = bekleyen (price zorunlu); buy_market/sell_market = anlık piyasa emri',
           },
           volume: { type: 'number' },
           price: { type: 'number', description: 'Tetik fiyatı — limit/stop için zorunlu, market tiplerinde gerekmez' },

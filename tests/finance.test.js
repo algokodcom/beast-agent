@@ -311,6 +311,48 @@ test('emir tipleri: mt5_trade limit/stop tipini pending köprüsüne, mt5_pendin
   }
 });
 
+/* ---------------- financetools: ⚡hızlı market girişi (volume'suz riskPct) ---------------- */
+
+test('mt5_trade: market giriş tek çağrı — volume yerine riskPct+sl verilince lot otomatik hesaplanır', async () => {
+  const ftools = require('../src/agent/financetools');
+  const bridge = require('../src/mt5bridge');
+  const calls = [];
+  const symbolsRow = {
+    symbol: 'XAUUSD', digits: 2, point: 0.01, volume_min: 0.01, volume_max: 100, volume_step: 0.01,
+    trade_stops_level: 0, trade_tick_size: 0.01, trade_tick_value: 1, bid: 2000, ask: 2000.5,
+  };
+  Object.defineProperty(bridge, 'running', { value: true, configurable: true, writable: true });
+  bridge.call = async (method, params) => {
+    calls.push({ method, params });
+    if (method === 'symbols') return { ok: true, data: { symbols: [symbolsRow] } };
+    if (method === 'market') return { ok: true, data: { result: { retcode: 10009, order: 888 }, price: 2000.5 } };
+    if (method === 'positions') return { ok: true, data: { positions: [] } };
+    if (method === 'account') return { ok: true, data: { account: { balance: 10000, equity: 10000, margin: 0, margin_free: 10000, margin_level: 0 } } };
+    if (method === 'margin') return { ok: true, data: { margin: 10 } };
+    return { ok: true, data: {} };
+  };
+  try {
+    ftools.setConfig(() => ({ allowTrading: true, maxLot: 1, maxPositions: 5, maxPerSymbol: 0, maxSameSide: 0, minMarginLevel: 0 }));
+    /* sl mesafesi 10.5 → 1050 tick × 1 USD = 105 USD/lot; %1 risk = 100 USD → 0.09 lot */
+    const r1 = await ftools.handlers.mt5_trade({ symbol: 'XAUUSD', side: 'buy', sl: 1990, tp: 2020, riskPct: 1, reason: 'hızlı market girişi' });
+    assert.strictEqual(r1.ok, true);
+    assert.strictEqual(r1.opened.volume, 0.09, 'lot risk üzerinden hesaplanır');
+    const m = calls.find((c) => c.method === 'market');
+    assert.ok(m && m.params.side === 'buy' && m.params.volume === 0.09 && m.params.sl === 1990, 'market emri tek çağrıda gider');
+    calls.length = 0;
+    const r2 = await ftools.handlers.mt5_trade({ symbol: 'XAUUSD', side: 'sell', riskPct: 1 });
+    assert.strictEqual(r2.ok, false, 'riskPct ile volume yokken SL zorunlu');
+    assert.match(String(r2.error), /sl zorunlu/);
+    calls.length = 0;
+    const r3 = await ftools.handlers.mt5_trade({ symbol: 'XAUUSD', side: 'sell' });
+    assert.strictEqual(r3.ok, false, 'volume ve sl tamamen yoksa net hata');
+    assert.match(String(r3.error), /volume gerekli/);
+  } finally {
+    delete bridge.running;
+    delete bridge.call;
+  }
+});
+
 /* ---------------- financetools: alarm modu (kararı kuran ajan verir) ---------------- */
 
 test('mt5_alerts: mode zorunlu — once/repeat seçimini ajan yapar', async () => {

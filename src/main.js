@@ -11493,6 +11493,7 @@ function finTraderBrief(agent) {
     'Bu turda: mt5_status → hesap/pozisyon/fiyat verisi → mt5_rates/mt5_indicators ile teknik okuma → değerlendirme → kararlar (veya BEKLE: sebep) → kısa rapor.',
     'Önemli kararların gerekçesini mt5_note ile günlüğe yaz (haftalık performans raporu bu notları kullanır).',
     'Risk otomasyonu main süreçte 5 sn döngüyle çalışır (+R BE, trailing, kısmi TP) — sen yine de SL/TP seviyelerini aktif yönet.',
+    '⚡HIZLI AKSİYON: onaylı fırsatta market buy/sell ile ANINDA gir (mt5_trade {symbol, side, sl, tp, riskPct}); bekleyen emir vermek ZORUNLU DEĞİL — limit/stop yalnız seviye beklemede kurulur.',
     'Diğer finance/paralel ajanlarla koordinasyon için agent_dm aracı var (to: ajan başlığı anahtar kelimesi).',
     agent && agent.main && !roleDef ? `İŞLEM GEÇMİŞİN:\n${finBuildDigest()}` : '',
   ].filter(Boolean).join('\n');
@@ -11640,7 +11641,7 @@ function finAgentRound(sid) {
       ? 'SHADOW MOD AÇIK: emir GÖNDERİLMEZ — kararını teziyle raporla (günlüğe yazılır).'
       : 'İşlem açabilirsin — limitlere uy, SL\u2019siz pozisyon bırakma.';
   const focus = agent.symbols.length ? `Odak: ${agent.symbols.join(', ')}. ` : '';
-  const round = `FINANCE TUR #${agent.round}: ${focus}hesap + pozisyonlar + fiyatları çek; ${roleDef ? 'rolüne uygun analiz yap (mt5_rates/mt5_indicators ile) ve öneri ver.' : 'açık pozisyonları yönet (SL/TP güncelle, hedefe ulaşanı kapat); mt5_rates/mt5_indicators ile yeni fırsatları değerlendir.'} ${auto} Önemli kararların gerekçesini mt5_note ile günlüğe yaz. Kısa rapor ver.`;
+  const round = `FINANCE TUR #${agent.round}: ${focus}hesap + pozisyonlar + fiyatları çek; ${roleDef ? 'rolüne uygun analiz yap (mt5_rates/mt5_indicators ile) ve öneri ver.' : 'açık pozisyonları yönet (SL/TP güncelle, hedefe ulaşanı kapat); mt5_rates/mt5_indicators ile yeni fırsatları değerlendir. ⚡Onaylı fırsatta market buy/sell ile ANINDA gir (bekleyen emir ZORUNLU DEĞİL); lot için volume yerine riskPct+sl yeter.'} ${auto} Önemli kararların gerekçesini mt5_note ile günlüğe yaz. Kısa rapor ver.`;
   const launch = (planBlock) => {
     if (!financeState.agents.has(String(sid))) return;
     const ok = engine.send(sid, planBlock + round, { userAction: false });

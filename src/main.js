@@ -332,6 +332,18 @@ let tgCronSid = null; // Telegram CRON TABAN OTURUMU: otomatik işler; hiçbir k
 let tgHistory = new Map(); // chatId -> [sid,...]
 const TG_HISTORY_CAP = 20;
 let tgLastActiveChatId = ''; // en son mesaj gelen TG sohbeti — cron yansıtma hedefi
+/* Botun gördüğü Telegram GRUPLARI: chatId -> {title, at}. Ajan DM ↔ Telegram
+   köprüsü kurulumunda grup seçimi bu listeden yapılır (BotFather'da gizlilik
+   kapatılmalı ya da bot gruba admin olmalı ki mesajlar düşsün). */
+let tgGroups = {};
+try {
+  const raw = settings.tgGroups;
+  if (raw && typeof raw === 'object') {
+    for (const [id, v] of Object.entries(raw)) {
+      if (v && typeof v === 'object') tgGroups[String(id)] = { title: String(v.title || ''), at: Number(v.at) || 0 };
+    }
+  }
+} catch {}
 let dc = null;
 let dcChats = new Map(); // discord channelId -> KENDİ oturumu: her kanal AYRI (gizlilik)
 let dcCronSid = null; // Discord CRON TABAN OTURUMU: otomatik işler; hiçbir kişiye bağlı DEĞİL
@@ -670,6 +682,29 @@ function isWaAllowed(senderNum) {
    Eşleşme: sayısal ID birebir, @username büyük/küçük harf duyarsız. */
 function tgLog(line) {
   try { log.info('telegram', line); } catch {}
+}
+
+/* Gelen grup mesajından grubu hatırla — ajan DM köprüsü grup seçicisi bu
+   listeden beslenir. Başlık değişmedikçe diske yazılmaz (yalnız tazeleme). */
+function tgRememberGroup(chatId, title) {
+  const id = String(chatId || '');
+  if (!id) return;
+  const cur = tgGroups[id];
+  const t = String(title || '');
+  const at = Date.now();
+  if (cur && (cur.title === t || !t)) {
+    cur.at = at;
+    return;
+  }
+  tgGroups[id] = { title: t || (cur && cur.title) || id, at };
+  settings.tgGroups = tgGroups;
+  try { saveSettings(); } catch {}
+}
+
+function tgGroupsList() {
+  return Object.entries(tgGroups)
+    .map(([id, v]) => ({ id, title: String((v && v.title) || id), at: Number((v && v.at) || 0) }))
+    .sort((a, b) => b.at - a.at);
 }
 
 function tgFind(senderId, username) {
@@ -2895,8 +2930,20 @@ async function tgFlush(chatId) {
 async function handleTgIncoming(chatId, payload) {
   try {
     if (!engine) return;
-    /* v1: yalnız birebir sohbetler — grup davranışı WA'daki gibi ayrı toggle ile gelir */
+    /* GRUP: normal grup desteği kapalı; ancak AJAN DM ↔ TELEGRAM köprüsünde
+       seçili grupsa mesaj AJAN DM grubuna düşer ve finance ajanları uyanır. */
     if (payload.isGroup) {
+      tgRememberGroup(chatId, payload.chatTitle);
+      const dmTg = finDmTgCfg();
+      if (dmTg.on && String(dmTg.chat) === String(chatId)) {
+        const allowed = tgFind(payload.senderId, payload.username);
+        tgLog(
+          `grup(ajan dm) chat=${chatId} sender=${payload.senderId || '?'} user=${payload.username || '-'} allowed=${!!allowed}`
+        );
+        if (!allowed) return; /* izin listesi dışı yoksay */
+        finTelegramToAgentDm(payload);
+        return;
+      }
       tgLog(`skip: grup mesajı chat=${chatId} (grup desteği kapalı)`);
       return;
     }
@@ -3566,6 +3613,10 @@ function reloadBackend() {
      düşünce sıradaki planlı turu BEKLEMEZ — ajan boştaysa tur hemen başlar
      (ajan-ajan DM'lerinde engine kancayı çağırmaz; ping-pong korunur). */
   engine.onDmQueued = (job) => { try { finWakeAgent(job && job.id); } catch {} };
+  /* AJAN DM → TELEGRAM: AJAN DM grubuna düşen her kayıt (alarm/sistem postu
+     dahil) tek kancadan geçer; köprü ayarı açıksa seçili Telegram grubuna
+     yansıtılır (Telegram'dan gelen mesajlar viaTelegram ile geri gönderilmez). */
+  engine.onAgentDm = (dm) => { try { finAgentDmToTelegram(dm); } catch {} };
   /* PANEL RUN köprüsü: ajanın panel_run aracı → ÇALIŞTIR panelindeki yönetilen
      süreç koşucusu (sandbox:run IPC ile aynı makine). */
   engine.sbRunHook = sbRunStartManaged;
@@ -7683,14 +7734,15 @@ function watcherFire(w, value) {
         ? 'izlenen değer değişti'
         : `kural sağlandı (son değer ${value}, koşul ${w.op} ${w.value ?? ''})`;
     toastNotify(`İzleyici: ${w.name}`, target, 'watchers');
-    /* FINANCE AJANI: izleyici alarmı AJAN DM'i olarak düşer ve boştaki ajanı
-       tur beklemeden uyandırır (main.js finWakeAgentDm). Diğer oturumlarda
-       eski davranış: mesaj doğrudan sohbete iner. */
-    if (financeState.agents.has(String(sid))) {
-      finWakeAgentDm(
-        sid,
+    /* FINANCE AJANI: izleyici alarmı AJAN DM GRUBUNA bildirim olarak düşer ve
+       koşan TÜM finance ajanlarını tur beklemeden uyandırır (finWakeAgents:
+       grup postu + dm+wake). Diğer oturumlarda eski davranış: mesaj doğrudan
+       sohbete iner. */
+    if (financeState.agents.has(String(sid)) || (financeState.mode && financeState.agents.size)) {
+      finWakeAgents(
         `[FİNANS OLAYI — İZLEYİCİ ALARMI: ${w.name}]\n- ${target}\n` +
-          `Şimdi yap: izleyiciyi kurma nedenini hatırla; durumu değerlendir, gerekiyorsa işlem/uyarı üret. Kısa rapor ver.`
+          `Şimdi yap: izleyiciyi kurma nedenini hatırla; durumu değerlendir, gerekiyorsa işlem/uyarı üret. Kısa rapor ver.`,
+        { kind: 'watcher', watcher: w.id }
       );
       return;
     }
@@ -9349,6 +9401,12 @@ function finCfg() {
      iptal) düşer; fiyat alarmı, koruma (BE/trailing/kısmi TP), günlük limit ve
      rapor bildirimleri panelde kalır. false = tüm olaylar kanallara gider. */
   if (typeof f.notifyTradeOnly !== 'boolean') f.notifyTradeOnly = true;
+  /* AJAN DM ↔ TELEGRAM KÖPRÜSÜ: açıkken `team:finance` AJAN DM grubundaki
+     mesajlar seçilen Telegram grubuna düşer; o gruba yazılan mesaj AJAN DM
+     grubunda görünür ve koşan finance ajanları tur beklemeden uyanır. */
+  if (typeof f.dmTelegram !== 'boolean') f.dmTelegram = false;
+  if (typeof f.dmTelegramChat !== 'string') f.dmTelegramChat = '';
+  if (typeof f.dmTelegramTitle !== 'string') f.dmTelegramTitle = '';
   if (!Number.isFinite(Number(f.maxDailyLossPct))) f.maxDailyLossPct = 3;
   /* GÜNLÜK LİMİT AKSİYONU: warn = yalnız uyarı; stop = tüm finance ajanlarını
      durdur; flatten = durdur + tüm pozisyonları kapat */
@@ -10001,6 +10059,76 @@ async function finStatsRefresh(force) {
   }
 }
 
+/* ---- AJAN DM ↔ TELEGRAM KÖPRÜSÜ ----
+   Beast Finance görünüm ayarlarından açılır: `team:finance` AJAN DM grubundaki
+   her mesaj (alarm/sistem postları dahil) seçilen Telegram grubuna yansır;
+   o gruba yazılan mesaj AJAN DM grubunda görünür ve koşan finance ajanları
+   tur beklemeden uyandırılır. Ayarlar: finCfg().dmTelegram / dmTelegramChat. */
+const FIN_TEAM_GID = 'team:finance';
+const FIN_TEAM_TITLE = 'Beast Finance EKİP';
+
+/* Köprü ayarı (tek nokta): açık + grup seçili mi? */
+function finDmTgCfg() {
+  let f = {};
+  try { f = finCfg(); } catch {}
+  return {
+    on: !!(f && f.dmTelegram && f.dmTelegramChat),
+    chat: String((f && f.dmTelegramChat) || ''),
+    title: String((f && f.dmTelegramTitle) || ''),
+  };
+}
+
+/* Giden: AJAN DM grubu → Telegram (Telegram'dan gelenler geri gönderilmez). */
+function finAgentDmToTelegram(dm) {
+  try {
+    if (!dm || dm.viaTelegram) return;
+    if (String(dm.group || '') !== FIN_TEAM_GID) return;
+    const c = finDmTgCfg();
+    if (!c.on || !tg || !tg.connected) return;
+    const who = String(dm.fromTitle || (dm.system ? 'SİSTEM' : 'Ajan'));
+    const body =
+      `👥 *${String(dm.groupTitle || FIN_TEAM_TITLE)}* · ${who}\n` +
+      String(dm.text || '').slice(0, 3800);
+    Promise.resolve(tg.send(c.chat, body)).catch((e) =>
+      tgLog('ajan dm → telegram hata: ' + String((e && e.message) || e))
+    );
+  } catch {}
+}
+
+/* Gelen: Telegram grubu → AJAN DM grubu (+ tüm koşan finance ajanlarını uyandır). */
+function finTelegramToAgentDm(payload) {
+  try {
+    const body = String((payload && payload.text) || '').trim();
+    if (!body || !engine) return { ok: false };
+    const who = String((payload && (payload.senderName || payload.username)) || 'Telegram');
+    const label = `Sahip · Telegram (${who})`;
+    try {
+      if (typeof engine.agentDmGroupPost === 'function') {
+        engine.agentDmGroupPost({
+          gid: FIN_TEAM_GID,
+          title: FIN_TEAM_TITLE,
+          fromSid: 'tg:' + String((payload && payload.senderId) || ''),
+          fromTitle: label,
+          topic: 'telegram',
+          text: body,
+          viaTelegram: true,
+        });
+      }
+    } catch {}
+    const wake =
+      `[AJAN DM — TELEGRAM GRUBU · ${label}]\n${body}\n` +
+      'Şimdi yap: sahibin Telegram grubundan gelen bu mesajı değerlendir; gerekiyorsa ekipçe aksiyon al. Kısa rapor ver.';
+    let sent = 0;
+    for (const [sid] of financeState.agents) {
+      if (finWakeAgentDm(sid, wake)) sent += 1;
+    }
+    financeLog(`[telegram] ajan dm grubuna mesaj düştü (${sent} ajan uyandı)`);
+    return { ok: true, sent };
+  } catch {
+    return { ok: false };
+  }
+}
+
 /* ---- FİNANS OLAY → AJAN DM UYANDIRMA ----
    Stop/TP/bekleyen emir aktivasyonu/fiyat alarmı gibi olaylar koşan finance
    ajanlarına AJAN DM'i olarak düşer ve BOŞTAKİ ajanı TUR SANİYESİNİ
@@ -10031,20 +10159,32 @@ function finWakeAgentDm(sid, text) {
   }
 }
 
-/* Tüm koşan finance ajanlarını olayla uyandır. Dönüş: uyandırılan ajan sayısı. */
+/* Tüm koşan finance ajanlarını olayla uyandır. Dönüş: uyandırılan ajan sayısı.
+   Olay HER durumda ekip DM grubuna sistem postu olarak düşer (koşan ajan yoksa
+   bile panelde görünür — grup yoksa kurulur). */
 function finWakeAgents(text, meta) {
   const body = String(text || '').trim();
   if (!body || !engine) return 0;
+  /* Panel görünürlüğü: olay ekip DM grubuna sistem postu olarak düşer */
+  try {
+    if (typeof engine.agentDmGroupPost === 'function') {
+      engine.agentDmGroupPost({
+        gid: FIN_TEAM_GID,
+        title: FIN_TEAM_TITLE,
+        fromSid: 'finance',
+        fromTitle: 'Beast Finance',
+        topic: 'ortak görev',
+        text: body,
+        system: true,
+      });
+    } else if (typeof engine._agentTeamPost === 'function') {
+      engine._agentTeamPost('team:finance', 'finance', 'Beast Finance', body);
+    }
+  } catch {}
   if (!financeState.agents.size) {
     financeLog('[olay] koşan finance ajanı yok — uyarı yalnız günlük/bildirimde' + (meta && meta.kind ? ' (' + meta.kind + ')' : ''));
     return 0;
   }
-  /* Panel görünürlüğü: olay ekip DM grubuna sistem postu olarak düşer */
-  try {
-    if (typeof engine._agentTeamPost === 'function') {
-      engine._agentTeamPost('team:finance', 'finance', 'Beast Finance', body);
-    }
-  } catch {}
   let sent = 0;
   for (const [sid] of financeState.agents) {
     if (finWakeAgentDm(sid, body)) sent += 1;
@@ -11473,6 +11613,13 @@ ipcMain.handle('finance:settings', async (_e, patch) => {
   if (p.notifyTrades !== undefined) f.notifyTrades = !!p.notifyTrades;
   if (p.notifyWatchdog !== undefined) f.notifyWatchdog = !!p.notifyWatchdog;
   if (p.notifyTradeOnly !== undefined) f.notifyTradeOnly = !!p.notifyTradeOnly;
+  /* AJAN DM ↔ TELEGRAM köprüsü ayarları */
+  if (p.dmTelegram !== undefined) f.dmTelegram = !!p.dmTelegram;
+  if (p.dmTelegramChat !== undefined) {
+    f.dmTelegramChat = String(p.dmTelegramChat || '').trim().slice(0, 64);
+    if (!f.dmTelegramChat) f.dmTelegram = false;
+  }
+  if (p.dmTelegramTitle !== undefined) f.dmTelegramTitle = String(p.dmTelegramTitle || '').trim().slice(0, 80);
   if (p.maxDailyLossPct !== undefined) f.maxDailyLossPct = Math.max(0, Math.min(50, Number(p.maxDailyLossPct) || 0));
   if (p.dailyLossAction !== undefined) {
     const v = String(p.dailyLossAction || 'warn').toLowerCase();
@@ -13877,6 +14024,8 @@ ipcMain.handle('tg:allow:set', (_e, list) => {
   saveSettings();
   return settings.tgAllow;
 });
+/* Botun gördüğü gruplar (AJAN DM ↔ TELEGRAM grup seçicisi) */
+ipcMain.handle('tg:groups:list', () => tgGroupsList());
 ipcMain.handle('tg:sessions', () => [...tgChats.values()]);
 
 /* Sohbet geçmişi etiketi (Telegram): "Telegram <ad|chatId>" */

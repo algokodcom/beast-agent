@@ -221,6 +221,7 @@ contextBridge.exposeInMainWorld('beast', {
   tgStop: () => ipcRenderer.invoke('tg:stop'),
   tgGetAllow: () => ipcRenderer.invoke('tg:allow:get'),
   tgSetAllow: (list) => ipcRenderer.invoke('tg:allow:set', list),
+  tgGroupsList: () => ipcRenderer.invoke('tg:groups:list'),
   tgListSessions: () => ipcRenderer.invoke('tg:sessions'),
   onTgEvent: (cb) => ipcRenderer.on('tg:event', (_e, ev) => cb(ev)),
   dcGetStatus: () => ipcRenderer.invoke('dc:status:get'),

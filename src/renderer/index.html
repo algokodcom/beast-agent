@@ -891,6 +891,17 @@
           <span class="fsr-main"><b>AKIŞ</b><i>Ajan ve MT5 olay günlüğü</i></span>
         </label>
         <div class="fin-set-note">RİSK OTOMASYONU gizliyken koruma döngüsü (watchdog) kapatılır; tekrar gösterdiğinde ilgili kutucuktan açabilirsin.</div>
+        <div class="fin-set-sep"></div>
+        <label class="fin-set-row" title="Açıkken Beast Finance AJAN DM grubundaki mesajlar (alarm/sistem postları dahil) seçtiğin Telegram grubuna düşer; o gruba yazdığın mesaj AJAN DM grubunda görünür ve koşan finance ajanları tur beklemeden uyanır.">
+          <input id="finDmTgOn" type="checkbox" />
+          <span class="fsr-main"><b>AJAN DM ↔ TELEGRAM</b><i>Ajan DM grubu Telegram'da canlı — iki yönlü köprü</i></span>
+        </label>
+        <div id="finDmTgWrap" class="fin-set-sub" hidden>
+          <span class="fin-set-lbl">TELEGRAM GRUBU</span>
+          <select id="finDmTgChat" title="Botu eklediğin Telegram grubunu seç — liste, bottan mesaj alınan grupları gösterir"></select>
+          <button id="finDmTgRefresh" class="fin-set-btn" title="Grup listesini yenile — bottan mesaj alan gruplar listelenir">&#x27F3; Listeyi yenile</button>
+          <div id="finDmTgHint" class="fin-set-note" style="margin:2px 0 0"></div>
+        </div>
       </div>
     </div>
   </div>

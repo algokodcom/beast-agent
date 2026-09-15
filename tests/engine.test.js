@@ -560,6 +560,36 @@ test('agent_dm: grup sohbeti kurulur, tüm üyelere düşer, iş bitince kapanı
   eng.agentDmsClear();
 });
 
+test('agent_dm: dış kaynak grup postu grubu kurar + onAgentDm kancası her DM için çağrılır', () => {
+  const eng = makeEngine();
+  const seen = [];
+  eng.onAgentDm = (dm) => seen.push(dm);
+  /* grup ÖNCEDEN yok → agentDmGroupPost grubu kurar, panelde görünür yapar */
+  const r = eng.agentDmGroupPost({
+    gid: 'team:finance',
+    title: 'Beast Finance EKİP',
+    fromSid: 'tg:42',
+    fromTitle: 'Sahip · Telegram (Ali)',
+    topic: 'telegram',
+    text: 'GOLD tarafında durum ne?',
+    viaTelegram: true,
+  });
+  assert.equal(r.ok, true);
+  const list = eng.agentDmsList();
+  assert.equal(list.dms.length, 1);
+  assert.equal(list.dms[0].group, 'team:finance');
+  assert.equal(list.dms[0].groupTitle, 'Beast Finance EKİP');
+  assert.equal(list.dms[0].viaTelegram, true);
+  const g = list.groups.find((x) => x.id === 'team:finance');
+  assert.ok(g && g.closed === false);
+  /* kanca hem grup postunda hem normal DM'de tetiklenir */
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].text, 'GOLD tarafında durum ne?');
+  /* bilinmeyen gid zarif hata */
+  assert.equal(eng.agentDmGroupPost({ gid: '', text: 'x' }).ok, false);
+  eng.agentDmsClear();
+});
+
 test('agent_dm: TEK oturum silinir (agentDmDeleteThread), diğer oturumlar korunur', async () => {
   const eng = makeEngine();
   eng.flushPendingReports = () => {};

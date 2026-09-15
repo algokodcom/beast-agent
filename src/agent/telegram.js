@@ -106,6 +106,8 @@ class TelegramBridge {
             username: String(msg.from.username || ''),
             senderName: String(msg.from.first_name || msg.from.username || ''),
             isGroup: !!(msg.chat && (msg.chat.type === 'group' || msg.chat.type === 'supergroup')),
+            chatTitle: String((msg.chat && (msg.chat.title || msg.chat.username)) || ''),
+            chatType: String((msg.chat && msg.chat.type) || 'private'),
           };
           try {
             if (this.onIncoming) this.onIncoming(String(chatId), payload);

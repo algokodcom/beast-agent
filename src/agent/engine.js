@@ -7109,6 +7109,11 @@ Engine.prototype._pushAgentDm = function (dm) {
   this._agentDms = this._agentDms || [];
   this._agentDms.push(dm);
   if (this._agentDms.length > 600) this._agentDms.splice(0, this._agentDms.length - 600);
+  /* DIŞ KÖPRÜ KANCASI (main.js: Telegram): panel kaydı düşen her DM tek
+     noktadan dışarı bildirilir — köprü hangi mesajı göndereceğine kendi karar verir. */
+  if (typeof this.onAgentDm === 'function') {
+    try { this.onAgentDm(dm); } catch {}
+  }
 };
 
 /* ---------- EKİP GRUBU: aynı görevde koşan paralel ajanlar otomatik
@@ -7212,6 +7217,66 @@ Engine.prototype._agentTeamPost = function (gid, fromSid, fromTitle, text) {
     if (firstRunning) emitSafe(this, firstRunning, { type: 'agent-dm', ...dm });
     this._persistAgentDms();
   } catch {}
+};
+
+/* Grubu hazırla (yoksa kur): Telegram köprüsü ve finans alarmları grubu önceden
+   hiç kurulmamış olsa da panele düşebilsin. */
+Engine.prototype._agentGroupEnsure = function (gid, title, opts) {
+  gid = String(gid || '');
+  if (!gid) return null;
+  let g = this._agentGroups.get(gid);
+  if (!g) {
+    g = {
+      id: gid,
+      title: String(title || gid),
+      members: [],
+      titles: {},
+      createdAt: nowIso(),
+      closed: false,
+      team: !(opts && opts.system),
+    };
+    this._agentGroups.set(gid, g);
+  }
+  if (title && !g.title) g.title = String(title);
+  g.closed = false;
+  delete g.closedAt;
+  return g;
+};
+
+/* DIŞ KAYNAKLI (kullanıcı/Telegram) GRUP POSTU: panelde gerçek mesaj olarak
+   görünür + istenirse koşan üyelere DM gibi teslim edilir. Sistem postlarından
+   farkı: model tarafına da düşebilir (wake kararı çağıranın). */
+Engine.prototype.agentDmGroupPost = function (input) {
+  try {
+    const i = input || {};
+    const gid = String(i.gid || '');
+    const g = this._agentGroupEnsure(gid, i.title || '', { system: !!i.system });
+    if (!g) return { ok: false, error: 'gid gerekli' };
+    const dm = {
+      at: nowIso(),
+      from: String(i.fromSid || 'user'),
+      fromTitle: String(i.fromTitle || 'Kullanıcı'),
+      to: '',
+      toTitle: 'ekip',
+      group: gid,
+      groupTitle: g.title,
+      topic: String(i.topic || 'grup').slice(0, 60),
+      text: String(i.text || '').slice(0, 4000),
+      ...(i.system ? { system: true } : {}),
+      ...(i.viaTelegram ? { viaTelegram: true } : {}),
+    };
+    this._pushAgentDm(dm);
+    /* canlı event TEK SEFER: ilk koşan üye (yoksa gönderen) — panelde çoğalmaz */
+    const firstRunning = (g.members || []).find((m) => {
+      const j = this._bgJobs && this._bgJobs.get(m);
+      return j && j.status === 'running';
+    });
+    emitSafe(this, firstRunning || String(i.fromSid || ''), { type: 'agent-dm', ...dm });
+    this._persistAgentDms();
+    return { ok: true, group: g.title };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
 };
 
 /* Sistem promptuna ekip zorunluluğu */

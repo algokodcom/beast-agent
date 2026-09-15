@@ -203,6 +203,11 @@ const els = {
   finShowNotify: $('#finShowNotify'),
   finShowPerf: $('#finShowPerf'),
   finShowFlow: $('#finShowFlow'),
+  finDmTgOn: $('#finDmTgOn'),
+  finDmTgWrap: $('#finDmTgWrap'),
+  finDmTgChat: $('#finDmTgChat'),
+  finDmTgRefresh: $('#finDmTgRefresh'),
+  finDmTgHint: $('#finDmTgHint'),
   finRiskCard: $('#finRiskCard'),
   finNotifyCard: $('#finNotifyCard'),
   finPerfCard: $('#finPerfCard'),
@@ -10119,6 +10124,11 @@ async function finSnapshot() {
   if (!finView.risk && r.cfg && r.cfg.watchdog !== false) finSaveCfg({ watchdog: false });
   finRenderStats(r.stats, r.equity, r.account && r.account.currency ? r.account.currency : '');
   finRenderAlerts(r.alerts);
+  /* görünüm ayarları açıkken AJAN DM ↔ TELEGRAM seçimi cfg ile senkron kalsın
+     (kullanıcı dropdown'dayken DOM'a dokunulmaz) */
+  if (els.finSettingsOverlay && !els.finSettingsOverlay.hidden && document.activeElement !== els.finDmTgChat) {
+    finDmTgPaint();
+  }
 }
 
 function finLogLine(line) {
@@ -10280,8 +10290,63 @@ function finViewApply() {
   if (!finView.risk) finSaveCfg({ watchdog: false });
 }
 
+/* ---------- AJAN DM ↔ TELEGRAM (görünüm ayarları) ----------
+   Ayarlar settings.finance'ta: dmTelegram + dmTelegramChat/Title. Grup listesi
+   bottan mesaj alan gruplardan gelir (kanal: tg:groups:list). */
+let finDmTgGroups = [];
+
+function finDmTgPaint() {
+  if (!els.finDmTgOn) return;
+  const cfg = finCfgCache || {};
+  const on = cfg.dmTelegram === true;
+  els.finDmTgOn.checked = on;
+  const row = els.finDmTgOn.closest('.fin-set-row');
+  if (row) row.classList.toggle('on', on);
+  if (els.finDmTgWrap) els.finDmTgWrap.hidden = !on;
+  if (els.finDmTgChat) {
+    const cur = String(cfg.dmTelegramChat || '');
+    const sel = els.finDmTgChat;
+    sel.textContent = '';
+    const opt0 = document.createElement('option');
+    opt0.value = '';
+    opt0.textContent = finDmTgGroups.length ? '— Grup seç —' : '— Görünen grup yok —';
+    sel.appendChild(opt0);
+    let has = false;
+    for (const g of finDmTgGroups) {
+      const o = document.createElement('option');
+      o.value = String(g.id);
+      o.textContent = String(g.title || g.id) + '  (' + g.id + ')';
+      if (String(g.id) === cur) { o.selected = true; has = true; }
+      sel.appendChild(o);
+    }
+    /* listelenmemiş kayıtlı grup kaybolmasın — mevcut seçim korunur */
+    if (cur && !has) {
+      const o = document.createElement('option');
+      o.value = cur;
+      o.textContent = String(cfg.dmTelegramTitle || cur) + '  (' + cur + ')';
+      o.selected = true;
+      sel.appendChild(o);
+    }
+  }
+  if (els.finDmTgHint) {
+    els.finDmTgHint.textContent = finDmTgGroups.length
+      ? 'Seçili gruptaki mesajlar AJAN DM grubunda görünür; AJAN DM mesajları da bu gruba düşer.'
+      : 'Botu bir Telegram grubuna ekle, gruba bir mesaj yaz ve "Listeyi yenile"ye bas (BotFather → /setprivacy → Disable ya da bot gruba admin olmalı).';
+  }
+}
+
+async function finDmTgRefresh() {
+  try {
+    const list = await beast.tgGroupsList();
+    finDmTgGroups = Array.isArray(list) ? list : [];
+  } catch { finDmTgGroups = []; }
+  finDmTgPaint();
+}
+
 function finSettingsOpen() {
   if (els.finSettingsOverlay) els.finSettingsOverlay.hidden = false;
+  finDmTgPaint();
+  finDmTgRefresh();
 }
 function finSettingsCloseModal() {
   if (els.finSettingsOverlay) els.finSettingsOverlay.hidden = true;
@@ -10315,6 +10380,30 @@ if (els.finShowRisk) els.finShowRisk.addEventListener('change', () => finViewTog
 if (els.finShowNotify) els.finShowNotify.addEventListener('change', () => finViewToggle('notify', els.finShowNotify.checked));
 if (els.finShowPerf) els.finShowPerf.addEventListener('change', () => finViewToggle('perf', els.finShowPerf.checked));
 if (els.finShowFlow) els.finShowFlow.addEventListener('change', () => finViewToggle('flow', els.finShowFlow.checked));
+/* AJAN DM ↔ TELEGRAM köprüsü kontrolleri */
+if (els.finDmTgOn) {
+  els.finDmTgOn.addEventListener('change', () => {
+    const on = els.finDmTgOn.checked;
+    if (finCfgCache) finCfgCache.dmTelegram = on;
+    finSaveCfg({ dmTelegram: on });
+    finDmTgPaint();
+    toast(on ? 'AJAN DM ↔ Telegram köprüsü açıldı' : 'AJAN DM ↔ Telegram köprüsü kapatıldı');
+    if (on) finDmTgRefresh();
+  });
+}
+if (els.finDmTgChat) {
+  els.finDmTgChat.addEventListener('change', () => {
+    const id = els.finDmTgChat.value || '';
+    const g = finDmTgGroups.find((x) => String(x.id) === String(id));
+    if (finCfgCache) {
+      finCfgCache.dmTelegramChat = id;
+      finCfgCache.dmTelegramTitle = g ? String(g.title || '') : '';
+    }
+    finSaveCfg({ dmTelegramChat: id, dmTelegramTitle: g ? String(g.title || '') : '' });
+    toast(id ? 'Telegram grubu bağlandı: ' + (g ? g.title || id : id) : 'Telegram grubu seçilmedi');
+  });
+}
+if (els.finDmTgRefresh) els.finDmTgRefresh.addEventListener('click', () => finDmTgRefresh());
 finViewApply();
 
 /* ---------- BÖLÜM SIRALAMA (sürükle-bırak) ----------

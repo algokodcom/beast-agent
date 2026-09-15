@@ -1,20 +1,24 @@
 {
   "name": "mt5_shot",
-  "description": "MT5 grafiğinin GERÇEK ekran görüntüsünü alır ve GÖRSELİ ÇAĞIRAN AJANA GÖSTERİR: MT5\\MQL5\\Files\\beast_cmd.json üzerinden BeastFinance EA'ya 'shot' komutu yazar, EA ChartScreenShot ile PNG üretir; PNG hem tool klasörüne hem <kullanıcı>\\beast_shots altına kopyalanır (dönen path send_file'a verilebilir) hem de data URL olarak sonuca gömülür — engine bunu sonraki turda ajana görsel olarak enjekte eder (embed:false kapatır). Aktif grafik istenen sembol/periyot ile aynıysa ondan çekilir (Beast panosu + seviye çizgileri görünür), değilse EA geçici grafik açar (ChartOpen/ChartSetSymbolPeriod + BeastShot.tpl açık tema). Komut id/ts ile yazılır, ack poll edilir ve PNG MQL5\\Files'ta belirene kadar beklenir; hata halinde gövde şu kodu taşır: err = no_terminal|ea_offline|cmd_write_fail|ea_no_ack|ea_error|png_yok|timeout (+ cmdId, filesDir, diagnostic, ping). Grafik analizi/raporu ve ekip paylaşımı için birincil screenshot aracıdır.",
+  "defaultsVersion": 2,
+  "description": "MT5 grafiğinin GERÇEK ekran görüntüsünü alır ve GÖRSELİ ÇAĞIRAN AJANA GÖSTERİR: MT5\\MQL5\\Files\\beast_cmd.json üzerinden BeastFinance EA'ya 'shot' komutu yazar, EA ChartScreenShot ile PNG üretir; PNG hem tool klasörüne hem <kullanıcı>\\beast_shots altına kopyalanır (dönen path send_file'a verilebilir) hem de data URL olarak sonuca gömülür — engine bunu sonraki turda ajana görsel olarak enjekte eder (embed:false kapatır). ÇOKLU ZAMAN DİLİMİ: timeframes:[\"M1\",\"M15\"] verirsen aynı sembolün periyotları SIRAYLA çekilip TEK PNG'de birleştirilir (layout:\"h\" soldan sağa — varsayılan; \"v\" üstten alta; 2-3 periyot) ve her panelin üstüne \"SEMBOL · PERİYOT\" etiketi çizilir — solda/sağda hangi periyot olduğu görüntüden de okunur. Aktif grafik istenen sembol/periyot ile aynıysa ondan çekilir (Beast panosu + seviye çizgileri görünür), değilse EA geçici grafik açar (ChartOpen/ChartSetSymbolPeriod + BeastShot.tpl açık tema). Komut id/ts ile yazılır, ack poll edilir ve PNG MQL5\\Files'ta belirene kadar beklenir; hata halinde gövde şu kodu taşır: err = no_terminal|ea_offline|cmd_write_fail|ea_no_ack|ea_error|png_yok|timeout|stitch_fail (+ cmdId, filesDir, diagnostic, ping). Grafik analizi/raporu ve ekip paylaşımı için birincil screenshot aracıdır.",
   "parameters": {
     "type": "object",
     "properties": {
       "symbol": { "type": "string", "description": "Boş = aktif grafik sembolü (örn GOLD)" },
       "timeframe": { "type": "string", "description": "M1|M5|M15|M30|H1|H4|D1 (boş = aktif periyot)" },
-      "width": { "type": "number", "description": "Görüntü genişliği (varsayılan 1600)" },
-      "height": { "type": "number", "description": "Görüntü yüksekliği (varsayılan 900)" },
-      "file": { "type": "string", "description": "Opsiyonel dosya adı (varsayılan beast_shot_<id>.png)" },
-      "timeoutSec": { "type": "number", "description": "Ack/PNG bekleme süresi sn (varsayılan 20, 5-70)" },
+      "timeframes": { "type": "array", "items": { "type": "string" }, "description": "ÇOKLU PERİYOT TEK GÖRÜNTÜ: örn [\"M1\",\"M15\"] — sırayla çekilip tek PNG'de birleştirilir (2-3 adet; soldan sağa)" },
+      "tf2": { "type": "string", "description": "İkinci periyot kısayolu (timeframe ile birlikte): örn timeframe M1 + tf2 M15" },
+      "layout": { "type": "string", "description": "Çoklu periyot yerleşimi: h = yan yana (varsayılan), v = alt alta" },
+      "width": { "type": "number", "description": "Panel başına görüntü genişliği (varsayılan 1600)" },
+      "height": { "type": "number", "description": "Panel başına görüntü yüksekliği (varsayılan 900)" },
+      "file": { "type": "string", "description": "Opsiyonel dosya adı (varsayılan beast_shot_<id>.png; çoklu periyotta birleşik dosyanın adı)" },
+      "timeoutSec": { "type": "number", "description": "Ack/PNG bekleme süresi sn (varsayılan 20, 5-70; çoklu periyotta panel başına 15 sn tavan)" },
       "outdir": { "type": "string", "description": "PNG'nin kopyalanacağı klasör (varsayılan <kullanıcı>\\beast_shots — send_file buradan gönderebilir)" },
       "diag": { "type": "boolean", "description": "Ack gelmezse teşhis amaçlı ping at (varsayılan true)" },
       "embed": { "type": "boolean", "description": "PNG'yi ajana görsel olarak enjekte et (varsayılan true; false = yalnız dosya yolu döner)" }
     },
     "required": []
   },
-  "updatedAt": "2026-09-11T23:15:00.000Z"
+  "updatedAt": "2026-09-15T00:00:00.000Z"
 }

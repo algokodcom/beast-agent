@@ -2,9 +2,15 @@
 /* mt5_shot — MT5 grafiğinden GERÇEK PNG screenshot (BeastFinance EA "shot" komutu)
    stdin: JSON args  ->  stdout: SADECE JSON sonuç
 
-   Girdi : {symbol?, timeframe?, width?, height?, file?, template?, timeoutSec?, outdir?, diag?, embed?}
+   Girdi : {symbol?, timeframe?, timeframes?:["M1","M15"], layout?:"h"|"v", width?, height?, file?, template?, timeoutSec?, outdir?, diag?, embed?}
    Çıktı : {ok:true, path, symbol, timeframe, ...}  |  {ok:false, err, error, cmdId, filesDir, ...}
-   err kodları: no_terminal | ea_offline | cmd_write_fail | ea_no_ack | ea_error | png_yok | timeout
+   err kodları: no_terminal | ea_offline | cmd_write_fail | ea_no_ack | ea_error | png_yok | timeout | stitch_fail | stitch_write_fail
+
+   ÇOKLU PERİYOT: timeframes:["M1","M15"] (2-3 adet) verilirse her periyot ayrı
+   çekilir ve TEK PNG'de birleştirilir (layout:"h" soldan sağa — varsayılan,
+   "v" üstten alta). Panellerin sol üstüne "SEMBOL · PERİYOT" etiketi çizilir;
+   sonuçta panels[{timeframe, position, path}] hangi tarafın hangi periyot
+   olduğunu söyler. tf2:"M15" kısayolu da (timeframe + tf2) kabul edilir.
 
    Notlar:
    - beast_cmd.json'a {id, ts, cmd, params} yazılır (UTF-16 BOM; EA FILE_UNICODE okur).
@@ -159,7 +165,213 @@ function eaPing(filesDir, budgetMs) {
 }
 
 /* ---------------- ana akış ---------------- */
-function run() {
+
+/* çoklu periyot listesi: ["M1","M15"] ya da "M1,M15"; tf2 kısayolu destekli */
+function normalizeTfs(a) {
+  let t = a.timeframes;
+  if ((t == null || t === '') && a.tf2) t = [a.timeframe, a.tf2];
+  if (typeof t === 'string') t = t.split(/[,\s|+/]+/);
+  if (!Array.isArray(t)) return [];
+  const out = [];
+  for (const x of t) {
+    const s = String(x == null ? '' : x).trim().toUpperCase();
+    if (s && !out.includes(s)) out.push(s);
+  }
+  return out.slice(0, 3);   /* 80 sn watchdog bütçesi: en fazla 3 panel */
+}
+
+function sanitizeFile(name, fallback) {
+  let f = (name && String(name).trim()) ? path.basename(String(name).trim()) : fallback;
+  if (!/\.(png|gif|bmp|jpg|jpeg)$/i.test(f)) f += '.png';
+  return f;
+}
+
+/* tek kare: EA'ya shot komutu yaz → ack bekle → PNG'yi bekle */
+function captureOne(o) {
+  CTX.cmdId = o.id;
+  const payload = { id: o.id, ts: Date.now(), cmd: 'shot', params: o.params };
+  try { if (fs.existsSync(o.ackFile)) fs.unlinkSync(o.ackFile); } catch (e) {}
+  try { writeUtf16(o.cmdFile, JSON.stringify(payload)); }
+  catch (e) { return { ok: false, err: 'cmd_write_fail', error: 'beast_cmd.json yazılamadı: ' + e.message, extra: { sent: payload } }; }
+
+  /* --- ack POLL (cmd dosyasının EA tarafından tüketilmesi de izlenir) --- */
+  let ack = null, cmdConsumed = false;
+  const ackDeadline = Date.now() + o.timeoutSec * 1000;
+  while (Date.now() < ackDeadline) {
+    syncSleep(250);
+    const a = readJson(o.ackFile);
+    if (a && a.id === o.id) { ack = a; break; }
+    try {
+      if (!fs.existsSync(o.cmdFile)) cmdConsumed = true;
+      else {
+        const c = readJson(o.cmdFile);
+        if (c && c.id && c.id !== o.id) cmdConsumed = true;   // başka bir çağrı ezip geçti
+      }
+    } catch (e) {}
+  }
+
+  if (!ack) {
+    const extra = {
+      heartbeat_age_sec: heartbeatAge(o.beatFile),
+      cmd_consumed: cmdConsumed,
+      timeout_sec: o.timeoutSec,
+      sent: payload
+    };
+    if (o.diag) {
+      extra.diagnostic = cmdConsumed
+        ? 'EA komutu aldı ama ack yazmadı (shot işleyicisi hata verdi / PNG üretimi bloke)'
+        : 'EA komutu hiç almadı (zamanlayıcı durmuş ya da komut dosyası okunamadı)';
+      extra.ping = eaPing(o.filesDir, 6000);
+    }
+    return { ok: false, err: 'ea_no_ack', error: 'EA ' + o.timeoutSec + ' sn içinde ack vermedi (id=' + o.id + ', heartbeat ' +
+      (extra.heartbeat_age_sec === null ? '?' : extra.heartbeat_age_sec) + ' sn, cmd tüketildi=' + cmdConsumed + ')', extra };
+  }
+
+  if (ack.ok === false) {
+    return { ok: false, err: 'ea_error', error: 'EA hata döndürdü: ' + (ack.error || 'bilinmeyen'), extra: { ack } };
+  }
+
+  /* --- PNG dosyasını bekle --- */
+  const shotFile = (ack.result && ack.result.file) ? path.basename(String(ack.result.file)) : o.params.file;
+  const src = path.join(o.filesDir, shotFile);
+  let size = 0;
+  const pngDeadline = Math.max(ackDeadline, Date.now() + 8000);
+  for (;;) {
+    try { if (fs.existsSync(src)) { size = fs.statSync(src).size; if (size > 1500) break; } } catch (e) {}
+    if (Date.now() >= pngDeadline) break;
+    syncSleep(250);
+  }
+  if (size <= 1500) {
+    return { ok: false, err: 'png_yok', error: 'PNG oluşmadı ya da çok küçük (' + size + ' byte): ' + shotFile, extra: { ack, expected_file: shotFile, bytes: size } };
+  }
+  return { ok: true, src, shotFile, size, res: ack.result || {}, params: o.params, id: o.id };
+}
+
+/* --- kopyala: Beast altı yedek + send_file edilebilir kullanıcı klasörü --- */
+function copyOut(src, shotFile, outdir) {
+  const pubDir = (outdir && String(outdir).trim()) ? path.resolve(String(outdir).trim()) : PUB_DIR_DEFAULT;
+  let pubPath = null, beastPath = null, pubErr = null;
+  try {
+    if (!fs.existsSync(SHOT_DIR)) fs.mkdirSync(SHOT_DIR, { recursive: true });
+    beastPath = path.join(SHOT_DIR, shotFile);
+    fs.copyFileSync(src, beastPath);
+  } catch (e) { /* yedek kopya zorunlu değil */ }
+  try {
+    if (!fs.existsSync(pubDir)) fs.mkdirSync(pubDir, { recursive: true });
+    pubPath = path.join(pubDir, shotFile);
+    fs.copyFileSync(src, pubPath);
+  } catch (e) { pubErr = e.message; }
+  return { pubPath, beastPath, pubErr };
+}
+
+/* --- PNG data URL (engine __injectImage sözleşmesiyle ajana görsel enjekte eder) --- */
+function embedData(src, size) {
+  let dataUrl = null;
+  try {
+    if (ARGS.embed !== false && size > 0 && size <= 3500000) {
+      dataUrl = 'data:image/png;base64,' + fs.readFileSync(src).toString('base64');
+    }
+  } catch (e) {}
+  return dataUrl;
+}
+
+/* ---- ÇOKLU PERİYOT: aynı sembolün N zaman dilimini TEK PNG'de birleştir ----
+   Paneller sırayla çekilir (kilit zaten alınmış — ack çakışması yok), sol üste
+   "SEMBOL · PERİYOT" etiketi çizilir; soldan sağa (layout:"v" ile üstten alta). */
+async function runMulti(tfList, filesDir, cmdFile, ackFile, beatFile, timeoutSec, diag) {
+  let compose = null;
+  try { compose = require('./stitch.js').compose; } catch (e) {}
+  if (!compose) return { err: 'stitch_fail', error: 'stitch.js bulunamadı (mt5_shot güncel kurulum gerekiyor)' };
+
+  const n = tfList.length;
+  const baseId = 'S' + Date.now().toString(36);
+  const fileArg = ARGS.file && String(ARGS.file).trim() ? String(ARGS.file).trim() : '';
+  const base = fileArg ? fileArg.replace(/\.[a-z0-9]+$/i, '') : 'beast_mtf_' + baseId;
+  const perAck = Math.max(5, Math.min(15, Math.floor(45 / n)));
+  const width = Number(ARGS.width) > 0 ? Math.min(10000, Math.round(Number(ARGS.width))) : 1600;
+  const height = Number(ARGS.height) > 0 ? Math.min(10000, Math.round(Number(ARGS.height))) : 900;
+  const layout = String(ARGS.layout || 'h').toLowerCase() === 'v' ? 'v' : 'h';
+
+  const panels = [];
+  const cmdIds = [];
+  let symbol = ARGS.symbol ? String(ARGS.symbol).toUpperCase() : null;
+  for (let i = 0; i < n; i++) {
+    const tf = tfList[i];
+    const id = baseId + 'p' + (i + 1);
+    const params = { file: sanitizeFile(base + '_' + tf, 'beast_shot_' + id), width, height, timeframe: tf };
+    if (symbol) params.symbol = symbol;
+    if (ARGS.template !== undefined) params.template = String(ARGS.template);
+    cmdIds.push(id);
+    const r = captureOne({ id, file: params.file, params, filesDir, cmdFile, ackFile, beatFile, timeoutSec: perAck, diag });
+    if (!r.ok) {
+      return {
+        err: r.err,
+        error: '[' + tf + '] ' + r.error,
+        extra: Object.assign({ panel: tf, cmdId: id, requested: { symbol: params.symbol || null, timeframe: tf } }, r.extra || {})
+      };
+    }
+    const cp = copyOut(r.src, r.shotFile, ARGS.outdir);
+    panels.push({ tf, src: r.src, file: r.shotFile, size: r.size, res: r.res, pubPath: cp.pubPath, beastPath: cp.beastPath });
+    if (!symbol) symbol = (r.res && r.res.symbol) ? String(r.res.symbol) : null;
+  }
+
+  /* birleştir */
+  let composed = null;
+  try {
+    composed = await compose(
+      panels.map((p) => ({ path: p.src, label: (symbol ? symbol + ' · ' : '') + p.tf })),
+      { layout }
+    );
+  } catch (e) { composed = { ok: false, error: String((e && e.message) || e) }; }
+  if (!composed || !composed.ok) {
+    return { err: 'stitch_fail', error: 'görüntüler birleştirilemedi: ' + ((composed && composed.error) || 'bilinmeyen') };
+  }
+
+  const outFile = sanitizeFile(fileArg, 'beast_mtf_' + baseId + '.png');
+  const pathMt5 = path.join(filesDir, outFile);
+  try { fs.writeFileSync(pathMt5, composed.buffer); }
+  catch (e) { return { err: 'stitch_write_fail', error: 'birleşik PNG yazılamadı: ' + e.message }; }
+  const size = composed.buffer.length;
+  const cp = copyOut(pathMt5, outFile, ARGS.outdir);
+  const dataUrl = embedData(pathMt5, size);
+
+  return {
+    ok: true,
+    payload: {
+      ok: true,
+      path: cp.pubPath || cp.beastPath || pathMt5,   // send_file'a verilecek yol (birleşik)
+      path_mt5: pathMt5,
+      path_beast: cp.beastPath,
+      file: outFile,
+      bytes: size,
+      image_embedded: !!dataUrl,
+      ...(dataUrl ? { __injectImage: dataUrl } : {}),
+      cmdIds,
+      filesDir,
+      symbol: symbol || null,
+      timeframes: tfList,
+      layout,
+      panels: panels.map((p, i) => ({
+        timeframe: p.tf,
+        position: layout === 'h'
+          ? (i === 0 ? 'left' : (i === n - 1 ? 'right' : 'middle'))
+          : (i === 0 ? 'top' : (i === n - 1 ? 'bottom' : 'middle')),
+        file: p.file,
+        path: p.pubPath || p.beastPath || p.src,
+        bytes: p.size,
+        period: (p.res && p.res.period) || null
+      })),
+      width: composed.width,
+      height: composed.height,
+      requested: { symbol: ARGS.symbol ? String(ARGS.symbol).toUpperCase() : null, timeframes: tfList, width, height, layout },
+      heartbeat_age_sec: heartbeatAge(beatFile),
+      ms: Date.now() - CTX.started,
+      pubErr: cp.pubErr || undefined
+    }
+  };
+}
+
+async function run() {
   const timeoutSec = Number(ARGS.timeoutSec) > 0
     ? Math.max(5, Math.min(70, Math.round(Number(ARGS.timeoutSec))))
     : DEFAULT_TIMEOUT_SEC;
@@ -182,12 +394,18 @@ function run() {
   const locked = acquireLock(Math.min(15000, timeoutSec * 500));
   if (!locked) console.error('[mt5_shot] uyarı: kilit alınamadı, yine de devam ediliyor');
 
+  /* ÇOKLU PERİYOT: timeframes:["M1","M15"] → tek karede yan yana */
+  const tfList = normalizeTfs(ARGS);
+  if (tfList.length >= 2) {
+    const r = await runMulti(tfList, filesDir, cmdFile, ackFile, beatFile, timeoutSec, diag);
+    if (!r.ok) return fail(r.err, r.error, r.extra);
+    return out(r.payload);
+  }
+
   const id = 'S' + Date.now().toString(36);
   CTX.cmdId = id;
 
-  let file = (ARGS.file && String(ARGS.file).trim()) ? String(ARGS.file).trim() : ('beast_shot_' + id + '.png');
-  file = path.basename(file);                       // yol kaçışını engelle
-  if (!/\.(png|gif|bmp|jpg|jpeg)$/i.test(file)) file += '.png';
+  const file = sanitizeFile(ARGS.file, 'beast_shot_' + id + '.png');
 
   const params = { file };
   if (ARGS.timeframe) params.timeframe = String(ARGS.timeframe).toUpperCase();
@@ -196,101 +414,23 @@ function run() {
   params.width = Number(ARGS.width) > 0 ? Math.min(10000, Math.round(Number(ARGS.width))) : 1600;
   params.height = Number(ARGS.height) > 0 ? Math.min(10000, Math.round(Number(ARGS.height))) : 900;
 
-  const payload = { id, ts: Date.now(), cmd: 'shot', params };
+  const cap = captureOne({ id, file, params, filesDir, cmdFile, ackFile, beatFile, timeoutSec, diag });
+  if (!cap.ok) return fail(cap.err, cap.error, cap.extra);
 
-  try { if (fs.existsSync(ackFile)) fs.unlinkSync(ackFile); } catch (e) {}
-  try { writeUtf16(cmdFile, JSON.stringify(payload)); }
-  catch (e) { return fail('cmd_write_fail', 'beast_cmd.json yazılamadı: ' + e.message, { sent: payload }); }
-
-  /* --- ack POLL (cmd dosyasının EA tarafından tüketilmesi de izlenir) --- */
-  let ack = null, cmdConsumed = false;
-  const ackDeadline = Date.now() + timeoutSec * 1000;
-  while (Date.now() < ackDeadline) {
-    syncSleep(250);
-    const a = readJson(ackFile);
-    if (a && a.id === id) { ack = a; break; }
-    try {
-      if (!fs.existsSync(cmdFile)) cmdConsumed = true;
-      else {
-        const c = readJson(cmdFile);
-        if (c && c.id && c.id !== id) cmdConsumed = true;   // başka bir çağrı ezip geçti
-      }
-    } catch (e) {}
-  }
-
-  if (!ack) {
-    const extra = {
-      heartbeat_age_sec: heartbeatAge(beatFile),
-      cmd_consumed: cmdConsumed,
-      timeout_sec: timeoutSec,
-      sent: payload
-    };
-    if (diag) {
-      extra.diagnostic = cmdConsumed
-        ? 'EA komutu aldı ama ack yazmadı (shot işleyicisi hata verdi / PNG üretimi bloke)'
-        : 'EA komutu hiç almadı (zamanlayıcı durmuş ya da komut dosyası okunamadı)';
-      extra.ping = eaPing(filesDir, 6000);
-    }
-    return fail('ea_no_ack', 'EA ' + timeoutSec + ' sn içinde ack vermedi (id=' + id + ', heartbeat ' +
-      (extra.heartbeat_age_sec === null ? '?' : extra.heartbeat_age_sec) + ' sn, cmd tüketildi=' + cmdConsumed + ')', extra);
-  }
-
-  if (ack.ok === false) {
-    return fail('ea_error', 'EA hata döndürdü: ' + (ack.error || 'bilinmeyen'), { ack });
-  }
-
-  /* --- PNG dosyasını bekle --- */
-  const shotFile = (ack.result && ack.result.file) ? path.basename(String(ack.result.file)) : file;
-  const src = path.join(filesDir, shotFile);
-  let size = 0;
-  const pngDeadline = Math.max(ackDeadline, Date.now() + 8000);
-  for (;;) {
-    try { if (fs.existsSync(src)) { size = fs.statSync(src).size; if (size > 1500) break; } } catch (e) {}
-    if (Date.now() >= pngDeadline) break;
-    syncSleep(250);
-  }
-  if (size <= 1500) {
-    return fail('png_yok', 'PNG oluşmadı ya da çok küçük (' + size + ' byte): ' + shotFile,
-      { ack, expected_file: shotFile, bytes: size });
-  }
-
-  /* --- kopyala: Beast altı yedek + send_file edilebilir kullanıcı klasörü --- */
-  const pubDir = (ARGS.outdir && String(ARGS.outdir).trim()) ? path.resolve(String(ARGS.outdir).trim()) : PUB_DIR_DEFAULT;
-  let pubPath = null, beastPath = null, pubErr = null;
-  try {
-    if (!fs.existsSync(SHOT_DIR)) fs.mkdirSync(SHOT_DIR, { recursive: true });
-    beastPath = path.join(SHOT_DIR, shotFile);
-    fs.copyFileSync(src, beastPath);
-  } catch (e) { /* yedek kopya zorunlu değil */ }
-  try {
-    if (!fs.existsSync(pubDir)) fs.mkdirSync(pubDir, { recursive: true });
-    pubPath = path.join(pubDir, shotFile);
-    fs.copyFileSync(src, pubPath);
-  } catch (e) { pubErr = e.message; }
-
-  const res = (ack.result || {});
+  const cp = copyOut(cap.src, cap.shotFile, ARGS.outdir);
+  const res = cap.res;
   const tfTxt = (res.period ? tfName(res.period) : null) || params.timeframe || null;
   const wantSym = params.symbol || res.symbol || null;
   const mismatch = !!(params.symbol && res.symbol && String(res.symbol).toUpperCase() !== String(params.symbol).toUpperCase());
-
-  /* --- GÖRSELİ ÇAĞIRAN AJANA GÖSTER: PNG data URL olarak sonuca gömülür;
-     engine bunu __injectImage sözleşmesiyle sonraki turda vision mesajı yapar
-     (ajan grafiği GERÇEKTEN görür). embed:false ile kapatılır; ~3.5MB üstü
-     bağlam/dekont şişmesin diye gömülmez (path yine döner). --- */
-  let dataUrl = null;
-  try {
-    if (ARGS.embed !== false && size > 0 && size <= 3500000) {
-      dataUrl = 'data:image/png;base64,' + fs.readFileSync(src).toString('base64');
-    }
-  } catch (e) {}
+  const dataUrl = embedData(cap.src, cap.size);
 
   return out({
     ok: true,
-    path: pubPath || beastPath || src,          // send_file'a verilecek yol
-    path_mt5: src,
-    path_beast: beastPath,
-    file: shotFile,
-    bytes: size,
+    path: cp.pubPath || cp.beastPath || cap.src,   // send_file'a verilecek yol
+    path_mt5: cap.src,
+    path_beast: cp.beastPath,
+    file: cap.shotFile,
+    bytes: cap.size,
     image_embedded: !!dataUrl,
     ...(dataUrl ? { __injectImage: dataUrl } : {}),
     cmdId: id,
@@ -306,7 +446,7 @@ function run() {
     symbol_mismatch: mismatch,
     heartbeat_age_sec: heartbeatAge(beatFile),
     ms: Date.now() - CTX.started,
-    pubErr: pubErr || undefined
+    pubErr: cp.pubErr || undefined
   });
 }
 
@@ -402,8 +542,9 @@ let raw = '', resolved = false, silenceTimer = null;
 function begin(resolve) { if (resolved) return; resolved = true; resolve(); }
 function finish() {
   ARGS = loadArgs(raw);
-  try { run(); }
-  catch (e) { fail('timeout', 'beklenmeyen hata: ' + (e && e.message ? e.message : String(e))); }
+  Promise.resolve()
+    .then(run)
+    .catch((e) => fail('timeout', 'beklenmeyen hata: ' + (e && e.message ? e.message : String(e))));
 }
 try {
   process.stdin.setEncoding('utf8');

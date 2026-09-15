@@ -9317,9 +9317,9 @@ function finCfg() {
   if (typeof f.notifyTrades !== 'boolean') f.notifyTrades = true;
   if (typeof f.notifyWatchdog !== 'boolean') f.notifyWatchdog = true;
   /* KANAL OLAY FİLTRESİ: varsayılan true — WhatsApp/Telegram/Discord'a yalnız
-     emir/işlem olayları (açılış, kapanış, bekleyen emir, iptal) düşer; fiyat
-     alarmı, koruma (BE/trailing/kısmi TP), günlük limit ve rapor bildirimleri
-     panelde kalır. false = tüm olaylar kanallara gider (eski davranış). */
+     emir/işlem olayları (açılış, kapanış, SL/TP güncelleme, bekleyen emir,
+     iptal) düşer; fiyat alarmı, koruma (BE/trailing/kısmi TP), günlük limit ve
+     rapor bildirimleri panelde kalır. false = tüm olaylar kanallara gider. */
   if (typeof f.notifyTradeOnly !== 'boolean') f.notifyTradeOnly = true;
   if (!Number.isFinite(Number(f.maxDailyLossPct))) f.maxDailyLossPct = 3;
   /* GÜNLÜK LİMİT AKSİYONU: warn = yalnız uyarı; stop = tüm finance ajanlarını
@@ -9566,7 +9566,7 @@ function financeNotify(text, kind, panel) {
      gider (emir açılış/kapanış, bekleyen emir, iptal). Alarm/koruma/risk/rapor
      bildirimleri yalnız panelde görünür. */
   const kindStr = String(kind || '');
-  if (cfg.notifyTradeOnly !== false && !['trade', 'close', 'pending', 'cancel'].includes(kindStr)) return;
+  if (cfg.notifyTradeOnly !== false && !['trade', 'close', 'modify', 'pending', 'cancel'].includes(kindStr)) return;
   const body = '💼 *Beast Finance*\n' + line;
   const senders = [];
   try {
@@ -10246,54 +10246,79 @@ try { finExcLoad(); } catch {}
 try { finStatsLoad(); } catch {}
 try { finEquityLoad(); } catch {}
 
+/* İŞLEM OLAYI (ortak hat): iç mt5_* handler'ları ve kişisel tool__mt5_*
+   araçları buradan geçer — jurnal → panel toast → seçili kanallara bildirim. */
+function finTradeEvent(kRaw, dataRaw, sidRaw) {
+  const k = String(kRaw || '');
+  const d = dataRaw && typeof dataRaw === 'object' ? dataRaw : {};
+  const sid = String(sidRaw || '');
+  const ai = finAgentInfo(sid);
+  const who = ai.label || '';
+  if (k === 'note') {
+    finJournal({ kind: 'note', sid, agent: who, symbol: d.symbol, note: d.note, ticket: d.ticket || 0, side: d.side || '' });
+    return;
+  }
+  /* SHADOW: gerçek emir yok — karar teziyle günlüğe yazılır (test/ölçüm) */
+  if (k === 'shadow') {
+    finJournal({ kind: 'shadow', sid, agent: who, symbol: d.symbol, side: d.side || '', volume: d.volume, sl: d.sl || 0, tp: d.tp || 0, price: d.price || 0, type: d.type || '', reason: d.reason || '' });
+    const sline = `🧪 SHADOW: ${d.side || d.type || ''} ${d.volume || ''} ${d.symbol || ''} — emir gönderilmedi (karar günlüğe yazıldı)`;
+    financeLog('[shadow] ' + sline);
+    finPush('trade', { line: sline });
+    return;
+  }
+  if (k === 'trade') {
+    finJournal({ kind: 'trade', sid, agent: who, symbol: d.symbol, side: d.side, volume: d.volume, sl: d.sl, tp: d.tp, reason: d.reason || d.comment || '' });
+  } else if (k === 'close') {
+    finJournal({ kind: 'close-req', sid, agent: who, ticket: d.ticket, volume: d.volume });
+    return; /* kesin kapanış K/Z'si watchdog tarafından yazılır (çift bildirim yok) */
+  } else if (k === 'modify') {
+    finJournal({ kind: 'modify', sid, agent: who, ticket: d.ticket, sl: d.sl, tp: d.tp });
+  } else if (k === 'pending') {
+    finJournal({ kind: 'pending', sid, agent: who, symbol: d.symbol, type: d.type, volume: d.volume, reason: d.reason || '' });
+  } else if (k === 'cancel') {
+    finJournal({ kind: 'cancel', sid, agent: who, ticket: d.ticket });
+  }
+  let line = '';
+  if (k === 'trade') line = `İŞLEM AÇILDI: ${d.side} ${d.volume} ${d.symbol}${who ? ' · ' + who : ''}`;
+  else if (k === 'modify') line = `SL/TP GÜNCELLENDİ: ticket ${d.ticket} (SL ${d.sl || 0} / TP ${d.tp || 0})${who ? ' · ' + who : ''}`;
+  else if (k === 'pending') line = `BEKLEYEN EMİR: ${d.type} ${d.volume} ${d.symbol}${who ? ' · ' + who : ''}`;
+  else if (k === 'cancel') line = `EMİR İPTAL: ticket ${d.ticket}`;
+  if (line) {
+    financeLog('[ajan] ' + line);
+    finPush('trade', { line });
+    if (finCfg().notifyTrades !== false && (k === 'trade' || k === 'modify' || k === 'pending' || k === 'cancel')) {
+      financeNotify(line, k, false); /* panel toast'ı yukarıda — kanallara gönder */
+    }
+    if (k === 'trade') finStatsRefresh(true).catch(() => {});
+  }
+}
+
 /* financetools ayar + bildirim kancası: her olay kalıcı günlüğe + bildirime */
 try {
   financetools.setConfig(() => finCfg());
   financetools.setAlerts(finAlertApi());
   financetools.setDiscipline((side, symbol, positions) => finDisciplineError(side, symbol, positions));
   financetools.setNotify((entry) => {
-    const k = String((entry && entry.kind) || '');
-    const d = entry && entry.data ? entry.data : {};
-    const ai = finAgentInfo(entry && entry.sid);
-    const who = ai.label || '';
-    const sid = String((entry && entry.sid) || '');
-    if (k === 'note') {
-      finJournal({ kind: 'note', sid, agent: who, symbol: d.symbol, note: d.note, ticket: d.ticket || 0, side: d.side || '' });
-      return;
-    }
-    /* SHADOW: gerçek emir yok — karar teziyle günlüğe yazılır (test/ölçüm) */
-    if (k === 'shadow') {
-      finJournal({ kind: 'shadow', sid, agent: who, symbol: d.symbol, side: d.side || '', volume: d.volume, sl: d.sl || 0, tp: d.tp || 0, price: d.price || 0, type: d.type || '', reason: d.reason || '' });
-      const sline = `🧪 SHADOW: ${d.side || d.type || ''} ${d.volume || ''} ${d.symbol || ''} — emir gönderilmedi (karar günlüğe yazıldı)`;
-      financeLog('[shadow] ' + sline);
-      finPush('trade', { line: sline });
-      return;
-    }
-    if (k === 'trade') {
-      finJournal({ kind: 'trade', sid, agent: who, symbol: d.symbol, side: d.side, volume: d.volume, sl: d.sl, tp: d.tp, reason: d.reason || d.comment || '' });
-    } else if (k === 'close') {
-      finJournal({ kind: 'close-req', sid, agent: who, ticket: d.ticket, volume: d.volume });
-      return; /* kesin kapanış K/Z'si watchdog tarafından yazılır (çift bildirim yok) */
-    } else if (k === 'modify') {
-      finJournal({ kind: 'modify', sid, agent: who, ticket: d.ticket, sl: d.sl, tp: d.tp });
-    } else if (k === 'pending') {
-      finJournal({ kind: 'pending', sid, agent: who, symbol: d.symbol, type: d.type, volume: d.volume, reason: d.reason || '' });
-    } else if (k === 'cancel') {
-      finJournal({ kind: 'cancel', sid, agent: who, ticket: d.ticket });
-    }
-    let line = '';
-    if (k === 'trade') line = `İŞLEM AÇILDI: ${d.side} ${d.volume} ${d.symbol}${who ? ' · ' + who : ''}`;
-    else if (k === 'modify') line = `SL/TP GÜNCELLENDİ: ticket ${d.ticket} (SL ${d.sl || 0} / TP ${d.tp || 0})${who ? ' · ' + who : ''}`;
-    else if (k === 'pending') line = `BEKLEYEN EMİR: ${d.type} ${d.volume} ${d.symbol}${who ? ' · ' + who : ''}`;
-    else if (k === 'cancel') line = `EMİR İPTAL: ticket ${d.ticket}`;
-    if (line) {
-      financeLog('[ajan] ' + line);
-      finPush('trade', { line });
-      if (finCfg().notifyTrades !== false && (k === 'trade' || k === 'pending' || k === 'cancel')) {
-        financeNotify(line, k, false); /* panel toast'ı yukarıda — kanallara gönder */
-      }
-      if (k === 'trade') finStatsRefresh(true).catch(() => {});
-    }
+    finTradeEvent(entry && entry.kind, entry && entry.data, entry && entry.sid);
+  });
+  /* kişisel MT5 toolları köprüyü doğrudan çağırır (iç mt5_* handler'ı devreye
+     girmez) — başarılı emir/SL-TP/bekleyen/iptal olayları aynı hatta düşer */
+  customtools.setTradeHook((id, args, res, sid) => {
+    if (!res || res.ok !== true) return;
+    const kind = {
+      mt5_emir: 'trade',
+      mt5_sltp: 'modify',
+      mt5_bekleyen: 'pending',
+      mt5_emir_iptal: 'cancel',
+      mt5_kapat: 'close',
+    }[String(id || '')];
+    if (!kind) return;
+    const a = args || {};
+    if (kind === 'trade') finTradeEvent('trade', { symbol: a.symbol, side: a.side, volume: a.volume, sl: a.sl, tp: a.tp, reason: a.reason || a.comment || '', result: res }, sid);
+    else if (kind === 'modify') finTradeEvent('modify', { ticket: a.ticket, sl: a.sl, tp: a.tp }, sid);
+    else if (kind === 'pending') finTradeEvent('pending', { symbol: a.symbol, type: a.type, volume: a.volume, reason: a.reason || '' }, sid);
+    else if (kind === 'cancel') finTradeEvent('cancel', { ticket: a.ticket }, sid);
+    else if (kind === 'close') finTradeEvent('close', { ticket: a.ticket, volume: a.volume || 'all' }, sid);
   });
 } catch {}
 

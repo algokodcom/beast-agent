@@ -2010,7 +2010,7 @@ class Engine {
       (roleBlockFull ? roleBlockFull + '\n' : '') +
       (teamLine || '') +
       'MT5 ARAÇLARI: mt5_status (bağlantı), mt5_account (hesap), mt5_market (canlı fiyat), mt5_positions (açık pozisyonlar), mt5_orders (bekleyen emirler), mt5_history (kapanan işlemler), mt5_ea (BeastFinance grafik panosu: status/ping/chart/note), mt5_trade (piyasa emri), mt5_close (kapat), mt5_modify (SL/TP), mt5_pending (bekleyen emir), mt5_cancel (emir iptal).\n' +
-      'KİŞİSEL MT5 ARAÇLARI (VARSAYILAN KURULU — tool__* tüm oturumlarda çağrılabilir): tool__mt5_shot (grafikten GERÇEK PNG + görsel ajana enjekte — grafik işlerinde BİRİNCİL), tool__mt5_barlar2 (OHLC mumlar, köprüsüz), tool__mt5_m15_m5 (GOLD M15+M5 hazır paket), tool__mt5_fiyat, tool__mt5_durum (hesap+pozisyon+emir tek çağrı), tool__mt5_gecmis, tool__mt5_pozisyon_gecmis, tool__mt5_sltp, tool__mt5_kapat, tool__mt5_bekleyen, tool__mt5_emir, tool__mt5_emir_iptal.\n' +
+      'KİŞİSEL MT5 ARAÇLARI (VARSAYILAN KURULU — tool__* tüm oturumlarda çağrılabilir): tool__mt5_shot (grafikten GERÇEK PNG + görsel ajana enjekte — grafik işlerinde BİRİNCİL; timeframes:["M1","M15"] ile çoklu periyot TEK karede soldan sağa), tool__mt5_barlar2 (OHLC mumlar, köprüsüz), tool__mt5_m15_m5 (GOLD M15+M5 hazır paket), tool__mt5_fiyat, tool__mt5_durum (hesap+pozisyon+emir tek çağrı), tool__mt5_gecmis, tool__mt5_pozisyon_gecmis, tool__mt5_sltp, tool__mt5_kapat, tool__mt5_bekleyen, tool__mt5_emir, tool__mt5_emir_iptal.\n' +
       'BEASTFINANCE EA (OTOMATİK GRAFİK UZMANI — ENTEGRASYON KANALI): MT5 terminaline bağlanıldığında BeastFinance uzman danışmanı İLK GRAFİĞE OTOMATİK yüklenir, AutoTrading izni açılır (kurulum sistem tarafından yapılır; elle ekleme gerekmez). Grafik panosu + seviye çizgileri + dosya köprüsü (beast_ea.json / beast_cmd.json / beast_note.json) bu EA üzerinden yürür: entegrasyon işlerinde (status/ping/chart/note) mt5_ea kullan; ekran görüntüsü işlerinde tool__mt5_shot ("shot" komutu — gerçek PNG + ajan görseli) birincildir. Yazdığın not ve çizgiler tool__mt5_shot ve computer_look screenshot\'ında GÖRÜNÜR.\n' +
       'YETKİLERİN (AÇIK — çekinmeden kullan):\n' +
       '- skill: kurulu SKILL.md kataloğunu oku ve uygula — tool yazmadan ÖNCE skill("tool-yazma"), MT5 tarafı işlerden ÖNCE skill("mql5") oku ve prosedürüne birebir uy.\n' +
@@ -2018,7 +2018,7 @@ class Engine {
       '- MQL5: MT5 tarafında script/gösterge/EA yaz (write_file), metaeditor64.exe /compile ile derle, MQL5\\Files dosya köprüsüyle veriyi Beast\'e taşı; kullanıcıya çalıştırma adımını açıkça söyle.\n' +
       '- Yerleşik araçlar: run_command, python_run, read_file/write_file/edit_file, web_search/deep_search, browser_*, computer_look (ekran görüntüsü) — hepsi açık.\n' +
       'GRAFİK & GÖRSEL DOĞRULAMA (karar öncesi — vazgeçilmez):\n' +
-      '- tool__mt5_shot: MT5 grafiğinin GERÇEK PNG\'si (BeastFinance EA "shot" komutu). Görsel SONRAKİ TURDA gözüne gelir; aktif grafikte Beast panosu + mt5_ea note ile çizilen seviyeler GÖRÜNÜR. symbol/timeframe ver → EA geçici grafik açıp o sembol/periyottan çeker; dönen path send_file ile kullanıcıya gönderilebilir. Grafik analizinde İLK tercih budur.\n' +
+      '- tool__mt5_shot: MT5 grafiğinin GERÇEK PNG\'si (BeastFinance EA "shot" komutu). Görsel SONRAKİ TURDA gözüne gelir; aktif grafikte Beast panosu + mt5_ea note ile çizilen seviyeler GÖRÜNÜR. symbol/timeframe ver → EA geçici grafik açıp o sembol/periyottan çeker; dönen path send_file ile kullanıcıya gönderilebilir. Grafik analizinde İLK tercih budur. ÇOKLU ZAMAN DİLİMİ: timeframes:["M1","M15"] (2-3 periyot, layout:"v" alt alta) → periyotlar sırayla çekilip TEK PNG\'de birleştirilir ve her panelin üstüne "SEMBOL · PERİYOT" etiketi çizilir; solda/sağda hangisi olduğunu görüntüden OKURSUN — trend uyumu/MTF teyidi için bunu kullan (gerçek kapanışlarla).\n' +
       '- mt5_ea action:"note": grafiğe kısa plan metni + yatay seviye çizgileri yazar (destek/direnç/SL/TP) — sonra tool__mt5_shot ile çekip seviyelerin doğru yerde olduğunu GÖRSEL doğrula.\n' +
       '- computer_look: tüm masaüstü ekranı (MT5 dışı pencereler dahil); browser_screenshot: web grafikleri (TradingView/Investing) — browser_open ile aç.\n' +
       '- Görsel göremiyorsan (metin-model) ocr_read (source:"screen"/"browser") ile grafikteki fiyat/seviyeleri metne çevir.\n' +
@@ -5379,7 +5379,7 @@ const skills = require('./skills');
       }
       /* KİŞİSEL TOOL: %APPDATA%\beast\tools\ — çocuk node prosesinde izole koşar */
       if (String(name).startsWith('tool__')) {
-        return JSON.stringify(await customtools.call(name, args));
+        return JSON.stringify(await customtools.call(name, args, sessionId));
       }
       if (isBc) {
         /* opencode permission akışı (tool/external-directory.ts + her aracın

@@ -20,6 +20,14 @@ function setNotify(fn) {
   notify = typeof fn === 'function' ? fn : () => {};
 }
 
+/* KİŞİSEL MT5 TOOLLARI köprüyü doğrudan çağırır (iç mt5_* handler'ı devreye
+   girmez) — başarılı çağrıyı trade olayı olarak ana sürece bildir ki jurnal +
+   panel/kanal bildirimi (işlem açıldı, SL/TP güncellendi…) kaçmasın. */
+let tradeHook = null;
+function setTradeHook(fn) {
+  tradeHook = typeof fn === 'function' ? fn : null;
+}
+
 function dir() {
   return path.join(beastRoot(), 'tools');
 }
@@ -117,7 +125,7 @@ function names() {
 const TOOL_TIMEOUT_MS = 90 * 1000;
 
 /* Tool'u çocuk node prosesinde koşturur — uygulama asla çökmez */
-function call(name, args) {
+function call(name, args, sid) {
   return new Promise((resolve) => {
     const id = String(name || '').replace(/^tool__/, '');
     if (!id) return resolve({ ok: false, error: 'tool adı gerekli' });
@@ -142,6 +150,9 @@ function call(name, args) {
           error: r && r.error ? String(r.error).slice(0, 200) : null,
         });
       } catch {}
+      try {
+        if (tradeHook) tradeHook(id, args || {}, r || {}, sid ? String(sid) : '');
+      } catch {}
       resolve(r);
     };
     let killer = setTimeout(() => {
@@ -154,6 +165,7 @@ function call(name, args) {
       const env = {
         ...process.env,
         BEAST_ROOT: beastRoot(),
+        BEAST_APP_DIR: path.join(__dirname, '..', '..'), // tool'lar uygulama node_modules'ına (ör. @napi-rs/canvas) buradan erişir
         BEAST_TOOL_ID: id,
         BEAST_TOOL_ARGS: JSON.stringify(args || {}),
         BEAST_FINANCE_DIR: path.join(beastRoot(), 'finance'),
@@ -245,6 +257,37 @@ function copyTree(srcDir, dstDir) {
   }
 }
 
+function readJsonSafe(fp) {
+  try { return JSON.parse(fs.readFileSync(fp, 'utf8')); } catch { return null; }
+}
+
+/* güncelleme öncesi: kullanıcının düzenlediği dosyaları .user-bak olarak sakla */
+function backupEditedFiles(fromDir, toDir) {
+  try {
+    for (const e of fs.readdirSync(fromDir, { withFileTypes: true })) {
+      if (!e.isDirectory()) continue;
+      backupEditedFiles(path.join(fromDir, e.name), path.join(toDir, e.name));
+    }
+  } catch {}
+  try {
+    for (const e of fs.readdirSync(fromDir, { withFileTypes: true })) {
+      if (e.isDirectory()) continue;
+      if (e.name === 'tool.json') continue; /* sürüm damgası her güncellemede değişir */
+      const from = path.join(fromDir, e.name);
+      const to = path.join(toDir, e.name);
+      try {
+        if (!fs.existsSync(to)) continue;
+        if (fs.readFileSync(from).equals(fs.readFileSync(to))) continue;
+        const bak = to + '.user-bak';
+        if (!fs.existsSync(bak)) fs.copyFileSync(to, bak);
+      } catch {}
+    }
+  } catch {}
+}
+
+/* SÜRÜM GÜNCELLEMESİ: shipped tool.json'da "defaultsVersion" varsa ve kurulu
+   sürümden büyükse araç güncellenir (ör. mt5_shot çoklu periyot); düzenlenmiş
+   dosyalar .user-bak olarak yedeklenir. Alan yoksa eski davranış: yalnız eksikse kur. */
 function seedDefaults() {
   const src = path.join(__dirname, 'defaulttools');
   try {
@@ -253,13 +296,27 @@ function seedDefaults() {
     let n = 0;
     for (const e of fs.readdirSync(src, { withFileTypes: true })) {
       if (!e.isDirectory()) continue;
+      const from = path.join(src, e.name);
       const to = path.join(dir(), e.name);
+      const shipped = readJsonSafe(path.join(from, 'tool.json'));
+      const shippedV = Number(shipped && shipped.defaultsVersion) || 0;
       /* tam kurulu mu? tool.json + run.js yoksa yarım demektir → yeniden kur */
       const complete = fs.existsSync(path.join(to, 'tool.json')) && fs.existsSync(path.join(to, 'run.js'));
-      if (complete) continue;
+      let need = !complete;
+      if (complete && shippedV > 0) {
+        const installed = readJsonSafe(path.join(to, 'tool.json'));
+        const installedV = Number(installed && installed.defaultsVersion) || 0;
+        if (shippedV > installedV) need = true;
+      }
+      if (!need) continue;
       try {
-        if (fs.existsSync(to)) fs.rmSync(to, { recursive: true, force: true });
-        copyTree(path.join(src, e.name), to);
+        if (complete) {
+          backupEditedFiles(from, to); /* kullanıcı düzenlemesi kaybolmasın */
+          copyTree(from, to);          /* güncelle: shots/ ve ek dosyalar korunur */
+        } else {
+          if (fs.existsSync(to)) fs.rmSync(to, { recursive: true, force: true });
+          copyTree(from, to);
+        }
         n++;
       } catch {}
     }
@@ -299,4 +356,4 @@ function seedIfEmpty() {
   } catch {}
 }
 
-module.exports = { setNotify, list, scan, definitions, names, call, save, remove, seedIfEmpty, seedDefaults, invalidate, dir, slugify };
+module.exports = { setNotify, setTradeHook, list, scan, definitions, names, call, save, remove, seedIfEmpty, seedDefaults, invalidate, dir, slugify };

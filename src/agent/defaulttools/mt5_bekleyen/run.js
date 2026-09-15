@@ -78,20 +78,25 @@ function call(requests) {
   const type = String(args.type || '').trim().toLowerCase();
   const volume = Number(args.volume || 0);
   const price = Number(args.price || 0);
-  const izin = ['buy_limit', 'sell_limit', 'buy_stop', 'sell_stop'];
+  /* 6 TİP: 4 bekleyen (limit/stop) + 2 ANLIK piyasa (buy_market/sell_market) */
+  const izin = ['buy_limit', 'sell_limit', 'buy_stop', 'sell_stop', 'buy_market', 'sell_market'];
   if (!symbol) return console.log(JSON.stringify({ ok: false, error: 'symbol zorunlu' }));
-  if (!izin.includes(type)) return console.log(JSON.stringify({ ok: false, error: 'type: buy_limit|sell_limit|buy_stop|sell_stop' }));
+  if (!izin.includes(type)) return console.log(JSON.stringify({ ok: false, error: 'type: buy_limit|sell_limit|buy_stop|sell_stop|buy_market|sell_market' }));
   if (!(volume > 0)) return console.log(JSON.stringify({ ok: false, error: 'volume (lot) zorunlu ve 0 dan buyuk' }));
-  if (!(price > 0)) return console.log(JSON.stringify({ ok: false, error: 'price zorunlu ve 0 dan buyuk' }));
-  const params = { symbol: symbol, type: type, volume: volume, price: price };
+  const isMarket = type === 'buy_market' || type === 'sell_market';
+  if (!isMarket && !(price > 0)) return console.log(JSON.stringify({ ok: false, error: 'price limit/stop emri icin zorunlu ve 0 dan buyuk' }));
+  const method = isMarket ? 'market' : 'pending';
+  const params = isMarket
+    ? { symbol: symbol, side: type.startsWith('buy') ? 'buy' : 'sell', volume: volume }
+    : { symbol: symbol, type: type, volume: volume, price: price };
   if (args.sl) params.sl = Number(args.sl);
   if (args.tp) params.tp = Number(args.tp);
-  const r = await call([{ method: 'pending', params: params }]);
+  const r = await call([{ method: method, params: params }]);
   if (r.ok && r.data && r.data.result) {
     const res = r.data.result;
     console.log(JSON.stringify({ ok: true, ticket: res.order, retcode: res.retcode, comment: res.comment, detay: r.data }));
   } else {
-    console.log(JSON.stringify({ ok: false, error: r.error || 'bekleyen emir reddedildi' }));
+    console.log(JSON.stringify({ ok: false, error: r.error || (isMarket ? 'piyasa emri reddedildi' : 'bekleyen emir reddedildi') }));
   }
 })();
 

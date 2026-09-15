@@ -9,6 +9,7 @@ const mt5 = require('../mt5bridge');
 const finindicators = require('./finindicators');
 const finstats = require('./finstats');
 const finrisk = require('./finrisk');
+const finwatch = require('./finwatch');
 
 const NAMES = [
   'mt5_status',
@@ -252,19 +253,25 @@ const definitions = NAMES.map((name) => {
     },
     mt5_trade: {
       description:
-        'PİYASA EMRİ AÇAR: mt5_trade {symbol, side:"buy"|"sell", volume, sl?, tp?, comment?, reason?}. Lot limiti ve max pozisyon sayısı sistem tarafından zorlanır. Otomatik işlem anahtarı kapalıysa reddedilir. SL/TP vermek ŞIDDETLİ önerilir. reason: kararın tek cümlelik tezi (günlüğe yazılır, performans değerlendirmesinde kullanılır).',
+        'EMİR AÇAR — TÜM TİPLER: mt5_trade {symbol, side:"buy"|"sell", volume, type?, sl?, tp?, comment?, reason?}. type: "buy"|"sell" (piyasa/anlık) ya da "buy_market"|"sell_market"|"buy_limit"|"sell_limit"|"buy_stop"|"sell_stop" — limit/stop tipleri otomatik bekleyen emre (mt5_pending) yönlenir ve price gerekir. Lot limiti ve max pozisyon sayısı sistem tarafından zorlanır. Otomatik işlem anahtarı kapalıysa reddedilir. SL/TP vermek ŞİDDETLİ önerilir. reason: kararın tek cümlelik tezi (günlüğe yazılır, performans değerlendirmesinde kullanılır).',
       parameters: {
         type: 'object',
         properties: {
           symbol: { type: 'string', description: 'Örn: EURUSD' },
-          side: { type: 'string', enum: ['buy', 'sell'] },
+          side: { type: 'string', enum: ['buy', 'sell'], description: 'Yön (type ile birlikte ya da tek başına: piyasa emri)' },
+          type: {
+            type: 'string',
+            enum: ['market', 'buy_market', 'sell_market', 'buy_limit', 'sell_limit', 'buy_stop', 'sell_stop'],
+            description: 'Emir tipi. Boş/side verilirse piyasa emri; limit/stop verilirse bekleyen emir (price zorunlu olur).',
+          },
           volume: { type: 'number', description: 'Lot (max lot sınırına tabi)' },
+          price: { type: 'number', description: 'Limit/stop emirlerinde tetik fiyatı (piyasa emrinde gerekmez)' },
           sl: { type: 'number', description: 'Stop loss fiyatı (0 = yok)' },
           tp: { type: 'number', description: 'Take profit fiyatı (0 = yok)' },
           comment: { type: 'string', description: 'Kısa işlem notu' },
           reason: { type: 'string', description: 'Kararın tezi/gerekçesi (tek cümle)' },
         },
-        required: ['symbol', 'side', 'volume'],
+        required: ['symbol', 'volume'],
       },
     },
     mt5_close: {
@@ -292,19 +299,22 @@ const definitions = NAMES.map((name) => {
     },
     mt5_pending: {
       description:
-        'BEKLEYEN EMİR koyar: mt5_pending {symbol, type:"buy_limit"|"sell_limit"|"buy_stop"|"sell_stop", volume, price, sl?, tp?, reason?}. Otomatik işlem anahtarına tabidir. reason: kararın tezi (günlüğe yazılır).',
+        'EMİR AÇAR (6 tip): mt5_pending {symbol, type:"buy_limit"|"sell_limit"|"buy_stop"|"sell_stop"|"buy_market"|"sell_market", volume, price?, sl?, tp?, reason?}. Limit/stop = bekleyen emir (price zorunlu); buy_market/sell_market = ANLIK piyasa emri. Otomatik işlem anahtarına tabidir. reason: kararın tezi (günlüğe yazılır).',
       parameters: {
         type: 'object',
         properties: {
           symbol: { type: 'string' },
-          type: { type: 'string', enum: ['buy_limit', 'sell_limit', 'buy_stop', 'sell_stop'] },
+          type: {
+            type: 'string',
+            enum: ['buy_limit', 'sell_limit', 'buy_stop', 'sell_stop', 'buy_market', 'sell_market'],
+          },
           volume: { type: 'number' },
-          price: { type: 'number' },
+          price: { type: 'number', description: 'Tetik fiyatı — limit/stop için zorunlu, market tiplerinde gerekmez' },
           sl: { type: 'number' },
           tp: { type: 'number' },
           reason: { type: 'string', description: 'Kararın tezi/gerekçesi (tek cümle)' },
         },
-        required: ['symbol', 'type', 'volume', 'price'],
+        required: ['symbol', 'type', 'volume'],
       },
     },
     mt5_cancel: {
@@ -523,13 +533,20 @@ const handlers = {
     };
   },
   async mt5_trade(args, ctx) {
+    /* TÜM EMİR TİPLERİ: piyasa (buy/sell, buy_market/sell_market) ve
+       bekleyen (buy_limit/sell_limit/buy_stop/sell_stop) — bekleyen tip
+       verilirse mt5_pending'e devredilir (tek tutarlı risk hattı). */
+    const t = finwatch.parseOrderType(args.type || args.orderType || args.side, args.side);
+    if (!t.ok) {
+      return { ok: false, error: "side 'buy'|'sell' ya da type: buy_market|sell_market|buy_limit|sell_limit|buy_stop|sell_stop" };
+    }
+    if (t.kind === 'pending') return handlers.mt5_pending({ ...args, type: t.type }, ctx);
     const cfg = getCfg();
     if (!cfg.allowTrading) {
       return { ok: false, error: 'Otomatik işlem KAPALI — analiz/öneri modundasın. İşlem önerisini yaz, açma.' };
     }
     if (!mt5.running) return notConnected();
-    const side = String(args.side || '').toLowerCase();
-    if (side !== 'buy' && side !== 'sell') return { ok: false, error: "side 'buy' veya 'sell' olmalı" };
+    const side = t.side;
     const symbol = String(args.symbol || '').trim().toUpperCase();
     if (!symbol) return { ok: false, error: 'symbol gerekli' };
     const maxLot = Number(cfg.maxLot) || 0.1;
@@ -626,6 +643,13 @@ const handlers = {
     return { ok: true, result: data && data.result };
   },
   async mt5_pending(args, ctx) {
+    /* 6 TİP: buy_limit/sell_limit/buy_stop/sell_stop BEKLEYEN emir;
+       buy_market/sell_market ANLIK piyasa emri — mt5_trade'e devredilir. */
+    const t = finwatch.parseOrderType(args.type || args.orderType, args.side);
+    if (!t.ok) {
+      return { ok: false, error: 'type: buy_limit|sell_limit|buy_stop|sell_stop|buy_market|sell_market' };
+    }
+    if (t.kind === 'market') return handlers.mt5_trade({ ...args, type: 'market', orderType: '', side: t.side }, ctx);
     const cfg = getCfg();
     if (!cfg.allowTrading) {
       return { ok: false, error: 'Otomatik işlem KAPALI — bekleyen emir de açılamaz. Öneriyi yaz.' };
@@ -638,8 +662,11 @@ const handlers = {
     const norm = finrisk.normalizeVolume(info, args.volume, Number(cfg.maxLot) || 0.1);
     if (norm.error) return { ok: false, error: norm.error };
     const vol = norm.volume;
-    const ptype = String(args.type || '').toLowerCase();
-    const pside = ptype.startsWith('buy') ? 'buy' : ptype.startsWith('sell') ? 'sell' : '';
+    const ptype = t.type;
+    const pside = t.side;
+    if (!(Number(args.price) > 0)) {
+      return { ok: false, error: 'price gerekli — limit/stop bekleyen emirleri için tetik fiyatı ver (market tipleri anlıktır, price istemez)' };
+    }
     /* KODLA DİSİPLİN: bekleyen emir de işlem sayılır */
     let discErr = null;
     try { discErr = discipline(pside, symbol, []); } catch {}
@@ -658,7 +685,7 @@ const handlers = {
       tp: Number(args.tp) || 0,
       comment: String(args.comment || 'Beast').slice(0, 26),
     }, 20000);
-    noteTrade('pending', { symbol, type: args.type, volume: vol, reason: String(args.reason || '').slice(0, 500) }, ctx);
+    noteTrade('pending', { symbol, type: ptype, volume: vol, reason: String(args.reason || '').slice(0, 500) }, ctx);
     return { ok: true, result: data && data.result };
   },
   async mt5_cancel(args, ctx) {

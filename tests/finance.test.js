@@ -248,6 +248,69 @@ test('kapanış nedeni: SL/TP/stop-out sınıflanır, manuel kapanış uyandırm
   assert.strictEqual(watch.closeKind(null), '');
 });
 
+/* ---------------- finwatch: emir tipi çözümleme (6 tip) ---------------- */
+
+test('emir tipi: 6 tip doğru çözülür (side/kind/type)', () => {
+  assert.deepStrictEqual(watch.parseOrderType('buy'), { ok: true, side: 'buy', kind: 'market', type: 'buy_market' });
+  assert.deepStrictEqual(watch.parseOrderType('sell'), { ok: true, side: 'sell', kind: 'market', type: 'sell_market' });
+  assert.strictEqual(watch.parseOrderType('buy_market').type, 'buy_market');
+  assert.strictEqual(watch.parseOrderType('sell_market').kind, 'market');
+  assert.strictEqual(watch.parseOrderType('buy_limit').type, 'buy_limit');
+  assert.strictEqual(watch.parseOrderType('sell_limit').kind, 'pending');
+  assert.strictEqual(watch.parseOrderType('buy_stop').type, 'buy_stop');
+  assert.strictEqual(watch.parseOrderType('sell_stop').type, 'sell_stop');
+});
+
+test('emir tipi: esnek yazım ve yön fallback', () => {
+  assert.strictEqual(watch.parseOrderType('SELL LIMIT').type, 'sell_limit');
+  assert.strictEqual(watch.parseOrderType('limit_buy').type, 'buy_limit');
+  assert.strictEqual(watch.parseOrderType('market').ok, false, 'yönsüz tip reddedilir');
+  assert.strictEqual(watch.parseOrderType('market', 'sell').type, 'sell_market');
+  assert.strictEqual(watch.parseOrderType('limit', 'buy').type, 'buy_limit');
+  assert.strictEqual(watch.parseOrderType('', '').ok, false);
+  assert.strictEqual(watch.parseOrderType(undefined).ok, false);
+});
+
+/* ---------------- financetools: 6 emir tipi yönlendirmesi ---------------- */
+
+test('emir tipleri: mt5_trade limit/stop tipini pending köprüsüne, mt5_pending market tipini anlık emre yönlendirir', async () => {
+  const ftools = require('../src/agent/financetools');
+  const bridge = require('../src/mt5bridge');
+  const calls = [];
+  const symbolsRow = {
+    symbol: 'XAUUSD', digits: 2, point: 0.01, volume_min: 0.01, volume_max: 100, volume_step: 0.01,
+    trade_stops_level: 0, bid: 2000, ask: 2000.5,
+  };
+  Object.defineProperty(bridge, 'running', { value: true, configurable: true, writable: true });
+  bridge.call = async (method, params) => {
+    calls.push({ method, params });
+    if (method === 'symbols') return { ok: true, data: { symbols: [symbolsRow] } };
+    if (method === 'pending') return { ok: true, data: { result: { retcode: 10009, order: 555 } } };
+    if (method === 'market') return { ok: true, data: { result: { retcode: 10009, order: 777 }, price: 2000.5 } };
+    if (method === 'positions') return { ok: true, data: { positions: [] } };
+    if (method === 'account') return { ok: true, data: { account: { balance: 1000, equity: 1000, margin: 0, margin_free: 1000, margin_level: 0 } } };
+    if (method === 'margin') return { ok: true, data: { margin: 10 } };
+    return { ok: true, data: {} };
+  };
+  try {
+    ftools.setConfig(() => ({ allowTrading: true, maxLot: 1, maxPositions: 5, shadowMode: false }));
+    const r1 = await ftools.handlers.mt5_trade({ symbol: 'XAUUSD', type: 'sell_limit', volume: 0.1, price: 2010 });
+    assert.strictEqual(r1.ok, true);
+    assert.ok(calls.some((c) => c.method === 'pending' && c.params.type === 'sell_limit'), 'limit tipi bekleyen emre gider');
+    calls.length = 0;
+    const r2 = await ftools.handlers.mt5_pending({ symbol: 'XAUUSD', type: 'buy_market', volume: 0.1 });
+    assert.strictEqual(r2.ok, true);
+    assert.ok(calls.some((c) => c.method === 'market' && c.params.side === 'buy'), 'market tipi anlık emre gider');
+    calls.length = 0;
+    const r3 = await ftools.handlers.mt5_trade({ symbol: 'XAUUSD', side: 'sell', volume: 0.1 });
+    assert.strictEqual(r3.ok, true);
+    assert.ok(calls.some((c) => c.method === 'market' && c.params.side === 'sell'), 'side tek başına piyasa emridir');
+  } finally {
+    delete bridge.running;
+    delete bridge.call;
+  }
+});
+
 /* ---------------- finwatch: bekleyen emir aktivasyonu ---------------- */
 
 function ord(over) {

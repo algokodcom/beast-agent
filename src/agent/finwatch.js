@@ -119,6 +119,34 @@ function closeKind(reason) {
   return '';
 }
 
+/* ---- emir tipi çözümleme (6 tip) ----
+   "buy"/"sell" → piyasa (market); buy_market/sell_market → piyasa;
+   buy_limit/sell_limit/buy_stop/sell_stop → bekleyen (pending).
+   Esnek yazım: "sell limit", "limit_buy", "MARKET BUY", "anlık" aynı sonuca iner.
+   fallbackSide: tip yön taşımıyorsa (ör. yalnız "market"/"limit") kullanılır.
+   Dönüş: { ok, side:'buy'|'sell', kind:'market'|'pending', type:'buy_market'|... } */
+function parseOrderType(raw, fallbackSide) {
+  const s = String(raw || '').toLowerCase().replace(/[\s-]+/g, '_');
+  const fb = String(fallbackSide || '').toLowerCase().trim();
+  const side = /(^|_)sell(_|$)/.test(s)
+    ? 'sell'
+    : /(^|_)buy(_|$)/.test(s)
+      ? 'buy'
+      : fb === 'sell'
+        ? 'sell'
+        : fb === 'buy'
+          ? 'buy'
+          : '';
+  if (!side) return { ok: false };
+  const hasLimit = /limit/.test(s);
+  const hasStop = /stop/.test(s);
+  const hasMarket = /market|instant|piyasa|anl[ıi]k/.test(s);
+  if ((hasLimit || hasStop) && !hasMarket) {
+    return { ok: true, side, kind: 'pending', type: side + '_' + (hasLimit ? 'limit' : 'stop') };
+  }
+  return { ok: true, side, kind: 'market', type: side + '_market' };
+}
+
 /* ---- bekleyen emir (pending) → pozisyon eşleştirme ----
    Watchdog turu emir listesini karşılaştırır: listeden DÜŞEN emir için aynı
    turda YENİ açılan (ya da netting hesapta hacmi artan) eşleşen bir pozisyon
@@ -188,4 +216,4 @@ function matchPendingDelta(goneOrders, freshPositions) {
   return out;
 }
 
-module.exports = { plan, roundTo, stepRound, closeKind, orderSide, orderTypeLabel, orderVolume, matchPendingDelta };
+module.exports = { plan, roundTo, stepRound, closeKind, parseOrderType, orderSide, orderTypeLabel, orderVolume, matchPendingDelta };

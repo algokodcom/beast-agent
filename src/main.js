@@ -10516,17 +10516,20 @@ try {
      girmez) — başarılı emir/SL-TP/bekleyen/iptal olayları aynı hatta düşer */
   customtools.setTradeHook((id, args, res, sid) => {
     if (!res || res.ok !== true) return;
+    const a = args || {};
+    /* mt5_bekleyen 6 tip kabul eder: market tipleri ANLIK işlem sayılır */
     const kind = {
       mt5_emir: 'trade',
       mt5_sltp: 'modify',
-      mt5_bekleyen: 'pending',
+      mt5_bekleyen: /_market$/i.test(String(a.type || '')) ? 'trade' : 'pending',
       mt5_emir_iptal: 'cancel',
       mt5_kapat: 'close',
     }[String(id || '')];
     if (!kind) return;
-    const a = args || {};
-    if (kind === 'trade') finTradeEvent('trade', { symbol: a.symbol, side: a.side, volume: a.volume, sl: a.sl, tp: a.tp, reason: a.reason || a.comment || '', result: res }, sid);
-    else if (kind === 'modify') finTradeEvent('modify', { ticket: a.ticket, sl: a.sl, tp: a.tp }, sid);
+    if (kind === 'trade') {
+      const side = a.side || (/^buy/i.test(String(a.type || '')) ? 'buy' : /^sell/i.test(String(a.type || '')) ? 'sell' : '');
+      finTradeEvent('trade', { symbol: a.symbol, side, volume: a.volume, sl: a.sl, tp: a.tp, reason: a.reason || a.comment || '', result: res }, sid);
+    } else if (kind === 'modify') finTradeEvent('modify', { ticket: a.ticket, sl: a.sl, tp: a.tp }, sid);
     else if (kind === 'pending') finTradeEvent('pending', { symbol: a.symbol, type: a.type, volume: a.volume, reason: a.reason || '' }, sid);
     else if (kind === 'cancel') finTradeEvent('cancel', { ticket: a.ticket }, sid);
     else if (kind === 'close') finTradeEvent('close', { ticket: a.ticket, volume: a.volume || 'all' }, sid);
@@ -10985,7 +10988,7 @@ function finTraderBrief(agent) {
     `Tur aralığı: ${f.intervalSec} sn · Max lot: ${f.maxLot} · Max eşzamanlı pozisyon: ${f.maxPositions}`,
     roleDef
       ? `UZMANLIK: ${roleDef.desc} — raporlarını bu çerçevede yaz; İŞLEM AÇMA, yalnız analiz + net öneri üret.`
-      : 'Otomatik işlem AÇIK (daima): mt5_trade/mt5_close/mt5_modify/mt5_pending kullanabilirsin (limitler sistemce zorlanır). Lot için mt5_risksize hesapla ya da mt5_trade’e riskPct ver; SL/TP broker stops_level mesafesine uymalı.',
+      : 'Otomatik işlem AÇIK (daima): 6 emir tipinin HEPSİ açık — buy_market/sell_market (anlık piyasa), buy_limit/sell_limit ve buy_stop/sell_stop (bekleyen; price zorunlu). mt5_trade ya da mt5_pending İKİSİ de tüm tipleri kabul eder; ayrıca mt5_close/mt5_modify/mt5_cancel açık (limitler sistemce zorlanır). Lot için mt5_risksize hesapla ya da mt5_trade’e riskPct ver; SL/TP broker stops_level mesafesine uymalı.',
     roleDef
       ? 'Bulgularını agent_dm ile ANA TRADER\u2019a bildir (to: "Trader" ya da ajan başlığı anahtarı); teknik/öneri çelişkisi varsa gerekçenle yaz.'
       : f.strategy ? `Sahibinin strateji notu: ${f.strategy}` : 'Strateji notu yok: trend + destek/direnç + momentum ile temel okuma yap.',

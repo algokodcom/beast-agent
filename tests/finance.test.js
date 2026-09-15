@@ -236,6 +236,56 @@ test('disiplin: yönlü kur maruziyeti (korelasyon) limiti uygular', () => {
   assert.deepStrictEqual(risk.symbolLegs('VOLX'), []);
 });
 
+/* ---------------- finwatch: bekleyen emir aktivasyonu ---------------- */
+
+function ord(over) {
+  return Object.assign(
+    { ticket: 500, symbol: 'XAUUSD', type: 2, volume_current: 0.1, price_open: 2000, sl: 1990, tp: 2020, magic: 20260908 },
+    over
+  );
+}
+
+test('bekleyen emir: listeden düşen emir yeni pozisyonla eşleşirse aktifleşir', () => {
+  const p = { ticket: 900, symbol: 'XAUUSD', type: 0, volume: 0.1, price_open: 2000.5, sl: 1990, tp: 2020, magic: 20260908 };
+  const d = watch.matchPendingDelta([ord()], [p]);
+  assert.strictEqual(d.activated.length, 1);
+  assert.strictEqual(d.canceled.length, 0);
+  assert.strictEqual(d.activated[0].position.ticket, 900);
+  assert.strictEqual(d.activated[0].order.ticket, 500);
+});
+
+test('bekleyen emir: yön uyuşmazsa eşleşmez (iptal sayılır)', () => {
+  const sell = { ticket: 901, symbol: 'XAUUSD', type: 1, volume: 0.1, price_open: 2000, magic: 20260908 };
+  const d = watch.matchPendingDelta([ord()], [sell]);
+  assert.strictEqual(d.activated.length, 0);
+  assert.strictEqual(d.canceled.length, 1);
+});
+
+test('bekleyen emir: yeni pozisyon yoksa iptal/süre doldu', () => {
+  const d = watch.matchPendingDelta([ord()], []);
+  assert.strictEqual(d.activated.length, 0);
+  assert.strictEqual(d.canceled.length, 1);
+});
+
+test('bekleyen emir: sembol/hacim eşleşir, en yakın fiyat ve aynı magic tercih edilir', () => {
+  const other = { ticket: 902, symbol: 'XAUUSD', type: 0, volume: 0.5, price_open: 1950, magic: 111 };
+  const sameMagic = { ticket: 903, symbol: 'XAUUSD', type: 0, volume: 0.1, price_open: 2001.2, magic: 20260908 };
+  const d = watch.matchPendingDelta([ord()], [other, sameMagic]);
+  assert.strictEqual(d.activated.length, 1);
+  assert.strictEqual(d.activated[0].position.ticket, 903, 'magic + fiyat yakınlığı ile doğru pozisyon');
+});
+
+test('bekleyen emir: satış limiti satış pozisyonuyla eşleşir, tip etiketleri doğru', () => {
+  const o = ord({ type: 1, price_open: 2005 });
+  const p = { ticket: 904, symbol: 'XAUUSD', type: 1, volume: 0.1, price_open: 2005, magic: 20260908 };
+  assert.strictEqual(watch.orderSide(o), 'sell');
+  assert.strictEqual(watch.orderTypeLabel(o), 'SELL LIMIT');
+  assert.strictEqual(watch.orderTypeLabel(ord({ type: 2 })), 'BUY STOP');
+  assert.strictEqual(watch.orderVolume(o), 0.1);
+  const d = watch.matchPendingDelta([o], [p]);
+  assert.strictEqual(d.activated.length, 1);
+});
+
 /* ---------------- finstats ---------------- */
 
 test('istatistik: deals pozisyon bazında gruplanır, K/Z ve win rate doğru', () => {

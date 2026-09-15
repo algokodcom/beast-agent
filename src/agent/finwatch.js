@@ -107,4 +107,73 @@ function plan(pos, meta, st, cfg) {
   return out;
 }
 
-module.exports = { plan, roundTo, stepRound };
+/* ---- bekleyen emir (pending) → pozisyon eşleştirme ----
+   Watchdog turu emir listesini karşılaştırır: listeden DÜŞEN emir için aynı
+   turda YENİ açılan (ya da netting hesapta hacmi artan) eşleşen bir pozisyon
+   varsa emir AKTİFLEŞTİ (tetiklendi); eşleşme yoksa İPTAL/süresi doldu.
+   Saf karar katmanı: IO ve ajan uyarısı main süreçte yapılır. */
+
+const ORDER_TYPE_LABELS = {
+  0: 'BUY LIMIT',
+  1: 'SELL LIMIT',
+  2: 'BUY STOP',
+  3: 'SELL STOP',
+  4: 'BUY STOP LIMIT',
+  5: 'SELL STOP LIMIT',
+};
+
+/* MT5 emir tipleri: çift = alış, tek = satış */
+function orderSide(o) {
+  return Number(o && o.type) % 2 === 1 ? 'sell' : 'buy';
+}
+
+function orderTypeLabel(o) {
+  const n = Number(o && o.type);
+  return ORDER_TYPE_LABELS[n] || 'TIP ' + (isFinite(n) ? n : '?');
+}
+
+function orderVolume(o) {
+  return num(o && (o.volume_current != null ? o.volume_current : o.volume_initial != null ? o.volume_initial : o.volume), 0);
+}
+
+/* goneOrders: önceki turda var olup şimdi listede OLMAYAN emirler
+   freshPositions: bu tur yeni açılan / hacmi artan pozisyonlar
+   Dönüş: { activated:[{order,position}], canceled:[order] } */
+function matchPendingDelta(goneOrders, freshPositions) {
+  const out = { activated: [], canceled: [] };
+  const free = (Array.isArray(freshPositions) ? freshPositions : []).filter(Boolean);
+  for (const o of Array.isArray(goneOrders) ? goneOrders : []) {
+    if (!o) continue;
+    const side = orderSide(o);
+    const symbol = String(o.symbol || '').toUpperCase();
+    const ovol = orderVolume(o);
+    const oprice = num(o.price_open, 0);
+    const omagic = Number(o.magic) || 0;
+    let best = -1;
+    let bestScore = Infinity;
+    for (let i = 0; i < free.length; i++) {
+      const p = free[i];
+      if (!p) continue;
+      if (String(p.symbol || '').toUpperCase() !== symbol) continue;
+      if ((num(p.type, -1) === 0 ? 'buy' : 'sell') !== side) continue;
+      /* fiyat yakınlığı + hacim yakınlığı; aynı magic KESİN öncelik */
+      let score = Math.abs(num(p.price_open, 0) - oprice);
+      const pvol = num(p.volume, 0);
+      if (ovol > 0 && pvol > 0) score += Math.abs(pvol - ovol) * 0.01;
+      if (omagic !== 0 && (Number(p.magic) || 0) === omagic) score -= 1e9;
+      if (score < bestScore) {
+        bestScore = score;
+        best = i;
+      }
+    }
+    if (best >= 0) {
+      out.activated.push({ order: o, position: free[best] });
+      free.splice(best, 1);
+    } else {
+      out.canceled.push(o);
+    }
+  }
+  return out;
+}
+
+module.exports = { plan, roundTo, stepRound, orderSide, orderTypeLabel, orderVolume, matchPendingDelta };

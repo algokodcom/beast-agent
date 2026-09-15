@@ -373,3 +373,43 @@ test('setCapsFile: öğrenilen yetenekler diske yazılır ve yeniden yüklenir',
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('friendlyError: aylık kullanım limiti net mesaja çevrilir (hız limiti değil)', () => {
+  const msg = friendlyError(429, 'Too Many Requests', '{"error":{"type":"GoUsageLimitError","message":"Monthly usage limit reached. Resets in 17 days. https://opencode.ai/workspace/w/go"}}');
+  assert.match(msg, /AYLIK KULLANIM LİMİTİ/);
+  assert.match(msg, /17 days/);
+  assert.match(msg, /https:\/\/opencode\.ai/);
+  assert.match(msg, /bakiyeden kullanımı aç/);
+});
+
+test('withRetries: aylık kota hatası boşa tekrar denenmez', async () => {
+  let calls = 0;
+  await assert.rejects(
+    () =>
+      withRetries(async () => {
+        calls++;
+        const e = new Error('aylık kota');
+        e.status = 429;
+        e.usageLimit = true;
+        throw e;
+      }),
+    /aylık kota/
+  );
+  assert.equal(calls, 1);
+});
+
+test('withRetries: 400 ama transient (upstream server_error) tekrar denenir', async () => {
+  let calls = 0;
+  const r = await withRetries(async () => {
+    calls++;
+    if (calls < 2) {
+      const e = new Error('HTTP 400 server_error upstream');
+      e.status = 400;
+      e.transient = true;
+      throw e;
+    }
+    return 'ok';
+  });
+  assert.equal(r, 'ok');
+  assert.equal(calls, 2);
+});

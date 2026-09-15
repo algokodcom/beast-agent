@@ -64,7 +64,27 @@ const HINTS = {
   504: 'sağlayıcı zaman aşımı',
 };
 
+/* AYLIK KOTA / KULLANIM LİMİTİ: 429 gövdesindeki "usage limit / quota" sinyali
+   hız limitinden FARKLI — tekrar denemek çözmez, aynı sağlayıcının diğer
+   modelleri de kapalıdır. Bu ayrım motorun FALLOUT kararını da besler. */
+function isUsageLimitDetail(detail) {
+  return /GoUsageLimit|usage[_ ]?limit|insufficient_quota|monthly limit|kullanım limiti/i.test(
+    String(detail || '')
+  );
+}
+
 function friendlyError(status, statusText, detail) {
+  const d = String(detail || '');
+  if (status === 429 && isUsageLimitDetail(d)) {
+    let msg = 'HTTP 429 — AYLIK KULLANIM LİMİTİ DOLDU (hız limiti değil)';
+    const reset = /Resets?\s+in\s+([^."}]+)/i.exec(d);
+    if (reset) msg += ` — sıfırlanma: ${reset[1].trim()} sonra`;
+    const link = /(https?:\/\/[^\s"}]+)/.exec(d);
+    if (link) msg += `\nDevam için: ${link[1]}`;
+    msg +=
+      '\n(çözüm: sağlayıcı panelinden bakiyeden kullanımı aç, başka model/sağlayıcı seç ya da sıfırlanmayı bekle)';
+    return msg;
+  }
   const hint = HINTS[status];
   let msg = `HTTP ${status} ${statusText}`;
   if (hint) msg += ` — ${hint}`;
@@ -72,7 +92,31 @@ function friendlyError(status, statusText, detail) {
   if ([500, 502, 503, 504].includes(status)) {
     msg += '\n(geçici olabilir: birkaç saniye sonra tekrar dene ya da model seçiciyi açıp başka bir model dene)';
   }
+  if (isTransientDetail(status, d)) {
+    msg += '\n(sağlayıcı geçici hatası — otomatik tekrar denenir; sürerse başka model/sağlayıcı dene)';
+  }
   return msg;
+}
+
+/* SAĞLAYICI GEÇİCİ HATASI: bazı sağlayıcılar upstream arızasını HTTP 400
+   gövdesinde "server_error" olarak döner — istemci hatası değildir, tekrar
+   denenmeli. Bu bayrak olmadan 400 kalıcı sayılıp model boşuna "çökmüş" olur. */
+function isTransientDetail(status, detail) {
+  if (status !== 400 && status !== 500) return false;
+  return /"(type|code)"\s*:\s*"server_error"|Error from provider|Upstream (request failed|response was not valid JSON)|temporar/i.test(
+    String(detail || '')
+  );
+}
+
+/* HTTP hatasını zengin bayraklarla kur — usageLimit/transient bilgisi retry ve
+   FALLOUT katmanlarına taşınır (boşa tekrar/boşa çökme olmaz). */
+function httpError(status, statusText, detail, headers) {
+  const err = new Error(friendlyError(status, statusText, detail));
+  err.status = status;
+  if (isUsageLimitDetail(detail)) err.usageLimit = true;
+  if (isTransientDetail(status, detail)) err.transient = true;
+  err.retryAfterMs = parseRetryAfter(headers && (headers.get('retry-after-ms') || headers.get('retry-after')));
+  return err;
 }
 
 /* opencode cache disiplini (provider/transform.ts:1262-1276 port): destekleyen
@@ -302,9 +346,15 @@ async function withRetries(fn, { signal, onRetry } = {}) {
       return await fn();
     } catch (e) {
       const aborted = e && (e.name === 'AbortError' || (signal && signal.aborted));
+      if (aborted) throw e;
+      /* AYLIK KOTA DOLDU: tekrar denemek boşa — hemen fırlat ki motor
+         FALLOUT ile sıradaki sağlayıcıya/modele geçebilsin. */
+      if (e && e.usageLimit) throw e;
       const status = e && e.status;
-      const netErr = !aborted && status === undefined;
-      const retriable = !aborted && (status === undefined || RETRYABLE_STATUS.has(status));
+      const netErr = status === undefined;
+      /* 400 gövdesinde "server_error/upstream" diyen sağlayıcı hataları geçicidir
+         (transient) — kalıcı 400 gibi davranıp modeli boşuna "çökertme". */
+      const retriable = status === undefined || RETRYABLE_STATUS.has(status) || !!(e && e.transient);
       if (!retriable) throw e;
       const cap = netErr ? NET_MAX_RETRIES : MAX_RETRIES;
       if (attempt >= cap) throw e;
@@ -409,12 +459,7 @@ async function streamOnce(sel, body, { signal, onDelta, onRetry } = {}, drops = 
           try {
             detail = (await r.text()).slice(0, 300);
           } catch {}
-          const err = new Error(friendlyError(r.status, r.statusText, detail));
-          err.status = r.status;
-          err.retryAfterMs = parseRetryAfter(
-            r.headers && (r.headers.get('retry-after-ms') || r.headers.get('retry-after'))
-          );
-          throw err;
+          throw httpError(r.status, r.statusText, detail, r.headers);
         }
         return r;
       },
@@ -590,12 +635,7 @@ async function chatOnce(sel, body, { signal, onRetry, onParamDrop, onEffortDowng
             try {
               detail = (await r.text()).slice(0, 300);
             } catch {}
-            const err = new Error(friendlyError(r.status, r.statusText, detail));
-            err.status = r.status;
-            err.retryAfterMs = parseRetryAfter(
-              r.headers && (r.headers.get('retry-after-ms') || r.headers.get('retry-after'))
-            );
-            throw err;
+            throw httpError(r.status, r.statusText, detail, r.headers);
           }
           return r;
         },

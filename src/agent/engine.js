@@ -811,9 +811,13 @@ class Engine {
       payload = squeeze.apply(payload, { cacheKey: String(session.id || '') });
     }
     const cands = this._chatCandidates(sel, wasVision);
+    /* AYLIK KOTASI DOLAN SAĞLAYICILAR: aynı sağlayıcının diğer modellerini
+       denemek boşuna (kota hesap/workspace bazlı) — bu turda atlanır. */
+    const quotaOut = new Set();
     let lastErr = null;
     for (let i = 0; i < cands.length; i++) {
       const c = cands[i];
+      if (quotaOut.has(String(c.providerId))) continue;
       let retried413 = false;
       try {
         /* provider bazlı girdi limiti: payload aşıyorsa sıkıştırılıp öyle gönderilir.
@@ -903,6 +907,15 @@ class Engine {
         if (e && (e.name === 'AbortError' || (signal && signal.aborted))) throw e;
         lastErr = e;
         const msgStr = String((e && e.message) || '');
+        /* AYLIK KOTA: bu sağlayıcı tur boyunca kapalı — kullanıcıya net söyle,
+           FALLOUT varsa farklı sağlayıcıya geç */
+        if (e && e.usageLimit) {
+          quotaOut.add(String(c.providerId));
+          emitSafe(this, session.id, {
+            type: 'status',
+            status: `⛔ ${c.providerName}: aylık kullanım limiti doldu — aynı sağlayıcının diğer modelleri atlanıyor`,
+          });
+        }
         /* 413 TPM: sağlayıcı gerçek istek boyutunu söylüyor → kalibre et,
            aynı modeli yeniden sıkıştırıp BİR KEZ daha dene */
         const m413 = /Requested\s+([\d,]+)/i.exec(msgStr) || (e && e.status === 413 ? [, 0] : null);
@@ -925,7 +938,11 @@ class Engine {
           ([400, 404, 422].includes(e.status) ||
             /\bno endpoints\b/i.test(msgStr) ||
             /\bimage input\b/i.test(msgStr));
-        const next = cands[i + 1];
+        /* sıradaki aday: kotası dolmuş sağlayıcılar atlanır */
+        let next = null;
+        for (let j = i + 1; j < cands.length; j++) {
+          if (!quotaOut.has(String(cands[j].providerId))) { next = cands[j]; break; }
+        }
         if (!next) break; // zincir bitti — hatayı yukarı fırlat
         if (imgIssue) {
           emitSafe(this, session.id, {
@@ -1417,15 +1434,21 @@ class Engine {
       files = fs.readdirSync(this.sessionsDir).filter((f) => f.endsWith('.jsonl'));
     } catch {}
     const out = [];
+    const fin = [];
     for (const f of files) {
       const id = f.replace(/\.jsonl$/, '');
       const v = this._view(this._load(id));
       if (v.isBg) continue;
       if (v.isBotDm) continue; // botlar arası DM — yalnız admin DM Log ekranında
-      out.push(v);
+      /* FİNANS GEÇMİŞİ KAYBOLMAZ: normal sohbet listesi 100 ile sınırlı olsa da
+         finance sohbetleri AYRICA listelenir — 100+ oturumu olan kullanıcıda
+         eski finance sohbetleri listeden düşüp "kaybolmuş" görünmez. */
+      (v.finance ? fin : out).push(v);
     }
-    out.sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
-    return out.slice(0, 100);
+    const byNew = (a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt));
+    out.sort(byNew);
+    fin.sort(byNew);
+    return out.slice(0, 100).concat(fin.slice(0, 60)).sort(byNew);
   }
 
   /* Panel oturumları: belirli bir bgTitle taşıyan gizli oturumlar (Beast Code,

@@ -961,3 +961,15 @@ test('send: mention mesajı bekleyen bağlam mesajıyla birleşir ve run başlar
   await new Promise((r) => setTimeout(r, 120));
   assert.ok(events.some((e) => e.type === 'error' || e.type === 'done'));
 });
+
+test('listSessions: 100+ oturumda eski finance sohbeti listeden DÜŞMEZ', () => {
+  const eng = makeEngine();
+  /* eski finance sohbeti (en eski updatedAt) */
+  const finS = eng.createSession();
+  eng.markFinance(finS.id, false);
+  /* üzerine 110 normal sohbet — normal liste 100 ile sınırlanır */
+  for (let i = 0; i < 110; i++) eng.createSession();
+  const list = eng.listSessions();
+  assert.ok(list.some((v) => v.id === finS.id && v.finance), 'finance sohbeti her zaman listede');
+  assert.ok(list.filter((v) => !v.finance).length <= 100, 'normal sohbetler 100 ile sınırlı');
+});

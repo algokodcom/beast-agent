@@ -1970,7 +1970,7 @@ class Engine {
         macro:
           'ROL: MAKRO AJANI 🌍 — büyük resim uzmanısın, İşlem AÇMAZSIN (mt5_trade/mt5_pending/mt5_close KULLANMA). Her turda web_search ile güncel makro manşetleri + ekonomik takvim riskleri (faiz, CPI, jeopolitik); DXY/altın/petrol bağıntılarını odak sembollere çevir; sembol başına yön eğilimi + TEMKİN/BEKLE notu ver.',
         visual:
-          'ROL: GÖRSEL ANALİZ AJANI 👁 — grafik/ekran görüntüsü uzmanısın, İşlem AÇMAZSIN (mt5_trade/mt5_pending/mt5_close KULLANMA). MT5 grafiği için ÖNCE tool__mt5_shot kullan (BeastFinance EA "shot": gerçek grafik PNG + görsel SONRAKİ TURDA gözüne gelir; symbol/timeframe vererek başka sembol/periyot çekebilirsin; dönen path send_file ile gönderilebilir); gerekirse EA panosuna mt5_ea action:"note" ile plan/seviye yaz. web grafiklerinde browser_open + browser_screenshot; bilgisayar ekranı için computer_look; görsel göremeyen metin-model isen ocr_read (source:"screen"/"browser") kullan. Gördüğün yapıyı yorumla: trend, formasyon, mum yapısı, destek-direnç ve SL/TP çizgileri; sembol başına GÖRSEL TEYİT + AL/SAT/BEKLE notu üret. Önemli bulguyu GÖRSELİYLE paylaş: agent_dm image:true (son ekran görüntün) ya da image:"<mt5_shot path>" ile ANA TRADER\'a/ekibe gönder — karşı ajan görüntüyü GERÇEKTEN görür, AJAN DM panelinde açılır.',
+          'ROL: GÖRSEL ANALİZ AJANI 👁 — grafik/ekran görüntüsü uzmanısın, İşlem AÇMAZSIN (mt5_trade/mt5_pending/mt5_close KULLANMA). MT5 grafiği için ÖNCE tool__mt5_shot kullan (BeastFinance EA "shot": gerçek grafik PNG + görsel SONRAKİ TURDA gözüne gelir; symbol/timeframe vererek başka sembol/periyot çekebilirsin; dönen path send_file ile gönderilebilir); gerekirse EA panosuna mt5_ea action:"note" ile plan/seviye yaz. ÇOKLU SEMBOL: symbols:["GOLD","EURUSD","BTCUSD"] ile izleme listesindeki tüm semboller TEK çağrıda çekilip etiketli TEK PNG\'de birleştirilir — ayrı ayrı 3 DM atmak yerine bu birleşik görseli gönder. web grafiklerinde browser_open + browser_screenshot; bilgisayar ekranı için computer_look; görsel göremeyen metin-model isen ocr_read (source:"screen"/"browser") kullan. Gördüğün yapıyı yorumla: trend, formasyon, mum yapısı, destek-direnç ve SL/TP çizgileri; sembol başına GÖRSEL TEYİT + AL/SAT/BEKLE notu üret. Önemli bulguyu GÖRSELİYLE paylaş: agent_dm image:true (son ekran görüntün) ya da image:"<mt5_shot path>" ile ANA TRADER\'a/ekibe gönder — karşı ajan görüntüyü GERÇEKTEN görür, AJAN DM panelinde açılır. NOT: image:true DAİMA oturumdaki EN SON görseli yollar — her sembolün fotoğrafını ayrı göndermen gerekirse dönen path\'leri kullan (image:"<path>").',
       })[String((session && session.financeRole) || '')] || '';
     /* ROL → SKILL eşleştirmesi (ayarlar modalı): rol başına TEK ve ZORUNLU
        skill; ANA TRADER için ayrıca PLAYBOOK skill'i (roleSkills.trader).
@@ -2010,7 +2010,7 @@ class Engine {
       (roleBlockFull ? roleBlockFull + '\n' : '') +
       (teamLine || '') +
       'MT5 ARAÇLARI: mt5_status (bağlantı), mt5_account (hesap), mt5_market (canlı fiyat), mt5_positions (açık pozisyonlar), mt5_orders (bekleyen emirler), mt5_history (kapanan işlemler), mt5_ea (BeastFinance grafik panosu: status/ping/chart/note), mt5_trade (piyasa emri), mt5_close (kapat), mt5_modify (SL/TP), mt5_pending (bekleyen emir), mt5_cancel (emir iptal).\n' +
-      'KİŞİSEL MT5 ARAÇLARI (VARSAYILAN KURULU — tool__* tüm oturumlarda çağrılabilir): tool__mt5_shot (grafikten GERÇEK PNG + görsel ajana enjekte — grafik işlerinde BİRİNCİL; timeframes:["M1","M15"] ile çoklu periyot TEK karede soldan sağa), tool__mt5_barlar2 (OHLC mumlar, köprüsüz), tool__mt5_m15_m5 (GOLD M15+M5 hazır paket), tool__mt5_fiyat, tool__mt5_durum (hesap+pozisyon+emir tek çağrı), tool__mt5_gecmis, tool__mt5_pozisyon_gecmis, tool__mt5_sltp, tool__mt5_kapat, tool__mt5_bekleyen, tool__mt5_emir, tool__mt5_emir_iptal.\n' +
+      'KİŞİSEL MT5 ARAÇLARI (VARSAYILAN KURULU — tool__* tüm oturumlarda çağrılabilir): tool__mt5_shot (grafikten GERÇEK PNG + görsel ajana enjekte — grafik işlerinde BİRİNCİL; timeframes:["M1","M15"] ile çoklu periyot, symbols:["GOLD","EURUSD","BTCUSD"] ile çoklu sembol TEK karede), tool__mt5_barlar2 (OHLC mumlar, köprüsüz), tool__mt5_m15_m5 (GOLD M15+M5 hazır paket), tool__mt5_fiyat, tool__mt5_durum (hesap+pozisyon+emir tek çağrı), tool__mt5_gecmis, tool__mt5_pozisyon_gecmis, tool__mt5_sltp, tool__mt5_kapat, tool__mt5_bekleyen, tool__mt5_emir, tool__mt5_emir_iptal.\n' +
       'BEASTFINANCE EA (OTOMATİK GRAFİK UZMANI — ENTEGRASYON KANALI): MT5 terminaline bağlanıldığında BeastFinance uzman danışmanı İLK GRAFİĞE OTOMATİK yüklenir, AutoTrading izni açılır (kurulum sistem tarafından yapılır; elle ekleme gerekmez). Grafik panosu + seviye çizgileri + dosya köprüsü (beast_ea.json / beast_cmd.json / beast_note.json) bu EA üzerinden yürür: entegrasyon işlerinde (status/ping/chart/note) mt5_ea kullan; ekran görüntüsü işlerinde tool__mt5_shot ("shot" komutu — gerçek PNG + ajan görseli) birincildir. Yazdığın not ve çizgiler tool__mt5_shot ve computer_look screenshot\'ında GÖRÜNÜR.\n' +
       'YETKİLERİN (AÇIK — çekinmeden kullan):\n' +
       '- skill: kurulu SKILL.md kataloğunu oku ve uygula — tool yazmadan ÖNCE skill("tool-yazma"), MT5 tarafı işlerden ÖNCE skill("mql5") oku ve prosedürüne birebir uy.\n' +
@@ -2018,7 +2018,7 @@ class Engine {
       '- MQL5: MT5 tarafında script/gösterge/EA yaz (write_file), metaeditor64.exe /compile ile derle, MQL5\\Files dosya köprüsüyle veriyi Beast\'e taşı; kullanıcıya çalıştırma adımını açıkça söyle.\n' +
       '- Yerleşik araçlar: run_command, python_run, read_file/write_file/edit_file, web_search/deep_search, browser_*, computer_look (ekran görüntüsü) — hepsi açık.\n' +
       'GRAFİK & GÖRSEL DOĞRULAMA (karar öncesi — vazgeçilmez):\n' +
-      '- tool__mt5_shot: MT5 grafiğinin GERÇEK PNG\'si (BeastFinance EA "shot" komutu). Görsel SONRAKİ TURDA gözüne gelir; aktif grafikte Beast panosu + mt5_ea note ile çizilen seviyeler GÖRÜNÜR. symbol/timeframe ver → EA geçici grafik açıp o sembol/periyottan çeker; dönen path send_file ile kullanıcıya gönderilebilir. Grafik analizinde İLK tercih budur. ÇOKLU ZAMAN DİLİMİ: timeframes:["M1","M15"] (2-3 periyot, layout:"v" alt alta) → periyotlar sırayla çekilip TEK PNG\'de birleştirilir ve her panelin üstüne "SEMBOL · PERİYOT" etiketi çizilir; solda/sağda hangisi olduğunu görüntüden OKURSUN — trend uyumu/MTF teyidi için bunu kullan (gerçek kapanışlarla).\n' +
+      '- tool__mt5_shot: MT5 grafiğinin GERÇEK PNG\'si (BeastFinance EA "shot" komutu). Görsel SONRAKİ TURDA gözüne gelir; aktif grafikte Beast panosu + mt5_ea note ile çizilen seviyeler GÖRÜNÜR. symbol/timeframe ver → EA geçici grafik açıp o sembol/periyottan çeker; dönen path send_file ile kullanıcıya gönderilebilir. Grafik analizinde İLK tercih budur. ÇOKLU SEMBOL: symbols:["GOLD","EURUSD","BTCUSD"] (2-4 sembol) → her sembolden bir kare çekilip TEK PNG\'de birleştirilir (izleme listesinin tamamı TEK görselle paylaşılır; sembol başına ayrı DM atmaya gerek yok); timeframes ile birlikte verilirse sembol × periyot ızgarası kurulur (en fazla 6 kare, her panel "SEMBOL · PERİYOT" etiketli). ÇOKLU ZAMAN DİLİMİ: timeframes:["M1","M15"] (2-3 periyot, layout:"v" alt alta) → periyotlar sırayla çekilip TEK PNG\'de birleştirilir; solda/sağda hangisi olduğunu görüntüden OKURSUN — trend uyumu/MTF teyidi için bunu kullan (gerçek kapanışlarla).\n' +
       '- mt5_ea action:"note": grafiğe kısa plan metni + yatay seviye çizgileri yazar (destek/direnç/SL/TP) — sonra tool__mt5_shot ile çekip seviyelerin doğru yerde olduğunu GÖRSEL doğrula.\n' +
       '- computer_look: tüm masaüstü ekranı (MT5 dışı pencereler dahil); browser_screenshot: web grafikleri (TradingView/Investing) — browser_open ile aç.\n' +
       '- Görsel göremiyorsan (metin-model) ocr_read (source:"screen"/"browser") ile grafikteki fiyat/seviyeleri metne çevir.\n' +
@@ -3688,7 +3688,9 @@ class Engine {
     /* SÜREKLİ ajan (Beast Finance): DM/rapor teslimi YENİ TUR AÇMAZ — aksi
        halde ajanlar birbirine DM attıkça sonsuz tur döngüsü doğar (bağlam
        şişer, ajan hiç dinlenmez). Mesaj inbox'a yazılır; bir sonraki PLANLI
-       turda send() tarafından tek blok halinde enjekte edilir. */
+       turda send() tarafından tek blok halinde enjekte edilir.
+       İSTİSNA: kullanıcı/chat kaynaklı DM'ler (wake) onDmQueued kancasıyla
+       ajanı HEMEN uyandırabilir — ajan-ajan trafiği beklemede kalır. */
     const continuous = !!(job && job.continuous);
     const rest = [];
     for (const r of this._pendingReports) {
@@ -3701,6 +3703,11 @@ class Engine {
           ...(r.image ? { image: String(r.image) } : {}),
         });
         if (job.dmInbox.length > 20) job.dmInbox.splice(0, job.dmInbox.length - 20);
+        /* kullanıcı/chat DM'i: sürekli ajan boştaysa turu beklemeden uyandır
+           (main.js finWakeAgent); ajan-ajan DM'lerinde tetiklenmez */
+        if (r.dm && r.wake) {
+          try { if (typeof this.onDmQueued === 'function') this.onDmQueued(job, r); } catch {}
+        }
         continue;
       }
       if (this.isBusy(sessionId)) { rest.push(r); continue; }
@@ -6973,6 +6980,10 @@ Engine.prototype._agentDmSend = async function (fromSid, args) {
             `[AJAN DM (grup: "${g.title}") — ${dm.fromTitle} · konu: "${topic}"]\n${text}\n` +
             `(Cevap yalnızca aksiyon/karar GEREKİYORSA ver — agent_dm group: "${g.title}", to: "${dm.fromTitle}", topic: "${topic}"; teşekkür/onay yazma.)`,
           ...(image ? { image } : {}),
+          /* dm: AJAN DM'i; wake: gönderen koşan bir ajan DEĞİL (kullanıcı/chat) —
+             sürekli ajan boştaysa turu beklemeden uyandırılır (ping-pong koruması) */
+          dm: true,
+          wake: !fromJob,
         });
         this.flushPendingReports(m);
       }
@@ -6999,6 +7010,8 @@ Engine.prototype._agentDmSend = async function (fromSid, args) {
           `[AJAN DM — ${dm.fromTitle} · konu: "${topic}"]\n${text}\n` +
           `(Cevap yalnızca aksiyon/karar GEREKİYORSA ver — agent_dm to: "${dm.fromTitle}", topic: "${topic}"; teşekkür/onay yazma.)`,
         ...(image ? { image } : {}),
+        dm: true,
+        wake: !fromJob,
       });
       this.flushPendingReports(target);
     }

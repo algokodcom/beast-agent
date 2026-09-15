@@ -3552,6 +3552,10 @@ function reloadBackend() {
       }
     },
   });
+  /* AJAN DM UYANDIRMA: kullanıcı/chat kaynaklı DM sürekli finance ajanına
+     düşünce sıradaki planlı turu BEKLEMEZ — ajan boştaysa tur hemen başlar
+     (ajan-ajan DM'lerinde engine kancayı çağırmaz; ping-pong korunur). */
+  engine.onDmQueued = (job) => { try { finWakeAgent(job && job.id); } catch {} };
   /* PANEL RUN köprüsü: ajanın panel_run aracı → ÇALIŞTIR panelindeki yönetilen
      süreç koşucusu (sandbox:run IPC ile aynı makine). */
   engine.sbRunHook = sbRunStartManaged;
@@ -10940,6 +10944,18 @@ function finAgentRound(sid) {
   finConsultPlan(f, agent, String(sid))
     .then((plan) => launch(teamPrefix + (plan ? `[ANA AJAN PLANI — bu turun varsayılan stratejisi; strateji notuyla çelişirse not önceliklidir]\n${plan}\n\n` : '')))
     .catch(() => launch(teamPrefix));
+}
+
+/* AJAN DM UYANDIRMA (engine.onDmQueued): kullanıcı/chat kaynaklı DM sürekli
+   ajanın inbox'ına düştüğünde tur zamanlayıcısını beklemeden turu başlatır.
+   Ajan meşgulse dokunmaz — dmInbox zaten sıradaki güvenli noktada okunur. */
+function finWakeAgent(sid) {
+  const id = String(sid || '');
+  const agent = financeState.agents.get(id);
+  if (!agent || !engine) return;
+  if (engine.isBusy(id)) return;
+  clearTimeout(agent.timer);
+  agent.timer = setTimeout(() => { try { finAgentRound(id); } catch {} }, 300);
 }
 
 /* Tur/durum sonları: sürekli ajan döngüsünü besle; kullanıcı iptalinde kapat */

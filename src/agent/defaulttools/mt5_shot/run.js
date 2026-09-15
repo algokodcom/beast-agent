@@ -2,15 +2,20 @@
 /* mt5_shot — MT5 grafiğinden GERÇEK PNG screenshot (BeastFinance EA "shot" komutu)
    stdin: JSON args  ->  stdout: SADECE JSON sonuç
 
-   Girdi : {symbol?, timeframe?, timeframes?:["M1","M15"], layout?:"h"|"v", width?, height?, file?, template?, timeoutSec?, outdir?, diag?, embed?}
-   Çıktı : {ok:true, path, symbol, timeframe, ...}  |  {ok:false, err, error, cmdId, filesDir, ...}
+   Girdi : {symbol?, symbols?:["GOLD","EURUSD"], timeframe?, timeframes?:["M1","M15"], layout?:"h"|"v", width?, height?, file?, template?, timeoutSec?, outdir?, diag?, embed?}
+   Çıktı : {ok:true, path, symbol, symbols, timeframe, timeframes, panels:[...], ...}  |  {ok:false, err, error, cmdId, filesDir, ...}
    err kodları: no_terminal | ea_offline | cmd_write_fail | ea_no_ack | ea_error | png_yok | timeout | stitch_fail | stitch_write_fail
+
+   ÇOKLU SEMBOL: symbols:["GOLD","EURUSD","BTCUSD"] (2-4 sembol) verilirse her
+   sembolden bir kare çekilir ve TEK PNG'de birleştirilir; timeframes ile
+   birlikte verilirse sembol × periyot ızgarası kurulur (en fazla 6 kare).
+   İzleme listesinin tamamı TEK görselde ekibe gönderilebilir.
 
    ÇOKLU PERİYOT: timeframes:["M1","M15"] (2-3 adet) verilirse her periyot ayrı
    çekilir ve TEK PNG'de birleştirilir (layout:"h" soldan sağa — varsayılan,
-   "v" üstten alta). Panellerin sol üstüne "SEMBOL · PERİYOT" etiketi çizilir;
-   sonuçta panels[{timeframe, position, path}] hangi tarafın hangi periyot
-   olduğunu söyler. tf2:"M15" kısayolu da (timeframe + tf2) kabul edilir.
+   "v" üstten alta). Panellerin SAĞ ÜSTüne "SEMBOL · PERİYOT" etiketi çizilir;
+   sonuçta panels[{symbol, timeframe, position, path}] hangi tarafın hangi
+   sembol/periyot olduğunu söyler. tf2:"M15" kısayolu da (timeframe + tf2) kabul edilir.
 
    Notlar:
    - beast_cmd.json'a {id, ts, cmd, params} yazılır (UTF-16 BOM; EA FILE_UNICODE okur).
@@ -42,6 +47,7 @@ function syncSleep(ms) {
 
 let CTX = { cmdId: null, filesDir: null, started: Date.now() };
 let ARGS = {};
+let WATCHDOG = null;
 
 function out(o) {
   try { fs.writeSync(1, JSON.stringify(o) + '\n'); }
@@ -180,6 +186,44 @@ function normalizeTfs(a) {
   return out.slice(0, 3);   /* 80 sn watchdog bütçesi: en fazla 3 panel */
 }
 
+/* çoklu sembol listesi: ["GOLD","EURUSD"] ya da "GOLD,EURUSD";
+   symbol alanı da listeye katılır (symbol + symbols birlikte verilebilir) */
+function normalizeSymbols(a) {
+  const out = [];
+  const add = (x) => {
+    const s = String(x == null ? '' : x).trim().toUpperCase();
+    if (s && !out.includes(s)) out.push(s);
+  };
+  add(a.symbol);
+  let s = a.symbols;
+  if (typeof s === 'string') s = s.split(/[,\s|+/]+/);
+  if (Array.isArray(s)) for (const x of s) add(x);
+  return out.slice(0, 4);
+}
+
+/* PANEL PLANI: symbols × timeframes çarpımı → sırayla çekilecek kareler.
+   - symbols 2+ → her sembolden bir kare (timeframes da verilmişse her periyot)
+   - tek sembol + timeframes 2+ → eski çoklu periyot davranışı
+   - tek karelik işler plana girmez: [] döner (tek çekim yolu kullanılır)
+   Dönüş: [{symbol, timeframe}] — en fazla MAX_PANELS kare (watchdog bütçesi) */
+const MAX_PANELS = 6;
+function buildPlan(a) {
+  const A = a || ARGS;
+  const symbols = normalizeSymbols(A);
+  const tfs = normalizeTfs(A);
+  const out = [];
+  const push = (symbol, timeframe) => {
+    if (out.length < MAX_PANELS) out.push({ symbol, timeframe });
+  };
+  if (symbols.length >= 2) {
+    const per = tfs.length ? tfs : [null];
+    for (const s of symbols) for (const tf of per) push(s, tf);
+    return out;
+  }
+  if (tfs.length >= 2) for (const tf of tfs) push(symbols[0] || null, tf);
+  return out;
+}
+
 function sanitizeFile(name, fallback) {
   let f = (name && String(name).trim()) ? path.basename(String(name).trim()) : fallback;
   if (!/\.(png|gif|bmp|jpg|jpeg)$/i.test(f)) f += '.png';
@@ -275,18 +319,22 @@ function embedData(src, size) {
   return dataUrl;
 }
 
-/* ---- ÇOKLU PERİYOT: aynı sembolün N zaman dilimini TEK PNG'de birleştir ----
-   Paneller sırayla çekilir (kilit zaten alınmış — ack çakışması yok), sol üste
-   "SEMBOL · PERİYOT" etiketi çizilir; soldan sağa (layout:"v" ile üstten alta). */
-async function runMulti(tfList, filesDir, cmdFile, ackFile, beatFile, timeoutSec, diag) {
+/* ---- ÇOKLU KARE: plan (sembol × periyot) sırayla çekilir ve TEK PNG'de
+   birleştirilir — kilit zaten alınmış (ack çakışması yok); her panelin SAĞ
+   ÜSTüne "SEMBOL · PERİYOT" etiketi çizilir; soldan sağa (layout:"v" ile
+   üstten alta). plan: [{symbol, timeframe}] — boş alan = aktif grafik. */
+async function runPanels(plan, filesDir, cmdFile, ackFile, beatFile, timeoutSec, diag) {
   let compose = null;
   try { compose = require('./stitch.js').compose; } catch (e) {}
   if (!compose) return { err: 'stitch_fail', error: 'stitch.js bulunamadı (mt5_shot güncel kurulum gerekiyor)' };
 
-  const n = tfList.length;
+  const n = plan.length;
   const baseId = 'S' + Date.now().toString(36);
   const fileArg = ARGS.file && String(ARGS.file).trim() ? String(ARGS.file).trim() : '';
-  const base = fileArg ? fileArg.replace(/\.[a-z0-9]+$/i, '') : 'beast_mtf_' + baseId;
+  const uniqSym = [...new Set(plan.map((p) => p.symbol).filter(Boolean))];
+  const base = fileArg
+    ? fileArg.replace(/\.[a-z0-9]+$/i, '')
+    : (uniqSym.length > 1 ? 'beast_symbols_' : 'beast_mtf_') + baseId;
   const perAck = Math.max(5, Math.min(15, Math.floor(45 / n)));
   const width = Number(ARGS.width) > 0 ? Math.min(10000, Math.round(Number(ARGS.width))) : 1600;
   const height = Number(ARGS.height) > 0 ? Math.min(10000, Math.round(Number(ARGS.height))) : 900;
@@ -294,32 +342,36 @@ async function runMulti(tfList, filesDir, cmdFile, ackFile, beatFile, timeoutSec
 
   const panels = [];
   const cmdIds = [];
-  let symbol = ARGS.symbol ? String(ARGS.symbol).toUpperCase() : null;
   for (let i = 0; i < n; i++) {
-    const tf = tfList[i];
+    const spec = plan[i] || {};
+    const symArg = spec.symbol ? String(spec.symbol).toUpperCase() : null;
+    const tfArg = spec.timeframe ? String(spec.timeframe).toUpperCase() : null;
     const id = baseId + 'p' + (i + 1);
-    const params = { file: sanitizeFile(base + '_' + tf, 'beast_shot_' + id), width, height, timeframe: tf };
-    if (symbol) params.symbol = symbol;
+    const tag = [symArg, tfArg].filter(Boolean).join('_') || 'aktif';
+    const params = { file: sanitizeFile(base + '_' + tag, 'beast_shot_' + id), width, height };
+    if (tfArg) params.timeframe = tfArg;
+    if (symArg) params.symbol = symArg;
     if (ARGS.template !== undefined) params.template = String(ARGS.template);
     cmdIds.push(id);
     const r = captureOne({ id, file: params.file, params, filesDir, cmdFile, ackFile, beatFile, timeoutSec: perAck, diag });
     if (!r.ok) {
       return {
         err: r.err,
-        error: '[' + tf + '] ' + r.error,
-        extra: Object.assign({ panel: tf, cmdId: id, requested: { symbol: params.symbol || null, timeframe: tf } }, r.extra || {})
+        error: '[' + tag + '] ' + r.error,
+        extra: Object.assign({ panel: tag, cmdId: id, requested: { symbol: symArg, timeframe: tfArg } }, r.extra || {})
       };
     }
     const cp = copyOut(r.src, r.shotFile, ARGS.outdir);
-    panels.push({ tf, src: r.src, file: r.shotFile, size: r.size, res: r.res, pubPath: cp.pubPath, beastPath: cp.beastPath });
-    if (!symbol) symbol = (r.res && r.res.symbol) ? String(r.res.symbol) : null;
+    const tfDone = (r.res && r.res.period ? tfName(r.res.period) : null) || tfArg || null;
+    const symDone = (r.res && r.res.symbol ? String(r.res.symbol).toUpperCase() : null) || symArg || null;
+    panels.push({ spec, sym: symDone, tf: tfDone, src: r.src, file: r.shotFile, size: r.size, res: r.res, pubPath: cp.pubPath, beastPath: cp.beastPath });
   }
 
-  /* birleştir */
+  /* birleştir: etiketler çekimden SONRA gerçek sembol/periyotla kurulur */
   let composed = null;
   try {
     composed = await compose(
-      panels.map((p) => ({ path: p.src, label: (symbol ? symbol + ' · ' : '') + p.tf })),
+      panels.map((p) => ({ path: p.src, label: [p.sym, p.tf].filter(Boolean).join(' · ') || 'aktif grafik' })),
       { layout }
     );
   } catch (e) { composed = { ok: false, error: String((e && e.message) || e) }; }
@@ -327,19 +379,21 @@ async function runMulti(tfList, filesDir, cmdFile, ackFile, beatFile, timeoutSec
     return { err: 'stitch_fail', error: 'görüntüler birleştirilemedi: ' + ((composed && composed.error) || 'bilinmeyen') };
   }
 
-  const outFile = sanitizeFile(fileArg, 'beast_mtf_' + baseId + '.png');
+  const outFile = sanitizeFile(fileArg, base + '.png');
   const pathMt5 = path.join(filesDir, outFile);
   try { fs.writeFileSync(pathMt5, composed.buffer); }
   catch (e) { return { err: 'stitch_write_fail', error: 'birleşik PNG yazılamadı: ' + e.message }; }
   const size = composed.buffer.length;
   const cp = copyOut(pathMt5, outFile, ARGS.outdir);
   const dataUrl = embedData(pathMt5, size);
+  const symDone = [...new Set(panels.map((p) => p.sym).filter(Boolean))];
+  const tfList = [...new Set(plan.map((p) => p.timeframe).filter(Boolean))];
 
   return {
     ok: true,
     payload: {
       ok: true,
-      path: cp.pubPath || cp.beastPath || pathMt5,   // send_file'a verilecek yol (birleşik)
+      path: cp.pubPath || cp.beastPath || pathMt5,   // send_file / agent_dm image:"<path>"
       path_mt5: pathMt5,
       path_beast: cp.beastPath,
       file: outFile,
@@ -348,10 +402,12 @@ async function runMulti(tfList, filesDir, cmdFile, ackFile, beatFile, timeoutSec
       ...(dataUrl ? { __injectImage: dataUrl } : {}),
       cmdIds,
       filesDir,
-      symbol: symbol || null,
+      symbol: symDone.length === 1 ? symDone[0] : null,
+      symbols: symDone,
       timeframes: tfList,
       layout,
       panels: panels.map((p, i) => ({
+        symbol: p.sym,
         timeframe: p.tf,
         position: layout === 'h'
           ? (i === 0 ? 'left' : (i === n - 1 ? 'right' : 'middle'))
@@ -363,7 +419,12 @@ async function runMulti(tfList, filesDir, cmdFile, ackFile, beatFile, timeoutSec
       })),
       width: composed.width,
       height: composed.height,
-      requested: { symbol: ARGS.symbol ? String(ARGS.symbol).toUpperCase() : null, timeframes: tfList, width, height, layout },
+      requested: {
+        symbol: ARGS.symbol ? String(ARGS.symbol).toUpperCase() : null,
+        symbols: Array.isArray(ARGS.symbols) ? ARGS.symbols.map((s) => String(s).toUpperCase()) : (ARGS.symbols || null),
+        timeframes: tfList,
+        width, height, layout
+      },
       heartbeat_age_sec: heartbeatAge(beatFile),
       ms: Date.now() - CTX.started,
       pubErr: cp.pubErr || undefined
@@ -394,10 +455,11 @@ async function run() {
   const locked = acquireLock(Math.min(15000, timeoutSec * 500));
   if (!locked) console.error('[mt5_shot] uyarı: kilit alınamadı, yine de devam ediliyor');
 
-  /* ÇOKLU PERİYOT: timeframes:["M1","M15"] → tek karede yan yana */
-  const tfList = normalizeTfs(ARGS);
-  if (tfList.length >= 2) {
-    const r = await runMulti(tfList, filesDir, cmdFile, ackFile, beatFile, timeoutSec, diag);
+  /* ÇOKLU KARE: symbols:["GOLD","EURUSD"] ve/veya timeframes:["M1","M15"]
+     → sırayla çekilip tek PNG'de etiketli birleştirilir */
+  const plan = buildPlan();
+  if (plan.length >= 2) {
+    const r = await runPanels(plan, filesDir, cmdFile, ackFile, beatFile, timeoutSec, diag);
     if (!r.ok) return fail(r.err, r.error, r.extra);
     return out(r.payload);
   }
@@ -546,24 +608,32 @@ function finish() {
     .then(run)
     .catch((e) => fail('timeout', 'beklenmeyen hata: ' + (e && e.message ? e.message : String(e))));
 }
-try {
-  process.stdin.setEncoding('utf8');
-  process.stdin.on('data', (d) => {
-    raw += d;
-    if (silenceTimer) clearTimeout(silenceTimer);
-    // JSON tamamlandıysa EOF beklemeden başla; değilse kısa bir sessizlik penceresi daha bekle
-    const o = parseArgs(raw);
-    if (raw.trim() && Object.keys(o).length) return begin(finish);
-    silenceTimer = setTimeout(() => begin(finish), 1200);
-  });
-  process.stdin.on('end', () => begin(finish));
-  process.stdin.on('error', () => begin(finish));
-  process.stdin.on('close', () => begin(finish));
-  process.stdin.resume();
-  setTimeout(() => begin(finish), 2500);        // stdin hiç açılmaz/kapanmazsa da devam et (asılmaya izin yok)
-} catch (e) { begin(finish); }
 
-/* watchdog: hiçbir koşulda 80 sn üzeri asılı kalma */
-const WATCHDOG = setTimeout(() => {
-  fail('timeout', 'mt5_shot ' + Math.round((Date.now() - CTX.started) / 1000) + ' sn içinde tamamlanamadı (watchdog) — ack/PNG beklemesi aşıldı');
-}, HARD_MS);
+function main() {
+  try {
+    process.stdin.setEncoding('utf8');
+    process.stdin.on('data', (d) => {
+      raw += d;
+      if (silenceTimer) clearTimeout(silenceTimer);
+      // JSON tamamlandıysa EOF beklemeden başla; değilse kısa bir sessizlik penceresi daha bekle
+      const o = parseArgs(raw);
+      if (raw.trim() && Object.keys(o).length) return begin(finish);
+      silenceTimer = setTimeout(() => begin(finish), 1200);
+    });
+    process.stdin.on('end', () => begin(finish));
+    process.stdin.on('error', () => begin(finish));
+    process.stdin.on('close', () => begin(finish));
+    process.stdin.resume();
+    setTimeout(() => begin(finish), 2500);        // stdin hiç açılmaz/kapanmazsa da devam et (asılmaya izin yok)
+  } catch (e) { begin(finish); }
+
+  /* watchdog: hiçbir koşulda 80 sn üzeri asılı kalma */
+  WATCHDOG = setTimeout(() => {
+    fail('timeout', 'mt5_shot ' + Math.round((Date.now() - CTX.started) / 1000) + ' sn içinde tamamlanamadı (watchdog) — ack/PNG beklemesi aşıldı');
+  }, HARD_MS);
+}
+
+/* saf yardımcılar test için dışa açılır; runner yalnız doğrudan çalıştırılınca başlar */
+module.exports = { normalizeTfs, normalizeSymbols, buildPlan, sanitizeFile };
+
+if (require.main === module) main();

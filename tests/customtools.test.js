@@ -114,7 +114,8 @@ test('customtools: seedDefaults sürüm güncellemesi yapar + düzenlenen dosyay
   assert.equal(n, 1, 'yalnız mt5_shot güncellenmeli');
   const after = JSON.parse(fs.readFileSync(toolPath, 'utf8'));
   assert.ok(Number(after.defaultsVersion) >= 2, 'defaultsVersion yükselmeli');
-  assert.ok(fs.readFileSync(runPath, 'utf8').includes('runMulti'), 'run.js yeni sürüm olmalı');
+  const runNew = fs.readFileSync(runPath, 'utf8');
+  assert.ok(runNew.includes('runPanels') && runNew.includes('normalizeSymbols'), 'run.js yeni sürüm olmalı (çoklu sembol)');
   assert.ok(fs.existsSync(path.join(dir, 'stitch.js')), 'stitch.js kurulmalı');
   assert.ok(fs.existsSync(runPath + '.user-bak'), 'kullanıcı düzenlemesi yedeklenmeli');
   assert.ok(fs.readFileSync(runPath + '.user-bak', 'utf8').includes('KULLANICI DUZENLEMESI'), 'yedek eski içeriği taşımalı');

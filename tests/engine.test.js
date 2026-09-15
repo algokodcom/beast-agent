@@ -419,6 +419,23 @@ test('DM teslimi: sürekli ajanı UYANDIRMAZ — inbox\'a yazılır (sonsuz DM p
   assert.deepEqual(sent, ['n1'], 'normal ajan DM ile uyanır');
 });
 
+test('DM teslimi: kullanıcı/chat DM\'i sürekli ajanı hemen uyandırır (onDmQueued)', () => {
+  const eng = makeEngine();
+  const woke = [];
+  eng.onDmQueued = (job, r) => woke.push({ sid: String(job.id), text: String(r.text || '') });
+  eng._bgJobs.set('c1', {
+    id: 'c1', status: 'running', continuous: true,
+    startedAt: new Date().toISOString(), lastActivityAt: new Date().toISOString(),
+  });
+  eng._pendingReports = [
+    { parentId: 'c1', text: '[AJAN DM] kullanıcıdan', dm: true, wake: true },
+    { parentId: 'c1', text: '[AJAN DM] ajandan', dm: true, wake: false },
+  ];
+  eng.flushPendingReports('c1');
+  assert.deepEqual(woke.map((w) => w.text), ['[AJAN DM] kullanıcıdan'], 'yalnız kullanıcı DM\'i uyandırır');
+  assert.equal(eng._bgJobs.get('c1').dmInbox.length, 2, 'her iki DM de inbox\'a yazılır');
+});
+
 test('send: sürekli ajan inbox DM\'lerini sıradaki planlı tura enjekte eder', async () => {
   const eng = makeEngine();
   eng._run = async () => {};

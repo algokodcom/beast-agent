@@ -5549,6 +5549,30 @@ function toggleDmRail(hide) {
 
 /* --- modal: SOHBET (yalnız burada tam döküm) --- */
 
+/* Yeni mesaj / geç decode olan görsellerde sohbeti otomatik en alta indir:
+   anında + rAF + kısa gecikmeler + görsel load olayları (görsel sonradan
+   yüklenince içerik uzar; tek seferlik scroll yetmez). */
+function dmStickBottom(box) {
+  if (!box) return;
+  const toBottom = () => {
+    try {
+      box.scrollTop = box.scrollHeight;
+      const p = box.parentElement;
+      if (p && p.scrollHeight > p.clientHeight) p.scrollTop = p.scrollHeight;
+    } catch {}
+  };
+  toBottom();
+  try { requestAnimationFrame(toBottom); } catch {}
+  setTimeout(toBottom, 60);
+  setTimeout(toBottom, 300);
+  for (const img of box.querySelectorAll('img.dmt-img')) {
+    if (img.dataset.dmStick) continue;
+    img.dataset.dmStick = '1';
+    img.addEventListener('load', toBottom, { once: true });
+    img.addEventListener('error', toBottom, { once: true });
+  }
+}
+
 function renderDmModal() {
   const list = els.dmDialogList;
   if (!list) return;
@@ -5570,8 +5594,7 @@ function renderDmModal() {
     if (els.dmBackBtn) els.dmBackBtn.hidden = false;
     if (els.dmModalDel) els.dmModalDel.hidden = false;
     list.innerHTML = '<div class="dm-thread-msgs">' + msgs.map(dmMsgHtml).join('') + '</div>';
-    const box = list.querySelector('.dm-thread-msgs');
-    if (box) box.scrollTop = box.scrollHeight;
+    dmStickBottom(list.querySelector('.dm-thread-msgs'));
     return;
   }
   /* OTURUM LİSTESİ — AKTİF + GEÇMİŞ bölümleri */

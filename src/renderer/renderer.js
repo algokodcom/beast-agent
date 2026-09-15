@@ -223,6 +223,7 @@ const els = {
   finTraderModel: $('#finTraderModel'),
   finModelRefreshBtn: $('#finModelRefreshBtn'),
   finInterval: $('#finInterval'),
+  finMinLot: $('#finMinLot'),
   finMaxLot: $('#finMaxLot'),
   finStrategy: $('#finStrategy'),
   finMaxTradesDay: $('#finMaxTradesDay'),
@@ -9803,6 +9804,7 @@ function finTraderInputsSet(cfg) {
     : [];
   const ae = document.activeElement;
   if (els.finInterval && ae !== els.finInterval) els.finInterval.value = cfg.intervalSec || 120;
+  if (els.finMinLot && ae !== els.finMinLot) els.finMinLot.value = cfg.minLot || 0.01;
   if (els.finMaxLot && ae !== els.finMaxLot) els.finMaxLot.value = cfg.maxLot || 0.1;
   if (els.finStrategy && ae !== els.finStrategy && !finStrategyDirty) els.finStrategy.value = cfg.strategy || '';
   if (els.finMaxTradesDay && ae !== els.finMaxTradesDay) els.finMaxTradesDay.value = Number(cfg.maxTradesPerDay) || 0;
@@ -10529,8 +10531,21 @@ if (els.finInterval) els.finInterval.addEventListener('change', () => {
 if (els.finMaxLot) els.finMaxLot.addEventListener('change', () => {
   const v = Math.max(0.01, Math.min(100, Number(els.finMaxLot.value) || 0.1));
   els.finMaxLot.value = v;
+  /* min lot max lotu aşamaz — görünürde de kelepçele (sunucu ayrıca zorlar) */
+  if (els.finMinLot && Number(els.finMinLot.value) > v) els.finMinLot.value = v;
   finSaveCfg({ maxLot: v });
   toast('Max lot: ' + v + ' — sonraki turdan itibaren geçerli');
+});
+if (els.finMinLot) els.finMinLot.addEventListener('change', () => {
+  const maxV = Math.max(0.01, Math.min(100, Number(els.finMaxLot && els.finMaxLot.value) || 0.1));
+  let v = Math.max(0.01, Math.min(100, Number(els.finMinLot.value) || 0.01));
+  if (v > maxV) {
+    v = maxV;
+    toast('Min lot max lotu aşamaz — ' + v + ' olarak ayarlandı');
+  }
+  els.finMinLot.value = v;
+  finSaveCfg({ minLot: v });
+  toast('Min lot: ' + v + ' — lot hesapları bu tabanın altına inmez');
 });
 if (els.finSymBtn) els.finSymBtn.addEventListener('click', finSymPickerOpen);
 

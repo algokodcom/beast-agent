@@ -9387,7 +9387,10 @@ function finCfg() {
     f.roleSkills.trader = cur.map((s) => String(s || '').trim()).filter(Boolean).slice(0, 1);
   }
   if (!Number(f.intervalSec)) f.intervalSec = 120;
+  if (!Number(f.minLot)) f.minLot = 0.01;
   if (!Number(f.maxLot)) f.maxLot = 0.1;
+  /* LOT ARALIĞI KILİDİ: min lot hiçbir zaman max lotu aşamaz */
+  if (f.minLot > f.maxLot) f.minLot = f.maxLot;
   if (f.maxPositions == null) f.maxPositions = 3;
   /* KODLA DİSİPLİN (trader kuralları): hepsi 0 = kural kapalı */
   if (!Number.isFinite(Number(f.maxTradesPerDay))) f.maxTradesPerDay = 10;
@@ -11403,7 +11406,7 @@ function finApplyTraderFields(s, symbolsOverride, role, isMain) {
   s.financeSymbols = Array.isArray(symbolsOverride) && symbolsOverride.length ? symbolsOverride : f.symbols;
   s.financeStrategy = String(f.strategy || '');
   s.financeShadow = !!f.shadowMode; /* shadow modda işlem araçları emir göndermez */
-  s.financeLimits = { maxLot: f.maxLot, maxPositions: f.maxPositions };
+  s.financeLimits = { minLot: f.minLot, maxLot: f.maxLot, maxPositions: f.maxPositions };
   /* ZORUNLU TEK skill: rol ajanı → roleSkills[rol], ana trader → roleSkills.trader */
   const skillKey = r || (s.financePlaybook ? 'trader' : '');
   s.financeRoleSkills = (skillKey && f.roleSkills && f.roleSkills[skillKey]) || [];
@@ -11499,7 +11502,7 @@ function finTraderBrief(agent) {
   return [
     `Beast Finance ${who} başlatıldı — ilk tur: strateji çerçeveni kur ve piyasa taramasını yap.`,
     `Odak semboller: ${syms || '(boş — mt5_status ile terminale bak, mantıklı semboller seç)'}`,
-    `Tur aralığı: ${f.intervalSec} sn · Max lot: ${f.maxLot} · Max eşzamanlı pozisyon: ${f.maxPositions}`,
+    `Tur aralığı: ${f.intervalSec} sn · Lot aralığı: ${f.minLot}–${f.maxLot} (min lot tabanı zorlanır, max lot tavanı aşılamaz) · Max eşzamanlı pozisyon: ${f.maxPositions}`,
     roleDef
       ? `UZMANLIK: ${roleDef.desc} — raporlarını bu çerçevede yaz; İŞLEM AÇMA, yalnız analiz + net öneri üret.`
       : 'Otomatik işlem AÇIK (daima): 6 emir tipinin HEPSİ açık — buy_market/sell_market (anlık piyasa), buy_limit/sell_limit ve buy_stop/sell_stop (bekleyen; price zorunlu). mt5_trade ya da mt5_pending İKİSİ de tüm tipleri kabul eder; ayrıca mt5_close/mt5_modify/mt5_cancel açık (limitler sistemce zorlanır). KISMİ KAPATMA yetkisi: kısmi TP (kâr al) ve kısmi stop (zarar kes) — mt5_close {percent, kind:"partial_tp"|"partial_sl"}; otomatik DEĞİL, gerek görürsen sen kullan. ALARM: mt5_alerts ile kurarken modu SEN seç — mode:"once" tek seferlik, mode:"repeat" + cooldownMin (dk) tekrarlı. Lot için mt5_risksize hesapla ya da mt5_trade’e riskPct ver; SL/TP broker stops_level mesafesine uymalı.',
@@ -11596,7 +11599,7 @@ async function finConsultPlan(f, agent, sid) {
     'Güncel piyasa bağlamı gerekiyorsa web_search kullan; kurulu bir skill konuyla ilgiliyse skill aracıyla oku.';
   const ctx = [
     `Odak semboller: ${agent && agent.symbols && agent.symbols.length ? agent.symbols.join(', ') : (f.symbols || []).join(', ') || '(boş — ajan kendi bulabilir)'}`,
-    `Otomatik işlem: ${auto} · max lot ${f.maxLot} · max eşzamanlı pozisyon ${f.maxPositions}`,
+    `Otomatik işlem: ${auto} · lot aralığı ${f.minLot}–${f.maxLot} · max eşzamanlı pozisyon ${f.maxPositions}`,
     account
       ? `Hesap: bakiye ${account.balance} ${account.currency} · özkaynak ${account.equity ?? '?'} · serbest marj ${account.margin_free ?? '?'} · kaldıraç 1:${account.leverage ?? '?'}`
       : 'Hesap verisi alınamadı.',
@@ -12007,6 +12010,9 @@ ipcMain.handle('finance:settings', async (_e, patch) => {
     }
   }
   if (p.maxLot !== undefined) f.maxLot = Math.max(0.01, Math.min(100, Number(p.maxLot) || 0.1));
+  if (p.minLot !== undefined) f.minLot = Math.max(0.01, Math.min(100, Number(p.minLot) || 0.01));
+  /* min lot max lotu aşamaz — hangisi sonra yazıldıysa diğerine kelepçelenir */
+  if (f.minLot > f.maxLot) f.minLot = f.maxLot;
   if (p.maxPositions !== undefined) f.maxPositions = Math.max(1, Math.min(20, Math.round(Number(p.maxPositions) || 3)));
   /* RİSK OTOMASYONU + BİLDİRİM ayarları */
   if (p.watchdog !== undefined) f.watchdog = !!p.watchdog;

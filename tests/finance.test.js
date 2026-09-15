@@ -139,6 +139,24 @@ test('risk: lot broker adımına yuvarlanır, kullanıcı limiti aşılmaz', () 
   assert.ok(c.error, 'minimum altı lot reddedilmeli');
 });
 
+test('risk: min lot tabanı lotu yukarı yuvarlar (raised)', () => {
+  /* kullanıcı min lotu 0.1: taban altı istek tabana yükseltilir */
+  const r = risk.normalizeVolume(RINFO, 0.005, 1, 0.1);
+  assert.strictEqual(r.volume, 0.1);
+  assert.strictEqual(r.raised, true);
+  /* min lot verilmezse eski davranış korunur: broker minimumu altı reddedilir */
+  assert.ok(risk.normalizeVolume(RINFO, 0.005, 1).error);
+  /* riskPct lotu tabanın altında kalırsa tabana yükseltilir; ham lot bildirilir */
+  const rr = risk.calcRiskLot(RINFO, 100, 99, 2, 1, 0.1); /* ham 0.02 lot */
+  assert.strictEqual(rr.volume, 0.1);
+  assert.strictEqual(rr.raised, true);
+  assert.strictEqual(rr.raw, 0.02);
+  /* taban + tavan birlikte: istek tavanı aşarsa tavan kazanır */
+  const cap = risk.normalizeVolume(RINFO, 5, 0.3, 0.1);
+  assert.strictEqual(cap.volume, 0.3);
+  assert.strictEqual(cap.capped, true);
+});
+
 test('risk: %risk lotu SL mesafesi × tick değerinden hesaplanır', () => {
   /* 1 lot için 1.00 fiyat hareketi = 100 USD; 50 USD risk → 0.5 lot */
   const r = risk.calcRiskLot(RINFO, 100, 99, 50, 1);

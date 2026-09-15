@@ -169,14 +169,18 @@
               <span>Model</span>
               <select id="finTraderModel" title="Trader ajanının modeli — farklı API/model seçilebilir"></select>
             </div>
-            <div class="fin-grid2" title="Değişiklik anında kaydedilir — ajanı DURDURMADAN sonraki tura uygulanır">
+            <div class="fin-grid3" title="Değişiklik anında kaydedilir — ajanı DURDURMADAN sonraki tura uygulanır">
               <div class="fin-field">
                 <span>Tur (sn)</span>
                 <input id="finInterval" type="number" min="30" max="3600" step="10" />
               </div>
               <div class="fin-field">
+                <span>Min lot</span>
+                <input id="finMinLot" type="number" min="0.01" max="100" step="0.01" title="Alt sınır: lot hesapları bu tabanın altına inemez — taban altındaki lotlar adıma yukarı yuvarlanır (broker minimumunun üzerinde bir taban koyar)" />
+              </div>
+              <div class="fin-field">
                 <span>Max lot</span>
-                <input id="finMaxLot" type="number" min="0.01" max="100" step="0.01" />
+                <input id="finMaxLot" type="number" min="0.01" max="100" step="0.01" title="Üst sınır: lot hesapları bu tavanın üzerine çıkamaz (min lotun altına inemez)" />
               </div>
             </div>
             <div class="fin-field">

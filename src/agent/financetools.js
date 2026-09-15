@@ -31,7 +31,7 @@ const NAMES = [
   'mt5_cancel',
 ];
 
-let getCfg = () => ({ allowTrading: false, maxLot: 0.1, maxPositions: 3, symbols: [] });
+let getCfg = () => ({ allowTrading: false, minLot: 0.01, maxLot: 0.1, maxPositions: 3, symbols: [] });
 let notify = () => {};
 /* DİSİPLİN KANCASI (main enjekte eder): kodla zorlanan kurallar — günlük işlem
    limiti, kayıp serisi molası, re-entry beklemesi, kur maruziyeti.
@@ -273,7 +273,7 @@ const definitions = NAMES.map((name) => {
             enum: ['market', 'buy_market', 'sell_market', 'buy_limit', 'sell_limit', 'buy_stop', 'sell_stop'],
             description: 'Emir tipi. Boş/side verilirse piyasa (anlık); limit/stop verilirse bekleyen emir (price zorunlu olur).',
           },
-          volume: { type: 'number', description: 'Lot (max lot sınırına tabi) — boşsa riskPct + sl ile OTOMATİK hesaplanır' },
+          volume: { type: 'number', description: 'Lot (min/max lot sınırına tabi) — boşsa riskPct + sl ile OTOMATİK hesaplanır' },
           riskPct: { type: 'number', description: 'İşlem riski % (ör. 0.5-2) — volume yerine ver: SL mesafesinden lot hesaplanır (sl zorunlu)' },
           price: { type: 'number', description: 'Limit/stop emirlerinde tetik fiyatı (piyasa emrinde gerekmez)' },
           sl: { type: 'number', description: 'Stop loss fiyatı (0 = yok) — şiddetle önerilir' },
@@ -565,7 +565,7 @@ const handlers = {
     const balance = Number(acct && acct.account && acct.account.balance) || 0;
     if (!(balance > 0)) return { ok: false, error: 'bakiye okunamadı' };
     const riskAmount = (balance * riskPct) / 100;
-    const res = finrisk.calcRiskLot(info, entry, sl, riskAmount, cfg.maxLot);
+    const res = finrisk.calcRiskLot(info, entry, sl, riskAmount, cfg.maxLot, cfg.minLot);
     if (res.error) return { ok: false, error: res.error, raw: res.raw, lossPerLot: res.lossPerLot, riskAmount: Math.round(riskAmount * 100) / 100 };
     const digits = Number(info.digits) || 5;
     const dist = Math.abs(entry - sl);
@@ -584,7 +584,9 @@ const handlers = {
       atr: atr != null ? Math.round(atr * 1e6) / 1e6 : null,
       timeframe: timeframe || null,
       capped: !!res.capped,
+      raised: !!res.raised,
       warning: closeErr || undefined,
+      minLot: Number(cfg.minLot) || 0.01,
       maxLot: Number(cfg.maxLot) || 0.1,
     };
   },
@@ -623,12 +625,12 @@ const handlers = {
       const acct = await bcall('account', {}, 8000);
       const balance = Number(acct && acct.account && acct.account.balance) || 0;
       const riskAmount = (balance * riskPct) / 100;
-      const rr = finrisk.calcRiskLot(info, price, sl, riskAmount, maxLot);
+      const rr = finrisk.calcRiskLot(info, price, sl, riskAmount, maxLot, cfg.minLot);
       if (rr.error) return { ok: false, error: rr.error };
       vol = rr.volume;
-      riskInfo = { riskPct, riskAmount: Math.round(riskAmount * 100) / 100, lossPerLot: rr.lossPerLot };
+      riskInfo = { riskPct, riskAmount: Math.round(riskAmount * 100) / 100, lossPerLot: rr.lossPerLot, raised: !!rr.raised };
     } else {
-      const norm = finrisk.normalizeVolume(info, wantVolume, maxLot);
+      const norm = finrisk.normalizeVolume(info, wantVolume, maxLot, cfg.minLot);
       if (norm.error) return { ok: false, error: norm.error };
       vol = norm.volume;
     }
@@ -745,7 +747,7 @@ const handlers = {
     if (!symbol) return { ok: false, error: 'symbol gerekli' };
     const info = await symInfoRow(symbol);
     if (!info) return { ok: false, error: 'sembol bulunamadı: ' + symbol + ' (MT5 Market Watch?)' };
-    const norm = finrisk.normalizeVolume(info, args.volume, Number(cfg.maxLot) || 0.1);
+    const norm = finrisk.normalizeVolume(info, args.volume, Number(cfg.maxLot) || 0.1, cfg.minLot);
     if (norm.error) return { ok: false, error: norm.error };
     const vol = norm.volume;
     const ptype = t.type;

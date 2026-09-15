@@ -5447,6 +5447,8 @@ body.finance-mode #composerWrap { margin-right: var(--finW, 400px); }
 .fin-field .fin-sym-select { width: 100%; }
 .fin-grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .fin-grid2 .fin-field { margin-bottom: 8px; }
+.fin-grid3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.fin-grid3 .fin-field { margin-bottom: 8px; }
 .fin-hint { font-style: normal; opacity: 0.75; }
 /* RİSK OTOMASYONU + PERFORMANS kartları */
 .fin-check label { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text); cursor: pointer; }

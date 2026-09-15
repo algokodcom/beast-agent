@@ -16,24 +16,46 @@ function stepFloor(v, step) {
   return Math.floor(v / s + 1e-9) * s;
 }
 
-/* info: MT5 symbol_info satırı. wanted: istenen lot. hardMax: kullanıcı limiti. */
-function normalizeVolume(info, wanted, hardMax) {
+function stepCeil(v, step) {
+  const s = num(step, 0.01);
+  if (!(s > 0)) return v;
+  return Math.ceil(v / s - 1e-9) * s;
+}
+
+/* info: MT5 symbol_info satırı. wanted: istenen lot. hardMax: kullanıcı üst
+   limiti (max lot). hardMin: kullanıcı alt limiti (min lot) — istenen lot bu
+   tabanın altındaysa adıma yukarı yuvarlanır (raised). */
+function normalizeVolume(info, wanted, hardMax, hardMin) {
   const vmin = num(info && info.volume_min, 0.01);
   const vmax = num(info && info.volume_max, 100);
   const step = num(info && info.volume_step, 0.01);
   let v = num(wanted, 0);
   if (!(v > 0)) return { error: 'volume gerekli (pozitif sayı)' };
   const cap = Math.min(vmax > 0 ? vmax : Infinity, num(hardMax, 0) > 0 ? num(hardMax, 0) : Infinity);
+  const floor = num(hardMin, 0) > 0 ? num(hardMin, 0) : 0;
   let capped = false;
+  let raised = false;
   if (v > cap) {
     v = stepFloor(cap, step);
     capped = true;
+  }
+  if (v < floor - 1e-9) {
+    v = stepCeil(floor, step);
+    raised = true;
   }
   v = Math.round(stepFloor(v, step) * 1e8) / 1e8;
   if (!(v > 0) || v < vmin - 1e-9) {
     return { error: `hacim broker minimumunun altında (min ${vmin} lot)` };
   }
-  return { volume: v, capped };
+  if (v > cap + 1e-9) {
+    /* min lot tabanı broker adımıyla üst limite sığmadı — üst limitte kal */
+    v = Math.round(stepFloor(cap, step) * 1e8) / 1e8;
+    capped = true;
+    if (!(v > 0) || v < vmin - 1e-9) {
+      return { error: `hacim broker minimumunun altında (min ${vmin} lot)` };
+    }
+  }
+  return { volume: v, capped, raised };
 }
 
 /* 1 lot için SL mesafesi kaybı (hesap para birimi): tick değeri, yoksa kontrat */
@@ -49,11 +71,11 @@ function lossPerLot(info, entry, sl) {
 }
 
 /* riskAmount: hesap para birimi cinsinden kaybedilecek tutar */
-function calcRiskLot(info, entry, sl, riskAmount, hardMax) {
+function calcRiskLot(info, entry, sl, riskAmount, hardMax, hardMin) {
   const lpl = lossPerLot(info, entry, sl);
   if (!(lpl > 0)) return { error: 'risk hesaplanamadı (tick değeri/kontrat bilgisi yok)' };
   const raw = num(riskAmount, 0) / lpl;
-  const norm = normalizeVolume(info, raw, hardMax);
+  const norm = normalizeVolume(info, raw, hardMax, hardMin);
   if (norm.error) return { error: norm.error, raw, lossPerLot: lpl };
   return {
     volume: norm.volume,
@@ -61,6 +83,7 @@ function calcRiskLot(info, entry, sl, riskAmount, hardMax) {
     lossPerLot: Math.round(lpl * 100) / 100,
     riskAmount: Math.round(raw * lpl * 100) / 100,
     capped: !!norm.capped,
+    raised: !!norm.raised,
   };
 }
 

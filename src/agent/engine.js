@@ -2057,7 +2057,15 @@ class Engine {
       'VERİ AKIŞI (her değerlendirmede): mt5_account + mt5_positions + mt5_market çağrılarını AYNI turda PARALEL ver; gerekiyorsa mt5_history ile son işlemleri gör.\n' +
       'PARALEL + KOORDİNASYON: uzun araştırma/işleri run_background ile paralel finance işçisine devret (parent finance olduğu için işçi mt5 okuma araçlarını görür); koşan ajanlarla konuşmak için agent_dm (to: ajan başlığındaki anahtar kelime, örn "GOLD"; ortak karar için group: "İSİM" ile grup sohbeti kur — mesaj tüm üyelere düşer). Görevin bitince DM/grup sohbetleri otomatik KAPANIR (geçmiş panelde kalır).\n' +
       (symbols ? `İZLEME LİSTESİ: ${symbols}\n` : '') +
-      (lim.maxLot ? `LİMİTLER: max lot ${lim.maxLot}` + (lim.maxPositions ? ` · max eşzamanlı pozisyon ${lim.maxPositions}` : '') + ' — bunları aşıp araç kullanma; sistem zaten reddeder.\n' : '') +
+      (lim.minLot || lim.maxLot
+        ? 'LİMİTLER: ' +
+          [
+            lim.minLot ? `min lot ${lim.minLot}` : null,
+            lim.maxLot ? `max lot ${lim.maxLot}` : null,
+            lim.maxPositions ? `max eşzamanlı pozisyon ${lim.maxPositions}` : null,
+          ].filter(Boolean).join(' · ') +
+          ' — bunları aşıp araç kullanma; sistem zaten reddeder (lot min lot altına inemez, max lot üstüne çıkamaz).\n'
+        : '') +
       'RİSK DİSİPLİNİ:\n' +
       '- SL\u2019siz pozisyon BIRAKMA: açtığın her işlemde mantıklı bir SL koy; SL\u2019siz kalan pozisyonu mt5_modify ile tamamla.\n' +
       '- Martingale/kademeli lot artışı YASAK; kaybı geri kovalama (revenge trade) YASAK.\n' +

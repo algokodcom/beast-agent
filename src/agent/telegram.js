@@ -108,6 +108,8 @@ class TelegramBridge {
             isGroup: !!(msg.chat && (msg.chat.type === 'group' || msg.chat.type === 'supergroup')),
             chatTitle: String((msg.chat && (msg.chat.title || msg.chat.username)) || ''),
             chatType: String((msg.chat && msg.chat.type) || 'private'),
+            isForum: !!(msg.chat && msg.chat.is_forum),
+            messageThreadId: msg.message_thread_id || null,
           };
           try {
             if (this.onIncoming) this.onIncoming(String(chatId), payload);
@@ -137,8 +139,9 @@ class TelegramBridge {
     };
   }
 
-  /* Metin gönder — 4096 sınırı için parçalara böl */
-  async send(chatId, text) {
+  /* Metin gönder — 4096 sınırı için parçalara böl; threadId verilirse forum
+     konusuna (topic) gönderir (message_thread_id). */
+  async send(chatId, text, threadId) {
     const t = String(text || '');
     if (!t.trim()) return false;
     const chunks = [];
@@ -148,6 +151,7 @@ class TelegramBridge {
         chat_id: chatId,
         text: part,
         disable_web_page_preview: true,
+        ...(threadId ? { message_thread_id: Number(threadId) } : {}),
       });
     }
     return true;

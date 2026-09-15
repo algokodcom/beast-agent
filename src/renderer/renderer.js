@@ -10310,7 +10310,9 @@ function finDmTgPaint() {
   if (els.finDmTgUnbind) els.finDmTgUnbind.hidden = !chat;
   if (els.finDmTgHint) {
     els.finDmTgHint.textContent =
-      'Grupta konuşulan her şey AJAN DM\u2019de görünür; ajanların/alarmların yazdıkları da gruba düşer. Grup değiştirmek için bağlantıyı kopar, yeni grupta /start yaz.';
+      'Her AJAN DM grubu (Beast Finance EKİP, sembol ekipleri vb.) Telegram\u2019da AYRI BAŞLIK (topic) olarak canlı akar. ' +
+      'Telegram grubunda Konular (Topics) açık ve bot yönetici (Konuları Yönet) olmalı — Konular kapalıysa mesajlar tek akışa grup etiketiyle düşer. ' +
+      'Bir başlığa yazdığın mesaj ilgili AJAN DM grubunda görünür ve o grubun ajanları uyanır.';
   }
 }
 

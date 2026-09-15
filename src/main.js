@@ -2956,7 +2956,9 @@ async function handleTgIncoming(chatId, payload) {
         return;
       }
       if (String(dmTg.chat) === String(chatId)) {
-        finTelegramToAgentDm(payload);
+        /* FORUM: konu (thread) → ilgili AJAN DM grubu; konusuz/genel → finance */
+        const gid = finDmTgGidForThread(payload.messageThreadId);
+        finTelegramToAgentDm(payload, gid);
         return;
       }
       tgLog(`skip: grup mesajı chat=${chatId} (bağlı grup ${dmTg.chat})`);
@@ -9416,12 +9418,14 @@ function finCfg() {
      iptal) düşer; fiyat alarmı, koruma (BE/trailing/kısmi TP), günlük limit ve
      rapor bildirimleri panelde kalır. false = tüm olaylar kanallara gider. */
   if (typeof f.notifyTradeOnly !== 'boolean') f.notifyTradeOnly = true;
-  /* AJAN DM ↔ TELEGRAM KÖPRÜSÜ: açıkken `team:finance` AJAN DM grubundaki
-     mesajlar seçilen Telegram grubuna düşer; o gruba yazılan mesaj AJAN DM
-     grubunda görünür ve koşan finance ajanları tur beklemeden uyanır. */
+  /* AJAN DM ↔ TELEGRAM KÖPRÜSÜ: açıkken AJAN DM gruplarındaki mesajlar seçilen
+     Telegram grubuna düşer; o gruba yazılan mesaj AJAN DM grubunda görünür ve
+     koşan finance ajanları tur beklemeden uyanır. Forum (Konular) destekli
+     grupta her AJAN DM grubu AYRI BAŞLIK (topic) olarak açılır canlı akar. */
   if (typeof f.dmTelegram !== 'boolean') f.dmTelegram = false;
   if (typeof f.dmTelegramChat !== 'string') f.dmTelegramChat = '';
   if (typeof f.dmTelegramTitle !== 'string') f.dmTelegramTitle = '';
+  if (!f.dmTelegramTopics || typeof f.dmTelegramTopics !== 'object') f.dmTelegramTopics = {};
   if (!Number.isFinite(Number(f.maxDailyLossPct))) f.maxDailyLossPct = 3;
   /* GÜNLÜK LİMİT AKSİYONU: warn = yalnız uyarı; stop = tüm finance ajanlarını
      durdur; flatten = durdur + tüm pozisyonları kapat */
@@ -10100,6 +10104,12 @@ function finDmTgBind(chatId, title) {
   if (!id) return false;
   const f = finCfg();
   const t = String(title || '').trim();
+  /* GRUP DEĞİŞTİ: eski konu eşlemeleri yeni chat'te geçersiz — sıfırla */
+  if (String(f.dmTelegramChat || '') !== id) {
+    f.dmTelegramTopics = {};
+    finDmTgThreads.clear();
+    finDmTgBlockedAt.clear();
+  }
   f.dmTelegramChat = id;
   f.dmTelegramTitle = t || f.dmTelegramTitle || id;
   try { saveSettings(); } catch {}
@@ -10111,7 +10121,8 @@ function finDmTgBind(chatId, title) {
         tg.send(
           id,
           '✅ Beast Finance AJAN DM bu gruba bağlandı.\n' +
-            'Bundan sonra ajanların/alarmların mesajları burada; buraya yazdıkların AJAN DM grubunda görünür ve ajanları uyandırır.'
+            'Bundan sonra ajanların/alarmların mesajları buraya düşer; buraya yazdıkların AJAN DM grubunda görünür ve ajanları uyandırır.\n' +
+            'NOT: Grup Konular (Topics) destekliyorsa her AJAN DM grubu ayrı başlık olarak canlı akar — botu yönetici yapıp Konuları Yönet izni ver.'
         )
       ).catch(() => {});
     }
@@ -10119,36 +10130,152 @@ function finDmTgBind(chatId, title) {
   return true;
 }
 
-/* Giden: AJAN DM grubu → Telegram (Telegram'dan gelenler geri gönderilmez;
-   grup henüz otomatik bağlanmadıysa sessizce beklenir). */
+/* ---- TELEGRAM KONU (TOPIC) EŞLEMESİ ----
+   Forum destekli Telegram grubunda her AJAN DM grubu AYRI BAŞLIK olarak açılır:
+   gid → message_thread_id eşlemesi settings.finance.dmTelegramTopics'ta kalıcı.
+   Konu açılamazsa (forum değil / bot yetkisiz) mesajlar grup adı etiketiyle
+   genel akışa düşer — köprü yine çalışır. */
+const finDmTgThreads = new Map(); // gid -> threadId (>0) | 0 (forum değil — kalıcı)
+const finDmTgThreadPend = new Map(); // gid -> in-flight açma promise'i
+const finDmTgBlockedAt = new Map(); // gid -> son hata ts (geçici: 10 dk sonra yeniden dener)
+const FIN_DM_TG_RETRY_MS = 10 * 60 * 1000;
+let finDmTgChatMeta = { id: '', at: 0, isForum: false };
+let finDmTgSendChain = Promise.resolve(); // gönderim sırası korunsun
+
+function finDmTgChatInfo(chatId) {
+  const id = String(chatId || '');
+  if (finDmTgChatMeta.id === id && Date.now() - finDmTgChatMeta.at < 5 * 60000) {
+    return Promise.resolve(finDmTgChatMeta);
+  }
+  return Promise.resolve(tg.api('getChat', { chat_id: id }))
+    .then((r) => {
+      finDmTgChatMeta = { id, at: Date.now(), isForum: !!(r && r.is_forum) };
+      return finDmTgChatMeta;
+    })
+    .catch(() => {
+      finDmTgChatMeta = { id, at: Date.now(), isForum: false };
+      return finDmTgChatMeta;
+    });
+}
+
+function finDmTgThreadCached(gid) {
+  if (finDmTgThreads.has(gid)) return Number(finDmTgThreads.get(gid)) || 0;
+  const f = finCfg();
+  const rec = f.dmTelegramTopics && f.dmTelegramTopics[gid];
+  const tid = rec && rec.threadId ? Number(rec.threadId) || 0 : 0;
+  if (tid) finDmTgThreads.set(gid, tid);
+  return tid;
+}
+
+/* gid için topic'i hazırla (yoksa aç). Dönüş: threadId (0 = konu yok/genel akış) */
+function finDmTgThreadEnsure(chatId, gid, title) {
+  const cached = finDmTgThreadCached(gid);
+  if (cached > 0) return Promise.resolve(cached);
+  if (finDmTgThreads.has(gid)) return Promise.resolve(0); // forum değil → genel akış
+  const blockedAt = finDmTgBlockedAt.get(gid) || 0;
+  if (blockedAt && Date.now() - blockedAt < FIN_DM_TG_RETRY_MS) return Promise.resolve(0);
+  if (finDmTgThreadPend.has(gid)) return finDmTgThreadPend.get(gid);
+  const p = (async () => {
+    try {
+      const info = await finDmTgChatInfo(chatId);
+      if (!info.isForum) { finDmTgThreads.set(gid, 0); return 0; }
+      const r = await tg.api('createForumTopic', {
+        chat_id: chatId,
+        name: String(title || gid).slice(0, 128),
+      });
+      const tid = Number(r && r.message_thread_id) || 0;
+      if (!tid) { finDmTgBlockedAt.set(gid, Date.now()); return 0; }
+      finDmTgThreads.set(gid, tid);
+      finDmTgBlockedAt.delete(gid);
+      const f = finCfg();
+      if (!f.dmTelegramTopics || typeof f.dmTelegramTopics !== 'object') f.dmTelegramTopics = {};
+      f.dmTelegramTopics[gid] = { threadId: tid, title: String(title || gid), at: Date.now() };
+      try { saveSettings(); } catch {}
+      tgLog(`telegram konu açıldı: "${title}" (${gid}) → thread ${tid}`);
+      return tid;
+    } catch (e) {
+      /* geçici hata (ağ/yetki): kalıcı işaretleme — 10 dk sonra yeniden denenir */
+      finDmTgBlockedAt.set(gid, Date.now());
+      tgLog(`telegram konu açılamadı (${gid}): ` + String((e && e.message) || e));
+      return 0;
+    } finally {
+      finDmTgThreadPend.delete(gid);
+    }
+  })();
+  finDmTgThreadPend.set(gid, p);
+  return p;
+}
+
+/* message_thread_id → AJAN DM gid (bilinmeyen konu: genel akış → finance) */
+function finDmTgGidForThread(threadId) {
+  const tid = Number(threadId) || 0;
+  if (!tid) return '';
+  const f = finCfg();
+  const topics = f.dmTelegramTopics && typeof f.dmTelegramTopics === 'object' ? f.dmTelegramTopics : {};
+  for (const [gid, rec] of Object.entries(topics)) {
+    if (rec && Number(rec.threadId) === tid) return gid;
+  }
+  return '';
+}
+
+/* Gönderimleri SIRAYLA işle: konu açma + mesaj sırası bozulmasın. */
+function finDmTgQueue(task) {
+  finDmTgSendChain = finDmTgSendChain
+    .then(() => task())
+    .catch((e) => tgLog('ajan dm → telegram kuyruk hata: ' + String((e && e.message) || e)));
+  return finDmTgSendChain;
+}
+
+/* Giden: HERHANGİ bir AJAN DM grubu → Telegram (topic varsa kendi başlığına;
+   Telegram'dan gelenler geri gönderilmez; grup bağlanmadıysa beklenir). */
 function finAgentDmToTelegram(dm) {
   try {
     if (!dm || dm.viaTelegram) return;
-    if (String(dm.group || '') !== FIN_TEAM_GID) return;
+    const gid = String(dm.group || '');
+    if (!gid) return; /* yalnız grup sohbetleri köprülenir (1:1 DM panelde kalır) */
     const c = finDmTgCfg();
     if (!c.on || !c.chat || !tg || !tg.connected) return;
+    const title = String(dm.groupTitle || (gid === FIN_TEAM_GID ? FIN_TEAM_TITLE : gid));
     const who = String(dm.fromTitle || (dm.system ? 'SİSTEM' : 'Ajan'));
-    const body =
-      `👥 *${String(dm.groupTitle || FIN_TEAM_TITLE)}* · ${who}\n` +
-      String(dm.text || '').slice(0, 3800);
-    Promise.resolve(tg.send(c.chat, body)).catch((e) =>
-      tgLog('ajan dm → telegram hata: ' + String((e && e.message) || e))
-    );
+    const text = String(dm.text || '').slice(0, 3800);
+    finDmTgQueue(async () => {
+      const tid = await finDmTgThreadEnsure(c.chat, gid, title);
+      const plain = `👥 [${title}] ${who}:\n${text}`;
+      if (tid > 0) {
+        try {
+          await tg.send(c.chat, `${who}:\n${text}`, tid);
+          return;
+        } catch {
+          /* konu silinmiş/erişim yok → genel akışa düş (mesaj kaybolmasın) */
+        }
+      }
+      await tg.send(c.chat, plain);
+    });
   } catch {}
 }
 
-/* Gelen: Telegram grubu → AJAN DM grubu (+ tüm koşan finance ajanlarını uyandır). */
-function finTelegramToAgentDm(payload) {
+/* Gelen: Telegram grubu/konusu → ilgili AJAN DM grubu (+ üye ajanları uyandır).
+   gid verilmezse finance grubuna düşer (genel akış / konusuz mesaj). */
+function finTelegramToAgentDm(payload, gid) {
   try {
     const body = String((payload && payload.text) || '').trim();
     if (!body || !engine) return { ok: false };
+    const key = String(gid || FIN_TEAM_GID);
+    const f = finCfg();
+    const topics = f.dmTelegramTopics && typeof f.dmTelegramTopics === 'object' ? f.dmTelegramTopics : {};
+    const title = String(
+      (topics[key] && topics[key].title) ||
+        (key === FIN_TEAM_GID ? FIN_TEAM_TITLE : '') ||
+        (payload && payload.chatTitle) ||
+        key
+    );
     const who = String((payload && (payload.senderName || payload.username)) || 'Telegram');
     const label = `Sahip · Telegram (${who})`;
     try {
       if (typeof engine.agentDmGroupPost === 'function') {
         engine.agentDmGroupPost({
-          gid: FIN_TEAM_GID,
-          title: FIN_TEAM_TITLE,
+          gid: key,
+          title,
           fromSid: 'tg:' + String((payload && payload.senderId) || ''),
           fromTitle: label,
           topic: 'telegram',
@@ -10157,14 +10284,31 @@ function finTelegramToAgentDm(payload) {
         });
       }
     } catch {}
+    /* Uyandırma: grubun KOŞAN üyeleri; finance grubu için tüm finance ajanları */
+    const g = engine._agentGroups && engine._agentGroups.get(key);
+    const members = g && Array.isArray(g.members) ? g.members.map(String) : [];
     const wake =
-      `[AJAN DM — TELEGRAM GRUBU · ${label}]\n${body}\n` +
+      `[AJAN DM — TELEGRAM${title ? ' · ' + title : ''} · ${label}]\n${body}\n` +
       'Şimdi yap: sahibin Telegram grubundan gelen bu mesajı değerlendir; gerekiyorsa ekipçe aksiyon al. Kısa rapor ver.';
     let sent = 0;
     for (const [sid] of financeState.agents) {
+      if (key !== FIN_TEAM_GID && members.length && !members.includes(String(sid))) continue;
       if (finWakeAgentDm(sid, wake)) sent += 1;
     }
-    financeLog(`[telegram] ajan dm grubuna mesaj düştü (${sent} ajan uyandı)`);
+    /* finance dışı koşan üyeler (paralel ajan grupları) da mesajı görsün */
+    const jobs = engine._bgJobs || new Map();
+    for (const m of members) {
+      const sid = String(m);
+      if (financeState.agents.has(sid)) continue;
+      const j = jobs.get(sid);
+      if (!j || j.status !== 'running') continue;
+      try {
+        (engine._pendingReports = engine._pendingReports || []).push({ parentId: sid, text: wake, dm: true, wake: true });
+        engine.flushPendingReports(sid);
+        sent += 1;
+      } catch {}
+    }
+    financeLog(`[telegram] ajan dm grubuna mesaj düştü: ${title} (${sent} ajan uyandı)`);
     return { ok: true, sent };
   } catch {
     return { ok: false };
@@ -11658,8 +11802,15 @@ ipcMain.handle('finance:settings', async (_e, patch) => {
   /* AJAN DM ↔ TELEGRAM köprüsü ayarları (grup SEÇİLMEZ — otomatik bağlanır) */
   if (p.dmTelegram !== undefined) f.dmTelegram = !!p.dmTelegram;
   if (p.dmTelegramChat !== undefined) {
+    const prevChat = String(f.dmTelegramChat || '');
     f.dmTelegramChat = String(p.dmTelegramChat || '').trim().slice(0, 64);
     if (!f.dmTelegramChat) f.dmTelegramTitle = ''; /* koparıldı → başlık da gitsin */
+    /* grup değişti/koparıldı: eski konu eşlemeleri geçersiz — sıfırla */
+    if (f.dmTelegramChat !== prevChat) {
+      f.dmTelegramTopics = {};
+      finDmTgThreads.clear();
+      finDmTgBlockedAt.clear();
+    }
   }
   if (p.dmTelegramTitle !== undefined) f.dmTelegramTitle = String(p.dmTelegramTitle || '').trim().slice(0, 80);
   /* köprü yeni açıldı ve botun gördüğü TEK grup varsa hemen bağla */

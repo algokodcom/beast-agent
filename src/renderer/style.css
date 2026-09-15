@@ -1504,6 +1504,8 @@ body.browser-open .mini-overlay { right: var(--bw, 480px); }
 .mini-row.off .mr-name, .mini-row.off .mr-meta { opacity: 0.45; }
 .mr-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); flex: none; }
 .mini-row.off .mr-dot { background: var(--muted); }
+/* Beast Finance fiyat alarmları: izleyici listesinde turuncu nokta ile ayrılır */
+.wp-row.alarm .wp-dot, .mini-row.alarm .mr-dot { background: #e6a117; }
 .mr-main { flex: 1; min-width: 0; }
 .mr-name { font-weight: 700; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mr-meta { color: var(--muted); font-size: 11px; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

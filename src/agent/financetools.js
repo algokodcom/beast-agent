@@ -200,7 +200,7 @@ const definitions = NAMES.map((name) => {
     },
     mt5_alerts: {
       description:
-        'FİYAT ALARMI: mt5_alerts {action:"list"|"set"|"remove"}. set: {symbol, price, direction:"above"|"below", note?}. Fiyat tetiklenince sahibine bildirim gider + alarm kapanır. Örn: XAUUSD 3400 üstü / 3280 altı kritik seviye bildirimi kur.',
+        'FİYAT ALARMI: mt5_alerts {action:"list"|"set"|"remove"}. set: {symbol, price, direction:"above"|"below", mode:"once"|"repeat", note?, cooldownMin?}. ALARM MODUNU KURAN AJAN (sen) SEÇERSİN — mode zorunlu: "once" tek seferlik (ilk tetiklemede kapanır) ya da "repeat" tekrarlı (alarm açık kalır, koşul sürdükçe cooldownMin dakikada bir tekrar bildirir + sahibi ajanı uyandırır; cooldownMin varsayılan 5). Örn kritik seviye: XAUUSD 3400 üstü → mode:"repeat", cooldownMin:15; tek kere haber: mode:"once".',
       parameters: {
         type: 'object',
         properties: {
@@ -208,7 +208,14 @@ const definitions = NAMES.map((name) => {
           symbol: { type: 'string', description: 'set için sembol' },
           price: { type: 'number', description: 'set için tetik fiyatı' },
           direction: { type: 'string', enum: ['above', 'below'], description: 'above: fiyat ≥ price; below: fiyat ≤ price' },
+          mode: {
+            type: 'string',
+            enum: ['once', 'repeat'],
+            description: "set için ZORUNLU: 'once' tek seferlik | 'repeat' tekrarlı (kararı alarmı kuran ajan verir)",
+          },
           note: { type: 'string', description: 'Alarm notu (bildirimde görünür)' },
+          cooldownMin: { type: 'number', description: "mode:'repeat' için iki tetik arası en az dakika (varsayılan 5, 0 = her tetiklemede, max 10080)" },
+          once: { type: 'boolean', description: "mode'a alternatif kısa yol (true = tek seferlik)" },
           id: { type: 'string', description: 'remove için alarm id' },
         },
         required: ['action'],
@@ -425,9 +432,34 @@ const handlers = {
       if (!symbol) return { ok: false, error: 'symbol gerekli' };
       if (!isFinite(price) || price <= 0) return { ok: false, error: 'price gerekli (pozitif sayı)' };
       if (direction !== 'above' && direction !== 'below') return { ok: false, error: "direction 'above' veya 'below' olmalı" };
-      const alarm = alertsApi.set({ symbol, price, direction, note: String(args.note || '').slice(0, 200), sid: ctx && ctx.sessionId ? String(ctx.sessionId) : '' });
+      /* ALARM MODUNU KURAN AJAN SEÇER: 'once' (tek seferlik) ya da
+         'repeat' (tekrarlı; koşul sürdükçe cooldownMin'de bir). Seçim
+         yapılmadan alarm kurulamaz — sistem varsayılanına bırakılmaz. */
+      const mRaw = String(args.mode || '').toLowerCase().trim();
+      let once;
+      if (mRaw === 'once' || mRaw === 'tek' || mRaw === 'tek_seferlik' || mRaw === 'tek-seferlik') once = true;
+      else if (mRaw === 'repeat' || mRaw === 'recurring' || mRaw === 'tekrarli' || mRaw === 'surekli' || mRaw === 'always') once = false;
+      else if (args.once !== undefined) once = args.once === true || String(args.once).toLowerCase() === 'true';
+      else {
+        return {
+          ok: false,
+          error:
+            "mode gerekli — alarmı kuran ajan karar verir: mode:'once' (tek seferlik, ilk tetiklemede kapanır) ya da mode:'repeat' (tekrarlı; koşul sürdükçe cooldownMin'de bir uyarır, varsayılan 5 dk)",
+        };
+      }
+      const cdRaw = Number(args.cooldownMin);
+      const cooldownMin = Number.isFinite(cdRaw) ? Math.min(Math.max(Math.round(cdRaw), 0), 10080) : undefined;
+      const alarm = alertsApi.set({
+        symbol,
+        price,
+        direction,
+        note: String(args.note || '').slice(0, 200),
+        sid: ctx && ctx.sessionId ? String(ctx.sessionId) : '',
+        ...(cooldownMin === undefined ? {} : { cooldownMin }),
+        once,
+      });
       if (!alarm) return { ok: false, error: 'alarm kurulamadı' };
-      noteTrade('alert-set', { symbol, price, direction, id: alarm.id, note: alarm.note }, ctx || {});
+      noteTrade('alert-set', { symbol, price, direction, id: alarm.id, note: alarm.note, cooldownMin: alarm.cooldownMin, once: alarm.once }, ctx || {});
       return { ok: true, alert: alarm };
     }
     return { ok: false, error: "action: list|set|remove" };

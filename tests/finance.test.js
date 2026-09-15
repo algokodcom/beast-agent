@@ -311,6 +311,48 @@ test('emir tipleri: mt5_trade limit/stop tipini pending köprüsüne, mt5_pendin
   }
 });
 
+/* ---------------- financetools: alarm modu (kararı kuran ajan verir) ---------------- */
+
+test('mt5_alerts: mode zorunlu — once/repeat seçimini ajan yapar', async () => {
+  const ftools = require('../src/agent/financetools');
+  const saved = [];
+  ftools.setAlerts({
+    list: () => [],
+    set: (a) => { saved.push(a); return { id: 'test1', ...a }; },
+    remove: () => false,
+  });
+  try {
+    const r1 = await ftools.handlers.mt5_alerts({ action: 'set', symbol: 'XAUUSD', price: 3400, direction: 'above' });
+    assert.strictEqual(r1.ok, false, 'mod seçilmeden alarm kurulamaz');
+    assert.match(String(r1.error), /mode gerekli/);
+    const r2 = await ftools.handlers.mt5_alerts({ action: 'set', symbol: 'XAUUSD', price: 3400, direction: 'above', mode: 'once' });
+    assert.strictEqual(r2.ok, true);
+    assert.strictEqual(saved[0].once, true, 'once → tek seferlik');
+    const r3 = await ftools.handlers.mt5_alerts({ action: 'set', symbol: 'XAUUSD', price: 3400, direction: 'above', mode: 'repeat', cooldownMin: 15 });
+    assert.strictEqual(r3.ok, true);
+    assert.strictEqual(saved[1].once, false, 'repeat → tekrarlı');
+    assert.strictEqual(saved[1].cooldownMin, 15, 'soğuma ajan kararı');
+    const r4 = await ftools.handlers.mt5_alerts({ action: 'set', symbol: 'XAUUSD', price: 3400, direction: 'above', once: true });
+    assert.strictEqual(r4.ok, true, 'once kısa yolu (geriye uyum)');
+    assert.strictEqual(saved[2].once, true);
+  } finally {
+    ftools.setAlerts({ list: () => [], set: () => null, remove: () => false });
+  }
+});
+
+/* ---------------- finwatch: fiyat alarmı soğuması ---------------- */
+
+test('alarm soğuması: tekrarlı alarm cooldown dolmadan tekrar tetiklenmez', () => {
+  const a = { cooldownMin: 5, lastFiredAt: 0, once: false };
+  assert.strictEqual(watch.alertCooldownActive(a, 1000000), false, 'ilk tetikleme serbest');
+  a.lastFiredAt = 1000000;
+  assert.strictEqual(watch.alertCooldownActive(a, 1000000 + 4 * 60000), true, 'soğuma sürüyor');
+  assert.strictEqual(watch.alertCooldownActive(a, 1000000 + 5 * 60000), false, 'soğuma doldu');
+  assert.strictEqual(watch.alertCooldownActive({ ...a, once: true }, 1000000 + 1), false, 'tek seferlikte soğuma yok');
+  assert.strictEqual(watch.alertCooldownActive({ ...a, cooldownMin: 0 }, 1000000 + 1), false, '0 = sınırsız tekrar');
+  assert.strictEqual(watch.alertCooldownActive(null, 1), false);
+});
+
 /* ---------------- finwatch: bekleyen emir aktivasyonu ---------------- */
 
 function ord(over) {

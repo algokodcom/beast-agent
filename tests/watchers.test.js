@@ -95,6 +95,51 @@ test('cooldownActive: süre dolmadan aktif', () => {
   assert.ok(!watchers.cooldownActive({ cooldownMin: 60, lastTriggeredAt: null }, T0));
 });
 
+test('applyCheck: tekrarlı alarm — koşul sürerken cooldown dolunca yeniden tetikler', () => {
+  /* cooldownMin=0 → yalnız kenar tetikleme (eski davranış korunur) */
+  const edge = { op: 'lte', value: 20, armed: true, lastTriggeredAt: null, cooldownMin: 0 };
+  const a1 = watchers.applyCheck(edge, 18, T0);
+  assert.ok(a1.triggered);
+  const a2 = watchers.applyCheck({ ...edge, ...a1.patch }, 18, T0 + 1);
+  assert.ok(!a2.triggered, 'cd=0 → koşul sürerken tekrar tetik yok');
+  /* cooldownMin>0 → koşul sürse bile soğuma dolunca TEKRAR tetikler */
+  const rep = { op: 'lte', value: 20, armed: true, lastTriggeredAt: null, cooldownMin: 5 };
+  const b1 = watchers.applyCheck(rep, 18, T0);
+  assert.ok(b1.triggered);
+  const b2 = watchers.applyCheck({ ...rep, ...b1.patch }, 19, T0 + 5 * 60000);
+  assert.ok(b2.triggered, 'cooldown doldu, koşul sürüyor → tekrar bildir');
+  /* 'changed' her zaman kenar tetiklemeli — tekrarlı hatırlatma yapmaz */
+  const ch = { op: 'changed', value: 'a', armed: true, lastTriggeredAt: null, cooldownMin: 5 };
+  const c1 = watchers.applyCheck(ch, 'b', T0);
+  assert.ok(c1.triggered);
+  const c2 = watchers.applyCheck({ ...ch, ...c1.patch }, 'b', T0 + 5 * 60000);
+  assert.ok(!c2.triggered, 'changed → koşul sürerken tekrar yok');
+});
+
+test('tickOnce: tek seferlik (once) izleyici ilk tetiklemede kapanır', async () => {
+  for (const w of watchers.list()) watchers.remove(w.id);
+  const r = watchers.add({
+    name: 'tek seferlik',
+    kind: 'web',
+    url: 'https://a.b',
+    op: 'lte',
+    value: 90,
+    everyMin: 1,
+    cooldownMin: 5,
+    once: true,
+  });
+  assert.ok(r.ok, JSON.stringify(r));
+  const deps = { check: async () => 85 };
+  const evs = await watchers.tickOnce(deps);
+  assert.equal(evs.length, 1);
+  const w = watchers.list().find((x) => x.id === r.watcher.id);
+  assert.equal(w.enabled, false, 'tetiklenince kapanır');
+  /* kapalı izleyici yeniden tetiklenmez */
+  await watchers.patch(r.watcher.id, { lastCheckAt: new Date(Date.now() - 5 * 60000).toISOString() });
+  assert.equal((await watchers.tickOnce(deps)).length, 0);
+  for (const id of watchers.list().map((x) => x.id)) watchers.remove(id);
+});
+
 /* ---------- arka plan tick ---------- */
 
 const { extractValue } = watchers;

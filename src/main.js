@@ -9780,7 +9780,14 @@ async function channelSendFromAgent(input) {
   };
 }
 
-/* ---- fiyat alarmları (kalıcı) ---- */
+/* ---- fiyat alarmları (kalıcı) ----
+   TEKRARLI (varsayılan): alarm kapanmaz; koşul sürdükçe en fazla
+   cooldownMin dakikada bir tekrar tetikler. once:true → tek tetiklemede
+   kapanır. cooldownMin'i AJAN karar verir (mt5_alerts ile). */
+const FIN_ALERT_CD_DEFAULT = 5; /* dk */
+function finAlertCooldown(a) {
+  return Math.min(Math.max(Math.round(Number(a && a.cooldownMin) || FIN_ALERT_CD_DEFAULT), 0), 10080);
+}
 function finAlertsLoad() {
   const raw = finReadJson(finFile('alerts.json'), []);
   financeState.alerts = (Array.isArray(raw) ? raw : [])
@@ -9791,6 +9798,10 @@ function finAlertsLoad() {
       direction: String((a && a.direction) || 'above').toLowerCase(),
       note: String((a && a.note) || '').slice(0, 200),
       sid: String((a && a.sid) || ''), /* alarmı kuran ajan oturumu (uyandırma hedefi) */
+      once: !!(a && a.once), /* tek seferlik mi */
+      cooldownMin: finAlertCooldown(a),
+      lastFiredAt: Number(a && a.lastFiredAt) || 0,
+      fires: Number(a && a.fires) || 0,
       at: Number(a && a.at) || Date.now(),
     }))
     .filter((a) => a.id && a.symbol && a.price > 0);
@@ -9807,18 +9818,41 @@ function finAlertApi() {
       const symbol = String((a && a.symbol) || '').toUpperCase();
       const price = Number(a && a.price);
       if (!symbol || !(price > 0)) return null;
+      const direction = String((a && a.direction) || 'above').toLowerCase() === 'below' ? 'below' : 'above';
+      /* AYNI ALARM ZATEN AÇIKSA yenisini EKLEME — mevcut kaydı güncelle:
+         ajan her turda aynı seviyeyi yeniden kurup alarm/tur döngüsü
+         (ard arda tetik + uyandırma) üretmesin. lastFiredAt KORUNUR. */
+      const existing = financeState.alerts.find(
+        (x) => x.symbol === symbol && x.direction === direction && Math.abs(Number(x.price) - price) < 1e-9
+      );
+      if (existing) {
+        if (a.note !== undefined) existing.note = String(a.note || '').slice(0, 200);
+        if (a.sid !== undefined) existing.sid = String(a.sid || '');
+        if (a.cooldownMin !== undefined) existing.cooldownMin = finAlertCooldown(a);
+        if (a.once !== undefined) existing.once = !!a.once;
+        finAlertsSave();
+        financeLog(`[alarm] güncellendi (zaten açıktı): ${existing.symbol} ${existing.direction === 'below' ? '≤' : '≥'} ${existing.price}`);
+        return { ...existing, updated: true };
+      }
       const alarm = {
         id: 'a' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
         symbol,
         price,
-        direction: String((a && a.direction) || 'above').toLowerCase() === 'below' ? 'below' : 'above',
+        direction,
         note: String((a && a.note) || '').slice(0, 200),
         sid: String((a && a.sid) || ''),
+        once: !!(a && a.once),
+        cooldownMin: finAlertCooldown(a),
+        lastFiredAt: 0,
+        fires: 0,
         at: Date.now(),
       };
       financeState.alerts.push(alarm);
       finAlertsSave();
-      financeLog(`[alarm] kuruldu: ${alarm.symbol} ${alarm.direction === 'below' ? '≤' : '≥'} ${alarm.price}`);
+      financeLog(
+        `[alarm] kuruldu: ${alarm.symbol} ${alarm.direction === 'below' ? '≤' : '≥'} ${alarm.price}` +
+          (alarm.once ? ' (tek seferlik)' : ` (tekrarlı · ${alarm.cooldownMin} dk soğuma)`)
+      );
       return alarm;
     },
     remove: (id) => {
@@ -10100,23 +10134,39 @@ async function finCheckAlerts() {
     prices[String(row.symbol)] = { bid: Number(row.bid), ask: Number(row.ask) };
   }
   let changed = false;
+  const now = Date.now();
   for (const a of alerts.slice()) {
     const p = prices[a.symbol];
     if (!p || !isFinite(p.bid)) continue;
+    /* soğuma: tekrarlı alarm koşul sürse bile cooldown dolmadan tekrar etmez */
+    if (finwatch.alertCooldownActive(a, now)) continue;
     const hit = a.direction === 'below' ? p.bid <= a.price : p.bid >= a.price;
     if (!hit) continue;
     changed = true;
-    financeState.alerts = financeState.alerts.filter((x) => x.id !== a.id);
-    const line = `🔔 ALARM: ${a.symbol} ${a.direction === 'below' ? '≤' : '≥'} ${a.price} (şimdi ${p.bid})${a.note ? ' — ' + a.note : ''}`;
+    const fires = (Number(a.fires) || 0) + 1;
+    if (a.once) {
+      /* tek seferlik: tetiklendi → kapanır */
+      financeState.alerts = financeState.alerts.filter((x) => x.id !== a.id);
+    } else {
+      /* tekrarlı: alarm AÇIK kalır; cooldown sonrası yeniden hatırlatır */
+      a.lastFiredAt = now;
+      a.fires = fires;
+    }
+    const tekrar = fires > 1 ? ` (tekrar #${fires - 1})` : '';
+    const cdTxt = a.once ? ' · tek seferlik' : ` · ${finAlertCooldown(a)} dk soğuma`;
+    const line = `🔔 ALARM${tekrar}: ${a.symbol} ${a.direction === 'below' ? '≤' : '≥'} ${a.price} (şimdi ${p.bid})${a.note ? ' — ' + a.note : ''}${cdTxt}`;
     financeLog('[alarm] ' + line);
     financeNotify(line, 'alert');
-    finJournal({ kind: 'alert', symbol: a.symbol, price: a.price, direction: a.direction, note: a.note || '' });
+    finJournal({ kind: 'alert', symbol: a.symbol, price: a.price, direction: a.direction, note: a.note || '', fires, once: !!a.once });
     /* ALARM SAHİBİ AJAN: alarmı kuran koşan finance ajanı DM'den uyanır;
        sahip koşmuyor/biliniyorsa koşan tüm finance ajanlarına düşer. */
     const wakeTxt =
-      `[FİNANS OLAYI — FİYAT ALARMI, TUR SANİYESİ BEKLENMEDEN İLETİLDİ]\n` +
-      `- ${a.symbol} ${a.direction === 'below' ? '≤' : '≥'} ${a.price} tetiklendi (şimdi ${p.bid})${a.note ? ' — ' + a.note : ''}\n` +
-      `Şimdi yap: alarmı kurma nedenini hatırla; fiyat seviyesini ve planını değerlendir, gerekiyorsa işlem/uyarı üret. Kısa rapor ver.`;
+      `[FİNANS OLAYI — FİYAT ALARMI${tekrar}, TUR SANİYESİ BEKLENMEDEN İLETİLDİ]\n` +
+      `- ${a.symbol} ${a.direction === 'below' ? '≤' : '≥'} ${a.price} tetiklendi (şimdi ${p.bid})${a.note ? ' — ' + a.note : ''}${cdTxt}\n` +
+      (a.once
+        ? 'Alarm TEK SEFERLİKTİ ve kapandı. '
+        : `Alarm TEKRARLI açık kalıyor${a.cooldownMin > 0 ? ` — koşul sürerse en erken ${a.cooldownMin} dk sonra yeniden uyarır` : ''}. `) +
+      'Şimdi yap: alarmı kurma nedenini hatırla; fiyat seviyesini ve planını değerlendir, gerekiyorsa işlem/uyarı üret. Kısa rapor ver.';
     if (!finWakeAgentDm(a.sid, wakeTxt)) finWakeAgents(wakeTxt, { kind: 'alarm', symbol: a.symbol });
   }
   if (changed) finAlertsSave();
@@ -10988,7 +11038,7 @@ function finTraderBrief(agent) {
     `Tur aralığı: ${f.intervalSec} sn · Max lot: ${f.maxLot} · Max eşzamanlı pozisyon: ${f.maxPositions}`,
     roleDef
       ? `UZMANLIK: ${roleDef.desc} — raporlarını bu çerçevede yaz; İŞLEM AÇMA, yalnız analiz + net öneri üret.`
-      : 'Otomatik işlem AÇIK (daima): 6 emir tipinin HEPSİ açık — buy_market/sell_market (anlık piyasa), buy_limit/sell_limit ve buy_stop/sell_stop (bekleyen; price zorunlu). mt5_trade ya da mt5_pending İKİSİ de tüm tipleri kabul eder; ayrıca mt5_close/mt5_modify/mt5_cancel açık (limitler sistemce zorlanır). Lot için mt5_risksize hesapla ya da mt5_trade’e riskPct ver; SL/TP broker stops_level mesafesine uymalı.',
+      : 'Otomatik işlem AÇIK (daima): 6 emir tipinin HEPSİ açık — buy_market/sell_market (anlık piyasa), buy_limit/sell_limit ve buy_stop/sell_stop (bekleyen; price zorunlu). mt5_trade ya da mt5_pending İKİSİ de tüm tipleri kabul eder; ayrıca mt5_close/mt5_modify/mt5_cancel açık (limitler sistemce zorlanır). ALARM: mt5_alerts ile kurarken modu SEN seç — mode:"once" tek seferlik, mode:"repeat" + cooldownMin (dk) tekrarlı. Lot için mt5_risksize hesapla ya da mt5_trade’e riskPct ver; SL/TP broker stops_level mesafesine uymalı.',
     roleDef
       ? 'Bulgularını agent_dm ile ANA TRADER\u2019a bildir (to: "Trader" ya da ajan başlığı anahtarı); teknik/öneri çelişkisi varsa gerekçenle yaz.'
       : f.strategy ? `Sahibinin strateji notu: ${f.strategy}` : 'Strateji notu yok: trend + destek/direnç + momentum ile temel okuma yap.',
@@ -11263,6 +11313,17 @@ ipcMain.handle('finance:snapshot', async () => {
     alerts: (financeState.alerts || []).slice(0, 50),
     watch: { on: !!financeState.watchTimer, managed: financeState.watch.size, lastAt: financeState.watchTickAt || 0 },
   };
+});
+
+ipcMain.handle('finance:alerts', async () => {
+  /* İzleyiciler paneli hafif alarm listesi (hesap/pozisyon çekmez) */
+  return { ok: true, alerts: (financeState.alerts || []).slice(0, 200) };
+});
+
+ipcMain.handle('finance:alerts:remove', async (_e, id) => {
+  const ok = finAlertApi().remove(String(id || ''));
+  finPush('alert', { removed: ok, id: String(id || '') });
+  return { ok };
 });
 
 ipcMain.handle('finance:mode', async (_e, payload) => {

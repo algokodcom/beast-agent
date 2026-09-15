@@ -172,7 +172,9 @@ function normalize(input) {
     const everyMin = Math.min(Math.max(Math.round(rawMin) || 15, 1), 1440);
     everySec = everyMin * 60;
   }
-  /* 0 geçerlidir (cooldown yok); sadece sayılamayan değerler varsayılana döner */
+  /* 0 geçerlidir (cooldown yok → yalnız kenar tetikleme); sayılamayan değerler
+     varsayılana döner. cooldownMin > 0 ise alarm TEKRARLIDIR: koşul sürdükçe
+     soğuma dolduğunda yeniden bildirir. */
   const cdRaw = Number(i.cooldownMin ?? i.cooldown_min ?? 60);
   const cooldownMin = Number.isFinite(cdRaw) ? Math.min(Math.max(Math.round(cdRaw), 0), 10080) : 60;
   const prompt = String(i.prompt || '').trim().slice(0, 2000);
@@ -192,6 +194,7 @@ function normalize(input) {
       everyMin: Math.max(1, Math.round(everySec / 60)), // geriye dönük uyum
       everySec,
       cooldownMin,
+      once: !!i.once, /* tek seferlik: ilk tetiklemede kapanır */
       prompt,
       sessionId: i.sessionId || null,
       enabled: true,
@@ -223,11 +226,15 @@ function compare(op, current, target) {
 }
 
 /* Tek kontrol uygula — saf: tetik kararı + kaydedilecek yama.
-   Kenar-tetiklemeli: koşul doğruyken tek kez ateşlenir, koşul normale
-   dönünce yeniden kurulur (armed). */
+   TEKRARLI ALARM: cooldownMin > 0 ise koşul sürdükçe, soğuma her dolduğunda
+   YENİDEN tetiklenir (tickOnce soğuma boyunca zaten kontrol etmez).
+   cooldownMin = 0 → yalnız kenar tetikleme (koşul bozulup yeniden sağlanınca).
+   'changed' her zaman kenar tetiklemelidir (değer değişimi olaydır). */
 function applyCheck(w, value, now) {
   const cond = compare(w.op, value, w.value);
-  const triggered = cond && w.armed;
+  const cdMin = Number(w.cooldownMin) || 0;
+  const repeat = cdMin > 0 && w.op !== 'changed' && !!w.lastTriggeredAt;
+  const triggered = !!(cond && (w.armed || repeat));
   const patch = {
     lastCheckAt: new Date(now).toISOString(),
     lastValue: value === undefined ? null : value,
@@ -371,6 +378,8 @@ async function tickOnce(deps = {}) {
       w.lastError = '';
       pushLog(w.id, r.triggered ? 'trigger' : 'ok', value);
       if (r.triggered) {
+        /* TEK SEFERLİK: ilk tetiklemede izleyici kapanır (yeniden etkinleştirilebilir) */
+        if (w.once) w.enabled = false;
         if (typeof hooks.onTrigger === 'function') hooks.onTrigger({ ...w }, value);
         events.push({ id: w.id, name: w.name, value });
       }

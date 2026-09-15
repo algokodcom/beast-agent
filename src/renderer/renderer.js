@@ -6640,17 +6640,35 @@ function fmtWhen(iso) {
    Kompakt liste: durum noktası + ad + bir sonraki tetik; satır → izleyici
    modalı; ▶/× mini kontroller. Yalnız agent modunda görünür (CSS). */
 let lastWatchPaneKey = '';
+/* FİYAT ALARMLARI (Beast Finance): İzleyiciler paneli + modalında watcher'larla
+   BİRLİKTE listelenir — tüm alarmlar tek yerde görünür/silinir. */
+function finAlertMeta(a) {
+  const dir = a.direction === 'below' ? '≤' : '≥';
+  return {
+    name: `🔔 ${a.symbol} ${dir} ${a.price}`,
+    meta:
+      (a.once ? 'tek seferlik' : `her ${Number(a.cooldownMin) || 5} dk`) +
+      (a.fires ? ` · ${a.fires}× tetiklendi` : '') +
+      (a.note ? ` · ${String(a.note).slice(0, 40)}` : ''),
+  };
+}
+
 async function renderWatchersPane(force) {
   const list = els.watchPaneList;
   if (!list) return;
   if (document.body.classList.contains('ide-mode') || document.body.classList.contains('studio-mode') || document.body.classList.contains('sandbox-mode')) return;
   let rows = [];
   try { rows = (await beast.watchersList()) || []; } catch {}
-  const key = JSON.stringify(rows);
+  let alerts = [];
+  try {
+    const ar = await beast.financeAlertsList();
+    alerts = (ar && ar.alerts) || [];
+  } catch {}
+  const key = JSON.stringify([rows, alerts]);
   if (!force && key === lastWatchPaneKey) return;
   lastWatchPaneKey = key;
   list.innerHTML = '';
-  if (!rows.length) {
+  if (!rows.length && !alerts.length) {
     list.innerHTML = '<div class="wp-empty">' + _t('w_empty') + '</div>';
     return;
   }
@@ -6698,18 +6716,52 @@ async function renderWatchersPane(force) {
     row.addEventListener('click', () => openWatchModal());
     list.appendChild(row);
   }
+  /* Beast Finance FİYAT ALARMLARI: aynı listede — silinebilir, canlı cd/fire bilgisi */
+  for (const a of alerts) {
+    const info = finAlertMeta(a);
+    const row = document.createElement('div');
+    row.className = 'wp-row alarm';
+    row.title = info.name + (a.note ? ' — ' + a.note : '') + ' · ' + info.meta;
+    row.innerHTML =
+      `<span class="wp-dot"></span>` +
+      `<div class="wp-main">` +
+      `<div class="wp-name">${escapeHtml(info.name)}</div>` +
+      `<div class="wp-meta">${escapeHtml(info.meta)}</div>` +
+      `</div>`;
+    const btns = document.createElement('div');
+    btns.className = 'wp-btns';
+    const d = document.createElement('button');
+    d.className = 'wp-btn del';
+    d.textContent = '×';
+    d.title = _t('cr_del');
+    d.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      await beast.financeAlertRemove(a.id);
+      lastWatchPaneKey = '';
+      renderWatchersPane(true);
+      renderWatchersModal(true);
+    });
+    btns.appendChild(d);
+    row.appendChild(btns);
+    list.appendChild(row);
+  }
 }
 
 let lastWatchKey = '';
 async function renderWatchersModal(force) {
   let rows = [];  try { rows = (await beast.watchersList()) || []; } catch {}
+  let alerts = [];
+  try {
+    const ar = await beast.financeAlertsList();
+    alerts = (ar && ar.alerts) || [];
+  } catch {}
   /* canlı yenilemede içerik değişmediyse DOM'a dokunma — buton tıklamaları
      yeniden kurulurken yutulmasın */
-  const key = JSON.stringify(rows);
+  const key = JSON.stringify([rows, alerts]);
   if (!force && key === lastWatchKey) return;
   lastWatchKey = key;
   els.watchList.innerHTML = '';
-  if (!rows.length) {
+  if (!rows.length && !alerts.length) {
     els.watchList.innerHTML = '<div class="mini-empty">' + _t('w_empty') + '</div>';
     return;
   }
@@ -6724,7 +6776,7 @@ async function renderWatchersModal(force) {
       `<span class="mr-dot"></span>` +
       `<div class="mr-main">` +
       `<div class="mr-name">${escapeHtml(w.name)}</div>` +
-      `<div class="mr-meta">[${w.kind}] ${escapeHtml(String(target).slice(0, 60))} · <b>${opText(w)}</b> · her <b>${fmtEvery(w)}</b> · cd ${w.cooldownMin}dk` +
+      `<div class="mr-meta">[${w.kind}] ${escapeHtml(String(target).slice(0, 60))} · <b>${opText(w)}</b> · her <b>${fmtEvery(w)}</b> · ${w.once ? '<b>tek seferlik</b>' : 'cd ' + w.cooldownMin + 'dk'}` +
       (w.lastValue !== null && w.lastValue !== undefined ? ` · son: <b>${escapeHtml(String(w.lastValue).slice(0, 20))}</b>` : '') +
       (w.lastError ? ` · <span style="color:var(--err)">${escapeHtml(w.lastError.slice(0, 40))}</span>` : '') +
       `</div></div>`;
@@ -6746,6 +6798,34 @@ async function renderWatchersModal(force) {
     d.title = _t('cr_del');
     d.addEventListener('click', async () => { await beast.watchersRemove(w.id); renderWatchersModal(); });
     btns.append(lg, t, d);
+    row.appendChild(btns);
+    els.watchList.appendChild(row);
+  }
+  /* Beast Finance FİYAT ALARMLARI: modalda da watcher'larla birlikte */
+  for (const a of alerts) {
+    const info = finAlertMeta(a);
+    const row = document.createElement('div');
+    row.className = 'mini-row alarm';
+    row.innerHTML =
+      `<span class="mr-dot"></span>` +
+      `<div class="mr-main">` +
+      `<div class="mr-name">${escapeHtml(info.name)}</div>` +
+      `<div class="mr-meta">${escapeHtml(info.meta)}` +
+      (a.note ? ` · ${escapeHtml(String(a.note).slice(0, 50))}` : '') +
+      `</div></div>`;
+    const btns = document.createElement('div');
+    btns.style.cssText = 'display:flex;gap:6px;flex:none';
+    const d = document.createElement('button');
+    d.className = 'mr-btn del';
+    d.textContent = '×';
+    d.title = _t('cr_del');
+    d.addEventListener('click', async () => {
+      await beast.financeAlertRemove(a.id);
+      lastWatchKey = '';
+      renderWatchersModal(true);
+      renderWatchersPane(true);
+    });
+    btns.appendChild(d);
     row.appendChild(btns);
     els.watchList.appendChild(row);
   }
@@ -7801,6 +7881,8 @@ async function init() {
         name: $('#wAddName').value.trim(),
         kind,
         everyMin: Number($('#wAddEvery').value) || 15,
+        cooldownMin: Math.max(0, Number($('#wAddCd') ? $('#wAddCd').value : 60) || 0),
+        once: !!($('#wAddOnce') && $('#wAddOnce').checked),
       };
       if (kind === 'web') {
         input.url = $('#wAddUrl').value.trim();
@@ -7823,6 +7905,8 @@ async function init() {
         const el = $(id);
         if (el) el.value = '';
       }
+      if ($('#wAddOnce')) $('#wAddOnce').checked = false;
+      if ($('#wAddCd')) $('#wAddCd').value = '60';
       lastWatchKey = '';
       lastWatchPaneKey = '';
       await renderWatchersModal(true);
@@ -9979,6 +10063,7 @@ function finRenderAlerts(list) {
     row.innerHTML =
       '<span class="fa-sym">' + escapeHtml(String(a.symbol || '?')) + '</span>' +
       '<span class="fa-cond">' + (a.direction === 'below' ? '≤' : '≥') + ' ' + (Number(a.price) || 0) + '</span>' +
+      '<span class="fa-note">' + (a.once ? 'tek seferlik' : `her ${Number(a.cooldownMin) || 5} dk`) + (a.fires ? ` · ${a.fires}×` : '') + '</span>' +
       (a.note ? '<span class="fa-note">' + escapeHtml(String(a.note)) + '</span>' : '');
     box.appendChild(row);
   }

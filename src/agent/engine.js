@@ -2009,8 +2009,9 @@ class Engine {
       modeBlock2 + '\n' +
       (roleBlockFull ? roleBlockFull + '\n' : '') +
       (teamLine || '') +
-      'MT5 ARAÇLARI: mt5_status (bağlantı), mt5_account (hesap), mt5_market (canlı fiyat), mt5_positions (açık pozisyonlar), mt5_orders (bekleyen emirler), mt5_history (kapanan işlemler), mt5_ea (BeastFinance grafik panosu: status/ping/chart/note), mt5_trade (TÜM TİPLER: buy/sell market + buy/sell limit/stop), mt5_close (kapat), mt5_modify (SL/TP), mt5_pending (TÜM TİPLER: buy_limit/sell_limit/buy_stop/sell_stop bekleyen + buy_market/sell_market anlık), mt5_cancel (emir iptal).\n' +
+      'MT5 ARAÇLARI: mt5_status (bağlantı), mt5_account (hesap), mt5_market (canlı fiyat), mt5_positions (açık pozisyonlar), mt5_orders (bekleyen emirler), mt5_history (kapanan işlemler), mt5_alerts (fiyat alarmı: modu SEN seçersin — once/repeat), mt5_ea (BeastFinance grafik panosu: status/ping/chart/note), mt5_trade (TÜM TİPLER: buy/sell market + buy/sell limit/stop), mt5_close (kapat), mt5_modify (SL/TP), mt5_pending (TÜM TİPLER: buy_limit/sell_limit/buy_stop/sell_stop bekleyen + buy_market/sell_market anlık), mt5_cancel (emir iptal).\n' +
       'EMİR TİPLERİ (6 tip — HEPSİ AÇIK): buy_market/sell_market = anlık piyasa emri (fiyat beklenmez), buy_limit/sell_limit = bekleyen limit (price zorunlu), buy_stop/sell_stop = bekleyen stop (price zorunlu). mt5_trade ve mt5_pending İKİSİ DE 6 tipi kabul eder; emir tipini net söyle (ör. type:"sell_limit").\n' +
+      'ALARM KARARI SENDE: mt5_alerts ile alarm kurarken mode ZORUNLU — "once" (tek seferlik; ilk tetiklemede kapanır) ya da "repeat" (tekrarlı; alarm açık kalır, koşul sürdükçe cooldownMin dakikada bir tekrar uyarır + seni uyandırır; cooldownMin varsayılan 5). Tekrarlı mı tek seferlik mi olacağını sen seç, varsayılana bırakma; seviyenin önemine göre cooldownMin belirle (ör. 5/15/60).\n' +
       'KİŞİSEL MT5 ARAÇLARI (VARSAYILAN KURULU — tool__* tüm oturumlarda çağrılabilir): tool__mt5_shot (grafikten GERÇEK PNG + görsel ajana enjekte — grafik işlerinde BİRİNCİL; timeframes:["M1","M15"] ile çoklu periyot, symbols:["GOLD","EURUSD","BTCUSD"] ile çoklu sembol TEK karede), tool__mt5_barlar2 (OHLC mumlar, köprüsüz), tool__mt5_m15_m5 (GOLD M15+M5 hazır paket), tool__mt5_fiyat, tool__mt5_durum (hesap+pozisyon+emir tek çağrı), tool__mt5_gecmis, tool__mt5_pozisyon_gecmis, tool__mt5_sltp, tool__mt5_kapat, tool__mt5_bekleyen, tool__mt5_emir, tool__mt5_emir_iptal.\n' +
       'BEASTFINANCE EA (OTOMATİK GRAFİK UZMANI — ENTEGRASYON KANALI): MT5 terminaline bağlanıldığında BeastFinance uzman danışmanı İLK GRAFİĞE OTOMATİK yüklenir, AutoTrading izni açılır (kurulum sistem tarafından yapılır; elle ekleme gerekmez). Grafik panosu + seviye çizgileri + dosya köprüsü (beast_ea.json / beast_cmd.json / beast_note.json) bu EA üzerinden yürür: entegrasyon işlerinde (status/ping/chart/note) mt5_ea kullan; ekran görüntüsü işlerinde tool__mt5_shot ("shot" komutu — gerçek PNG + ajan görseli) birincildir. Yazdığın not ve çizgiler tool__mt5_shot ve computer_look screenshot\'ında GÖRÜNÜR.\n' +
       'YETKİLERİN (AÇIK — çekinmeden kullan):\n' +
@@ -6175,7 +6176,8 @@ const TOOLS = [
           windowMin: { type: 'number', description: 'kind=logs: sliding window in minutes (default 10, max 720)' },
           everyMin: { type: 'number', description: 'Check interval in minutes (default 15, min 1, max 1440)' },
           everySec: { type: 'number', description: 'Check interval in SECONDS (10-8640) — overrides everyMin for fast watchers (e.g. 30 = every 30s)' },
-          cooldownMin: { type: 'number', description: 'Min minutes between notifications (default 60)' },
+          cooldownMin: { type: 'number', description: 'İki bildirim arası en az dakika (varsayılan 60). >0 ise alarm TEKRARLIDIR: koşul sürdükçe soğuma dolduğunda yeniden bildirir (ör. 5 = 5 dakikada bir hatırlat). 0 = yalnız koşul yeniden sağlandığında (kenar tetikleme).' },
+          once: { type: 'boolean', description: 'true = tek seferlik izleyici: ilk tetiklemede kapanır (varsayılan false = tekrarlı)' },
         },
         required: ['name', 'kind'],
       },

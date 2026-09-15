@@ -147,6 +147,18 @@ function parseOrderType(raw, fallbackSide) {
   return { ok: true, side, kind: 'market', type: side + '_market' };
 }
 
+/* ---- fiyat alarmı soğuması ----
+   Tekrarlı alarm (once=false): aynı koşul sürdükçe en fazla cooldownMin
+   dakikada bir tetiklenir. once=true alarmda soğuma uygulanmaz (ilk
+   tetiklemede kapanır). */
+function alertCooldownActive(a, now) {
+  if (!a || a.once) return false;
+  const cd = (Number(a.cooldownMin) || 0) * 60000;
+  if (!(cd > 0)) return false;
+  const last = Number(a.lastFiredAt) || 0;
+  return last > 0 && Number(now) - last < cd;
+}
+
 /* ---- bekleyen emir (pending) → pozisyon eşleştirme ----
    Watchdog turu emir listesini karşılaştırır: listeden DÜŞEN emir için aynı
    turda YENİ açılan (ya da netting hesapta hacmi artan) eşleşen bir pozisyon
@@ -216,4 +228,4 @@ function matchPendingDelta(goneOrders, freshPositions) {
   return out;
 }
 
-module.exports = { plan, roundTo, stepRound, closeKind, parseOrderType, orderSide, orderTypeLabel, orderVolume, matchPendingDelta };
+module.exports = { plan, roundTo, stepRound, closeKind, parseOrderType, alertCooldownActive, orderSide, orderTypeLabel, orderVolume, matchPendingDelta };

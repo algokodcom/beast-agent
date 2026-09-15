@@ -117,6 +117,8 @@ contextBridge.exposeInMainWorld('beast', {
 
   financeState: () => ipcRenderer.invoke('finance:state'),
   financeSnapshot: () => ipcRenderer.invoke('finance:snapshot'),
+  financeAlertsList: () => ipcRenderer.invoke('finance:alerts'),
+  financeAlertRemove: (id) => ipcRenderer.invoke('finance:alerts:remove', id),
   financeMode: (on, sessionId) => ipcRenderer.invoke('finance:mode', { on, sessionId }),
   financeSettings: (patch) => ipcRenderer.invoke('finance:settings', patch),
   financeTraderStart: () => ipcRenderer.invoke('finance:trader:start'),

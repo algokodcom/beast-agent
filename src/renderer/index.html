@@ -798,6 +798,10 @@
             <input id="wAddWindow" class="inp" type="number" min="1" max="720" value="10" title="pencere (dk)" style="width:80px" />
             <input id="wAddRe" class="inp" data-i18n-ph="w_add_re" placeholder="regex (opsiyonel)" />
           </div>
+          <div class="mini-add-row">
+            <input id="wAddCd" class="inp" type="number" min="0" max="10080" value="60" title="soğuma (dk): koşul sürdükçe en fazla bu aralıkta bir bildirir — 0 = yalnız koşul yeniden sağlanınca" style="width:70px" />
+            <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--muted);white-space:nowrap"><input id="wAddOnce" type="checkbox" /> tek seferlik</label>
+          </div>
         </div>
         <div id="watchList" class="mini-list"></div>
       </div>

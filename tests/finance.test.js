@@ -340,6 +340,67 @@ test('mt5_alerts: mode zorunlu — once/repeat seçimini ajan yapar', async () =
   }
 });
 
+/* ---------------- finwatch: alarm temizliği (pickAlarms) ---------------- */
+
+test('pickAlarms: varsayılan yalnız kendi alarmları — symbol/all/ids filtreleri', () => {
+  const alerts = [
+    { id: 'a1', symbol: 'XAUUSD', sid: 's1' },
+    { id: 'a2', symbol: 'XAUUSD', sid: 's2' },
+    { id: 'a3', symbol: 'EURUSD', sid: 's1' },
+    { id: 'a4', symbol: 'EURUSD', sid: '' },
+  ];
+  assert.deepStrictEqual(watch.pickAlarms(alerts, { sid: 's1' }), ['a1', 'a3'], 'yalnız kendi alarmları');
+  assert.deepStrictEqual(watch.pickAlarms(alerts, { sid: 's1', symbol: 'XAUUSD' }), ['a1'], 'symbol daraltır');
+  assert.deepStrictEqual(watch.pickAlarms(alerts, { all: true }), ['a1', 'a2', 'a3', 'a4'], 'all = tümü');
+  assert.deepStrictEqual(watch.pickAlarms(alerts, { all: true, symbol: 'eurusd' }), ['a3', 'a4'], 'all + symbol');
+  assert.deepStrictEqual(watch.pickAlarms(alerts, { ids: ['a2', 'yok'] }), ['a2'], 'ids sahiplikten bağımsız');
+  assert.deepStrictEqual(watch.pickAlarms(alerts, {}), ['a4'], 'sid yoksa sahipsiz alarmlar (işçi oturumu)');
+  assert.deepStrictEqual(watch.pickAlarms(null, { all: true }), []);
+});
+
+test('mt5_alerts: clear — ajan kendi alarmlarını toplu siler (sid iletilir)', async () => {
+  const ftools = require('../src/agent/financetools');
+  const calls = [];
+  ftools.setAlerts({
+    list: () => [],
+    set: () => null,
+    remove: () => false,
+    clear: (opts) => { calls.push(opts); return { removed: 2, ids: ['a1', 'a3'] }; },
+  });
+  try {
+    const r1 = await ftools.handlers.mt5_alerts({ action: 'clear', symbol: 'xauusd' }, { sessionId: 's1' });
+    assert.strictEqual(r1.ok, true);
+    assert.strictEqual(r1.removed, 2);
+    assert.deepStrictEqual(r1.ids, ['a1', 'a3']);
+    assert.deepStrictEqual(calls[0], { ids: [], sid: 's1', all: false, symbol: 'XAUUSD' }, 'varsayılan kapsam kendi + sid');
+    const r2 = await ftools.handlers.mt5_alerts({ action: 'clear', ids: ['a9'], all: true });
+    assert.strictEqual(r2.ok, true);
+    assert.deepStrictEqual(calls[1].ids, ['a9']);
+    assert.strictEqual(calls[1].all, true, 'all bayrağı geçer');
+  } finally {
+    ftools.setAlerts({ list: () => [], set: () => null, remove: () => false });
+  }
+});
+
+/* ---------------- finwatch: trade saatleri (yerel saat) ---------------- */
+
+test('tradeHoursOpen: kapalıyken 7/24; 09:00-22:00 penceresi; gece aralığı', () => {
+  const at = (h, m) => new Date(2026, 0, 5, h, m || 0);
+  assert.strictEqual(watch.tradeHoursOpen({ on: false, start: '09:00', end: '22:00' }, at(3, 0)), true, 'kapalı = 7/24');
+  assert.strictEqual(watch.tradeHoursOpen(null, at(3, 0)), true, 'ayar yoksa serbest');
+  const g = { on: true, start: '09:00', end: '22:00' };
+  assert.strictEqual(watch.tradeHoursOpen(g, at(8, 59)), false, 'başlangıçtan önce kapalı');
+  assert.strictEqual(watch.tradeHoursOpen(g, at(9, 0)), true, 'başlangıç dahil');
+  assert.strictEqual(watch.tradeHoursOpen(g, at(21, 59)), true);
+  assert.strictEqual(watch.tradeHoursOpen(g, at(22, 0)), false, 'bitiş hariç');
+  const n = { on: true, start: '22:00', end: '06:00' };
+  assert.strictEqual(watch.tradeHoursOpen(n, at(23, 30)), true, 'gece aralığı gece yarısından önce');
+  assert.strictEqual(watch.tradeHoursOpen(n, at(5, 0)), true, 'gece aralığı sabaha karşı');
+  assert.strictEqual(watch.tradeHoursOpen(n, at(12, 0)), false, 'gece aralığı gündüz kapalı');
+  assert.strictEqual(watch.tradeHoursOpen({ on: true, start: '09:00', end: '09:00' }, at(3, 0)), true, 'start=end → 24 saat');
+  assert.strictEqual(watch.tradeHoursOpen({ on: true, start: 'bozuk', end: 'bozuk' }, at(12, 0)), true, 'geçersiz saat → 09:00-22:00 varsayılanı');
+});
+
 /* ---------------- financetools: kısmi kapatma (kısmi TP / kısmi stop) ---------------- */
 
 test('mt5_close: percent ile kısmi kapatma — pozisyon hacminden hesaplanır, otomatik değil', async () => {

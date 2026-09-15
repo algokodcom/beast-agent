@@ -208,6 +208,10 @@ const els = {
   finDmTgState: $('#finDmTgState'),
   finDmTgUnbind: $('#finDmTgUnbind'),
   finDmTgHint: $('#finDmTgHint'),
+  finTradeHoursOn: $('#finTradeHoursOn'),
+  finTradeHoursWrap: $('#finTradeHoursWrap'),
+  finTradeHoursStart: $('#finTradeHoursStart'),
+  finTradeHoursEnd: $('#finTradeHoursEnd'),
   finRiskCard: $('#finRiskCard'),
   finNotifyCard: $('#finNotifyCard'),
   finPerfCard: $('#finPerfCard'),
@@ -9997,6 +10001,7 @@ function finRenderAutomation(cfg, watch) {
   if (els.finWatchInfo) {
     els.finWatchInfo.textContent = watch && watch.on ? '· izlenen ' + (watch.managed || 0) : '';
   }
+  finTradeHoursPaint();
 }
 
 function finSparkline(points) {
@@ -10158,6 +10163,7 @@ function finOnEvent(ev) {
   } else if (ev.fn === 'trader') {
     if (ev.state === 'running') finLogLine('[trader] tur #' + (ev.round || 0) + ' başladı');
     else if (ev.state === 'idle') finLogLine('[trader] tur #' + (ev.round || 0) + ' bitti — sıradaki tur ~' + (ev.nextInSec || '?') + ' sn');
+    else if (ev.state === 'hours') finLogLine('[trader] trade saatleri dışı — ajan askıda (kontrol ~' + (ev.nextInSec || 60) + ' sn)');
     else if (ev.state === 'stopped') finLogLine('[trader] durduruldu');
   } else if (ev.fn === 'install') {
     finLogLine('[MT5] paket kurulumu tamamlandı (kod ' + ev.code + ')');
@@ -10319,9 +10325,35 @@ function finDmTgPaint() {
 function finSettingsOpen() {
   if (els.finSettingsOverlay) els.finSettingsOverlay.hidden = false;
   finDmTgPaint();
+  finTradeHoursPaint();
 }
 function finSettingsCloseModal() {
   if (els.finSettingsOverlay) els.finSettingsOverlay.hidden = true;
+}
+
+/* ---------- TRADE SAATLERİ (görünüm ayarları modalı) ----------
+   Ayarlar sunucuda (settings.finance.tradeHours) yaşar: on + start/end.
+   Kapalıyken ajanlar 7/24; açıkken yalnız [start,end) aralığında çalışır
+   (makinenin yerel saati). Açık pozisyon koruması her saat sürer. */
+function finTradeHoursPaint() {
+  if (!els.finTradeHoursOn) return;
+  const th = (finCfgCache && finCfgCache.tradeHours) || {};
+  const on = th.on === true;
+  els.finTradeHoursOn.checked = on;
+  const row = els.finTradeHoursOn.closest('.fin-set-row');
+  if (row) row.classList.toggle('on', on);
+  if (els.finTradeHoursWrap) els.finTradeHoursWrap.hidden = !on;
+  const ae = document.activeElement;
+  if (els.finTradeHoursStart && ae !== els.finTradeHoursStart) els.finTradeHoursStart.value = th.start || '09:00';
+  if (els.finTradeHoursEnd && ae !== els.finTradeHoursEnd) els.finTradeHoursEnd.value = th.end || '22:00';
+}
+function finTradeHoursSave() {
+  const on = !!(els.finTradeHoursOn && els.finTradeHoursOn.checked);
+  const start = String((els.finTradeHoursStart && els.finTradeHoursStart.value) || '09:00').slice(0, 5) || '09:00';
+  const end = String((els.finTradeHoursEnd && els.finTradeHoursEnd.value) || '22:00').slice(0, 5) || '22:00';
+  if (finCfgCache) finCfgCache.tradeHours = { on, start, end };
+  finSaveCfg({ tradeHours: { on, start, end } });
+  return { on, start, end };
 }
 
 function finViewToggle(key, on) {
@@ -10373,6 +10405,24 @@ if (els.finDmTgUnbind) {
     toast('Telegram grubu koparıldı — yeni grupta /start yazınca bağlanır');
   });
 }
+/* TRADE SAATLERİ kontrolleri — anında kaydedilir (yerel saat) */
+if (els.finTradeHoursOn) {
+  els.finTradeHoursOn.addEventListener('change', () => {
+    const { on, start, end } = finTradeHoursSave();
+    finTradeHoursPaint();
+    toast(on
+      ? 'Trade saatleri AÇIK — Beast Finance ve ajanları yalnız ' + start + '–' + end + ' arasında çalışır (yerel saat)'
+      : 'Trade saatleri kapalı — ajanlar 7/24 serbest');
+  });
+}
+for (const el of [els.finTradeHoursStart, els.finTradeHoursEnd]) {
+  if (!el) continue;
+  el.addEventListener('change', () => {
+    const { on, start, end } = finTradeHoursSave();
+    if (on) toast('Trade saatleri: ' + start + '–' + end + ' (yerel saat)');
+  });
+}
+finTradeHoursPaint();
 finViewApply();
 
 /* ---------- BÖLÜM SIRALAMA (sürükle-bırak) ----------

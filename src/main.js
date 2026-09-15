@@ -9400,6 +9400,13 @@ function finCfg() {
   /* GÜNLÜK RUTİN: plan/review saatleri (HH:MM; boş = kapalı) — hafta içi cron */
   if (typeof f.planTime !== 'string') f.planTime = '';
   if (typeof f.reviewTime !== 'string') f.reviewTime = '';
+  /* TRADE SAATLERİ: varsayılan KAPALI (7/24). Açıkken Beast Finance ve tüm
+     ajanları YALNIZ [start,end) aralığında çalışır — makinenin YEREL saati;
+     varsayılan aralık 09:00-22:00; gece aralığı desteklenir (22:00 → 06:00). */
+  if (!f.tradeHours || typeof f.tradeHours !== 'object') f.tradeHours = {};
+  if (typeof f.tradeHours.on !== 'boolean') f.tradeHours.on = false;
+  if (!/^([01]?\d|2[0-3]):([0-5]\d)$/.test(String(f.tradeHours.start || '').trim())) f.tradeHours.start = '09:00';
+  if (!/^([01]?\d|2[0-3]):([0-5]\d)$/.test(String(f.tradeHours.end || '').trim())) f.tradeHours.end = '22:00';
   /* RİSK OTOMASYONU (watchdog): +R'da BE, trailing, kısmi TP — main süreç
      saniyelik döngüyle uygular; ajan turunu BEKLEMEZ. 0 = ilgili kural kapalı. */
   if (typeof f.watchdog !== 'boolean') f.watchdog = true;
@@ -9444,6 +9451,26 @@ function finCfg() {
   if (typeof f.autoRestart !== 'boolean') f.autoRestart = true;
   if (f.weeklyReport == null) f.weeklyReport = true;
   return f;
+}
+
+/* ---- TRADE SAATLERİ KAPISI (makinenin YEREL saati) ----
+   tradeHours.on true iken ajan turları ve olay uyandırmaları yalnız
+   [start,end) aralığında çalışır; gece aralığı desteklenir (ör. 22:00 →
+   06:00). Kapalıyken (varsayılan) 7/24 serbesttir. Açık pozisyon koruması
+   (watchdog: BE/trailing/kısmi TP) bu kapıdan ETKİLENMEZ — risk güvenliği
+   her saat sürer; kapı yalnız ajan ÜRETİMİNİ (tur/karar/uyandırma) kısar.
+   Karar katmanı saf fonksiyondur: finwatch.tradeHoursOpen (birim testli). */
+function finTradeHoursOpen(now) {
+  return finwatch.tradeHoursOpen(finCfg().tradeHours, now);
+}
+/* Kapı kaynaklı ertelemeler günlüğe SEYREK düşer (10 dk'da en fazla 1 satır) */
+function finTradeHoursBlockedLog(what) {
+  const now = Date.now();
+  if (now - Number(financeState.tradeHoursLogAt || 0) < 10 * 60 * 1000) return false;
+  financeState.tradeHoursLogAt = now;
+  const th = finCfg().tradeHours || {};
+  financeLog(`[saat] trade saatleri dışı (${th.start || '09:00'}-${th.end || '22:00'} yerel) — ${what} ertelendi`);
+  return true;
 }
 
 /* ANALİZ EKİBİ: trader'ın yanında koşan uzman ajan rolleri — seçilen her rol
@@ -9943,6 +9970,21 @@ function finAlertApi() {
       }
       return false;
     },
+    /* TOPLU TEMİZLİK: alarmı KURAN ajan kendi gereksiz alarmlarını siler.
+       Varsayılan kapsam: yalnız bu oturumun (sid) kurduğu alarmlar; symbol
+       verilirse sembole daralır; ids açıkça verilirse sahiplik aranmaz;
+       all:true → sahiplik filtresi kalkar (tüm finance alarmları). */
+    clear: (opts) => {
+      const o = opts || {};
+      const ids = finwatch.pickAlarms(financeState.alerts, o);
+      if (!ids.length) return { removed: 0, ids: [] };
+      const drop = new Set(ids);
+      financeState.alerts = financeState.alerts.filter((a) => !drop.has(String(a.id)));
+      finAlertsSave();
+      const scope = Array.isArray(o.ids) && o.ids.length ? 'verilen id\'ler' : o.all ? 'tüm alarmlar' : 'ajanın kendi alarmları';
+      financeLog(`[alarm] temizlendi: ${ids.length} adet (${scope}${o.symbol ? ' · ' + String(o.symbol).toUpperCase() : ''})`);
+      return { removed: ids.length, ids };
+    },
   };
 }
 
@@ -10367,6 +10409,12 @@ function finWakeAgentDm(sid, text) {
   const id = String(sid || '');
   const agent = financeState.agents.get(id);
   if (!agent || !engine) return false;
+  /* TRADE SAATLERİ KAPISI: aralık dışında olay ajanı UYANDIRMAZ (panel/kanal
+     bildirimi düşmeye devam eder; tur pencere açılınca kendiliğinden başlar) */
+  if (!finTradeHoursOpen()) {
+    finTradeHoursBlockedLog('olay uyandırması');
+    return false;
+  }
   try {
     const body = agent.role
       ? String(text || '') + "\n(ROL HATIRLATMASI: işlem AÇMA — durumu analiz et; gerekiyorsa agent_dm ile ANA TRADER'a bildir.)"
@@ -10527,11 +10575,12 @@ async function finCheckAlerts() {
        sahip koşmuyor/biliniyorsa koşan tüm finance ajanlarına düşer. */
     const wakeTxt =
       `[FİNANS OLAYI — FİYAT ALARMI${tekrar}, TUR SANİYESİ BEKLENMEDEN İLETİLDİ]\n` +
-      `- ${a.symbol} ${a.direction === 'below' ? '≤' : '≥'} ${a.price} tetiklendi (şimdi ${p.bid})${a.note ? ' — ' + a.note : ''}${cdTxt}\n` +
+      `- ${a.symbol} ${a.direction === 'below' ? '≤' : '≥'} ${a.price} tetiklendi (şimdi ${p.bid})${a.note ? ' — ' + a.note : ''}${cdTxt} (id: ${a.id})\n` +
       (a.once
         ? 'Alarm TEK SEFERLİKTİ ve kapandı. '
         : `Alarm TEKRARLI açık kalıyor${a.cooldownMin > 0 ? ` — koşul sürerse en erken ${a.cooldownMin} dk sonra yeniden uyarır` : ''}. `) +
-      'Şimdi yap: alarmı kurma nedenini hatırla; fiyat seviyesini ve planını değerlendir, gerekiyorsa işlem/uyarı üret. Kısa rapor ver.';
+      'Şimdi yap: alarmı kurma nedenini hatırla; fiyat seviyesini ve planını değerlendir, gerekiyorsa işlem/uyarı üret. ' +
+      'TEMİZLİK: alarmın görevi bittiyse (tez geçersiz, pozisyon kapandı, seviye anlamsızlaştı) mt5_alerts action:"remove" {id} ya da action:"clear" ile SİL — gereksiz alarm biriktirme. Kısa rapor ver.';
     if (!finWakeAgentDm(a.sid, wakeTxt)) finWakeAgents(wakeTxt, { kind: 'alarm', symbol: a.symbol });
   }
   if (changed) finAlertsSave();
@@ -11453,6 +11502,10 @@ function finTraderBrief(agent) {
    'finance-review' job'ları tetikler. Trader koşmuyorsa sessizce atlanır. */
 function finDailyRoutine(mode) {
   try {
+    if (!finTradeHoursOpen()) {
+      financeLog('[rutin] trade saatleri dışı — günlük ' + mode + ' atlandı');
+      return;
+    }
     let mainSid = '';
     for (const [sid, a] of financeState.agents) {
       if (a && a.main) { mainSid = String(sid); break; }
@@ -11554,6 +11607,15 @@ async function finConsultPlan(f, agent, sid) {
 function finAgentRound(sid) {
   const agent = financeState.agents.get(String(sid));
   if (!agent || !engine) return;
+  /* TRADE SAATLERİ KAPISI: aralık dışında YENİ TUR BAŞLATILMAZ — ajan askıya
+     alınır; pencere açılınca 60 sn içinde kaldığı yerden devam eder */
+  if (!finTradeHoursOpen()) {
+    finTradeHoursBlockedLog(`tur #${(Number(agent.round) || 0) + 1}`);
+    clearTimeout(agent.timer);
+    agent.timer = setTimeout(() => { try { finAgentRound(sid); } catch {} }, 60000);
+    if (agent.main) finPush('trader', { state: 'hours', round: agent.round, nextInSec: 60 });
+    return;
+  }
   if (engine.isBusy(sid)) {
     /* hâlâ çalışıyor — done eventinde tekrar planlanır */
     return;
@@ -11616,6 +11678,12 @@ function finWakeAgent(sid) {
   const id = String(sid || '');
   const agent = financeState.agents.get(id);
   if (!agent || !engine) return;
+  /* TRADE SAATLERİ KAPISI: aralık dışında DM uyandırması tur AÇMAZ; mesaj
+     inbox'ta bekler, pencere açılınca okunur */
+  if (!finTradeHoursOpen()) {
+    finTradeHoursBlockedLog('DM uyandırması');
+    return;
+  }
   if (engine.isBusy(id)) {
     /* tur sürüyor: olay dmInbox'ta bekler — tur bitince finFlushOnDone
        BEKLEMEDEN yeni tur açar (interval beklenmez) */
@@ -11903,6 +11971,20 @@ ipcMain.handle('finance:settings', async (_e, patch) => {
   if (p.shadowMode !== undefined) f.shadowMode = !!p.shadowMode;
   if (p.planTime !== undefined) f.planTime = /^([01]?\d|2[0-3]):([0-5]\d)$/.test(String(p.planTime || '').trim()) ? String(p.planTime).trim() : '';
   if (p.reviewTime !== undefined) f.reviewTime = /^([01]?\d|2[0-3]):([0-5]\d)$/.test(String(p.reviewTime || '').trim()) ? String(p.reviewTime).trim() : '';
+  /* TRADE SAATLERİ: {on, start, end} — yerel saat; aralık dışında ajan turları
+     ve olay uyandırmaları durur (varsayılan kapalı, aralık 09:00-22:00) */
+  if (p.tradeHours !== undefined && p.tradeHours && typeof p.tradeHours === 'object') {
+    const th = f.tradeHours && typeof f.tradeHours === 'object' ? f.tradeHours : {};
+    if (typeof p.tradeHours.on === 'boolean') th.on = p.tradeHours.on;
+    for (const k of ['start', 'end']) {
+      if (p.tradeHours[k] !== undefined) {
+        const v = String(p.tradeHours[k] || '').trim().slice(0, 5);
+        if (/^([01]?\d|2[0-3]):([0-5]\d)$/.test(v)) th[k] = v;
+      }
+    }
+    f.tradeHours = th;
+    if (th.on && !finTradeHoursOpen()) financeLog('[saat] trade saatleri açık — ajanlar ' + th.start + '-' + th.end + ' aralığında çalışacak (yerel saat)');
+  }
   if (p.pythonPath !== undefined) f.pythonPath = String(p.pythonPath || '').trim();
   if (p.terminalPath !== undefined) f.terminalPath = String(p.terminalPath || '').trim();
   if (p.traderSel !== undefined) {

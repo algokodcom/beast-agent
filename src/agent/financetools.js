@@ -200,12 +200,12 @@ const definitions = NAMES.map((name) => {
     },
     mt5_alerts: {
       description:
-        'FİYAT ALARMI: mt5_alerts {action:"list"|"set"|"remove"}. set: {symbol, price, direction:"above"|"below", mode:"once"|"repeat", note?, cooldownMin?}. ALARM MODUNU KURAN AJAN (sen) SEÇERSİN — mode zorunlu: "once" tek seferlik (ilk tetiklemede kapanır) ya da "repeat" tekrarlı (alarm açık kalır, koşul sürdükçe cooldownMin dakikada bir tekrar bildirir + sahibi ajanı uyandırır; cooldownMin varsayılan 5). Örn kritik seviye: XAUUSD 3400 üstü → mode:"repeat", cooldownMin:15; tek kere haber: mode:"once".',
+        'FİYAT ALARMI: mt5_alerts {action:"list"|"set"|"remove"|"clear"}. set: {symbol, price, direction:"above"|"below", mode:"once"|"repeat", note?, cooldownMin?}. ALARM MODUNU KURAN AJAN (sen) SEÇERSİN — mode zorunlu: "once" tek seferlik (ilk tetiklemede kapanır) ya da "repeat" tekrarlı (alarm açık kalır, koşul sürdükçe cooldownMin dakikada bir tekrar bildirir + sahibi ajanı uyandırır; cooldownMin varsayılan 5). Örn kritik seviye: XAUUSD 3400 üstü → mode:"repeat", cooldownMin:15; tek kere haber: mode:"once". TEMİZLİK: alarm bir bekçidir, süs değil — gereksiz alarm biriktirme; her turda list ile KENDİ alarmlarını gör, işi bitenleri (tez geçersiz, pozisyon kapandı, seviye anlamsız) clear ile SİL. clear varsayılanı YALNIZ senin kurduğun alarmlar; symbol ile daralt; ids:[...] belirli alarmlar; all:true tüm finance alarmları.',
       parameters: {
         type: 'object',
         properties: {
-          action: { type: 'string', enum: ['list', 'set', 'remove'] },
-          symbol: { type: 'string', description: 'set için sembol' },
+          action: { type: 'string', enum: ['list', 'set', 'remove', 'clear'] },
+          symbol: { type: 'string', description: 'set/clear için sembol (clear: yalnız bu sembole daralt)' },
           price: { type: 'number', description: 'set için tetik fiyatı' },
           direction: { type: 'string', enum: ['above', 'below'], description: 'above: fiyat ≥ price; below: fiyat ≤ price' },
           mode: {
@@ -217,6 +217,8 @@ const definitions = NAMES.map((name) => {
           cooldownMin: { type: 'number', description: "mode:'repeat' için iki tetik arası en az dakika (varsayılan 5, 0 = her tetiklemede, max 10080)" },
           once: { type: 'boolean', description: "mode'a alternatif kısa yol (true = tek seferlik)" },
           id: { type: 'string', description: 'remove için alarm id' },
+          ids: { type: 'array', items: { type: 'string' }, description: 'clear için: silinecek alarm id listesi (verilirse sahiplik aranmaz)' },
+          all: { type: 'boolean', description: 'clear için: true → sahiplik filtresini kaldır, kalan TÜM finance alarmlarını sil (varsayılan: yalnız kendi kurdukların)' },
         },
         required: ['action'],
       },
@@ -420,7 +422,9 @@ const handlers = {
   async mt5_alerts(args, ctx) {
     const action = String(args.action || 'list').toLowerCase();
     if (action === 'list') {
-      const list = alertsApi.list();
+      /* mine:true → bu oturumun (senin) kurduğu alarm — temizlik kararı için */
+      const sid = ctx && ctx.sessionId ? String(ctx.sessionId) : '';
+      const list = alertsApi.list().map((a) => ({ ...a, mine: sid ? String(a.sid || '') === sid : !a.sid }));
       return { ok: true, count: list.length, alerts: list };
     }
     if (action === 'remove') {
@@ -428,6 +432,20 @@ const handlers = {
       if (!id) return { ok: false, error: 'id gerekli' };
       const removed = alertsApi.remove(id);
       return { ok: !!removed, removed: !!removed, id };
+    }
+    if (action === 'clear') {
+      /* ALARM TEMİZLİĞİ: alarmı kuran ajan kendi gereksiz alarmlarını siler.
+         Varsayılan kapsam: bu oturumun kurdukları (ctx.sessionId); symbol ile
+         daralt; ids açıkça verilirse sahiplik aranmaz; all:true → tümü. */
+      if (typeof alertsApi.clear !== 'function') return { ok: false, error: 'toplu alarm temizliği desteklenmiyor' };
+      const ids = Array.isArray(args.ids) ? args.ids.map((x) => String(x || '').trim()).filter(Boolean) : [];
+      const all = args.all === true || String(args.all || '').toLowerCase() === 'true' || String(args.scope || '').toLowerCase() === 'all';
+      const symbol = String(args.symbol || '').trim().toUpperCase();
+      const sid = ctx && ctx.sessionId ? String(ctx.sessionId) : '';
+      const res = alertsApi.clear({ ids, sid, all, symbol }) || {};
+      const removed = Number(res.removed) || 0;
+      if (removed > 0) noteTrade('alert-clear', { removed, ids: res.ids || [], symbol, all }, ctx || {});
+      return { ok: true, removed, ids: res.ids || [] };
     }
     if (action === 'set') {
       const symbol = String(args.symbol || '').trim().toUpperCase();
@@ -466,7 +484,7 @@ const handlers = {
       noteTrade('alert-set', { symbol, price, direction, id: alarm.id, note: alarm.note, cooldownMin: alarm.cooldownMin, once: alarm.once }, ctx || {});
       return { ok: true, alert: alarm };
     }
-    return { ok: false, error: "action: list|set|remove" };
+    return { ok: false, error: "action: list|set|remove|clear" };
   },
   async mt5_note(args, ctx) {
     const symbol = String(args.symbol || '').trim().toUpperCase();

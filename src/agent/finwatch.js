@@ -159,6 +159,57 @@ function alertCooldownActive(a, now) {
   return last > 0 && Number(now) - last < cd;
 }
 
+/* ---- alarm temizliği (ajan kendi kurduğu gereksiz alarmı siler) ----
+   opts:
+     ids    → yalnız bu id'ler (açıkça verilenler sahiplikten bağımsız silinir)
+     sid    → alarmı kuran ajan oturumu; scope varsayılanı "kendi alarmlarım"
+     symbol → yalnız bu sembole daralt
+     all    → sahiplik filtresini kaldır (tüm finance alarmları)
+   Dönüş: silinecek alarm id listesi (saf; IO yok). */
+function pickAlarms(alerts, opts) {
+  const o = opts || {};
+  const ids = Array.isArray(o.ids) ? o.ids.map((x) => String(x || '')).filter(Boolean) : [];
+  const sid = String(o.sid || '');
+  const symbol = String(o.symbol || '').toUpperCase();
+  const all = !!o.all;
+  const out = [];
+  for (const a of Array.isArray(alerts) ? alerts : []) {
+    if (!a || !a.id) continue;
+    if (ids.length) {
+      if (ids.includes(String(a.id))) out.push(String(a.id));
+      continue;
+    }
+    if (symbol && String(a.symbol || '').toUpperCase() !== symbol) continue;
+    if (all) {
+      out.push(String(a.id));
+      continue;
+    }
+    /* sid varsa YALNIZ kendi alarmları; sid yoksa (işçi oturumu) sahipsizler */
+    const owner = String(a.sid || '');
+    if (sid ? owner === sid : !owner) out.push(String(a.id));
+  }
+  return out;
+}
+
+/* ---- trade saatleri (makinenin YEREL saati) ----
+   th: { on, start:'HH:MM', end:'HH:MM' }. on değilse 7/24 açık (true).
+   Açıkken yalnız [start,end) aralığında true döner; gece aralığı desteklenir
+   (ör. 22:00 → 06:00). start === end → 24 saat. Saf; IO yok. */
+function parseHM(v, defMin) {
+  const m = /^([01]?\d|2[0-3]):([0-5]\d)$/.exec(String(v || '').trim());
+  if (!m) return defMin;
+  return Number(m[1]) * 60 + Number(m[2]);
+}
+function tradeHoursOpen(th, now) {
+  if (!th || !th.on) return true;
+  const s = parseHM(th.start, 9 * 60);
+  const e = parseHM(th.end, 22 * 60);
+  if (s === e) return true;
+  const d = now instanceof Date ? now : new Date(Number(now) || Date.now());
+  const cur = d.getHours() * 60 + d.getMinutes();
+  return s < e ? cur >= s && cur < e : cur >= s || cur < e;
+}
+
 /* ---- bekleyen emir (pending) → pozisyon eşleştirme ----
    Watchdog turu emir listesini karşılaştırır: listeden DÜŞEN emir için aynı
    turda YENİ açılan (ya da netting hesapta hacmi artan) eşleşen bir pozisyon
@@ -228,4 +279,4 @@ function matchPendingDelta(goneOrders, freshPositions) {
   return out;
 }
 
-module.exports = { plan, roundTo, stepRound, closeKind, parseOrderType, alertCooldownActive, orderSide, orderTypeLabel, orderVolume, matchPendingDelta };
+module.exports = { plan, roundTo, stepRound, closeKind, parseOrderType, alertCooldownActive, pickAlarms, parseHM, tradeHoursOpen, orderSide, orderTypeLabel, orderVolume, matchPendingDelta };

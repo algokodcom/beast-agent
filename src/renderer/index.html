@@ -892,6 +892,20 @@
         </label>
         <div class="fin-set-note">RİSK OTOMASYONU gizliyken koruma döngüsü (watchdog) kapatılır; tekrar gösterdiğinde ilgili kutucuktan açabilirsin.</div>
         <div class="fin-set-sep"></div>
+        <label class="fin-set-row" title="Varsayılan KAPALI: kapalıyken ajanlar 7/24 çalışır. Açıkken Beast Finance ve tüm ajanları YALNIZ belirlenen saat aralığında çalışır — aralık dışında yeni tur başlatılmaz ve olaylar ajanı uyandırmaz (makinenin YEREL saati). Açık pozisyon koruması (BE/trailing/kısmi TP) her saat çalışmaya devam eder.">
+          <input id="finTradeHoursOn" type="checkbox" />
+          <span class="fsr-main"><b>TRADE SAATLERİ</b><i>Kapalıyken 7/24 · açıkken ajanlar yalnız bu aralıkta</i></span>
+        </label>
+        <div id="finTradeHoursWrap" class="fin-set-sub" hidden>
+          <span class="fin-set-lbl">BAŞLANGIÇ / BİTİŞ (YEREL SAAT)</span>
+          <div class="fin-th-row">
+            <input id="finTradeHoursStart" type="time" step="60" value="09:00" />
+            <span class="fin-set-lbl">→</span>
+            <input id="finTradeHoursEnd" type="time" step="60" value="22:00" />
+          </div>
+          <div class="fin-set-note" style="margin:0">Aralık dışında ajan turları askıya alınır, olay alarmları ajanı uyandırmaz; pencere açılıp kapanınca kaldığı yerden devam eder. Gece aralığı da verilebilir (ör. 22:00 → 06:00).</div>
+        </div>
+        <div class="fin-set-sep"></div>
         <label class="fin-set-row" title="Açıkken botu eklediğin Telegram grubuna yazılan ilk mesaj o grubu AJAN DM aynası yapar. Her AJAN DM grubu Telegram'da AYRI BAŞLIK (topic) olarak canlı akar; başlığa yazdıkların ilgili AJAN DM grubunda görünür ve o grubun ajanları uyanır. Grup/Konu seçmene gerek yok.">
           <input id="finDmTgOn" type="checkbox" />
           <span class="fsr-main"><b>AJAN DM ↔ TELEGRAM</b><i>Her ajan grubu Telegram'da ayrı başlık — canlı</i></span>

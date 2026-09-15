@@ -53,6 +53,9 @@ const els = {
   dmColumnBtn: $('#dmColumnBtn'),
   dmMaxBtn: $('#dmMaxBtn'),
   dmBackBtn: $('#dmBackBtn'),
+  imgOverlay: $('#imgOverlay'),
+  imgOverlayImg: $('#imgOverlayImg'),
+  imgOverlayClose: $('#imgOverlayClose'),
   watchBtn: $('#watchBtn'),
   watchPaneList: $('#watchPaneList'),
   watchPaneOpen: $('#watchPaneOpen'),
@@ -5688,7 +5691,8 @@ if (els.dmOverlay) {
   els.dmOverlay.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
       e.stopPropagation();
-      if (els.dmOverlay.classList.contains('dm-max')) toggleDmMax(false);
+      if (els.imgOverlay && !els.imgOverlay.hidden) closeImgViewer(); /* önce görüntüleyici kapansın */
+      else if (els.dmOverlay.classList.contains('dm-max')) toggleDmMax(false);
       else closeDmModal();
     }
   });
@@ -5701,6 +5705,47 @@ if (els.dmColumnBtn) {
     toggleDmRail(false); // sütunda canlı akış
   });
 }
+
+/* --- DM görsel görüntüleyici: görsele tıkla → TAM BOY (tıkla/Esc kapat) --- */
+function openImgViewer(src) {
+  if (!els.imgOverlay || !els.imgOverlayImg || !src) return;
+  els.imgOverlayImg.src = String(src);
+  els.imgOverlay.hidden = false;
+}
+
+function closeImgViewer() {
+  if (els.imgOverlay) els.imgOverlay.hidden = true;
+  if (els.imgOverlayImg) els.imgOverlayImg.src = '';
+}
+
+if (els.imgOverlay) {
+  els.imgOverlay.addEventListener('click', () => closeImgViewer());
+}
+if (els.imgOverlayClose) {
+  els.imgOverlayClose.addEventListener('click', (e) => {
+    e.stopPropagation();
+    closeImgViewer();
+  });
+}
+if (els.dmDialogList) {
+  /* delegasyon: modal her mesajda yeniden çizilir — dinleyici tek yerde kalır */
+  els.dmDialogList.addEventListener('click', (e) => {
+    const img = e.target && e.target.closest ? e.target.closest('img.dmt-img') : null;
+    if (!img || !img.src) return;
+    e.stopPropagation();
+    openImgViewer(img.src);
+  });
+}
+document.addEventListener(
+  'keydown',
+  (e) => {
+    if (e.key !== 'Escape' || !els.imgOverlay || els.imgOverlay.hidden) return;
+    e.preventDefault();
+    e.stopPropagation();
+    closeImgViewer();
+  },
+  true
+);
 
 /* ---------------- TOOLS konsolu (kişisel araçlar) ----------------
    %APPDATA%\beast\tools\<ad>\tool.json + run.js — kullanıcı kendi araçlarını

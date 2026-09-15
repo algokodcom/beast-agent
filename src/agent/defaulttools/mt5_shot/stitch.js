@@ -97,16 +97,41 @@ async function compose(panels, opts) {
       if (layout === 'h') ctx.fillRect(x - GAP, 0, GAP, H);
       else ctx.fillRect(0, y - GAP, W, GAP);
     }
-    /* etiket: sol üstte koyu şerit + parlak metin */
+    /* etiket: SAĞ ÜST köşede BÜYÜK zaman dilimi (üstünde küçük sembol) —
+       görsel ajan hangi panelin hangi periyot olduğunu bakışta okur */
     if (p.label) {
       try {
-        ctx.font = pickFont(20);
-        const tw = Math.min(cellW - 24, Math.ceil(ctx.measureText(p.label).width) + 20);
-        ctx.fillStyle = 'rgba(0,0,0,0.78)';
-        ctx.fillRect(x + 6, y + 6, Math.max(60, tw), LABEL_H);
-        ctx.fillStyle = '#00e676';
+        const parts = String(p.label).split('·').map((s) => s.trim()).filter(Boolean);
+        const tf = parts.length > 1 ? parts[1] : parts[0];
+        const sym = parts.length > 1 ? parts[0] : '';
+        const fsTf = Math.max(22, Math.round(cellW / 44));      /* 1600 px panel → 36 px */
+        const fsSym = Math.max(12, Math.round(fsTf * 0.45));
+        const padX = Math.round(fsTf * 0.55);
+        const padY = Math.round(fsTf * 0.42);
+        const lineGap = Math.round(fsSym * 0.45);
         ctx.textBaseline = 'middle';
-        ctx.fillText(p.label, x + 15, y + 6 + LABEL_H / 2 + 1);
+        ctx.textAlign = 'right';
+        ctx.font = pickFont(fsTf);
+        const tw = ctx.measureText(tf).width;
+        ctx.font = pickFont(fsSym);
+        const sw = sym ? ctx.measureText(sym).width : 0;
+        const boxW = Math.ceil(Math.max(tw, sw) + padX * 2);
+        const boxH = Math.ceil(padY * 2 + fsTf + (sym ? fsSym + lineGap : 0));
+        const bx = x + cellW - boxW - 10;
+        const by = y + 10;
+        ctx.fillStyle = 'rgba(0,0,0,0.80)';
+        ctx.fillRect(bx, by, boxW, boxH);
+        ctx.fillStyle = '#00e676';
+        ctx.fillRect(bx, by, boxW, 3);                          /* üst aksan çizgisi */
+        if (sym) {
+          ctx.font = pickFont(fsSym);
+          ctx.fillStyle = '#c9d2d9';
+          ctx.fillText(sym, bx + boxW - padX, by + padY + fsSym / 2);
+        }
+        ctx.font = pickFont(fsTf);
+        ctx.fillStyle = '#00e676';
+        ctx.fillText(tf, bx + boxW - padX, by + padY + (sym ? fsSym + lineGap : 0) + fsTf / 2);
+        ctx.textAlign = 'start';
       } catch (e) {}
     }
   });

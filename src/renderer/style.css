@@ -2331,6 +2331,7 @@ body.browser-open #settingsDialog { width: min(70vw, calc(100vw - var(--bw, 480p
   border-radius: 6px;
   margin-top: 5px;
   border: 1px solid var(--border, rgba(255,255,255,0.12));
+  cursor: zoom-in;
 }
 .dmt-msg .dmt-img-note {
   font-size: 10px;
@@ -2338,6 +2339,40 @@ body.browser-open #settingsDialog { width: min(70vw, calc(100vw - var(--bw, 480p
   font-style: italic;
   margin-top: 3px;
 }
+/* DM görsel görüntüleyici: tam boy, tıkla/Esc ile kapanır */
+#imgOverlay {
+  position: fixed;
+  inset: 0;
+  z-index: 400;
+  background: rgba(0, 0, 0, 0.88);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: zoom-out;
+}
+#imgOverlay[hidden] { display: none; }
+#imgOverlay img {
+  max-width: 96vw;
+  max-height: 94vh;
+  object-fit: contain;
+  border-radius: 6px;
+  box-shadow: 0 9px 40px rgba(0, 0, 0, 0.55);
+  background: #0b0b0b;
+}
+#imgOverlayClose {
+  position: absolute;
+  top: 14px;
+  right: 18px;
+  width: 34px;
+  height: 34px;
+  border: none;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+  font-size: 17px;
+  cursor: pointer;
+}
+#imgOverlayClose:hover { background: rgba(255, 255, 255, 0.26); }
 /* ajan adının yanındaki KOD rozeti (oturum id) */
 .dm-code {
   font-size: 9px; font-weight: 700; letter-spacing: 0.5px;

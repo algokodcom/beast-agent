@@ -1,5 +1,5 @@
 //+------------------------------------------------------------------+
-//| BeastFinance.mq5 — Beast Finance köprü EA'sı (v1.20)             |
+//| BeastFinance.mq5 — Beast Finance köprü EA'sı (v1.21)             |
 //| - Heartbeat: MQL5\Files\beast_ea.json (durum + izinler + equity) |
 //| - Komut köprüsü: beast_cmd.json (Beast yazar) → beast_cmd_ack.json|
 //| - Entegrasyon/Screenshot: grafik üstü pano (Comment) + seviye     |
@@ -8,7 +8,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Beast Agent"
 #property link      "https://github.com/algokodcom/beast-agent"
-#property version   "1.20"
+#property version   "1.21"
 #property description "Beast Finance köprü EA'sı — heartbeat + komut köprüsü + grafik panosu."
 
 #include <Trade\Trade.mqh>
@@ -72,7 +72,7 @@ void WriteBeat(const string stage)
 {
    int h = FileOpen(BeatFile, FILE_WRITE|FILE_TXT|FILE_UNICODE);
    if(h == INVALID_HANDLE) return;
-   string js = StringFormat("{\"ok\":true,\"ea\":\"BeastFinance\",\"version\":\"1.20\",\"tag\":\"%s\",\"stage\":\"%s\",\"time\":%d,\"server_time\":\"%s\",\"symbol\":\"%s\",\"period\":%d,\"equity\":%.2f,\"balance\":%.2f,\"terminal_trade_allowed\":%s,\"mql_trade_allowed\":%s,\"positions\":%d,\"note\":\"%s\"}",
+   string js = StringFormat("{\"ok\":true,\"ea\":\"BeastFinance\",\"version\":\"1.21\",\"tag\":\"%s\",\"stage\":\"%s\",\"time\":%d,\"server_time\":\"%s\",\"symbol\":\"%s\",\"period\":%d,\"equity\":%.2f,\"balance\":%.2f,\"terminal_trade_allowed\":%s,\"mql_trade_allowed\":%s,\"positions\":%d,\"note\":\"%s\"}",
                             JStr(InpTag), stage, (int)TimeCurrent(), TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS),
                             _Symbol, (int)Period(),
                             AccountInfoDouble(ACCOUNT_EQUITY), AccountInfoDouble(ACCOUNT_BALANCE),
@@ -93,7 +93,7 @@ void RefreshPanel()
       Comment("");
       return;
    }
-   string lines = "Beast Finance — BeastFinance v1.20\n";
+   string lines = "Beast Finance — BeastFinance v1.21\n";
    lines += _Symbol + " · " + EnumToString((ENUM_TIMEFRAMES)Period()) + " · " + TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS) + "\n";
    lines += StringFormat("Equity: %.2f · Balance: %.2f · Acik pozisyon: %d\n",
                          AccountInfoDouble(ACCOUNT_EQUITY), AccountInfoDouble(ACCOUNT_BALANCE), PositionsTotal());
@@ -351,8 +351,16 @@ void ProcessCommands()
          }
       }
 
+      /* SON MUM SAĞ KENARA YAPIŞMASIN: grafik "shift" payı (%12 sağ boşluk).
+         Aktif grafikte önceki ayar çekimden SONRA geri yazılır — kullanıcının
+         grafiği kalıcı değişmez; geçici grafik zaten kapanır. */
+      long shiftPrev = ChartGetInteger(cid, CHART_SHIFT);
+      long shiftSizePrev = ChartGetInteger(cid, CHART_SHIFT_SIZE);
+
       if(ok)
       {
+         ChartSetInteger(cid, CHART_SHIFT, true);
+         ChartSetInteger(cid, CHART_SHIFT_SIZE, 12);
          ChartRedraw(cid);
          Sleep(1200);            /* mumlar/olcek otursun */
          ChartRedraw(cid);
@@ -366,6 +374,12 @@ void ProcessCommands()
          {
             result = StringFormat("{\"file\":\"%s\",\"width\":%d,\"height\":%d,\"symbol\":\"%s\",\"period\":%d,\"temp_chart\":%s,\"template_applied\":%s,\"theme_ok\":%s,\"bg\":%d}",
                                   JStr(file), w, hh, symWant, (int)tfUse, (tempChart ? "true" : "false"), (tplApplied ? "true" : "false"), (themeOk ? "true" : "false"), bgNow);
+         }
+         if(!tempChart)
+         {
+            ChartSetInteger(cid, CHART_SHIFT, shiftPrev != 0);
+            ChartSetInteger(cid, CHART_SHIFT_SIZE, shiftSizePrev);
+            ChartRedraw(cid);
          }
       }
       if(tempChart) ChartClose(cid);

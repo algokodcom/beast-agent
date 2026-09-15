@@ -10314,15 +10314,24 @@ async function finWatchTick() {
             finJournal({ kind: 'watchdog', action: 'sl-move', ticket, symbol: p.symbol, sl: act.sl });
           }
         } else if (act.kind === 'partial') {
-          const r = await mt5bridge.call('close', { ticket: p.ticket, volume: act.volume }, 15000).catch(() => null);
-          if (r && r.ok) {
-            st.partial = true;
-            const line = `🎯 Kısmi TP: ${p.symbol} #${ticket} ${act.volume} lot kapatıldı`;
-            financeLog('[watchdog] ' + line);
-            if (cfg.notifyWatchdog !== false) financeNotify(line, 'watchdog');
-            finJournal({ kind: 'watchdog', action: 'partial-tp', ticket, symbol: p.symbol, volume: act.volume });
-            finStatsRefresh(true);
-          }
+          /* OTOMATİK KAPATMA YOK — kısmi TP/stop kararını AJAN verir: seviye
+             gelince ajanlar TUR BEKLEMEDEN uyandırılır; uygun görürse
+             mt5_close {percent, kind:"partial_tp"} ile kısmi kâr alır. */
+          st.partial = true;
+          const rNow = decision.r > 0
+            ? Math.round(((Number(p.type) === 0 ? Number(p.price_current) - Number(p.price_open) : Number(p.price_open) - Number(p.price_current)) / decision.r) * 10) / 10
+            : 0;
+          const pct = Number(cfg.partialPct) || 50;
+          const line = `🎯 KISMİ TP FIRSATI: ${p.symbol} #${ticket} +${rNow}R (önerilen %${pct}) — kapatma kararı ajanın`;
+          financeLog('[watchdog] ' + line);
+          if (cfg.notifyWatchdog !== false) financeNotify(line, 'watchdog');
+          finJournal({ kind: 'watchdog', action: 'partial-tp-opportunity', ticket, symbol: p.symbol, r: rNow, pct });
+          finWakeAgents(
+            `[FİNANS OLAYI — KISMİ TP FIRSATI, TUR BEKLEMEDEN İLETİLDİ]\n` +
+              `- ${p.symbol}${Number(p.type) === 0 ? ' BUY' : ' SELL'} #${ticket} +${rNow}R seviyesinde (önerilen kısmi kapatma: %${pct})\n` +
+              `Karar SENİN (otomatik kapatma yok): gerek görürsen mt5_close {ticket:${ticket}, percent:${pct}, kind:"partial_tp", reason:"..."} ile kısmi kâr al; kalan pozisyon SL/TP ile devam eder. Uygun değilse dokunma. Kısa rapor ver.`,
+            { kind: 'partial-tp', ticket }
+          );
         } else if (act.kind === 'warnSL') {
           st.warnSL = true;
           const line = `⚠️ SL yaklaşıyor: ${p.symbol} #${ticket} (SL ${p.sl}, fiyat ${p.price_current})`;
@@ -10530,6 +10539,19 @@ function finTradeEvent(kRaw, dataRaw, sidRaw) {
   if (k === 'trade') {
     finJournal({ kind: 'trade', sid, agent: who, symbol: d.symbol, side: d.side, volume: d.volume, sl: d.sl, tp: d.tp, reason: d.reason || d.comment || '' });
   } else if (k === 'close') {
+    /* KISMİ KAPATMA (kısmi TP / kısmi stop): ajan kararı; günlük + bildirim.
+       Kesin toplam K/Z yine watchdog tarafından yazılır (çift sayım yok). */
+    const isPartial = d.partial === true || Number(d.percent) > 0;
+    if (isPartial) {
+      const ck = String(d.closeKind || '');
+      const label = ck === 'partial_sl' ? 'KISMİ STOP (zarar kes)' : ck === 'partial_tp' ? 'KISMİ TP (kâr al)' : 'KISMİ KAPATMA';
+      finJournal({ kind: 'partial-close', sid, agent: who, ticket: d.ticket, volume: d.volume, percent: Number(d.percent) || 0, closeKind: ck, reason: d.reason || '' });
+      const line = `✂️ ${label}: ticket ${d.ticket}${Number(d.percent) > 0 ? ` · %${Number(d.percent)}` : ''}${d.volume ? ` · ${d.volume} lot` : ''}${who ? ' · ' + who : ''}`;
+      financeLog('[ajan] ' + line);
+      finPush('trade', { line });
+      if (finCfg().notifyTrades !== false) financeNotify(line, 'close', false);
+      return;
+    }
     finJournal({ kind: 'close-req', sid, agent: who, ticket: d.ticket, volume: d.volume });
     return; /* kesin kapanış K/Z'si watchdog tarafından yazılır (çift bildirim yok) */
   } else if (k === 'modify') {
@@ -10582,7 +10604,16 @@ try {
     } else if (kind === 'modify') finTradeEvent('modify', { ticket: a.ticket, sl: a.sl, tp: a.tp }, sid);
     else if (kind === 'pending') finTradeEvent('pending', { symbol: a.symbol, type: a.type, volume: a.volume, reason: a.reason || '' }, sid);
     else if (kind === 'cancel') finTradeEvent('cancel', { ticket: a.ticket }, sid);
-    else if (kind === 'close') finTradeEvent('close', { ticket: a.ticket, volume: a.volume || 'all' }, sid);
+    else if (kind === 'close') {
+      finTradeEvent('close', {
+        ticket: a.ticket,
+        volume: a.volume || (a.percent ? 0 : 'all'),
+        percent: Number(a.percent) || 0,
+        partial: !!(Number(a.percent) > 0 || (a.volume && String(a.volume) !== 'all')),
+        closeKind: String(a.kind || a.closeKind || ''),
+        reason: String(a.reason || ''),
+      }, sid);
+    }
   });
 } catch {}
 
@@ -11038,7 +11069,7 @@ function finTraderBrief(agent) {
     `Tur aralığı: ${f.intervalSec} sn · Max lot: ${f.maxLot} · Max eşzamanlı pozisyon: ${f.maxPositions}`,
     roleDef
       ? `UZMANLIK: ${roleDef.desc} — raporlarını bu çerçevede yaz; İŞLEM AÇMA, yalnız analiz + net öneri üret.`
-      : 'Otomatik işlem AÇIK (daima): 6 emir tipinin HEPSİ açık — buy_market/sell_market (anlık piyasa), buy_limit/sell_limit ve buy_stop/sell_stop (bekleyen; price zorunlu). mt5_trade ya da mt5_pending İKİSİ de tüm tipleri kabul eder; ayrıca mt5_close/mt5_modify/mt5_cancel açık (limitler sistemce zorlanır). ALARM: mt5_alerts ile kurarken modu SEN seç — mode:"once" tek seferlik, mode:"repeat" + cooldownMin (dk) tekrarlı. Lot için mt5_risksize hesapla ya da mt5_trade’e riskPct ver; SL/TP broker stops_level mesafesine uymalı.',
+      : 'Otomatik işlem AÇIK (daima): 6 emir tipinin HEPSİ açık — buy_market/sell_market (anlık piyasa), buy_limit/sell_limit ve buy_stop/sell_stop (bekleyen; price zorunlu). mt5_trade ya da mt5_pending İKİSİ de tüm tipleri kabul eder; ayrıca mt5_close/mt5_modify/mt5_cancel açık (limitler sistemce zorlanır). KISMİ KAPATMA yetkisi: kısmi TP (kâr al) ve kısmi stop (zarar kes) — mt5_close {percent, kind:"partial_tp"|"partial_sl"}; otomatik DEĞİL, gerek görürsen sen kullan. ALARM: mt5_alerts ile kurarken modu SEN seç — mode:"once" tek seferlik, mode:"repeat" + cooldownMin (dk) tekrarlı. Lot için mt5_risksize hesapla ya da mt5_trade’e riskPct ver; SL/TP broker stops_level mesafesine uymalı.',
     roleDef
       ? 'Bulgularını agent_dm ile ANA TRADER\u2019a bildir (to: "Trader" ya da ajan başlığı anahtarı); teknik/öneri çelişkisi varsa gerekçenle yaz.'
       : f.strategy ? `Sahibinin strateji notu: ${f.strategy}` : 'Strateji notu yok: trend + destek/direnç + momentum ile temel okuma yap.',

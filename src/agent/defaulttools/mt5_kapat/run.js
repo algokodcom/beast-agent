@@ -76,12 +76,28 @@ function call(requests) {
   try { args = JSON.parse(fs.readFileSync(0, 'utf8') || '{}'); } catch (e) {}
   const ticket = Number(args.ticket || 0);
   if (!ticket) return console.log(JSON.stringify({ ok: false, error: 'ticket zorunlu' }));
+  /* KISMİ KAPATMA (kısmi TP / kısmi stop): percent verilirse pozisyon
+     hacminden hesaplanır; hacim verilmezse tamamı kapanır. Kalan kısım
+     broker minimumunun (0.01) altındaysa tamamı kapatılır. */
+  const percent = Math.max(0, Math.min(100, Number(args.percent) || 0));
+  let volume = Number(args.volume || 0);
+  let pvol = 0;
+  if (percent > 0 && !(volume > 0)) {
+    const pr = await call([{ method: 'positions', params: {} }]);
+    const list = (pr.ok && pr.data && pr.data.positions) || [];
+    const pos = list.find((p) => Number(p.ticket) === ticket);
+    if (!pos) return console.log(JSON.stringify({ ok: false, error: 'pozisyon bulunamadi: ' + ticket }));
+    pvol = Number(pos.volume) || 0;
+    volume = Math.floor(((pvol * percent) / 100) * 100) / 100;
+    if (!(volume > 0)) return console.log(JSON.stringify({ ok: false, error: 'percent sonucu hacim sifir cikti (pozisyon ' + pvol + ' lot)' }));
+    if (pvol - volume > 0 && pvol - volume < 0.01 - 1e-9) volume = pvol; /* kalan minimumun altinda → tamami */
+  }
   const params = { ticket: ticket };
-  if (args.volume) params.volume = Number(args.volume);
+  if (volume > 0) params.volume = volume;
   const r = await call([{ method: 'close', params: params }]);
   if (r.ok && r.data && r.data.result) {
     const res = r.data.result;
-    console.log(JSON.stringify({ ok: true, retcode: res.retcode, comment: res.comment, detay: r.data }));
+    console.log(JSON.stringify({ ok: true, retcode: res.retcode, comment: res.comment, kismi: pvol > 0 && volume < pvol, kapatilan: volume || 'tamami', detay: r.data }));
   } else {
     console.log(JSON.stringify({ ok: false, error: r.error || 'kapatma reddedildi' }));
   }

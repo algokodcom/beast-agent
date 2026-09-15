@@ -340,6 +340,46 @@ test('mt5_alerts: mode zorunlu — once/repeat seçimini ajan yapar', async () =
   }
 });
 
+/* ---------------- financetools: kısmi kapatma (kısmi TP / kısmi stop) ---------------- */
+
+test('mt5_close: percent ile kısmi kapatma — pozisyon hacminden hesaplanır, otomatik değil', async () => {
+  const ftools = require('../src/agent/financetools');
+  const bridge = require('../src/mt5bridge');
+  const calls = [];
+  let posVolume = 1;
+  Object.defineProperty(bridge, 'running', { value: true, configurable: true, writable: true });
+  bridge.call = async (method, params) => {
+    calls.push({ method, params });
+    if (method === 'positions') {
+      return { ok: true, data: { positions: [{ ticket: 42, symbol: 'XAUUSD', type: 0, volume: posVolume, price_open: 2000, price_current: 2010, profit: 10, sl: 1990, tp: 2020 }] } };
+    }
+    if (method === 'symbols') {
+      return { ok: true, data: { symbols: [{ symbol: 'XAUUSD', digits: 2, point: 0.01, volume_min: 0.01, volume_max: 100, volume_step: 0.01, trade_stops_level: 0, bid: 2010, ask: 2010.5 }] } };
+    }
+    if (method === 'close') return { ok: true, data: { result: { retcode: 10009, order: 42 } } };
+    return { ok: true, data: {} };
+  };
+  try {
+    const r1 = await ftools.handlers.mt5_close({ ticket: 42, percent: 50, kind: 'partial_tp', reason: 'yarı kâr al' });
+    assert.strictEqual(r1.ok, true);
+    assert.strictEqual(r1.closed.partial, true);
+    assert.strictEqual(r1.closed.volume, 0.5, '1 lotun %50si = 0.5 lot');
+    assert.strictEqual(r1.remaining, 0.5);
+    assert.strictEqual(calls.filter((c) => c.method === 'close')[0].params.volume, 0.5);
+    calls.length = 0;
+    const r2 = await ftools.handlers.mt5_close({ ticket: 42, percent: 100 });
+    assert.strictEqual(r2.ok, true);
+    assert.strictEqual(r2.closed.partial, false, 'percent 100 → tamamı');
+    calls.length = 0;
+    posVolume = 0.05;
+    const r3 = await ftools.handlers.mt5_close({ ticket: 42, percent: 10 });
+    assert.strictEqual(r3.ok, false, 'broker minimumunun altına inen kısmi reddedilir');
+  } finally {
+    delete bridge.running;
+    delete bridge.call;
+  }
+});
+
 /* ---------------- finwatch: fiyat alarmı soğuması ---------------- */
 
 test('alarm soğuması: tekrarlı alarm cooldown dolmadan tekrar tetiklenmez', () => {

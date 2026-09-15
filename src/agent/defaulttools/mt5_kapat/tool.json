@@ -1,13 +1,15 @@
 {
   "name": "mt5_kapat",
-  "description": "Açık pozisyonu KAPATIR: ticket (pozisyon no) zorunlu. volume verilirse kısmi kapatır. Risk yönetimi için kullanılır. Başarıda kapanış sonucu döner.",
+  "description": "Açık pozisyonu kapatır — TAM ya da KISMİ: ticket zorunlu; percent (pozisyonun % kaçı, ör. 50) ya da volume (lot) verilebilir. Kısmi kapatma = kısmi TP (kâr al) / kısmi stop (zarar kes) — kararı ajan verir, otomatik değildir. Kalan kısım SL/TP ile devam eder; kalan lot 0.01 altında kalırsa tamamı kapanır. Başarıda kapanış sonucu döner.",
   "parameters": {
     "type": "object",
     "properties": {
       "ticket": { "type": "number", "description": "Kapatilacak pozisyonun ticket numarasi" },
-      "volume": { "type": "number", "description": "Kapatilacak lot (bos = tamami)" }
+      "percent": { "type": "number", "description": "Kapatilacak yuzde (ör. 50) — kısmi TP/kısmi stop icin" },
+      "volume": { "type": "number", "description": "Kapatilacak lot (percent yerine; ikisi de yoksa tamami kapanir)" }
     },
     "required": ["ticket"]
   },
-  "updatedAt": "2026-09-09T18:48:00.000Z"
+  "defaultsVersion": 2,
+  "updatedAt": "2026-09-15T15:00:00.000Z"
 }

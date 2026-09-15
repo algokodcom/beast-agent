@@ -282,12 +282,16 @@ const definitions = NAMES.map((name) => {
       },
     },
     mt5_close: {
-      description: 'Açık pozisyonu kapatır: mt5_close {ticket, volume?}. volume verilirse kısmi kapatır. Risk yönetimi için kullanılır.',
+      description:
+        'Pozisyonu kapatır — TAM ya da KISMİ: mt5_close {ticket, percent?|volume?, kind?:"partial_tp"|"partial_sl"|"close", reason?}. KISMİ KAPATMA (kâr al = kısmi TP, zarar kes = kısmi stop) tamamen SENİN KARARIN — otomatik yapılmaz; gerek gördüğünde kullan. percent: pozisyonun % kaçı kapatılsın (ör. 50), volume: lot; kalan pozisyon SL/TP ile devam eder. Kalan lot broker minimumunun altında kalırsa tamamı kapanır. Risk yönetiminin temel aracıdır.',
       parameters: {
         type: 'object',
         properties: {
           ticket: { type: 'number', description: 'Pozisyon ticket no' },
-          volume: { type: 'number', description: 'Kapatılacak lot (boşsa tamamı)' },
+          percent: { type: 'number', description: 'Kapatılacak yüzde (ör. 50) — kısmi TP/kısmi stop için' },
+          volume: { type: 'number', description: 'Kapatılacak lot (percent yerine; boşsa ve percent yoksa tamamı kapanır)' },
+          kind: { type: 'string', enum: ['partial_tp', 'partial_sl', 'close'], description: 'Kısmi kapatmanın nedeni: kâr al / zarar kes (günlüğe etiket olur)' },
+          reason: { type: 'string', description: 'Kararın tezi (tek cümle, günlüğe yazılır)' },
         },
         required: ['ticket'],
       },
@@ -649,18 +653,48 @@ const handlers = {
     return { ok: true, opened: { symbol, side, volume: vol, sl, tp }, risk: riskInfo, result: data && data.result };
   },
   async mt5_close(args, ctx) {
-    const cfg = getCfg();
     if (!mt5.running) return notConnected();
     const ticket = Number(args.ticket);
     if (!ticket) return { ok: false, error: 'ticket gerekli' };
+    /* KISMİ KAPATMA (kısmi TP / kısmi stop): kararı AJAN verir — otomatik
+       değildir. percent: pozisyonun % kaçı; volume: lot. Kalan pozisyon
+       SL/TP ile devam eder. */
+    const percent = Math.max(0, Math.min(100, Number(args.percent) || 0));
     let vol = Number(args.volume) || 0;
-    if (vol > 0) {
-      const maxLot = Number(cfg.maxLot) || 0.1;
-      if (vol > maxLot) return { ok: false, error: `kısmi kapatma lotu limiti aşıyor (max ${maxLot})` };
+    let pos = null;
+    try {
+      const posRes = await bcall('positions', {}, 8000);
+      pos = ((posRes && posRes.positions) || []).find((x) => Number(x.ticket) === ticket) || null;
+    } catch {}
+    if (!pos) return { ok: false, error: 'pozisyon bulunamadı: ' + ticket };
+    const pvol = Number(pos.volume) || 0;
+    if (!(pvol > 0)) return { ok: false, error: 'pozisyon hacmi okunamadı: ' + ticket };
+    let info = null;
+    try { info = await symInfoRow(String(pos.symbol || '')); } catch {}
+    if (percent > 0 && !(vol > 0)) {
+      const norm = finrisk.normalizeVolume(info || {}, (pvol * percent) / 100);
+      if (norm.error) return { ok: false, error: norm.error };
+      vol = norm.volume;
     }
-    const data = await bcall('close', { ticket, volume: vol || 0 }, 20000);
-    noteTrade('close', { ticket, volume: vol || 'all', result: data && data.result }, ctx);
-    return { ok: true, result: data && data.result };
+    if (!(vol > 0)) vol = pvol; /* hacim yok → tamamı */
+    if (vol > pvol + 1e-9) return { ok: false, error: `kapatılacak lot pozisyondan büyük (${vol} > ${pvol})` };
+    /* kalan pozisyon broker minimumunun altında kalacaksa TAMAMINI kapat */
+    const vmin = Number(info && info.volume_min) || 0.01;
+    const remain = pvol - vol;
+    if (remain > 0 && remain < vmin - 1e-9) vol = pvol;
+    const isPartial = vol < pvol - 1e-9;
+    const kind = String(args.kind || args.closeKind || '').toLowerCase();
+    const data = await bcall('close', { ticket, volume: vol }, 20000);
+    noteTrade('close', {
+      ticket,
+      volume: vol,
+      percent: percent || 0,
+      partial: isPartial,
+      closeKind: /partial_sl|kismi_stop|partial_stop/.test(kind) ? 'partial_sl' : /partial_tp|kismi_tp|partial_take/.test(kind) ? 'partial_tp' : kind,
+      reason: String(args.reason || '').slice(0, 300),
+      result: data && data.result,
+    }, ctx);
+    return { ok: true, closed: { ticket, volume: vol, partial: isPartial }, remaining: Math.round(remain * 1e8) / 1e8, result: data && data.result };
   },
   async mt5_modify(args, ctx) {
     if (!mt5.running) return notConnected();

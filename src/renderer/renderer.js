@@ -51,6 +51,7 @@ const els = {
   dmModalClear: $('#dmModalClear'),
   dmModalDel: $('#dmModalDel'),
   dmColumnBtn: $('#dmColumnBtn'),
+  dmMaxBtn: $('#dmMaxBtn'),
   dmBackBtn: $('#dmBackBtn'),
   watchBtn: $('#watchBtn'),
   watchPaneList: $('#watchPaneList'),
@@ -5588,12 +5589,28 @@ function openDmModal(threadKey) {
   if (!els.dmOverlay) return;
   dmState.modalThread = threadKey || null;
   els.dmOverlay.hidden = false;
+  syncDmMaxBtn();
   refreshDmRail().then(() => renderDmModal());
 }
 
 function closeDmModal() {
   if (els.dmOverlay) els.dmOverlay.hidden = true;
   if (els.dmBtn) els.dmBtn.classList.remove('on');
+}
+
+/* tam ekran: modal tüm pencereyi kaplar — ikon duruma göre ⛶ / ❐ */
+function syncDmMaxBtn() {
+  if (!els.dmMaxBtn) return;
+  const on = !!(els.dmOverlay && els.dmOverlay.classList.contains('dm-max'));
+  els.dmMaxBtn.innerHTML = on ? '&#x2750;&#xFE0E;' : '&#x26F6;&#xFE0E;';
+  els.dmMaxBtn.title = on ? 'Tam ekrandan çık' : 'Tam ekran';
+}
+
+function toggleDmMax(force) {
+  if (!els.dmOverlay) return;
+  const on = typeof force === 'boolean' ? force : !els.dmOverlay.classList.contains('dm-max');
+  els.dmOverlay.classList.toggle('dm-max', on);
+  syncDmMaxBtn();
 }
 
 async function dmClearAll() {
@@ -5646,9 +5663,14 @@ if (els.dmOverlay) {
     if (e.target === els.dmOverlay) closeDmModal();
   });
   els.dmOverlay.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') { e.stopPropagation(); closeDmModal(); }
+    if (e.key === 'Escape') {
+      e.stopPropagation();
+      if (els.dmOverlay.classList.contains('dm-max')) toggleDmMax(false);
+      else closeDmModal();
+    }
   });
 }
+if (els.dmMaxBtn) els.dmMaxBtn.addEventListener('click', () => toggleDmMax());
 if (els.dmClear) els.dmClear.addEventListener('click', dmClearAll);
 if (els.dmColumnBtn) {
   els.dmColumnBtn.addEventListener('click', () => {

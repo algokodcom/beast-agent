@@ -2393,6 +2393,21 @@ body.browser-open #settingsDialog { width: min(70vw, calc(100vw - var(--bw, 480p
 }
 #dmDialogHead button:hover { color: var(--accent); background: var(--panel2); }
 #dmDialogHead .bot-bar-btns { display: flex; gap: 4px; }
+/* tam ekran modu — oturum tüm pencereyi kaplar (sağ üstteki ⛶ butonu) */
+#dmOverlay.dm-max { align-items: stretch; justify-content: stretch; }
+#dmOverlay.dm-max #dmDialog {
+  width: 100vw;
+  height: 100vh;
+  max-height: 100vh;
+  border: none;
+  border-radius: 0;
+}
+#dmOverlay.dm-max #dmDialogList { min-height: 0; }
+#dmOverlay.dm-max .dm-thread-msgs {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
+}
 #dmDialogList {
   flex: 1 1 auto;
   min-height: 200px;

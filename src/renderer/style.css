@@ -5843,6 +5843,121 @@ body.finance-mode #composerWrap { margin-right: var(--finW, 400px); }
 .fin-skill-chip.on { border-color: var(--accent); color: var(--accent); background: var(--accent-dim); }
 .fin-skill-chip input { flex: none; width: auto; margin: 0; }
 
+/* MT5 ÖĞRENME HAFIZASI modalı (TRADE AJANI 🧠) */
+.fin-learn-dialog { width: 580px; max-width: calc(100vw - 40px); }
+.fin-learn-dialog .mini-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+#finLearnList {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+#finLearnClear {
+  flex: none;
+  border: 1px solid var(--border);
+  background: var(--panel2);
+  color: var(--muted);
+  font-size: 10.5px;
+  font-weight: 700;
+  border-radius: 7px;
+  padding: 4px 8px;
+  cursor: pointer;
+  margin-right: 6px;
+}
+#finLearnClear:hover { color: #ef4444; border-color: #ef4444; }
+.fin-learn-sym { border: 1px solid var(--border); border-radius: 8px; padding: 7px 9px; background: var(--panel2); }
+.fin-learn-sym-head { display: flex; align-items: center; gap: 7px; cursor: pointer; }
+.fin-learn-sym-head b { flex: none; font-size: 12px; color: var(--accent); }
+.fin-learn-sym-stats {
+  flex: 1;
+  min-width: 0;
+  font-size: 10px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fin-learn-sym-notes { flex: none; font-size: 9.5px; font-weight: 800; letter-spacing: 0.4px; color: var(--muted); }
+.fin-learn-sum-btn {
+  flex: none;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.4px;
+  border-radius: 5px;
+  padding: 2px 6px;
+  cursor: pointer;
+}
+.fin-learn-sum-btn:hover { color: var(--accent); border-color: var(--accent); }
+.fin-learn-sum-btn:disabled { opacity: 0.5; cursor: default; }
+.fin-learn-summary {
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 6px;
+  background: var(--panel);
+  padding: 6px 8px;
+  font-size: 10.5px;
+  color: var(--text);
+  line-height: 1.45;
+  word-break: break-word;
+}
+.fin-learn-summary-at { font-size: 9px; color: var(--muted); margin: 3px 0 2px; }
+.fin-learn-drop,
+.fin-learn-note-del {
+  flex: none;
+  border: none;
+  background: none;
+  color: var(--muted);
+  line-height: 0;
+  padding: 3px 4px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.fin-learn-drop:hover,
+.fin-learn-note-del:hover { color: #ef4444; background: var(--accent-dim); }
+.fin-learn-body { margin-top: 6px; border-top: 1px dashed var(--border); padding-top: 6px; }
+.fin-learn-detail-stats { font-size: 10px; color: var(--muted); margin-bottom: 6px; }
+.fin-learn-sec { font-size: 9.5px; font-weight: 800; letter-spacing: 0.5px; color: var(--muted); margin: 6px 0 4px; }
+.fin-learn-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 4px 5px;
+  border-radius: 6px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  margin-bottom: 4px;
+}
+.fin-learn-kind {
+  flex: none;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.4px;
+  border-radius: 5px;
+  padding: 2px 5px;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  text-transform: uppercase;
+}
+.fin-learn-kind.k-pattern { color: #22c55e; border-color: #22c55e; }
+.fin-learn-kind.k-mistake { color: #ef4444; border-color: #ef4444; }
+.fin-learn-kind.k-rule { color: #e6a117; border-color: #e6a117; }
+.fin-learn-note-text { flex: 1; min-width: 0; font-size: 10.5px; color: var(--text); word-break: break-word; }
+.fin-learn-note-at { flex: none; font-size: 9px; color: var(--muted); }
+.fin-learn-trade { font-size: 10px; color: var(--muted); padding: 2px 4px; border-radius: 5px; }
+.fin-learn-trade.win { color: #22c55e; }
+.fin-learn-trade.loss { color: #ef4444; }
+
 /* FINANCE GÖRÜNÜM AYARLARI modalı (başlıktaki ⚙) — isteğe bağlı bölümler */
 .fin-card[hidden] { display: none; }
 .fin-settings-dialog { width: min(440px, 90vw); height: auto; max-height: min(560px, 84vh); }

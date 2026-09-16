@@ -92,6 +92,7 @@ const els = {
   bbBack: $('#bbBack'),
   bbFwd: $('#bbFwd'),
   bbReload: $('#bbReload'),
+  bbRestart: $('#bbRestart'),
   bbUrl: $('#bbUrl'),
   bbOpenExt: $('#bbOpenExt'),
   bbClose: $('#bbClose'),
@@ -260,6 +261,12 @@ const els = {
   finSkillsOverlay: $('#finSkillsOverlay'),
   finSkillsClose: $('#finSkillsClose'),
   finSkillsList: $('#finSkillsList'),
+  finLearnBtn: $('#finLearnBtn'),
+  finLearnOverlay: $('#finLearnOverlay'),
+  finLearnClose: $('#finLearnClose'),
+  finLearnList: $('#finLearnList'),
+  finLearnCount: $('#finLearnCount'),
+  finLearnClear: $('#finLearnClear'),
   finSymSearch: $('#finSymSearch'),
   finSymPick: $('#finSymPick'),
   finSymCount: $('#finSymCount'),
@@ -7813,6 +7820,16 @@ async function init() {
   els.bbBack.addEventListener('click', () => beast.browserCtrl('back'));
   els.bbFwd.addEventListener('click', () => beast.browserCtrl('forward'));
   els.bbReload.addEventListener('click', () => beast.browserCtrl('reload'));
+  if (els.bbRestart) {
+    els.bbRestart.addEventListener('click', async () => {
+      try {
+        const r = await beast.browserCtrl('restart');
+        toast(r && r.ok ? 'Tarayıcı yeniden başlatıldı' : 'Tarayıcı yeniden başlatılamadı');
+      } catch (e) {
+        toast('Tarayıcı yeniden başlatılamadı');
+      }
+    });
+  }
   if (els.bbPhone) {
     els.bbPhone.addEventListener('click', () => {
       /* web ↔ mobil: aynı sitenin iki versiyonu arasındaki anahtar */
@@ -11027,6 +11044,303 @@ if (els.finSkillsOverlay) {
   });
   els.finSkillsOverlay.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') { e.stopPropagation(); finSkillsCloseModal(); }
+  });
+}
+
+/* ---------- MT5 ÖĞRENME HAFIZASI modalı (TRADE AJANI 🧠) ----------
+   Çekirdekteki (main process) sembol bazlı öğrenme deposunu gösterir:
+   otomatik istatistik + ajanın mt5_ogrenme ile yazdığı dersler. Tek ders
+   silinebilir, sembol kaydı tümden bırakılabilir; depo tavanları
+   (60 sembol / 120 ders / 60 işlem / günlük 12 ders) çekirdekte uygulanır. */
+const FIN_LEARN_TRASH_SVG =
+  '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px"><path d="M3 6h18"/><path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>';
+
+let finLearnRows = [];
+let finLearnOpenSym = '';
+let finLearnBusy = false;
+
+function finLearnCall(payload) {
+  return beast.financeLearn(payload).catch(() => ({ ok: false }));
+}
+
+function finLearnSign(v) {
+  const n = Math.round((Number(v) || 0) * 100) / 100;
+  return (n >= 0 ? '+' : '') + n;
+}
+
+function finLearnTime(ts) {
+  const t = Number(ts) || 0;
+  if (!t) return '';
+  const d = new Date(t);
+  const p = (x) => String(x).padStart(2, '0');
+  return p(d.getDate()) + '.' + p(d.getMonth() + 1) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+}
+
+function finLearnKindLabel(kind) {
+  return ({ pattern: 'desen', mistake: 'hata', rule: 'kural', observation: 'gözlem' })[String(kind || '')] || 'gözlem';
+}
+
+function finLearnStatsText(st) {
+  const trades = Number(st && st.trades) || 0;
+  if (!trades) return '';
+  const parts = [
+    trades + ' işlem',
+    '%' + Math.round(((Number(st.wins) || 0) / trades) * 100) + ' kazanç',
+    'net ' + finLearnSign(st.net),
+  ];
+  if (Number(st.streak) >= 2) parts.push(Number(st.streak) + ' ardışık kayıp');
+  if (Number(st.givebacks) > 0) parts.push(Number(st.givebacks) + ' kez kâr geri verildi');
+  if (st.lastAt) parts.push('son ' + finLearnSign(st.lastNet));
+  return parts.join(' · ');
+}
+
+async function finLearnOpen() {
+  if (!els.finLearnOverlay) return;
+  finLearnOpenSym = '';
+  els.finLearnOverlay.hidden = false;
+  await finLearnRefresh();
+}
+
+function finLearnCloseModal() {
+  if (els.finLearnOverlay) els.finLearnOverlay.hidden = true;
+}
+
+async function finLearnRefresh() {
+  const box = els.finLearnList;
+  if (!box || finLearnBusy) return;
+  finLearnBusy = true;
+  box.innerHTML = '<div class="fin-empty">Öğrenme kayıtları yükleniyor…</div>';
+  const r = await finLearnCall({ action: 'list' });
+  finLearnBusy = false;
+  finLearnRows = (r && Array.isArray(r.symbols)) ? r.symbols : [];
+  finLearnRender();
+}
+
+function finLearnRender() {
+  const box = els.finLearnList;
+  if (!box) return;
+  box.textContent = '';
+  if (els.finLearnCount) els.finLearnCount.textContent = finLearnRows.length ? finLearnRows.length + ' sembol' : '';
+  if (!finLearnRows.length) {
+    box.innerHTML = '<div class="fin-empty">Henüz öğrenilmiş bir şey yok — işlem kapandıkça istatistik, ajan ders yazdıkça kayıt burada birikir.</div>';
+    return;
+  }
+  for (const row of finLearnRows) box.appendChild(finLearnSymEl(row));
+  /* silme sonrası yeniden çizimde açık sembol detayı açık kalsın */
+  if (finLearnOpenSym) {
+    const el = [...box.children].find((c) => c.dataset && c.dataset.sym === finLearnOpenSym);
+    if (el && el._finToggle) el._finToggle();
+  }
+}
+
+function finLearnSymEl(row) {
+  const sym = String(row.symbol || '');
+  const el = document.createElement('div');
+  el.className = 'fin-learn-sym';
+  el.dataset.sym = sym;
+  const head = document.createElement('div');
+  head.className = 'fin-learn-sym-head';
+  const name = document.createElement('b');
+  name.textContent = sym;
+  const stats = document.createElement('span');
+  stats.className = 'fin-learn-sym-stats';
+  stats.textContent = finLearnStatsText(row.stats) || 'henüz kapanan işlem yok';
+  const noteCount = document.createElement('span');
+  noteCount.className = 'fin-learn-sym-notes';
+  noteCount.textContent = (Number(row.notes) || 0) + ' ders' + (row.hasSummary ? ' · özet' : '');
+  /* ÖZETLE (opencode tarzı compaction): eski dersler modele özetlettirilir */
+  const sum = document.createElement('button');
+  sum.type = 'button';
+  sum.className = 'fin-learn-sum-btn';
+  sum.title = 'Eski dersleri modele özetlet — hafıza sadeleşir (24+ ders birikince otomatik de çalışır)';
+  sum.textContent = 'ÖZET';
+  sum.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    sum.disabled = true;
+    sum.textContent = '…';
+    const r = await finLearnCall({ action: 'compact', symbol: sym });
+    sum.disabled = false;
+    sum.textContent = 'ÖZET';
+    if (r && r.ok) {
+      toast(sym + ' özetlendi: ' + (Number(r.covered) || 0) + ' eski ders kalıcı özete sıkıştı');
+      await finLearnRefresh();
+    } else {
+      toast('Özetlenemedi: ' + ((r && r.error) || '?'));
+    }
+  });
+  const drop = document.createElement('button');
+  drop.type = 'button';
+  drop.className = 'fin-learn-drop';
+  drop.title = sym + ' kaydını TÜMDEN sil (dersler + otomatik istatistik)';
+  drop.innerHTML = FIN_LEARN_TRASH_SVG;
+  drop.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    const ok = await uiConfirm(sym + ' için TÜM öğrenme kaydı (dersler + istatistik) silinsin mi?', 'Sil', 'Vazgeç');
+    if (!ok) return;
+    await finLearnCall({ action: 'drop', symbol: sym });
+    if (finLearnOpenSym === sym) finLearnOpenSym = '';
+    toast(sym + ' öğrenme kaydı silindi');
+    await finLearnRefresh();
+  });
+  head.appendChild(name);
+  head.appendChild(stats);
+  head.appendChild(noteCount);
+  head.appendChild(sum);
+  head.appendChild(drop);
+  el.appendChild(head);
+
+  const body = document.createElement('div');
+  body.className = 'fin-learn-body';
+  body.hidden = true;
+  el.appendChild(body);
+  let loaded = false;
+  let busy = false;
+  el._finToggle = async () => {
+    if (busy) return;
+    if (loaded && !body.hidden) {
+      body.hidden = true;
+      if (finLearnOpenSym === sym) finLearnOpenSym = '';
+      return;
+    }
+    if (loaded) {
+      body.hidden = false;
+      finLearnOpenSym = sym;
+      return;
+    }
+    busy = true;
+    body.hidden = false;
+    finLearnOpenSym = sym;
+    body.innerHTML = '<div class="fin-empty">yükleniyor…</div>';
+    const d = await finLearnCall({ action: 'list', symbol: sym });
+    if (!els.finLearnOverlay || els.finLearnOverlay.hidden) { busy = false; return; }
+    finLearnDetail(body, sym, d);
+    loaded = true;
+    busy = false;
+  };
+  head.addEventListener('click', () => { el._finToggle(); });
+  return el;
+}
+
+function finLearnDetail(body, sym, d) {
+  body.textContent = '';
+  const st = (d && d.stats) || {};
+  const info = document.createElement('div');
+  info.className = 'fin-learn-detail-stats';
+  const trades = Number(st.trades) || 0;
+  const bits = [];
+  if (trades) {
+    bits.push(`${trades} işlem · ${Number(st.wins) || 0} kazanç · ${Number(st.losses) || 0} kayıp`);
+    bits.push(`net ${finLearnSign(st.net)} · en iyi ${finLearnSign(st.bestNet)} · en kötü ${finLearnSign(st.worstNet)}`);
+    bits.push(`MFE toplam ${finLearnSign(st.mfe)} · MAE toplam ${finLearnSign(st.mae)}`);
+    if (Number(st.givebacks) > 0) bits.push(`${Number(st.givebacks)} kez kâr geri verildi (${finLearnSign(st.givebackAmount)})`);
+  } else {
+    bits.push('Bu sembolde henüz kapanan işlem yok — istatistik ilk kapanışta oluşur.');
+  }
+  info.textContent = bits.join(' — ');
+  body.appendChild(info);
+
+  /* KALICI ÖZET (opencode tarzı compaction): eski derslerin modele
+     özetlettirilmiş hâli — ham dersler silinse de bilgi burada kalır */
+  const summ = d && d.summary && d.summary.text ? d.summary : null;
+  if (summ) {
+    const sHead = document.createElement('div');
+    sHead.className = 'fin-learn-sec';
+    sHead.textContent = 'KALICI ÖZET (opencode tarzı sıkıştırma' +
+      (Number(summ.covered) ? ' · ' + Number(summ.covered) + ' eski ders' : '') + ')';
+    body.appendChild(sHead);
+    const sBox = document.createElement('div');
+    sBox.className = 'fin-learn-summary';
+    sBox.textContent = String(summ.text || '');
+    body.appendChild(sBox);
+    const sAt = document.createElement('div');
+    sAt.className = 'fin-learn-summary-at';
+    sAt.textContent = 'güncelleme: ' + finLearnTime(summ.at);
+    body.appendChild(sAt);
+  }
+
+  const notes = (d && Array.isArray(d.notes)) ? d.notes : [];
+  const nHead = document.createElement('div');
+  nHead.className = 'fin-learn-sec';
+  nHead.textContent = 'DERSLER (' + notes.length + ')';
+  body.appendChild(nHead);
+  if (!notes.length) {
+    const e = document.createElement('div');
+    e.className = 'fin-empty';
+    e.textContent = 'Ders yok — ajan her kapanıştan sonra mt5_ogrenme ile buraya yazar.';
+    body.appendChild(e);
+  } else {
+    for (const n of notes.slice().reverse()) {
+      const rowEl = document.createElement('div');
+      rowEl.className = 'fin-learn-note';
+      const kind = document.createElement('span');
+      kind.className = 'fin-learn-kind k-' + String(n.kind || 'observation');
+      kind.textContent = finLearnKindLabel(n.kind);
+      const txt = document.createElement('span');
+      txt.className = 'fin-learn-note-text';
+      txt.textContent = String(n.text || '');
+      txt.title = txt.textContent;
+      const at = document.createElement('span');
+      at.className = 'fin-learn-note-at';
+      at.textContent = finLearnTime(n.at);
+      const del = document.createElement('button');
+      del.type = 'button';
+      del.className = 'fin-learn-note-del';
+      del.title = 'Bu dersi sil — yanlış/geçersiz ders hafızayı zehirlemesin';
+      del.innerHTML = FIN_LEARN_TRASH_SVG;
+      del.addEventListener('click', async () => {
+        const r = await finLearnCall({ action: 'remove', id: n.id, symbol: sym });
+        if (r && r.ok) {
+          toast('Ders silindi');
+          await finLearnRefresh();
+        } else {
+          toast('Ders silinemedi');
+        }
+      });
+      rowEl.appendChild(kind);
+      rowEl.appendChild(txt);
+      rowEl.appendChild(at);
+      rowEl.appendChild(del);
+      body.appendChild(rowEl);
+    }
+  }
+
+  const tradeRows = (d && Array.isArray(d.trades)) ? d.trades : [];
+  if (tradeRows.length) {
+    const tHead = document.createElement('div');
+    tHead.className = 'fin-learn-sec';
+    tHead.textContent = 'SON İŞLEMLER (otomatik)';
+    body.appendChild(tHead);
+    for (const t of tradeRows.slice().reverse()) {
+      const tr = document.createElement('div');
+      tr.className = 'fin-learn-trade ' + (Number(t.net) < 0 ? 'loss' : 'win');
+      const side = String(t.side || '').toLowerCase();
+      const sideTxt = side === 'buy' ? 'AL' : side === 'sell' ? 'SAT' : (side || '?');
+      tr.textContent = `${finLearnTime(t.at)} · ${sideTxt} · ${finLearnSign(t.net)}` +
+        (t.mfe != null ? ` · MFE ${finLearnSign(t.mfe)}` : '') +
+        (t.mae != null ? ` · MAE ${finLearnSign(t.mae)}` : '') +
+        (t.reason ? ` · ${String(t.reason)}` : '');
+      body.appendChild(tr);
+    }
+  }
+}
+
+if (els.finLearnBtn) els.finLearnBtn.addEventListener('click', () => { finLearnOpen(); });
+if (els.finLearnClose) els.finLearnClose.addEventListener('click', finLearnCloseModal);
+if (els.finLearnOverlay) {
+  els.finLearnOverlay.addEventListener('click', (e) => {
+    if (e.target === els.finLearnOverlay) finLearnCloseModal();
+  });
+  els.finLearnOverlay.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') { e.stopPropagation(); finLearnCloseModal(); }
+  });
+}
+if (els.finLearnClear) {
+  els.finLearnClear.addEventListener('click', async () => {
+    const ok = await uiConfirm('TÜM sembollerin öğrenme DERSLERİ silinsin mi? Otomatik istatistikler korunur; işlem geri alınamaz.', 'Tümünü sil', 'Vazgeç');
+    if (!ok) return;
+    const r = await finLearnCall({ action: 'clear', all: true });
+    toast(r && r.ok ? ('Dersler temizlendi' + (r.removed ? ' (' + r.removed + ' kayıt)' : '')) : 'Dersler temizlenemedi');
+    await finLearnRefresh();
   });
 }
 

@@ -130,7 +130,25 @@ function ensureDefaultBots() {
   loadRegistry();
   let created = false;
   for (const def of DEFAULT_BOT_SEEDS) {
-    if (REG.bots.some((b) => b && b.id === def.id)) continue;
+    const existing = REG.bots.find((b) => b && b.id === def.id);
+    if (existing) {
+      /* VARSAYILAN PROMPT GÜNCELLEMESİ (tek seferlik ek): eski sürümde
+         oluşmuş Tool botunun promptunda mql5/edit_file/skill vurgusu yoksa
+         eksik parçalar EKLENİR — kullanıcı düzenlemesi ezilmez. */
+      if (def.id === 'tool') {
+        const p = String(existing.prompt || '');
+        const add = [];
+        if (!/skill\(["']mql5["']\)/.test(p)) add.push('MQL5/gösterge/EA işlerinde ÖNCE skill("mql5") oku ve prosedürüne uy.');
+        if (!/edit_file/.test(p)) add.push('Var olan dosyayı edit_file ile GÜNCELLE; yeniyi write_file ile yaz; içerik aramada grep, dosya adı aramada glob kullan.');
+        if (!/skill\(["']tool-yazma["']\)/.test(p)) add.push('Tool yazmadan önce skill("tool-yazma") oku ve sözleşmeye birebir uy.');
+        if (add.length) {
+          existing.prompt = (p ? p + ' ' : '') + add.join(' ');
+          created = true;
+          logChange(def.id, 'varsayılan prompt ekleri eklendi (mql5/edit_file/skill)');
+        }
+      }
+      continue;
+    }
     if (REG.bots.length >= MAX_BOTS) break;
     const bot = {
       id: def.id,

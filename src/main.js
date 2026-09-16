@@ -2356,6 +2356,7 @@ function botToolSet(cfg) {
     'tool_request', /* CEPHANE: eksik aracı TOOL botuna yazdırma hakkı HER botta */
     'channel_send', /* İLK MESAJ: allow listteki kişilere kendiliğinden yazma hakkı HER botta */
     'agent_dm',     /* BOTLAR ARASI DM: botlar birbirine iş atar/cevap verir (ör. Beast → Tool) */
+    'skill',        /* SKILL KATALOĞU: botlar SKILL.md gövdesini skill() ile okur (Tool botu: tool-yazma/mql5) */
   ]);
   if (s.web_search) { set.add('web_search'); set.add('http_fetch'); set.add('webfetch'); set.add('deep_search'); }
   if (s.browser) {
@@ -2363,7 +2364,7 @@ function botToolSet(cfg) {
   }
   if (s.email) { set.add('email_list'); set.add('email_read'); set.add('email_send'); }
   if (s.run_command) {
-    for (const t of ['run_command', 'python_run', 'read_file', 'write_file', 'list_dir', 'computer_look', 'computer_act',
+    for (const t of ['run_command', 'python_run', 'read_file', 'write_file', 'edit_file', 'grep', 'glob', 'list_dir', 'computer_look', 'computer_act',
       'git_commit', 'git_diff_review', 'git_pr_create', 'repo_map', 'repo_symbols', 'xlsx_read', 'xlsx_write', 'xlsx_edit']) set.add(t);
   }
   if (s.memory) { set.add('memory_write'); set.add('user_write'); set.add('memory_search'); set.add('memory_hygiene'); }
@@ -4321,6 +4322,43 @@ function detachBrowser() {
     }
   }
   browser.attached = false;
+}
+
+/* TARAYICI YENİDEN BAŞLATMA: takılan/kilitlenen sayfa için view + webContents
+   tamamen kapatılır, aynı URL YENİ bir view'da açılır. persist:browser
+   partition'ı silinmez → oturum/çerezler (Google, X vb.) korunur. */
+function restartBrowser() {
+  if (!win || win.isDestroyed()) return { ok: false, error: 'pencere yok' };
+  const wasOpen = browser.open;
+  let url = '';
+  try {
+    if (browser.view && browser.view.webContents && !browser.view.webContents.isDestroyed()) {
+      url = browser.view.webContents.getURL();
+    }
+  } catch {}
+  detachBrowser();
+  try {
+    const oldWc = browser.view && browser.view.webContents;
+    if (oldWc && !oldWc.isDestroyed()) {
+      try { oldWc.close(); } catch { try { oldWc.destroy(); } catch {} }
+      /* takılı renderer süreci close()'u geciktirebilir — güvence: kısa süre
+         sonra hâlâ duruyorsa zorla yok et (yeni view'ı asla kilitlemez) */
+      setTimeout(() => { try { if (!oldWc.isDestroyed()) oldWc.destroy(); } catch {} }, 1500);
+    }
+  } catch {}
+  browser.view = null;
+  browser.started = false;
+  browser.lastDialog = null;
+  if (wasOpen) {
+    ensureBrowser();
+    browser.started = true;
+    browser.view.webContents.loadURL(url || BROWSER_START_URL).catch(() => {});
+    layoutBrowser();
+    const [w] = win.getContentSize();
+    browserEmit({ open: true, width: browserShownWidth(w), url: url || BROWSER_START_URL, restarted: true });
+  }
+  blog('restart', 'tarayıcı yeniden başlatıldı' + (url ? ' — ' + url.slice(0, 90) : ''));
+  return { ok: true, url };
 }
 
 function setBrowserOpen(v, forceVisible) {
@@ -8399,6 +8437,7 @@ ipcMain.handle('browser:ctrl', (_e, action) => {
     setBrowserOpen(false);
     return { ok: true };
   }
+  if (action === 'restart') return restartBrowser();
   const wc = browser.view && browser.view.webContents;
   if (!wc) return { ok: false };
   try {
@@ -11280,8 +11319,21 @@ function finLimitsSet(patch, ctx) {
    kazanç/kayıp, net, MFE/MAE, kâr geri verme) (2) ajanın yazdığı dersler.
    Trader turunda bu özet sistem promptuna gömülür — sistem kendi geçmişinden
    öğrenir; her kapanış otomatik işlenir, dersleri ajan mt5_ogrenme ile yazar. */
-const FIN_LEARN_MAX_NOTES = 120;
+const FIN_LEARN_MAX_NOTES = 60;      /* sembol başına ders tavanı */
 const FIN_LEARN_MAX_TRADES = 60;
+const FIN_LEARN_MAX_SYMBOLS = 60;   /* toplam sembol tavanı — depo sınırsız büyümesin */
+const FIN_LEARN_MAX_NOTES_DAY = 12; /* sembol başına 24 saatte en fazla ders — ajan seli depoyu zehirlemesin */
+/* SÜREKLİ UNUTMA (bellek hijyeni): eski kayıtlar otomatik düşer — depo büyüyüp
+   zehirlenmez, yalnız GÜNCEL dersler ve son performans kalır. */
+const FIN_LEARN_NOTE_TTL_MS = 30 * 24 * 60 * 60 * 1000;    /* 30 gün: eski ders unutulur */
+const FIN_LEARN_TRADE_TTL_MS = 90 * 24 * 60 * 60 * 1000;   /* 90 gün: eski işlem kaydı düşer */
+const FIN_LEARN_SYMBOL_TTL_MS = 120 * 24 * 60 * 60 * 1000; /* 120 gün aktivite yoksa sembol kaydı silinir */
+/* ÖZETLEME (opencode tarzı compaction): ham dersler birikince ESKİ olanlar
+   modele özetlettirilir → tek kalıcı özet; ham yalnız son dersler kalır. */
+const FIN_LEARN_COMPACT_AT = 24;    /* not sayısı bunu aşınca arka planda otomatik özetle */
+const FIN_LEARN_KEEP_RECENT = 8;    /* ham kalan son ders sayısı */
+const FIN_LEARN_SUMMARY_MAX = 800;  /* kalıcı özet metin tavanı (karakter) */
+const FIN_LEARN_COMPACT_MIN = 4;    /* elle özetleme için gereken en az eski ders */
 
 function finLearnEmptyStats() {
   return {
@@ -11289,6 +11341,70 @@ function finLearnEmptyStats() {
     mfe: 0, mae: 0, givebacks: 0, givebackAmount: 0,
     lastAt: 0, lastNet: 0, streak: 0, bestNet: 0, worstNet: 0,
   };
+}
+
+/* Ders metni karşılaştırma anahtarı: büyük/küçük harf, noktalama ve boşluk
+   farkları aynı ders sayılır — ajan aynı cümleyi kopyalayıp depoyu doldurmasın */
+function finLearnNoteKey(text) {
+  return String(text || '')
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]+/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 140);
+}
+
+/* sembolün son aktivitesi (kapanış / ders / eski istatistik) — tavan aşımında
+   EN ESKİ semboller düşürülür; dokunulan (protectSym) sembol asla atılmaz */
+function finLearnActivity(e) {
+  const last = (arr) => (Array.isArray(arr) && arr.length ? Number(arr[arr.length - 1].at) || 0 : 0);
+  return Math.max(Number((e.stats || {}).lastAt) || 0, last(e.notes), last(e.trades));
+}
+
+function finLearnPrune(learn, keep, protectSym) {
+  const cap = Number.isFinite(Number(keep)) ? Number(keep) : FIN_LEARN_MAX_SYMBOLS;
+  const keys = Object.keys(learn.symbols);
+  if (keys.length <= cap) return 0;
+  const protect = String(protectSym || '').trim().toUpperCase();
+  const dropped = keys
+    .sort((a, b) => {
+      if (a === protect) return 1;
+      if (b === protect) return -1;
+      return finLearnActivity(learn.symbols[a]) - finLearnActivity(learn.symbols[b]);
+    })
+    .slice(0, keys.length - cap);
+  for (const k of dropped) delete learn.symbols[k];
+  return dropped.length;
+}
+
+/* SÜREKLİ UNUTMA: TTL'i geçen ders/işlem kayıtları düşer; uzun süre hiç
+   aktivite görmeyen sembol kaydı (istatistik dahil) silinir. Her yazma ve
+   yüklemede çalışır → depo kendiliğinden sade kalır, birikme/zehirlenme olmaz. */
+function finLearnForget(learn, now) {
+  const t = Number(now) || Date.now();
+  const stat = { notes: 0, trades: 0, symbols: 0 };
+  for (const [sym, e] of Object.entries(learn.symbols)) {
+    if (!e || typeof e !== 'object') { delete learn.symbols[sym]; stat.symbols++; continue; }
+    const notes = Array.isArray(e.notes) ? e.notes : [];
+    e.notes = notes.filter((n) => n && t - (Number(n.at) || 0) <= FIN_LEARN_NOTE_TTL_MS);
+    stat.notes += notes.length - e.notes.length;
+    const trades = Array.isArray(e.trades) ? e.trades : [];
+    e.trades = trades.filter((x) => x && t - (Number(x.at) || 0) <= FIN_LEARN_TRADE_TTL_MS);
+    stat.trades += trades.length - e.trades.length;
+    if (t - finLearnActivity(e) > FIN_LEARN_SYMBOL_TTL_MS) {
+      delete learn.symbols[sym];
+      stat.symbols += 1;
+    }
+  }
+  return stat;
+}
+
+/* TEK TEMİZLİK: önce TTL unutması, sonra sembol tavanı. protectSym (yeni
+   dokunulan sembol) asla düşürülmez. */
+function finLearnTidy(learn, protectSym, now) {
+  const forgot = finLearnForget(learn, now);
+  const cap = finLearnPrune(learn, FIN_LEARN_MAX_SYMBOLS, protectSym);
+  return { notes: forgot.notes, trades: forgot.trades, symbols: forgot.symbols + cap };
 }
 
 function finLearnLoad() {
@@ -11305,19 +11421,126 @@ function finLearnLoad() {
           notes: Array.isArray(v.notes) ? v.notes.filter((n) => n && n.id && n.text).slice(-FIN_LEARN_MAX_NOTES) : [],
           trades: Array.isArray(v.trades) ? v.trades.filter(Boolean).slice(-FIN_LEARN_MAX_TRADES) : [],
           stats: v.stats && typeof v.stats === 'object' ? { ...finLearnEmptyStats(), ...v.stats } : finLearnEmptyStats(),
+          /* KALICI ÖZET (opencode tarzı sıkıştırma): eski derslerin modele
+             özetlettirilmiş hâli — ham dersler düşse de bilgi kalır */
+          summary: v.summary && typeof v.summary === 'object' && String(v.summary.text || '').trim()
+            ? {
+                text: String(v.summary.text).replace(/\s+/g, ' ').trim().slice(0, FIN_LEARN_SUMMARY_MAX),
+                at: Number(v.summary.at) || 0,
+                covered: Math.max(0, Math.round(Number(v.summary.covered) || 0)),
+              }
+            : null,
         };
       }
       if (Number(raw.updatedAt)) learn.updatedAt = Number(raw.updatedAt);
     }
   } catch {}
+  const dropped = finLearnTidy(learn);    /* yükleme anında unut + tavan uygula */
   financeState.learn = learn;
+  if (dropped.notes || dropped.trades || dropped.symbols) finLearnSave(); /* disk de hemen küçülsün */
   return learn;
 }
 
 function finLearnSave() {
   const learn = finLearnLoad();
+  finLearnTidy(learn);                    /* her yazmada sürekli unutma */
   learn.updatedAt = Date.now();
   try { finWriteJson(finFile('ogrenme.json'), learn); } catch {}
+}
+
+/* ---------- OPENCODE TARZI ÖZETLEME (COMPACTION) ----------
+   Ham dersler birikince ESKİ dersler modele özetlettirilir: çalışan desenler,
+   kaçınılacak hatalar, kurallar tek KALICI ÖZET'e iner; ham olarak yalnız son
+   dersler kalır. Böylece öğrenme hafızası hem küçük hem zehirsiz kalır —
+   context penceresi sıkıştırmasının sembol bazlı hâli. */
+const FIN_LEARN_COMPACT_SYSTEM =
+  'Sen bir trading mentorüsün. Sana bir sembolün ESKİ ders notları ve mevcut özeti verilir. ' +
+  'Görevin: güncellenmiş KISA bir özet üretmek.\n' +
+  'KURALLAR: (1) Yalnız kalıcı değeri olan bilgiyi tut: çalışan desenler, kaçınılacak hatalar, ' +
+  'seans/setup kuralları, SL/TP davranışı. (2) Tekrarları birleştir; tarih/saat damgası, anlık ' +
+  'haber, geçici durum gibi bayat bilgiyi at. (3) Çelişen bilgide EN YENİ ve istatistikle ' +
+  'desteklenen kazanır. (4) Sayısal istatistikleri (işlem, kazanç %, net, kâr geri verme) koru. ' +
+  '(5) En fazla ' + FIN_LEARN_SUMMARY_MAX + ' karakter; kısa maddeler ya da 2-4 akıcı cümle. ' +
+  '(6) Çıktı SADECE özet metni olsun; başlık/etiket/açıklama yazma.';
+
+const finLearnCompacting = new Set();
+
+function finLearnSummaryPrompt(sym, e, oldNotes) {
+  const st = { ...finLearnEmptyStats(), ...(e.stats || {}) };
+  const wr = st.trades ? Math.round((st.wins / st.trades) * 100) : 0;
+  const lines = [];
+  lines.push('SEMBOL: ' + sym);
+  lines.push(
+    `OTOMATİK İSTATİSTİK: ${st.trades} işlem · %${wr} kazanç · net ${st.net >= 0 ? '+' : ''}${st.net}` +
+      (st.givebacks ? ` · ${st.givebacks} kez kâr geri verildi` : '') +
+      (st.streak >= 2 ? ` · ${st.streak} ardışık kayıp` : '')
+  );
+  if (e.summary && e.summary.text) lines.push('MEVCUT ÖZET:\n' + String(e.summary.text).slice(0, 1400));
+  lines.push('ESKİ DERSLER (kronolojik — en yeni EN SONDA):');
+  for (const n of oldNotes.slice(-80)) {
+    lines.push(`- [${String(n.kind || 'observation')}] ${String(n.text || '').slice(0, 220)}`);
+  }
+  lines.push('Görev: yalnız kalıcı ve güncel dersleri koruyan yeni özet metnini yaz.');
+  return lines.join('\n');
+}
+
+/* Bir sembolü özetle: snapshot'taki ESKİ dersleri modele özetlet, onları düş,
+   yerine kalıcı özet yaz. Model çalışırken gelen YENİ dersler ham kalır. */
+async function finLearnCompactSymbol(symbol, force) {
+  const sym = String(symbol || '').trim().toUpperCase();
+  if (!sym) return { ok: false, error: 'symbol gerekli' };
+  if (finLearnCompacting.has(sym)) return { ok: false, error: 'bu sembol şu an özetleniyor' };
+  if (!engine || !engine.sel) return { ok: false, error: 'özetleme için aktif model yok' };
+  const e = finLearnLoad().symbols[sym];
+  if (!e) return { ok: false, error: 'sembol kaydı yok: ' + sym };
+  const oldNotes = e.notes.slice(0, Math.max(0, e.notes.length - FIN_LEARN_KEEP_RECENT));
+  const min = force ? FIN_LEARN_COMPACT_MIN : FIN_LEARN_COMPACT_AT - FIN_LEARN_KEEP_RECENT;
+  if (oldNotes.length < min) {
+    return { ok: false, error: `özetlenecek yeterli eski ders yok (${oldNotes.length}/${min})` };
+  }
+  finLearnCompacting.add(sym);
+  try {
+    const ctrl = new AbortController();
+    const kill = setTimeout(() => ctrl.abort(), 60000);
+    let r = null;
+    try {
+      r = await require('./agent/llm').chatOnce(engine.sel, {
+        messages: [
+          { role: 'system', content: FIN_LEARN_COMPACT_SYSTEM },
+          { role: 'user', content: finLearnSummaryPrompt(sym, e, oldNotes) },
+        ],
+        temperature: 0.2,
+      }, { signal: ctrl.signal });
+    } catch (err) {
+      return { ok: false, error: 'özetleme çağrısı başarısız: ' + String((err && err.message) || err).slice(0, 120) };
+    } finally {
+      clearTimeout(kill);
+    }
+    const text = String((r && r.content) || '').replace(/\s+/g, ' ').trim().slice(0, FIN_LEARN_SUMMARY_MAX);
+    if (!text) return { ok: false, error: 'özet üretilemedi (model yanıtı boş)' };
+    /* yarışma koruması: yalnız snapshot'taki eski dersleri düşür */
+    const fresh = finLearnLoad().symbols[sym];
+    if (!fresh) return { ok: false, error: 'sembol kaydı kalmadı' };
+    const drop = new Set(oldNotes.map((n) => String(n.id)));
+    const before = fresh.notes.length;
+    fresh.notes = fresh.notes.filter((n) => !drop.has(String(n.id)));
+    const covered = before - fresh.notes.length;
+    fresh.summary = {
+      text,
+      at: Date.now(),
+      covered: (Number(fresh.summary && fresh.summary.covered) || 0) + covered,
+    };
+    finLearnSave();
+    financeLog(`[öğrenme] ${sym} özetlendi: ${covered} eski ders → kalıcı özet (${text.length} karakter)`);
+    return { ok: true, symbol: sym, covered, remaining: fresh.notes.length, summary: text };
+  } finally {
+    finLearnCompacting.delete(sym);
+  }
+}
+
+/* Arka plan tetikleyici: ajanı BEKLETMEDEN özetler (notlar birikince) */
+function finLearnCompactAuto(sym) {
+  try { finLearnCompactSymbol(sym, false).catch(() => {}); } catch {}
 }
 
 function finLearnSym(symbol) {
@@ -11367,6 +11590,7 @@ function finLearnRecordClose({ symbol, side, net, mfe, mae, reason }) {
       reason: String(reason || '').slice(0, 40),
     });
     while (e.trades.length > FIN_LEARN_MAX_TRADES) e.trades.shift();
+    finLearnTidy(finLearnLoad(), symbol);
     finLearnSave();
   } catch {}
 }
@@ -11389,6 +11613,11 @@ function finBuildLearnDigest(symbols) {
       if (st.lastAt) parts.push(`son: ${st.lastNet >= 0 ? '+' : ''}${st.lastNet}`);
       L.push(`- ${sym}: ${parts.join(' · ')}`);
     }
+    /* KALICI ÖZET (compaction): eski derslerin sıkıştırılmış hâli — ham ders
+       sayısı azalsa da birikmiş bilgi prompta girer */
+    if (e.summary && e.summary.text) {
+      L.push(`  kalıcı özet: "${String(e.summary.text).slice(0, 500)}"`);
+    }
     if (e.notes.length) {
       const last = e.notes[e.notes.length - 1];
       const extra = e.notes.length > 1 ? ` (+${e.notes.length - 1} ders)` : '';
@@ -11406,7 +11635,7 @@ function finLearnApi() {
       const sym = norm(symbol);
       if (sym) {
         const e = learn.symbols[sym];
-        if (!e) return { ok: true, symbol: sym, count: 0, notes: [], trades: [], stats: finLearnEmptyStats() };
+        if (!e) return { ok: true, symbol: sym, count: 0, notes: [], trades: [], stats: finLearnEmptyStats(), summary: null };
         return {
           ok: true,
           symbol: sym,
@@ -11414,6 +11643,7 @@ function finLearnApi() {
           notes: e.notes.slice(-25),
           trades: e.trades.slice(-12),
           stats: { ...finLearnEmptyStats(), ...(e.stats || {}) },
+          summary: e.summary && e.summary.text ? e.summary : null,
         };
       }
       const rows = Object.entries(learn.symbols)
@@ -11422,9 +11652,10 @@ function finLearnApi() {
           notes: e.notes.length,
           stats: { ...finLearnEmptyStats(), ...(e.stats || {}) },
           lastNote: String(((e.notes[e.notes.length - 1] || {}).text) || ''),
+          hasSummary: !!(e.summary && e.summary.text),
         }))
         .sort((a, b) => (b.stats.lastAt || 0) - (a.stats.lastAt || 0));
-      return { ok: true, count: rows.length, symbols: rows.slice(0, 40) };
+      return { ok: true, count: rows.length, symbols: rows.slice(0, FIN_LEARN_MAX_SYMBOLS) };
     },
     stats: ({ symbol } = {}) => {
       const learn = finLearnLoad();
@@ -11438,12 +11669,26 @@ function finLearnApi() {
       const sym = norm(symbol);
       const t = String(text || '').replace(/\s+/g, ' ').trim();
       if (!sym || !t) return { ok: false, error: 'symbol ve text gerekli' };
+      const learn = finLearnLoad();
       const e = finLearnSym(sym);
       if (!e) return { ok: false, error: 'sembol yok' };
-      /* aynı ders tekrar yazılmasın (son 20 kayıtta aynı metin) */
-      const key = t.toLowerCase().slice(0, 120);
-      if (e.notes.slice(-20).some((n) => String(n.text || '').toLowerCase().slice(0, 120) === key)) {
+      /* aynı ders tekrar yazılmasın (son 40 kayıtta normalize metin) — kopyala/
+         yapıştır ve noktalama oyunlarıyla depo şişirilemez */
+      const key = finLearnNoteKey(t);
+      if (key && e.notes.slice(-40).some((n) => finLearnNoteKey(n.text) === key)) {
         return { ok: true, duplicate: true, symbol: sym, count: e.notes.length };
+      }
+      /* GÜNLÜK DERS LİMİTİ: ajan aynı gün aynı sembole ders yağdıramaz —
+         hafıza öğrenmeyle zehirlenmesin, özet son dersleri temsil etsin */
+      const dayAgo = Date.now() - 24 * 60 * 60 * 1000;
+      const today = e.notes.filter((n) => Number(n.at) >= dayAgo).length;
+      if (today >= FIN_LEARN_MAX_NOTES_DAY) {
+        return {
+          ok: false,
+          error: `günlük ders limiti doldu (${FIN_LEARN_MAX_NOTES_DAY}/24s) — ders kaydedilmedi`,
+          symbol: sym,
+          count: e.notes.length,
+        };
       }
       const note = {
         id: 'l' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
@@ -11455,7 +11700,11 @@ function finLearnApi() {
       };
       e.notes.push(note);
       while (e.notes.length > FIN_LEARN_MAX_NOTES) e.notes.shift();
+      finLearnTidy(learn, sym);
       finLearnSave();
+      /* OPENCODE TARZI COMPACTION: notlar birikince ESKİLERİ arka planda
+         özetle — ajanı bekletmez, hafıza kendiliğinden sadeleşir */
+      if (e.notes.length > FIN_LEARN_COMPACT_AT) finLearnCompactAuto(sym);
       return { ok: true, id: note.id, symbol: sym, count: e.notes.length };
     },
     remove: ({ id, symbol } = {}) => {
@@ -11496,6 +11745,31 @@ function finLearnApi() {
       else return { ok: false, error: 'clear için symbol ya da all:true ver (ids de verilebilir)' };
       if (removed) finLearnSave();
       return { ok: true, removed };
+    },
+    drop: ({ symbol } = {}) => {
+      /* sembolün TÜM kaydını (istatistik + dersler + işlemler) bırak —
+         artık işlem yapılmayan/eski semboller depoda yer kaplamasın */
+      const learn = finLearnLoad();
+      const sym = norm(symbol);
+      if (!sym || !learn.symbols[sym]) return { ok: false, error: 'sembol yok' };
+      delete learn.symbols[sym];
+      finLearnSave();
+      return { ok: true, symbol: sym };
+    },
+    forget: () => {
+      /* ELLE SADELEŞTİRME: TTL'i geçen ders/işlemleri ve hareketsiz sembolleri
+         hemen unut (normalde her yazmada otomatik çalışır) */
+      const learn = finLearnLoad();
+      const r = finLearnForget(learn);
+      if (r.notes || r.trades || r.symbols) finLearnSave();
+      return { ok: true, ...r };
+    },
+    compact: ({ symbol } = {}) => {
+      /* OPENCODE TARZI ÖZETLEME (elle): eski dersleri modele özetlet,
+         ham yalnız son dersler kalsın */
+      const sym = norm(symbol);
+      if (!sym) return Promise.resolve({ ok: false, error: 'compact için symbol gerekli' });
+      return finLearnCompactSymbol(sym, true);
     },
   };
 }
@@ -12395,6 +12669,26 @@ ipcMain.handle('finance:alerts:remove', async (_e, id) => {
   const ok = finAlertApi().remove(String(id || ''));
   finPush('alert', { removed: ok, id: String(id || '') });
   return { ok };
+});
+
+/* MT5 ÖĞRENME HAFIZASI (panel 🧠): sembol bazlı istatistik + ajan derslerini
+   görüntüle/sil — depo tavanları (sembol/ders/işlem/günlük ders) çekirdekte uygulanır */
+ipcMain.handle('finance:learn', async (_e, payload) => {
+  const p = payload && typeof payload === 'object' ? payload : {};
+  const api = finLearnApi();
+  const action = String(p.action || 'list');
+  try {
+    if (action === 'list') return api.list({ symbol: p.symbol });
+    if (action === 'stats') return api.stats({ symbol: p.symbol });
+    if (action === 'remove') return api.remove({ id: p.id, symbol: p.symbol });
+    if (action === 'clear') return api.clear({ ids: p.ids, symbol: p.symbol, all: p.all });
+    if (action === 'drop') return api.drop({ symbol: p.symbol });
+    if (action === 'forget') return api.forget();
+    if (action === 'compact') return await api.compact({ symbol: p.symbol });
+    return { ok: false, error: 'bilinmeyen action' };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e).slice(0, 160) };
+  }
 });
 
 ipcMain.handle('finance:mode', async (_e, payload) => {

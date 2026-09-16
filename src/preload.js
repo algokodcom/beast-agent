@@ -131,6 +131,7 @@ contextBridge.exposeInMainWorld('beast', {
   financeMt5Setup: () => ipcRenderer.invoke('finance:mt5:setup'),
   financeSymbolsList: (filter) => ipcRenderer.invoke('finance:symbols:list', filter),
   financeReport: () => ipcRenderer.invoke('finance:report'),
+  financeLearn: (payload) => ipcRenderer.invoke('finance:learn', payload),
   clipRead: () => ipcRenderer.invoke('clip:read'),
   clipWrite: (t) => ipcRenderer.invoke('clip:write', t),
   thinkSet: (v) => ipcRenderer.invoke('think:set', v),

@@ -164,7 +164,7 @@
             </div>
           </div>
           <div class="fin-card fin-card-trader" data-fin-card="trader">
-            <div class="fin-card-title">TRADE AJANI <span id="finTraderDot" class="fin-dot off" title="Trader durumu"></span><span class="file-spacer"></span><button id="finSetupBtn" title="MT5 kurulumunu uygula — BeastFinance.mq5 derle + AutoTrading izni + grafiğe ekle">&#x1F6E0;</button><button id="finModelRefreshBtn" title="Modelleri yeniden çek — eksik/güncel modelleri tazeler">&#x27F3;</button><button id="finSkillsBtn" title="Rol → skill eşleştirmesi — rol başına tek skill (çöp ikonuyla kaldırılır; boş = ajan kendi seçer)">&#9881;</button><button id="finAdvToggle" type="button" aria-expanded="false" title="Gelişmiş — disiplin kuralları + shadow mod"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px"><path d="M4 6h9"/><circle cx="16.5" cy="6" r="2.5"/><path d="M20 6h0.01"/><path d="M4 12h3"/><circle cx="10.5" cy="12" r="2.5"/><path d="M15 12h5"/><path d="M4 18h11"/><circle cx="18.5" cy="18" r="2.5"/></svg></button></div>
+            <div class="fin-card-title">TRADE AJANI <span id="finTraderDot" class="fin-dot off" title="Trader durumu"></span><span class="file-spacer"></span><button id="finSetupBtn" title="MT5 kurulumunu uygula — BeastFinance.mq5 derle + AutoTrading izni + grafiğe ekle">&#x1F6E0;</button><button id="finModelRefreshBtn" title="Modelleri yeniden çek — eksik/güncel modelleri tazeler">&#x27F3;</button><button id="finLearnBtn" title="MT5 öğrenme hafızası — neler öğrendi: sembol bazlı dersler + otomatik istatistik (görüntüle/sil)">&#x1F9E0;</button><button id="finSkillsBtn" title="Rol → skill eşleştirmesi — rol başına tek skill (çöp ikonuyla kaldırılır; boş = ajan kendi seçer)">&#9881;</button><button id="finAdvToggle" type="button" aria-expanded="false" title="Gelişmiş — disiplin kuralları + shadow mod"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px"><path d="M4 6h9"/><circle cx="16.5" cy="6" r="2.5"/><path d="M20 6h0.01"/><path d="M4 12h3"/><circle cx="10.5" cy="12" r="2.5"/><path d="M15 12h5"/><path d="M4 18h11"/><circle cx="18.5" cy="18" r="2.5"/></svg></button></div>
             <div class="fin-field">
               <span>Model</span>
               <select id="finTraderModel" title="Trader ajanının modeli — farklı API/model seçilebilir"></select>
@@ -858,6 +858,21 @@
     </div>
   </div>
 
+  <div id="finLearnOverlay" class="mini-overlay" hidden>
+    <div class="mini-dialog fin-learn-dialog">
+      <div class="mini-head">
+        <span class="mini-title">MT5 ÖĞRENME HAFIZASI</span>
+        <span id="finLearnCount" class="fin-sym-count"></span>
+        <button id="finLearnClear" title="TÜM sembollerin derslerini sil — otomatik istatistikler korunur (depo şişmesi/zehirlenmesi önlenir)">Tüm dersleri sil</button>
+        <button class="mini-close" id="finLearnClose" title="Kapat">&#x00D7;</button>
+      </div>
+      <div class="mini-body">
+        <div id="finLearnList" class="mini-list"></div>
+        <div class="fin-sym-hint">Trade ajanının çekirdekteki sembol bazlı hafızası: her işlem kapanışı otomatik istatistiğe işlenir, ajan dersleri mt5_ogrenme ile yazar. Sembol satırına tıkla → kalıcı özeti, dersleri ve son işlemleri gör; ÖZET ile eski dersleri modele sıkıştırt (24+ ders birikince otomatik), tek dersi çöp ikonuyla sil, sembol kaydını tümden bırak. Hafıza sürekli sadeleşir: 30 günden eski dersler, 90 günden eski işlem kayıtları ve 120 gün hareketsiz semboller otomatik unutulur.</div>
+      </div>
+    </div>
+  </div>
+
   <div id="finTeamOverlay" class="mini-overlay" hidden>
     <div class="mini-dialog fin-sym-dialog">
       <div class="mini-head">
@@ -942,6 +957,7 @@
     <button id="bbBack" title="Geri" data-i18n-title="tip_bb_back">&#x2190;</button>
     <button id="bbFwd" title="İleri" data-i18n-title="tip_bb_fwd">&#x2192;</button>
     <button id="bbReload" title="Yenile" data-i18n-title="tip_bb_reload">&#x21BB;</button>
+    <button id="bbRestart" title="Yeniden başlat — takılan sayfayı sıfırdan açar (oturum korunur)" data-i18n-title="tip_bb_restart">&#x27F3;</button>
     <input id="bbUrl" placeholder="adres yaz veya ara…" autocomplete="off" spellcheck="false" data-i18n-ph="bb_ph" />
     <button id="bbPhone" title="Telefon modu — mobil versiyon / web versiyonu" data-i18n-title="tip_bb_phone"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="7" y="2" width="10" height="20" rx="2.5"/><line x1="11" y1="18" x2="13" y2="18"/></svg></button>
     <button id="bbOpenExt" title="Tarayıcıda aç" data-i18n-title="tip_bb_open">&#x2197;</button>

@@ -13,7 +13,7 @@
 
    ÇOKLU PERİYOT: timeframes:["M1","M15"] (2-3 adet) verilirse her periyot ayrı
    çekilir ve TEK PNG'de birleştirilir (layout:"h" soldan sağa — varsayılan,
-   "v" üstten alta). Panellerin SAĞ ÜSTüne "SEMBOL · PERİYOT" etiketi çizilir;
+   "v" üstten alta). Panellerin SOL ÜSTüne "SEMBOL · PERİYOT" etiketi çizilir;
    sonuçta panels[{symbol, timeframe, position, path}] hangi tarafın hangi
    sembol/periyot olduğunu söyler. tf2:"M15" kısayolu da (timeframe + tf2) kabul edilir.
 
@@ -324,7 +324,7 @@ function embedData(src, size) {
 }
 
 /* ---- ÇOKLU KARE: plan (sembol × periyot) sırayla çekilir ve TEK PNG'de
-   birleştirilir — kilit zaten alınmış (ack çakışması yok); her panelin SAĞ
+   birleştirilir — kilit zaten alınmış (ack çakışması yok); her panelin SOL
    ÜSTüne "SEMBOL · PERİYOT" etiketi çizilir; soldan sağa (layout:"v" ile
    üstten alta). plan: [{symbol, timeframe}] — boş alan = aktif grafik. */
 async function runPanels(plan, filesDir, cmdFile, ackFile, beatFile, timeoutSec, diag) {

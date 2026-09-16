@@ -97,8 +97,9 @@ async function compose(panels, opts) {
       if (layout === 'h') ctx.fillRect(x - GAP, 0, GAP, H);
       else ctx.fillRect(0, y - GAP, W, GAP);
     }
-    /* etiket: SAĞ ÜST köşede BÜYÜK zaman dilimi (üstünde küçük sembol) —
-       görsel ajan hangi panelin hangi periyot olduğunu bakışta okur */
+    /* etiket: SOL ÜST köşede BÜYÜK zaman dilimi (üstünde küçük sembol) —
+       görsel ajan hangi panelin hangi periyot olduğunu bakışta okur;
+       son mumlar sağda olduğundan etiket oraya konmaz (mumları kapatıyordu) */
     if (p.label) {
       try {
         const parts = String(p.label).split('·').map((s) => s.trim()).filter(Boolean);
@@ -110,14 +111,14 @@ async function compose(panels, opts) {
         const padY = Math.round(fsTf * 0.42);
         const lineGap = Math.round(fsSym * 0.45);
         ctx.textBaseline = 'middle';
-        ctx.textAlign = 'right';
+        ctx.textAlign = 'left';
         ctx.font = pickFont(fsTf);
         const tw = ctx.measureText(tf).width;
         ctx.font = pickFont(fsSym);
         const sw = sym ? ctx.measureText(sym).width : 0;
         const boxW = Math.ceil(Math.max(tw, sw) + padX * 2);
         const boxH = Math.ceil(padY * 2 + fsTf + (sym ? fsSym + lineGap : 0));
-        const bx = x + cellW - boxW - 10;
+        const bx = x + 10;
         const by = y + 10;
         ctx.fillStyle = 'rgba(0,0,0,0.80)';
         ctx.fillRect(bx, by, boxW, boxH);
@@ -126,11 +127,11 @@ async function compose(panels, opts) {
         if (sym) {
           ctx.font = pickFont(fsSym);
           ctx.fillStyle = '#c9d2d9';
-          ctx.fillText(sym, bx + boxW - padX, by + padY + fsSym / 2);
+          ctx.fillText(sym, bx + padX, by + padY + fsSym / 2);
         }
         ctx.font = pickFont(fsTf);
         ctx.fillStyle = '#00e676';
-        ctx.fillText(tf, bx + boxW - padX, by + padY + (sym ? fsSym + lineGap : 0) + fsTf / 2);
+        ctx.fillText(tf, bx + padX, by + padY + (sym ? fsSym + lineGap : 0) + fsTf / 2);
         ctx.textAlign = 'start';
       } catch (e) {}
     }

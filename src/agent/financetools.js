@@ -276,11 +276,11 @@ const definitions = NAMES.map((name) => {
     },
     mt5_ogrenme: {
       description:
-        'SEMBOL BAZLI ÖĞRENME HAFIZASI — Beast Finance sürekli öğrenir: mt5_ogrenme {action:"list"|"add"|"remove"|"clear"|"stats", symbol?, text?, kind?, tags?, id?, ids?, all?}. Her sembolün KENDİ istatistiği (işlem/kazanç/kayıp, net, kâr yakalama, kâr geri verme) OTOMATİK birikir; ayrıca işlemlerden çıkardığın DERSLERİ sen kaydedersin. KURALLAR: (1) Her kapanıştan sonra (özellikle stop/tp sonrası) sembol için tek cümle ders yaz: hangi setup işe yaradı/yaramadı, saat/seans, SL yeri, hata mı hata yok mu — kind:"pattern"|"mistake"|"rule"|"observation". (2) Yeni işlem kararından ÖNCE ilgili sembolün list/stats çıktısını oku; aynı hatayı tekrarlama, işleyen deseni kullan. (3) Yanlış çıkan/genel geçersiz dersi remove/clear ile sil. action:"list" symbol verilmezse tüm sembollerin özetini döner. Ör: {action:"add", symbol:"XAUUSD", text:"Londra açılışında M5 EMA50 üstü momentum girişleri iyi çalışıyor", kind:"pattern"}.',
+        'SEMBOL BAZLI ÖĞRENME HAFIZASI — Beast Finance sürekli öğrenir: mt5_ogrenme {action:"list"|"add"|"remove"|"clear"|"stats"|"compact"|"forget", symbol?, text?, kind?, tags?, id?, ids?, all?}. Her sembolün KENDİ istatistiği (işlem/kazanç/kayıp, net, kâr yakalama, kâr geri verme) OTOMATİK birikir; ayrıca işlemlerden çıkardığın DERSLERİ sen kaydedersin. KURALLAR: (1) Her kapanıştan sonra (özellikle stop/tp sonrası) sembol için tek cümle ders yaz: hangi setup işe yaradı/yaramadı, saat/seans, SL yeri, hata mı hata yok mu — kind:"pattern"|"mistake"|"rule"|"observation". (2) Yeni işlem kararından ÖNCE ilgili sembolün list/stats çıktısını oku; aynı hatayı tekrarlama, işleyen deseni kullan. (3) Yanlış çıkan/genel geçersiz dersi remove/clear ile sil. Aynı ders tekrar yazılamaz ve sembol başına 24 saatte en fazla 12 ders kaydedilir. HAFIZA KENDİNİ SADELEŞTİRİR (opencode tarzı compaction): ham dersler birikince (24+) ESKİ dersler OTOMATİK olarak modele özetlettirilir ve tek KALICI ÖZETE sıkıştırılır — ham yalnız son dersler kalır; 30 günden eski dersler, 90 günden eski işlem kayıtları ve 120 gün hareketsiz semboller otomatik unutulur. Gerekirse compact {symbol} ile hemen özetlet, forget ile süresi geçenleri temizle. action:"list" symbol verilmezse tüm sembollerin özetini döner (kalıcı özet dahil). Ör: {action:"add", symbol:"XAUUSD", text:"Londra açılışında M5 EMA50 üstü momentum girişleri iyi çalışıyor", kind:"pattern"}.',
       parameters: {
         type: 'object',
         properties: {
-          action: { type: 'string', enum: ['list', 'add', 'remove', 'clear', 'stats'] },
+          action: { type: 'string', enum: ['list', 'add', 'remove', 'clear', 'stats', 'compact', 'forget'] },
           symbol: { type: 'string', description: 'Sembol (ör. XAUUSD) — öğrenme sembol bazlıdır' },
           text: { type: 'string', description: 'add: öğrenilen ders/desen (kısa, net, tek cümle)' },
           kind: { type: 'string', enum: ['pattern', 'mistake', 'rule', 'observation'], description: 'add: kayıt türü (varsayılan observation)' },
@@ -600,7 +600,18 @@ const handlers = {
       const all = args.all === true || String(args.all || '').toLowerCase() === 'true';
       return learningApi.clear({ ids, symbol, all });
     }
-    return { ok: false, error: 'action: list|add|remove|clear|stats' };
+    if (action === 'compact') {
+      /* OPENCODE TARZI ÖZETLEME: eski dersler modele özetlettirilir, ham yalnız
+         son dersler kalır — bellek sadeleşir (normalde otomatik de çalışır) */
+      if (!symbol) return { ok: false, error: 'compact için symbol gerekli' };
+      if (typeof learningApi.compact !== 'function') return { ok: false, error: 'özetleme kullanılamıyor' };
+      return await learningApi.compact({ symbol });
+    }
+    if (action === 'forget') {
+      if (typeof learningApi.forget !== 'function') return { ok: false, error: 'temizleme kullanılamıyor' };
+      return learningApi.forget();
+    }
+    return { ok: false, error: 'action: list|add|remove|clear|stats|compact|forget' };
   },
   async mt5_ea(args) {
     if (!mt5.running) return notConnected();

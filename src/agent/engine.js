@@ -2074,7 +2074,7 @@ class Engine {
       '- Emin olmadığında İŞLEM YOK — "BEKLE: <sebep>" yaz. Sık işlem tek başına iyi işlem değil; ama onaylı fırsatta HIZLI gir, kârı hızlı topla.\n' +
       '- Hesap kaldıracı ve serbest marja göre pozisyon boyutunu düşük tut; tek işlemde serbest marjın büyük kısmını riske atma. Sık işlem için lotu değil, TUR SIKLIĞINI ve kısmi kâr alımını kullan.\n' +
       (session && session.financeLearn ? `SEMBOL BAZLI ÖĞRENME HAFIZAN (otomatik istatistik + kendi derslerin — kararlarında kullan):\n${session.financeLearn}\n` : '') +
-      'ÖĞRENME DÖNGÜSÜ (ZORUNLU): her kapanıştan (özellikle stop/TP sonrası) hemen sonra mt5_ogrenme {action:"add", symbol, text, kind} ile o sembolün dersini yaz (ne işe yaradı/yaramadı, hata mı, kural mı); yeni işlem kararından önce mt5_ogrenme {action:"stats", symbol} ya da list ile o sembolün geçmişini oku — aynı hatayı tekrarlama, işleyen deseni kullan. Geçersiz dersi remove/clear ile sil.\n' +
+      'ÖĞRENME DÖNGÜSÜ (ZORUNLU): her kapanıştan (özellikle stop/TP sonrası) hemen sonra mt5_ogrenme {action:"add", symbol, text, kind} ile o sembolün dersini yaz (ne işe yaradı/yaramadı, hata mı, kural mı); yeni işlem kararından önce mt5_ogrenme {action:"stats", symbol} ya da list ile o sembolün geçmişini oku (kalıcı özet + son dersler) — aynı hatayı tekrarlama, işleyen deseni kullan. Hafıza kendini sadeleştirir: eski dersler otomatik özetlenir ve süresi geçenler unutulur; gerekirse mt5_ogrenme {action:"compact", symbol} ile hemen özetlet, geçersiz dersi remove/clear ile sil.\n' +
       (session && session.financeStrategy ? `SAHİBİNİN STRATEJİ NOTU (önceliklidir):\n${session.financeStrategy}\n` : '') +
       (session && session.financeShadow ? 'SHADOW MOD AKTİF: mt5_trade/mt5_pending emir GÖNDERMEZ — kararını teziyle raporla; gerçek işlem açılmaz (karar günlüğe yazılır).\n' : '') +
       (session && session.financeDigest ? `İŞLEM PERFORMANS GEÇMİŞİN (kendi kayıtların — kararlarında ders çıkar):\n${session.financeDigest}\n` : '') +
@@ -3845,15 +3845,17 @@ class Engine {
       /* KİŞİSEL TOOLLAR: %APPDATA%\beast\tools\<ad>\ — kullanıcı yazmışsa
          TÜM oturumlara (BEAST FINANCE dahil) tool__<ad> olarak açılır */
       toolsList = [...toolsList, ...customtools.definitions()];
-      /* Beast Finance: skill aracı da açık — kataloğun SKILL.md gövdesi
-         modele açılır (skill handler'ı zaten tüm oturumlar için çalışır,
-         definition yalnız BC'de vardı; finance chat copilot + trader ikisi de)
-         Not: BC oturumları zaten opencode registry'sinden skill'i görür. */
-      if (session && session.finance) {
+      /* SKILL ARACI: kurulu SKILL.md gövdesini modele açar — finance oturumları
+         kadar BOT oturumları (Tool botu: tool-yazma/mql5) ve arka plan ajanları
+         da promptlarında skill() kullanır. Tanım yalnız finance'a verilince bot
+         skill çağrısı yapamıyor, tur rapor üretmeden boşa düşüyordu. */
+      if (session && (session.finance || session.botId || session.bgJob)) {
         const skillDef = (opencode.toolmap.definitions() || []).find(
           (d) => d && d.function && d.function.name === 'skill'
         );
-        if (skillDef) toolsList = [...toolsList, skillDef];
+        if (skillDef && !toolsList.some((t) => t && t.function && t.function.name === 'skill')) {
+          toolsList = [...toolsList, skillDef];
+        }
       }
       /* AJAN DM: koşan ajanlara (arka plan işleri + finance), ana sohbete VE
          bot sohbetlerine verilir — botlar birbirine iş atar/cevap verir
@@ -4913,6 +4915,7 @@ const skills = require('./skills');
       requesterTitle: who,
       responderTitle: target.name || 'Tool botu',
       task: task.slice(0, 300),
+      text,
       before,
       at: Date.now(),
     });
@@ -4964,14 +4967,16 @@ const skills = require('./skills');
   }
 
   /* Tool botunun turu bitti: bekleyen isteklerin raporunu AJAN DM paneline
-     ve isteyen oturuma düşür. _run finally'den çağrılır (tüm bitiş yolları). */
+     ve isteyen oturuma düşür. _run finally'den çağrılır (tüm bitiş yolları).
+     Tur metin rapor üretmeden öldüyse: (1) tur hiç iş yapmadıysa TEK kez
+     sessizce yeniden dene (geçici model/ağ hatası), (2) yine olmazsa araç
+     izini + hata mesajını rapora koy ki isteyen NE olduğunu anlasın. */
   _toolRequestFinished(sid) {
     try {
       const key = String(sid || '');
       if (!this._toolPending || !this._toolPending.size) return;
       const list = this._toolPending.get(key);
       if (!list || !list.length) return;
-      this._toolPending.delete(key);
       const s = this.cache.get(key) || this._load(key);
       const reply = (() => {
         for (let i = s.messages.length - 1; i >= 0; i--) {
@@ -4983,10 +4988,51 @@ const skills = require('./skills');
         }
         return '';
       })();
+      /* TEST/İZ: isteğin başladığı noktadan sonra araç çağrısı/sonucu var mı? */
+      const activity = (from) => {
+        let n = 0;
+        for (let i = Math.max(0, Number(from) || 0); i < s.messages.length; i++) {
+          const m = s.messages[i];
+          if (m && ((m.role === 'assistant' && Array.isArray(m.tool_calls) && m.tool_calls.length) || m.role === 'tool')) n++;
+        }
+        return n;
+      };
+      /* GEÇİCİ ÖLÜM: tek istek + hiç araç izi + metin yok → tek kez yeniden dene */
+      if (!reply && list.length === 1 && !list[0].retried && list[0].text && activity(list[0].before) === 0) {
+        list[0].retried = true;
+        this._toolPending.set(key, list);
+        try {
+          const ok = this.send(key, { text: '[YENİDEN DENEME — önceki tur iş yapmadan düştü; isteği baştan yürüt]\n' + String(list[0].text) });
+          if (ok) return;
+        } catch {}
+      }
+      this._toolPending.delete(key);
+      /* METİN RAPOR YOKSA: son turun araç izini özetle — teşhis kaybolmasın */
+      const failDetail = (() => {
+        if (reply) return '';
+        const L = [];
+        for (let i = s.messages.length - 1; i >= 0 && L.length < 8; i--) {
+          const m = s.messages[i];
+          if (!m) continue;
+          if (m.role === 'tool') {
+            const t = typeof m.content === 'string' ? m.content : '';
+            if (t.trim()) L.unshift('araç sonucu: ' + t.replace(/\s+/g, ' ').slice(0, 180));
+          } else if (m.role === 'assistant' && Array.isArray(m.tool_calls) && m.tool_calls.length) {
+            L.unshift('çağrılan araçlar: ' + m.tool_calls.map((c) => (c && c.function && c.function.name) || '?').join(', '));
+          } else if (m.role === 'assistant' && typeof m.content === 'string' && m.content.trim()) {
+            L.unshift('son metin: ' + stripAiDashes(m.content.trim()).replace(/\s+/g, ' ').slice(0, 180));
+          } else if (m.role === 'user') {
+            break;
+          }
+        }
+        return L.join('\n');
+      })();
       for (const req of list) {
         const body = reply
           ? `[TOOL BOTU RAPORU — ${req.id}]\n${reply}`
-          : `[TOOL BOTU] ${req.id} numaralı istek tamamlanamadı (tur yarıda kesildi ya da metin rapor üretilemedi). Tool botu sohbetinden ayrıntıya bakabilirsin.`;
+          : `[TOOL BOTU] ${req.id} numaralı istek tamamlanamadı (tur yarıda kesildi ya da metin rapor üretilemedi).\n` +
+            (failDetail ? 'Ne oldu:\n' + failDetail + '\n' : '') +
+            'Tool botu sohbetinden ayrıntıya bakabilirsin.';
         const dm = {
           at: new Date().toISOString(),
           from: key,
@@ -7081,8 +7127,14 @@ Engine.prototype._agentDmDeliver = function (dm, target, opts = {}) {
       dm: true,
       wake: !!opts.wake,
     };
-    /* bot↔bot sigorta: boş bot oturumunu her DM'de yeni turla uyandırma */
-    if (sess && sess.botId && !this.isBusy(m) && !this._agentDmWakeAllowed(dm.from, m)) {
+    /* bot↔bot sigorta: boş bot oturumunu her DM'de yeni turla uyandırma.
+       TOOL BOTU İSTİSNA (yalnız bot OLMAYAN gönderenden): ajan (finance/paralel
+       sohbet) → Tool DM'i gerçek görevdir, beklemeden uyandırılır; bot↔bot
+       ping-pong'u ise bütçeye tabidir (sonsuz tur fırtınası korunur). */
+    const fromSess = this.cache.get(String(dm.from)) || null;
+    const fromIsBot = !!(fromSess && fromSess.botId);
+    const isToolBot = sess && String(sess.botId || '') === 'tool' && !fromIsBot;
+    if (sess && sess.botId && !isToolBot && !this.isBusy(m) && !this._agentDmWakeAllowed(dm.from, m)) {
       this._agentDmBacklog = this._agentDmBacklog || new Map();
       const q = this._agentDmBacklog.get(m) || [];
       q.push({ text, ...(dm.image ? { image: String(dm.image) } : {}) });

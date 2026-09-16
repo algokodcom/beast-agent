@@ -275,7 +275,7 @@ const definitions = NAMES.map((name) => {
     },
     mt5_limits: {
       description:
-        'LOT / POZİSYON LİMİTLERİNİ oku ve GÜNCELLE — trader karar mercii: mt5_limits {action:"get"|"set", symbol?, minLot?, maxLot?, maxPositions?, reset?}. get: genel min lot / max lot / max eşzamanlı pozisyon + SEMBOL BAZLI limitler + işlem riski %. GENEL set: minLot/maxLot/maxPositions. SEMBOL BAZLI set: symbol ver (ör. {action:"set", symbol:"XAUUSD", minLot:0.02, maxLot:0.5}) — her sembolün min/max lotunu kendi karakterine göre SEN belirle (volatilite, spread, marj); sembol limiti genel aralığın dışına çıkamaz (genel taban/tavan kelepçeler). Sembolü genele döndürmek için {action:"set", symbol:"XAUUSD", reset:true}. set: yalnız ana trader (ve finance sohbet copilot\'ı) kullanabilir — rol/işçi ajanları değiştiremez. Değişiklik ANINDA panelde ve sonraki turda geçerli olur. Kural: minLot maxLot\'u aşamaz.',
+        'LOT / POZİSYON / RİTİM LİMİTLERİNİ oku ve GÜNCELLE — trader karar mercii: mt5_limits {action:"get"|"set", symbol?, minLot?, maxLot?, maxPositions?, intervalSec?, intervalForMin?, reset?}. get: genel min lot / max lot / max eşzamanlı pozisyon + SEMBOL BAZLI limitler + efektif tur aralığı + işlem riski %. GENEL set: minLot/maxLot/maxPositions. SEMBOL BAZLI set: symbol ver (ör. {action:"set", symbol:"XAUUSD", minLot:0.02, maxLot:0.5}) — her sembolün min/max lotunu kendi karakterine göre SEN belirle (volatilite, spread, marj); sembol limiti genel aralığın dışına çıkamaz (genel taban/tavan kelepçeler). Sembolü genele döndürmek için {action:"set", symbol:"XAUUSD", reset:true}. TUR RİTMİ: intervalSec (30-3600 sn) + intervalForMin (1-240 dk) → geçici hızlanma; süre bitince taban aralığa OTOMATİK döner (ör. {action:"set", intervalSec:45, intervalForMin:15}). intervalForMin yoksa kalıcı temel aralık değişir. Sert hareket/haber anında hızlan, sakinleşince geri çek — SÜREKLİ en düşük aralıkta kalma (API/maliyet limiti); sınırlar sistemce zorlanır. set: yalnız ana trader (ve finance sohbet copilot\'ı) kullanabilir — rol/işçi ajanları değiştiremez. Değişiklik ANINDA panelde ve sonraki turda geçerli olur. Kural: minLot maxLot\'u aşamaz.',
       parameters: {
         type: 'object',
         properties: {
@@ -284,6 +284,8 @@ const definitions = NAMES.map((name) => {
           minLot: { type: 'number', description: 'set: yeni alt sınır (0.01-100)' },
           maxLot: { type: 'number', description: 'set: yeni üst sınır (0.01-100)' },
           maxPositions: { type: 'number', description: 'set: eşzamanlı pozisyon tavanı (1-20) — yalnız GENEL (sembol ile verilemez)' },
+          intervalSec: { type: 'number', description: 'set: tur aralığı saniye (30-3600) — intervalForMin ile geçici hız modu, tek başına kalıcı temel aralık' },
+          intervalForMin: { type: 'number', description: 'set: hız modu süresi dakika (1-240) — süre bitince taban aralığa otomatik döner' },
           reset: { type: 'boolean', description: 'set + symbol: true → sembol limitini kaldır, genel aralığa dön' },
         },
         required: ['action'],
@@ -578,7 +580,7 @@ const handlers = {
     }
     if (action === 'set') {
       const patch = {};
-      for (const k of ['minLot', 'maxLot', 'maxPositions']) {
+      for (const k of ['minLot', 'maxLot', 'maxPositions', 'intervalSec', 'intervalForMin']) {
         if (args[k] !== undefined && args[k] !== null && args[k] !== '') patch[k] = Number(args[k]);
       }
       /* SEMBOL BAZLI LOT LİMİTİ: symbol verilirse trader o sembolün min/max
@@ -588,7 +590,7 @@ const handlers = {
       const reset = args.reset === true || String(args.reset || '').toLowerCase() === 'true';
       if (reset) patch.reset = true;
       if (!Object.keys(patch).length || (sym && patch.minLot === undefined && patch.maxLot === undefined && !reset)) {
-        return { ok: false, error: 'set için en az bir alan ver: minLot / maxLot / maxPositions (sembol bazlıda minLot/maxLot ya da reset:true)' };
+        return { ok: false, error: 'set için en az bir alan ver: minLot / maxLot / maxPositions / intervalSec (sembol bazlıda minLot/maxLot ya da reset:true)' };
       }
       return await limitsApi.set(patch, ctx || {});
     }

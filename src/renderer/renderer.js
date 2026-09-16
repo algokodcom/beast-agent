@@ -10231,16 +10231,19 @@ function finOnEvent(ev) {
       if (ev.maxLot !== undefined) finCfgCache.maxLot = ev.maxLot;
       if (ev.maxPositions !== undefined) finCfgCache.maxPositions = ev.maxPositions;
       if (ev.symbols !== undefined) finCfgCache.symbolLimits = ev.symbols;
+      if (ev.intervalBase !== undefined) finCfgCache.intervalSec = ev.intervalBase;
       finTraderInputsSet(finCfgCache);
     } else {
       const ae2 = document.activeElement;
       if (els.finMinLot && ae2 !== els.finMinLot && ev.minLot !== undefined) els.finMinLot.value = ev.minLot;
       if (els.finMaxLot && ae2 !== els.finMaxLot && ev.maxLot !== undefined) els.finMaxLot.value = ev.maxLot;
+      if (els.finInterval && ae2 !== els.finInterval && ev.intervalBase !== undefined) els.finInterval.value = ev.intervalBase;
       if (ev.symbols !== undefined) finSymLimitsRender(ev.symbols);
     }
     finLogLine('[limit] ' + (ev.note || ('min lot ' + ev.minLot + ' · max lot ' + ev.maxLot + ' · max pozisyon ' + ev.maxPositions)));
     if (ev.symbol) toast('Sembol lot limiti güncellendi: ' + ev.symbol);
-    else toast('Trader limitleri güncelledi: min ' + ev.minLot + ' / max ' + ev.maxLot);
+    else if (ev.paceUntil) toast('Trader hız modu: tur ' + ev.intervalSec + ' sn — süre bitince tabana döner');
+    else toast('Trader limitleri güncelledi: min ' + ev.minLot + ' / max ' + ev.maxLot + (ev.intervalSec ? ' · tur ' + ev.intervalSec + ' sn' : ''));
   } else if (ev.fn === 'install') {
     finLogLine('[MT5] paket kurulumu tamamlandı (kod ' + ev.code + ')');
   }

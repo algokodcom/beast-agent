@@ -187,6 +187,10 @@ test('mt5_limits: get/set API üzerinden çalışır, yetki main tarafında doğ
     assert.strictEqual(onlySym.ok, false, 'symbol tek başına yetmez — minLot/maxLot ya da reset gerekir');
     const rf = await ftools.handlers.mt5_limits({ action: 'set', symbol: 'XAUUSD', reset: false });
     assert.strictEqual(rf.ok, false, 'reset:false tek başına limit silmez (yanlışlıkla reset koruması)');
+    /* TUR RİTMİ: trader intervalSec (+ geçici hız modu) ayarını main'e iletir */
+    const ri = await ftools.handlers.mt5_limits({ action: 'set', intervalSec: 45, intervalForMin: 15 }, { sessionId: 's1' });
+    assert.strictEqual(ri.ok, true);
+    assert.deepStrictEqual(calls[3].patch, { intervalSec: 45, intervalForMin: 15 });
     const bad = await ftools.handlers.mt5_limits({ action: 'set' });
     assert.strictEqual(bad.ok, false);
     assert.match(String(bad.error), /minLot/);

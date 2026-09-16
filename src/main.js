@@ -9402,6 +9402,11 @@ const financeState = {
   reportCheckAt: 0,
   flattening: false,
   breachBusy: false,
+  /* TUR RİTMİ (trader kararı): sert hareket/haber anında geçici hızlanma.
+     pace = { sec, until, base } — süre dolunca otomatik taban aralığa döner;
+     kalıcı değişiklik settings.finance.intervalSec'e yazılır. */
+  pace: { sec: 0, until: 0, base: 0 },
+  paceTimer: null,
 };
 
 function financeDir() {
@@ -11270,8 +11275,51 @@ try {
    Ana trader / finance sohbet oturumu min lot-max lot-pozisyon tavanını
    güncelleyebilir; rol/işçi ajanları yalnız okur. Değişiklik ayarlara yazılır,
    koşan oturumlara ANINDA işlenir ve panele duyurulur. */
+/* TUR RİTMİ: trader sert harekette geçici hızlanabilir — efektif aralık (sn).
+   Süre dolunca kendiliğinden taban aralığa döner (API/maliyet limiti korunur). */
+function finPaceSec() {
+  const f = finCfg();
+  const base = Math.max(30, Math.min(3600, Math.round(Number(f.intervalSec) || 120)));
+  const p = financeState.pace;
+  if (p && Number(p.until) > Date.now() && Number(p.sec) >= 30) {
+    return Math.max(30, Math.min(3600, Math.round(Number(p.sec))));
+  }
+  return base;
+}
+
+/* Koşan ajan zamanlayıcılarını efektif ritme göre yeniden kur; hız modunun
+   bitişini de zamanla — süre dolunca taban aralığa OTOMATİK dönüş. */
+function finRescheduleAgents() {
+  const iv = finPaceSec() * 1000;
+  if (financeState.paceTimer) { clearTimeout(financeState.paceTimer); financeState.paceTimer = null; }
+  const p = financeState.pace;
+  if (p && Number(p.until) > Date.now() && Number(p.sec) > 0) {
+    const left = Math.max(1000, Number(p.until) - Date.now() + 1000);
+    financeState.paceTimer = setTimeout(() => {
+      financeState.pace = { sec: 0, until: 0, base: 0 };
+      try { financeLog('[ritim] hız modu bitti — taban tur aralığı ' + finPaceSec() + ' sn'); } catch {}
+      try { finRescheduleAgents(); } catch {}
+      try { finPush('limits', { ...finLimitsSnapshot(), note: 'hız modu bitti — taban tur aralığı ' + finPaceSec() + ' sn' }); } catch {}
+    }, left);
+  }
+  if (!engine || !financeState.agents) return;
+  const hasMain = finTeamHasMain();
+  for (const [sid, a] of financeState.agents) {
+    if (!a) continue;
+    if (a.role && hasMain) continue; /* cycle modu: trader turu başlatır */
+    if (engine.isBusy(sid)) continue; /* tur bitince finFlushOnDone yeni ritmi okur */
+    clearTimeout(a.timer);
+    a.timer = setTimeout(() => { try { finAgentRound(String(sid)); } catch {} }, iv);
+  }
+  if (financeState.traderSid) {
+    const a = financeState.agents.get(String(financeState.traderSid));
+    finPush('trader', { state: 'idle', round: (a && a.round) || 0, nextInSec: iv / 1000 });
+  }
+}
+
 function finLimitsSnapshot() {
   const f = finCfg();
+  const paceOn = Number(financeState.pace && financeState.pace.until) > Date.now();
   return {
     minLot: Number(f.minLot) || 0.01,
     maxLot: Number(f.maxLot) || 0.1,
@@ -11279,6 +11327,10 @@ function finLimitsSnapshot() {
     riskPerTradePct: Number(f.riskPerTradePct) || 0,
     /* SEMBOL BAZLI LOT LİMİTLERİ (trader kararı) — genel aralığı daraltır */
     symbols: { ...(f.symbolLimits && typeof f.symbolLimits === 'object' ? f.symbolLimits : {}) },
+    /* TUR RİTMİ: efektif aralık + taban + hız modu bitişi */
+    intervalSec: finPaceSec(),
+    intervalBase: Math.max(30, Math.min(3600, Math.round(Number(f.intervalSec) || 120))),
+    paceUntil: paceOn ? Number(financeState.pace.until) : 0,
   };
 }
 
@@ -11295,7 +11347,7 @@ function finLimitsSessionAllowed(sid) {
 
 function finSyncLimitsToSessions(extra) {
   const lim = finLimitsSnapshot();
-  const apply = { minLot: lim.minLot, maxLot: lim.maxLot, maxPositions: lim.maxPositions, symbolLimits: lim.symbols };
+  const apply = { minLot: lim.minLot, maxLot: lim.maxLot, maxPositions: lim.maxPositions, symbolLimits: lim.symbols, intervalSec: lim.intervalSec, intervalBase: lim.intervalBase, paceUntil: lim.paceUntil };
   if (engine) {
     try {
       for (const [sid] of financeState.agents) {
@@ -11323,8 +11375,8 @@ function finLimitsSet(patch, ctx) {
      symbol) → sembol limiti kaldırılır, genel aralık geçerli olur. */
   const sym = String(patch.symbol || '').trim().toUpperCase();
   if (sym) {
-    if (patch.maxPositions !== undefined) {
-      return { ok: false, error: 'maxPositions sembol bazlı değil — symbol vermeden genel limit olarak ayarla' };
+    if (patch.maxPositions !== undefined || patch.intervalSec !== undefined || patch.intervalForMin !== undefined) {
+      return { ok: false, error: 'maxPositions ve tur ritmi (intervalSec) sembol bazlı değil — symbol vermeden genel olarak ayarla' };
     }
     const hasMin = patch.minLot !== undefined && patch.minLot !== null && patch.minLot !== '';
     const hasMax = patch.maxLot !== undefined && patch.maxLot !== null && patch.maxLot !== '';
@@ -11381,16 +11433,39 @@ function finLimitsSet(patch, ctx) {
     if (!(v >= 1) || v > 20) return { ok: false, error: 'maxPositions 1-20 arasında olmalı' };
     f.maxPositions = v;
   }
+  /* TUR RİTMİ (trader kararı): sert hareket/haber anında geçici hızlanma.
+     intervalForMin > 0 → geçici (süre dolunca taban aralığa otomatik döner);
+     yoksa kalıcı temel aralık güncellenir. Alt sınır 30 sn, hız modu ≤ 240 dk:
+     API/maliyet limiti bilinçli — sürekli en düşük aralıkta kalmak YASAK. */
+  let intervalChanged = false;
+  if (patch.intervalSec !== undefined) {
+    const base = Math.max(30, Math.min(3600, Math.round(Number(f.intervalSec) || 120)));
+    const sec = Math.max(30, Math.min(3600, Math.round(Number(patch.intervalSec) || base)));
+    const mins = Math.max(0, Math.min(240, Math.round(Number(patch.intervalForMin) || 0)));
+    if (mins > 0 && sec < base) {
+      financeState.pace = { sec, until: Date.now() + mins * 60 * 1000, base };
+      notes.push(`hız modu: ${sec} sn × ${mins} dk (sonra taban ${base} sn'e döner)`);
+    } else {
+      f.intervalSec = sec;
+      if (Number(financeState.pace && financeState.pace.until) > Date.now()) financeState.pace = { sec: 0, until: 0, base: 0 };
+      notes.push(`temel tur aralığı: ${sec} sn`);
+    }
+    intervalChanged = true;
+  } else if (patch.intervalForMin !== undefined) {
+    notes.push('intervalForMin için intervalSec de verilmeli');
+  }
   if (f.minLot > f.maxLot) {
     notes.push(`minLot (${f.minLot}) maxLot'tan (${f.maxLot}) büyüktü → minLot ${f.maxLot} yapıldı`);
     f.minLot = f.maxLot;
   }
   try { saveSettings(); } catch {}
+  if (intervalChanged) { try { finRescheduleAgents(); } catch {} }
   finSyncLimitsToSessions();
-  const line = `⚙️ LİMİTLER GÜNCELLENDİ: min lot ${f.minLot} · max lot ${f.maxLot} · max pozisyon ${f.maxPositions}${sid ? ' (ajan kararı)' : ''}`;
+  const paceOn = Number(financeState.pace && financeState.pace.until) > Date.now();
+  const line = `⚙️ LİMİTLER GÜNCELLENDİ: min lot ${f.minLot} · max lot ${f.maxLot} · max pozisyon ${f.maxPositions}${intervalChanged ? ` · tur ${finPaceSec()} sn${paceOn ? ' (hız modu)' : ''}` : ''}${sid ? ' (ajan kararı)' : ''}`;
   financeLog('[limit] ' + line);
   financeNotify(line, 'limit', true);
-  try { finJournal({ kind: 'limits', minLot: f.minLot, maxLot: f.maxLot, maxPositions: f.maxPositions, sid }); } catch {}
+  try { finJournal({ kind: 'limits', minLot: f.minLot, maxLot: f.maxLot, maxPositions: f.maxPositions, intervalSec: finPaceSec(), paceUntil: paceOn ? financeState.pace.until : 0, sid }); } catch {}
   return { ok: true, limits: finLimitsSnapshot(), note: notes.length ? notes.join('; ') : undefined };
 }
 
@@ -12272,7 +12347,10 @@ function finApplyTraderFields(s, symbolsOverride, role, isMain) {
   s.financeShadow = !!f.shadowMode; /* shadow modda işlem araçları emir göndermez */
   {
     const lim = finLimitsSnapshot();
-    s.financeLimits = { minLot: lim.minLot, maxLot: lim.maxLot, maxPositions: lim.maxPositions, symbolLimits: lim.symbols };
+    s.financeLimits = {
+      minLot: lim.minLot, maxLot: lim.maxLot, maxPositions: lim.maxPositions,
+      symbolLimits: lim.symbols, intervalSec: lim.intervalSec, intervalBase: lim.intervalBase, paceUntil: lim.paceUntil,
+    };
   }
   /* ZORUNLU TEK skill: rol ajanı → roleSkills[rol], ana trader → roleSkills.trader */
   const skillKey = r || (s.financePlaybook ? 'trader' : '');
@@ -12351,7 +12429,7 @@ function finAgentStop(sid, reason, opts) {
   }
   /* ANA TRADER DURDU: ekip cycle'sız kaldı — kendi timer'ıyla dönmeye devam etsin */
   if (agent.main) {
-    const iv = Math.max(30, Number(finCfg().intervalSec) || 120) * 1000;
+    const iv = finPaceSec() * 1000;
     for (const [tsid, ta] of financeState.agents) {
       if (!ta || !ta.role) continue;
       if (engine && engine.isBusy(tsid)) continue;
@@ -12374,7 +12452,7 @@ function finTraderBrief(agent) {
   return [
     `Beast Finance ${who} başlatıldı — ilk tur: strateji çerçeveni kur ve piyasa taramasını yap.`,
     `Odak semboller: ${syms || '(boş — mt5_status ile terminale bak, mantıklı semboller seç)'}`,
-    `Tur aralığı: ${f.intervalSec} sn · Lot aralığı: ${f.minLot}–${f.maxLot} (genel taban/tavan; sembol bazlı limit daraltır) · Max eşzamanlı pozisyon: ${f.maxPositions}`,
+    `Tur aralığı: ${finPaceSec()} sn${Number(financeState.pace && financeState.pace.until) > Date.now() ? ` (HIZ MODU — taban ${f.intervalSec} sn)` : ''} · Lot aralığı: ${f.minLot}–${f.maxLot} (genel taban/tavan; sembol bazlı limit daraltır) · Max eşzamanlı pozisyon: ${f.maxPositions}`,
     (() => {
       const rows = Object.entries(f.symbolLimits || {}).map(([s, v]) => {
         const mn = Number(v && v.minLot) > 0 ? Number(v.minLot) : Number(f.minLot);
@@ -12384,11 +12462,11 @@ function finTraderBrief(agent) {
       return rows.length ? `SEMBOL LOT LİMİTLERİN (senin kararın): ${rows.join(' · ')}` : '';
     })(),
     agent && agent.main
-      ? `LİMİT YETKİN: volatilite/performansa göre mt5_limits ile SEN güncellersin (anında geçerli): genel {action:"set", minLot?, maxLot?, maxPositions?}; SEMBOL BAZLI {action:"set", symbol:"XAUUSD", minLot?, maxLot?} — her sembolün min/max lotunu kendi karakterine göre SEN belirle (volatilite, spread, marj); sembolü genele döndürmek için {action:"set", symbol:"XAUUSD", reset:true}.`
+      ? `LİMİT+RİTİM YETKİN: mt5_limits ile SEN güncellersin (anında geçerli): genel {action:"set", minLot?, maxLot?, maxPositions?}; SEMBOL BAZLI {action:"set", symbol:"XAUUSD", minLot?, maxLot?} — her sembolün min/max lotunu kendi karakterine göre SEN belirle (volatilite, spread, marj); sembolü genele döndürmek için {action:"set", symbol:"XAUUSD", reset:true}. TUR RİTMİ: {action:"set", intervalSec:45, intervalForMin:15} → sert hareket/haber anında geçici hızlan, süre bitince taban aralığa OTOMATİK döner; sakinleşince geri çek (ör. 180-300 sn) — SÜREKLİ en düşük aralıkta kalma (API/maliyet limiti).`
       : '',
     roleDef
       ? `UZMANLIK: ${roleDef.desc} — raporlarını bu çerçevede yaz; İŞLEM AÇMA, yalnız analiz + net öneri üret.`
-      : 'Otomatik işlem AÇIK (daima): 6 emir tipinin HEPSİ açık — buy_market/sell_market (anlık piyasa), buy_limit/sell_limit ve buy_stop/sell_stop (bekleyen; price zorunlu). mt5_trade ya da mt5_pending İKİSİ de tüm tipleri kabul eder; ayrıca mt5_close/mt5_modify/mt5_cancel açık (limitler sistemce zorlanır). KISMİ KAPATMA yetkisi: kısmi TP (kâr al) ve kısmi stop (zarar kes) — mt5_close {percent, kind:"partial_tp"|"partial_sl"}; otomatik DEĞİL, gerek görürsen sen kullan. ALARM: mt5_alerts ile kurarken modu SEN seç — mode:"once" tek seferlik, mode:"repeat" + cooldownMin (dk) tekrarlı. Lot için mt5_risksize hesapla ya da mt5_trade’e riskPct ver; SL/TP broker stops_level mesafesine uymalı.',
+      : 'Otomatik işlem AÇIK (daima): 6 emir tipinin HEPSİ açık — buy_market/sell_market (anlık piyasa), buy_limit/sell_limit ve buy_stop/sell_stop (bekleyen; price zorunlu). mt5_trade ya da mt5_pending İKİSİ de tüm tipleri kabul eder; ayrıca mt5_close/mt5_modify/mt5_cancel açık (limitler sistemce zorlanır). KISMİ KAPATMA yetkisi: kısmi TP (kâr al) ve kısmi stop (zarar kes) — mt5_close {percent, kind:"partial_tp"|"partial_sl"}; otomatik DEĞİL, gerek görürsen sen kullan. ALARM: mt5_alerts ile kurarken modu SEN seç — mode:"once" tek seferlik, mode:"repeat" + cooldownMin (dk) tekrarlı. Lot için mt5_risksize hesapla ya da mt5_trade’e riskPct ver; SL/TP broker stops_level mesafesine uymalı. LOT KORKUSU YOK: önemli olan lot değil SL YERİ ve risk %’sidir — yakın stoplu net setupta yüksek lot NORMALDİR (boyutu risk hesabı verir).',
     roleDef
       ? 'Bulgularını agent_dm ile ANA TRADER\u2019a bildir (to: "Trader" ya da ajan başlığı anahtarı); teknik/öneri çelişkisi varsa gerekçenle yaz.'
       : f.strategy ? `Sahibinin strateji notu: ${f.strategy}` : 'Strateji notu yok: trend + destek/direnç + momentum ile temel okuma yap.',
@@ -12535,7 +12613,7 @@ function finTeamHasMain() {
 
 /* Takılma valfi: ekip turu bu süreyi aşarsa trader eski raporla başlar */
 function finTeamWaitMaxMs() {
-  const iSec = Math.max(30, Number(finCfg().intervalSec) || 120);
+  const iSec = finPaceSec();
   return Math.max(60, Math.min(300, iSec)) * 1000;
 }
 
@@ -12624,7 +12702,7 @@ function finAgentRound(sid, opts) {
       : 'İşlem açabilirsin — limitlere uy, SL\u2019siz pozisyon bırakma.';
   const learnTip = roleDef
     ? ' İlgili sembolün geçmiş derslerini (mt5_ogrenme) oku ve önerine yansıt.'
-    : ' Yalnız gerçekten öğretici, tekrar kullanılabilir bir içgörü varsa TEK kısa cümleyle mt5_ogrenme add ile kaydet (her kapanışa ders yazma); karar öncesi mt5_ogrenme stats/list ile o sembolün geçmişini oku' + (agent.main ? '; volatiliteye göre mt5_limits ile genel ya da SEMBOL BAZLI (symbol) lot limitlerini güncelleyebilirsin.' : '.');
+    : ' Yalnız gerçekten öğretici, tekrar kullanılabilir bir içgörü varsa TEK kısa cümleyle mt5_ogrenme add ile kaydet (her kapanışa ders yazma); karar öncesi mt5_ogrenme stats/list ile o sembolün geçmişini oku' + (agent.main ? '; mt5_limits ile lot/pozisyon limitlerini ve TUR RİTMİNİ (intervalSec+intervalForMin) güncelleyebilirsin.' : '.');
   const focus = agent.symbols.length ? `Odak: ${agent.symbols.join(', ')}. ` : '';
   const round = `FINANCE TUR #${agent.round}: ${focus}hesap + pozisyonlar + fiyatları çek; ${roleDef ? 'rolüne uygun analiz yap (mt5_rates/mt5_indicators ile) ve öneri ver.' : 'açık pozisyonları yönet (SL/TP güncelle, hedefe ulaşanı kapat); mt5_rates/mt5_indicators ile yeni fırsatları değerlendir. ⚡Onaylı fırsatta market buy/sell ile ANINDA gir (bekleyen emir ZORUNLU DEĞİL); lot için volume yerine riskPct+sl yeter.'} ${auto}${learnTip} Önemli kararların gerekçesini mt5_note ile günlüğe yaz. Kısa rapor ver.`;
   const launch = (planBlock) => {
@@ -12719,8 +12797,7 @@ function finFlushOnDone(ev) {
      sıradaki turu trader'ın cycle'ı başlatır (rapor tazeliği). Trader yoksa
      ekip kendi timer'ıyla dönmeye devam eder. */
   if (agent.role && finTeamHasMain()) return;
-  const f = finCfg();
-  const iv = Math.max(30, Number(f.intervalSec) || 120) * 1000;
+  const iv = finPaceSec() * 1000;
   financeState.lastRoundAt = Date.now();
   if (agent.main) {
     finPush('trader', { state: 'idle', round: agent.round, nextInSec: iv / 1000 });
@@ -12915,17 +12992,8 @@ ipcMain.handle('finance:settings', async (_e, patch) => {
   }
   if (p.intervalSec !== undefined) f.intervalSec = Math.max(30, Math.min(3600, Math.round(Number(p.intervalSec) || 120)));
   /* TUR ARALIĞI CANLI: bekleyen zamanlayıcılar yeni aralıkla yeniden kurulur —
-     koşan tur bitince zaten finFlushOnDone yeni aralığı okur. */
-  if (p.intervalSec !== undefined && financeState.agents) {
-    const iv = Math.max(30, Math.round(Number(f.intervalSec) || 120)) * 1000;
-    const hasMain = finTeamHasMain();
-    for (const [sid, a] of financeState.agents) {
-      if (!a || !engine || engine.isBusy(sid)) continue;
-      if (a.role && hasMain) continue; /* cycle modu: ekip turunu trader başlatır */
-      clearTimeout(a.timer);
-      a.timer = setTimeout(() => { try { finAgentRound(String(sid)); } catch {} }, iv);
-    }
-  }
+     koşan tur bitince zaten finFlushOnDone yeni ritmi okur. */
+  if (p.intervalSec !== undefined) { try { finRescheduleAgents(); } catch {} }
   if (p.maxLot !== undefined) f.maxLot = Math.max(0.01, Math.min(100, Number(p.maxLot) || 0.1));
   if (p.minLot !== undefined) f.minLot = Math.max(0.01, Math.min(100, Number(p.minLot) || 0.01));
   /* min lot max lotu aşamaz — hangisi sonra yazıldıysa diğerine kelepçelenir */

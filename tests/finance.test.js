@@ -176,11 +176,64 @@ test('mt5_limits: get/set API üzerinden çalışır, yetki main tarafında doğ
     assert.strictEqual(s.ok, true);
     assert.deepStrictEqual(calls[0].patch, { maxLot: 0.2, maxPositions: 6 });
     assert.strictEqual(calls[0].ctx.sessionId, 's1');
+    /* SEMBOL BAZLI: symbol + reset main tarafına aynen geçer */
+    const sy = await ftools.handlers.mt5_limits({ action: 'set', symbol: 'xauusd', minLot: 0.02, maxLot: 0.25 }, { sessionId: 's1' });
+    assert.strictEqual(sy.ok, true);
+    assert.deepStrictEqual(calls[1].patch, { minLot: 0.02, maxLot: 0.25, symbol: 'XAUUSD' });
+    const rst = await ftools.handlers.mt5_limits({ action: 'set', symbol: 'XAUUSD', reset: true });
+    assert.strictEqual(rst.ok, true);
+    assert.deepStrictEqual(calls[2].patch, { symbol: 'XAUUSD', reset: true });
+    const onlySym = await ftools.handlers.mt5_limits({ action: 'set', symbol: 'XAUUSD' });
+    assert.strictEqual(onlySym.ok, false, 'symbol tek başına yetmez — minLot/maxLot ya da reset gerekir');
+    const rf = await ftools.handlers.mt5_limits({ action: 'set', symbol: 'XAUUSD', reset: false });
+    assert.strictEqual(rf.ok, false, 'reset:false tek başına limit silmez (yanlışlıkla reset koruması)');
     const bad = await ftools.handlers.mt5_limits({ action: 'set' });
     assert.strictEqual(bad.ok, false);
     assert.match(String(bad.error), /minLot/);
   } finally {
     ftools.setLimits({ get: () => ({ minLot: 0.01, maxLot: 0.1, maxPositions: 3 }), set: () => ({ ok: false, error: 'x' }) });
+  }
+});
+
+test('mt5_trade: sembol bazlı lot limiti (mt5_limits symbol) hacmi kelepçeler', async () => {
+  const ftools = require('../src/agent/financetools');
+  const bridge = require('../src/mt5bridge');
+  const calls = [];
+  const symbolsRow = {
+    symbol: 'XAUUSD', digits: 2, point: 0.01, volume_min: 0.01, volume_max: 100, volume_step: 0.01,
+    trade_stops_level: 0, trade_tick_size: 0.01, trade_tick_value: 1, bid: 2000, ask: 2000.5,
+  };
+  Object.defineProperty(bridge, 'running', { value: true, configurable: true, writable: true });
+  bridge.call = async (method, params) => {
+    calls.push({ method, params });
+    if (method === 'symbols') return { ok: true, data: { symbols: [symbolsRow] } };
+    if (method === 'market') return { ok: true, data: { result: { retcode: 10009, order: 999 }, price: 2000.5 } };
+    if (method === 'positions') return { ok: true, data: { positions: [] } };
+    if (method === 'account') return { ok: true, data: { account: { balance: 10000, equity: 10000, margin: 0, margin_free: 10000, margin_level: 0 } } };
+    if (method === 'margin') return { ok: true, data: { margin: 10 } };
+    return { ok: true, data: {} };
+  };
+  try {
+    ftools.setConfig(() => ({
+      allowTrading: true, minLot: 0.01, maxLot: 1, maxPositions: 5, maxPerSymbol: 0, maxSameSide: 0, minMarginLevel: 0,
+      symbolLimits: { XAUUSD: { minLot: 0.02, maxLot: 0.05 } },
+    }));
+    const r1 = await ftools.handlers.mt5_trade({ symbol: 'XAUUSD', side: 'buy', volume: 0.9, reason: 'tavan testi' });
+    assert.strictEqual(r1.ok, true);
+    assert.strictEqual(r1.opened.volume, 0.05, 'sembol max lotu genel tavanın altında uygulanır');
+    calls.length = 0;
+    const r2 = await ftools.handlers.mt5_trade({ symbol: 'XAUUSD', side: 'buy', volume: 0.01, reason: 'taban testi' });
+    assert.strictEqual(r2.ok, true);
+    assert.strictEqual(r2.opened.volume, 0.02, 'sembol min lotu hacmi yukarı iter');
+    calls.length = 0;
+    const r3 = await ftools.handlers.mt5_risksize({ symbol: 'XAUUSD', entry: 2000, sl: 1990, riskPct: 1 });
+    assert.strictEqual(r3.ok, true);
+    assert.strictEqual(r3.maxLot, 0.05);
+    assert.strictEqual(r3.minLot, 0.02);
+    assert.ok(r3.volume <= 0.05, 'risk lotu sembol tavanını aşamaz');
+  } finally {
+    delete bridge.running;
+    delete bridge.call;
   }
 });
 
@@ -251,6 +304,17 @@ test('risk: min lot tabanı lotu yukarı yuvarlar (raised)', () => {
   const cap = risk.normalizeVolume(RINFO, 5, 0.3, 0.1);
   assert.strictEqual(cap.volume, 0.3);
   assert.strictEqual(cap.capped, true);
+});
+
+test('risk: broker adımıyla uyuşmayan taban/tavan sessizce ihlal edilmez', () => {
+  const info = Object.assign({}, RINFO, { volume_step: 0.1, volume_min: 0.01, volume_max: 100 });
+  /* min 0.15 – max 0.19, adım 0.1 → geçerli hacim yok (0.1 taban altı, 0.2 tavan üstü):
+     sessizce 0.1 lot DÖNMEMELİ, net hata vermeli (trader aralığı düzeltir) */
+  const r = risk.normalizeVolume(info, 0.15, 0.19, 0.15);
+  assert.ok(r.error, 'aralık broker adımına oturmuyorsa hata döner');
+  const ok = risk.normalizeVolume(info, 0.15, 0.5, 0.15);
+  assert.strictEqual(ok.volume, 0.2, 'adıma yukarı yuvarlanır ve tavana sığar');
+  assert.strictEqual(ok.raised, true);
 });
 
 test('risk: %risk lotu SL mesafesi × tick değerinden hesaplanır', () => {

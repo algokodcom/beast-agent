@@ -101,6 +101,19 @@ function tickPrice(row, side) {
   return Number(row && row.bid) || Number(row && row.ask) || 0;
 }
 
+/* SEMBOL BAZLI LOT ARALIĞI (trader mt5_limits ile koyar): sembol limiti
+   varsa genel aralığın yerine geçer — yoksa genel minLot/maxLot kullanılır.
+   İki değer de broker normalizasyonuna girer (adım/min/max sembolden gelir). */
+function lotRange(cfg, symbol) {
+  const sym = String(symbol || '').trim().toUpperCase();
+  const o = (cfg && cfg.symbolLimits && cfg.symbolLimits[sym]) || null;
+  let minLot = Number(o && o.minLot) > 0 ? Number(o.minLot) : Number(cfg && cfg.minLot) || 0.01;
+  let maxLot = Number(o && o.maxLot) > 0 ? Number(o.maxLot) : Number(cfg && cfg.maxLot) || 0.1;
+  if (minLot > maxLot) minLot = maxLot;
+  if (maxLot < minLot) maxLot = minLot;
+  return { minLot, maxLot };
+}
+
 /* İşlem öncesi risk katmanı: stops_level + yoğunluk + marj kalkanı.
    Hata metni ya da null döner. positions çağıran tarafından verilir. */
 async function preTradeCheck(cfg, side, symbol, info, price, volume, sl, tp, positions) {
@@ -262,32 +275,35 @@ const definitions = NAMES.map((name) => {
     },
     mt5_limits: {
       description:
-        'LOT / POZİSYON LİMİTLERİNİ oku ve GÜNCELLE — trader karar mercii: mt5_limits {action:"get"|"set", minLot?, maxLot?, maxPositions?}. get: yürürlükteki min lot / max lot / max eşzamanlı pozisyon ve işlem riski %. set: yalnız ana trader (ve finance sohbet copilot\'ı) kullanabilir — rol/işçi ajanları değiştiremez. Volatilite rejimine göre limitleri sen ayarla (ör. sakin piyasada max lot artır, haber anında düşür); değişiklik ANINDA panelde ve sonraki turda geçerli olur. Kural: minLot maxLot\'u aşamaz.',
+        'LOT / POZİSYON LİMİTLERİNİ oku ve GÜNCELLE — trader karar mercii: mt5_limits {action:"get"|"set", symbol?, minLot?, maxLot?, maxPositions?, reset?}. get: genel min lot / max lot / max eşzamanlı pozisyon + SEMBOL BAZLI limitler + işlem riski %. GENEL set: minLot/maxLot/maxPositions. SEMBOL BAZLI set: symbol ver (ör. {action:"set", symbol:"XAUUSD", minLot:0.02, maxLot:0.5}) — her sembolün min/max lotunu kendi karakterine göre SEN belirle (volatilite, spread, marj); sembol limiti genel aralığın dışına çıkamaz (genel taban/tavan kelepçeler). Sembolü genele döndürmek için {action:"set", symbol:"XAUUSD", reset:true}. set: yalnız ana trader (ve finance sohbet copilot\'ı) kullanabilir — rol/işçi ajanları değiştiremez. Değişiklik ANINDA panelde ve sonraki turda geçerli olur. Kural: minLot maxLot\'u aşamaz.',
       parameters: {
         type: 'object',
         properties: {
           action: { type: 'string', enum: ['get', 'set'], description: 'get: mevcut limitler · set: güncelle' },
+          symbol: { type: 'string', description: 'set: sembol bazlı lot limiti (ör. XAUUSD) — genel set için boş bırak' },
           minLot: { type: 'number', description: 'set: yeni alt sınır (0.01-100)' },
           maxLot: { type: 'number', description: 'set: yeni üst sınır (0.01-100)' },
-          maxPositions: { type: 'number', description: 'set: eşzamanlı pozisyon tavanı (1-20)' },
+          maxPositions: { type: 'number', description: 'set: eşzamanlı pozisyon tavanı (1-20) — yalnız GENEL (sembol ile verilemez)' },
+          reset: { type: 'boolean', description: 'set + symbol: true → sembol limitini kaldır, genel aralığa dön' },
         },
         required: ['action'],
       },
     },
     mt5_ogrenme: {
       description:
-        'SEMBOL BAZLI ÖĞRENME HAFIZASI — Beast Finance sürekli öğrenir: mt5_ogrenme {action:"list"|"add"|"remove"|"clear"|"stats"|"compact"|"forget", symbol?, text?, kind?, tags?, id?, ids?, all?}. Her sembolün KENDİ istatistiği (işlem/kazanç/kayıp, net, kâr yakalama, kâr geri verme) OTOMATİK birikir; ayrıca işlemlerden çıkardığın DERSLERİ sen kaydedersin. KURALLAR: (1) Her kapanıştan sonra (özellikle stop/tp sonrası) sembol için tek cümle ders yaz: hangi setup işe yaradı/yaramadı, saat/seans, SL yeri, hata mı hata yok mu — kind:"pattern"|"mistake"|"rule"|"observation". (2) Yeni işlem kararından ÖNCE ilgili sembolün list/stats çıktısını oku; aynı hatayı tekrarlama, işleyen deseni kullan. (3) Yanlış çıkan/genel geçersiz dersi remove/clear ile sil. Aynı ders tekrar yazılamaz ve sembol başına 24 saatte en fazla 12 ders kaydedilir. HAFIZA KENDİNİ SADELEŞTİRİR (opencode tarzı compaction): ham dersler birikince (24+) ESKİ dersler OTOMATİK olarak modele özetlettirilir ve tek KALICI ÖZETE sıkıştırılır — ham yalnız son dersler kalır; 30 günden eski dersler, 90 günden eski işlem kayıtları ve 120 gün hareketsiz semboller otomatik unutulur. Gerekirse compact {symbol} ile hemen özetlet, forget ile süresi geçenleri temizle. action:"list" symbol verilmezse tüm sembollerin özetini döner (kalıcı özet dahil). Ör: {action:"add", symbol:"XAUUSD", text:"Londra açılışında M5 EMA50 üstü momentum girişleri iyi çalışıyor", kind:"pattern"}.',
+        'SEMBOL BAZLI ÖĞRENME HAFIZASI — Beast Finance sürekli öğrenir: mt5_ogrenme {action:"list"|"add"|"remove"|"clear"|"stats"|"compact"|"forget", symbol?, text?, kind?, tags?, id?, ids?, all?, limit?}. Her sembolün KENDİ istatistiği (işlem/kazanç/kayıp, net, kâr yakalama, kâr geri verme) OTOMATİK birikir; ayrıca gerçekten öğrendiğin dersleri sen kaydedersin. DERS KURALLARI (SEÇİCİ): (1) Her kapanışa ders YAZMA — yalnız gerçekten öğrenilmiş, tekrar kullanılabilir, kanıtlı içgörüyü TEK KISA cümleyle kaydet (en fazla ~20 kelime / 200 karakter); ör. "XAUUSD M5 EMA50 üstü Londra açılışı momentumu 3/4 işledi". YASAK: günlük/rapor tarzı uzun metin ("bugün şunu yaptım"), genel laf ("dikkatli olmalıyım"), her turda ders, tekrar. Emin değilsen HİÇ kaydetme. (2) Yeni işlem kararından ÖNCE ilgili sembolün stats (kompakt: istatistik + kalıcı özet + son 3 ders) ya da list (son 8 ders; limit ile artır) çıktısını oku; aynı hatayı tekrarlama, işleyen deseni kullan. (3) Yanlış çıkan/genel geçersiz dersi remove/clear ile sil. Aynı ders tekrar yazılamaz; sembol başına 24 saatte en fazla 3 ders kabul edilir (kalite kapısı: çok kısa/uzun, günlük tarzı ve genel tavsiye metinleri reddedilir). HAFIZA KENDİNİ SADELEŞTİRİR (opencode tarzı compaction): ham dersler birikince (24+) ESKİ dersler OTOMATİK olarak modele özetlettirilir ve tek KALICI ÖZETE sıkıştırılır — ham yalnız son dersler kalır; 30 günden eski dersler, 90 günden eski işlem kayıtları ve 120 gün hareketsiz semboller otomatik unutulur. Gerekirse compact {symbol} ile hemen özetlet, forget ile süresi geçenleri temizle. action:"list" symbol verilmezse tüm sembollerin özetini döner (kalıcı özet dahil).',
       parameters: {
         type: 'object',
         properties: {
           action: { type: 'string', enum: ['list', 'add', 'remove', 'clear', 'stats', 'compact', 'forget'] },
           symbol: { type: 'string', description: 'Sembol (ör. XAUUSD) — öğrenme sembol bazlıdır' },
-          text: { type: 'string', description: 'add: öğrenilen ders/desen (kısa, net, tek cümle)' },
+          text: { type: 'string', description: 'add: öğrenilen ders — TEK kısa cümle (en fazla ~20 kelime/200 karakter), somut ve tekrar kullanılabilir; günlük/uzun metin kaydetme' },
           kind: { type: 'string', enum: ['pattern', 'mistake', 'rule', 'observation'], description: 'add: kayıt türü (varsayılan observation)' },
           tags: { type: 'array', items: { type: 'string' }, description: 'add: etiketler (ör. ["scalp","london"])' },
           id: { type: 'string', description: 'remove: kayıt id' },
           ids: { type: 'array', items: { type: 'string' }, description: 'clear: silinecek kayıt id listesi' },
           all: { type: 'boolean', description: 'clear: true → tüm öğrenme kayıtları (dikkatli)' },
+          limit: { type: 'number', description: 'list: döndürülecek son ders sayısı (varsayılan 8, en fazla 25)' },
         },
         required: ['action'],
       },
@@ -565,8 +581,14 @@ const handlers = {
       for (const k of ['minLot', 'maxLot', 'maxPositions']) {
         if (args[k] !== undefined && args[k] !== null && args[k] !== '') patch[k] = Number(args[k]);
       }
-      if (!Object.keys(patch).length) {
-        return { ok: false, error: 'set için en az bir alan ver: minLot / maxLot / maxPositions' };
+      /* SEMBOL BAZLI LOT LİMİTİ: symbol verilirse trader o sembolün min/max
+         lotunu ayarlar (reset:true → genel aralığa döndürür) */
+      const sym = String(args.symbol || '').trim().toUpperCase();
+      if (sym) patch.symbol = sym;
+      const reset = args.reset === true || String(args.reset || '').toLowerCase() === 'true';
+      if (reset) patch.reset = true;
+      if (!Object.keys(patch).length || (sym && patch.minLot === undefined && patch.maxLot === undefined && !reset)) {
+        return { ok: false, error: 'set için en az bir alan ver: minLot / maxLot / maxPositions (sembol bazlıda minLot/maxLot ya da reset:true)' };
       }
       return await limitsApi.set(patch, ctx || {});
     }
@@ -575,7 +597,12 @@ const handlers = {
   async mt5_ogrenme(args, ctx) {
     const action = String(args.action || 'list').toLowerCase();
     const symbol = String(args.symbol || '').trim().toUpperCase();
-    if (action === 'list') return learningApi.list({ symbol });
+    if (action === 'list') {
+      /* kompakt okuma: varsayılan son 8 ders (limit ile artırılır, max 25) —
+         hafızanın tamamı ajana gönderilmez */
+      const limit = Math.round(Number(args.limit) || 0);
+      return learningApi.list({ symbol, limit: limit > 0 ? limit : 8 });
+    }
     if (action === 'stats') return learningApi.stats({ symbol });
     if (action === 'add') {
       const text = String(args.text || '').replace(/\s+/g, ' ').trim();
@@ -584,9 +611,11 @@ const handlers = {
       const kindRaw = String(args.kind || 'observation').toLowerCase();
       const kind = ['pattern', 'mistake', 'rule', 'observation'].includes(kindRaw) ? kindRaw : 'observation';
       const tags = Array.isArray(args.tags) ? args.tags.map((t) => String(t || '').trim()).filter(Boolean).slice(0, 6) : [];
-      const res = learningApi.add({ symbol, text: text.slice(0, 600), kind, tags, sid: (ctx && ctx.sessionId) || '' });
+      /* metin AYNEN geçer: kalite kapısı (kısa+somut) main tarafında çalışır —
+         uzun/günlük metin sessizce kırpılmaz, ajan net hata alıp kısaltır */
+      const res = learningApi.add({ symbol, text, kind, tags, sid: (ctx && ctx.sessionId) || '' });
       if (res && res.ok) {
-        noteTrade('learn', { symbol, text: text.slice(0, 300), kind }, ctx || {});
+        noteTrade('learn', { symbol, text: text.slice(0, 200), kind }, ctx || {});
       }
       return res;
     }
@@ -678,7 +707,8 @@ const handlers = {
     const balance = Number(acct && acct.account && acct.account.balance) || 0;
     if (!(balance > 0)) return { ok: false, error: 'bakiye okunamadı' };
     const riskAmount = (balance * riskPct) / 100;
-    const res = finrisk.calcRiskLot(info, entry, sl, riskAmount, cfg.maxLot, cfg.minLot);
+    const range = lotRange(cfg, symbol);
+    const res = finrisk.calcRiskLot(info, entry, sl, riskAmount, range.maxLot, range.minLot);
     if (res.error) return { ok: false, error: res.error, raw: res.raw, lossPerLot: res.lossPerLot, riskAmount: Math.round(riskAmount * 100) / 100 };
     const digits = Number(info.digits) || 5;
     const dist = Math.abs(entry - sl);
@@ -699,8 +729,8 @@ const handlers = {
       capped: !!res.capped,
       raised: !!res.raised,
       warning: closeErr || undefined,
-      minLot: Number(cfg.minLot) || 0.01,
-      maxLot: Number(cfg.maxLot) || 0.1,
+      minLot: range.minLot,
+      maxLot: range.maxLot,
     };
   },
   async mt5_trade(args, ctx) {
@@ -720,7 +750,7 @@ const handlers = {
     const side = t.side;
     const symbol = String(args.symbol || '').trim().toUpperCase();
     if (!symbol) return { ok: false, error: 'symbol gerekli' };
-    const maxLot = Number(cfg.maxLot) || 0.1;
+    const range = lotRange(cfg, symbol);
     const sl = Number(args.sl) || 0;
     const tp = Number(args.tp) || 0;
     const info = await symInfoRow(symbol);
@@ -738,12 +768,12 @@ const handlers = {
       const acct = await bcall('account', {}, 8000);
       const balance = Number(acct && acct.account && acct.account.balance) || 0;
       const riskAmount = (balance * riskPct) / 100;
-      const rr = finrisk.calcRiskLot(info, price, sl, riskAmount, maxLot, cfg.minLot);
+      const rr = finrisk.calcRiskLot(info, price, sl, riskAmount, range.maxLot, range.minLot);
       if (rr.error) return { ok: false, error: rr.error };
       vol = rr.volume;
       riskInfo = { riskPct, riskAmount: Math.round(riskAmount * 100) / 100, lossPerLot: rr.lossPerLot, raised: !!rr.raised };
     } else {
-      const norm = finrisk.normalizeVolume(info, wantVolume, maxLot, cfg.minLot);
+      const norm = finrisk.normalizeVolume(info, wantVolume, range.maxLot, range.minLot);
       if (norm.error) return { ok: false, error: norm.error };
       vol = norm.volume;
     }
@@ -860,7 +890,8 @@ const handlers = {
     if (!symbol) return { ok: false, error: 'symbol gerekli' };
     const info = await symInfoRow(symbol);
     if (!info) return { ok: false, error: 'sembol bulunamadı: ' + symbol + ' (MT5 Market Watch?)' };
-    const norm = finrisk.normalizeVolume(info, args.volume, Number(cfg.maxLot) || 0.1, cfg.minLot);
+    const range = lotRange(cfg, symbol);
+    const norm = finrisk.normalizeVolume(info, args.volume, range.maxLot, range.minLot);
     if (norm.error) return { ok: false, error: norm.error };
     const vol = norm.volume;
     const ptype = t.type;

@@ -9410,6 +9410,33 @@ function financeDir() {
   return d;
 }
 
+/* SEMBOL BAZLI LOT LİMİTLERİ: trader mt5_limits symbol ile koyar; anahtar =
+   sembol (XAUUSD…). Genel aralık taban/tavan olarak zorlanır — sembol limiti
+   onun dışına çıkamaz; boş alan genel aralığı kullanır. Her okuma/yazmada
+   normalize edilir (bozuk/eski kayıtlar temizlenir). */
+function finNormalizeSymbolLimits(f) {
+  const gMin = Number(f.minLot) || 0.01;
+  const gMax = Number(f.maxLot) || 0.1;
+  if (!f.symbolLimits || typeof f.symbolLimits !== 'object') f.symbolLimits = {};
+  const clean = {};
+  for (const [k, v] of Object.entries(f.symbolLimits).slice(0, 40)) {
+    const sym = String(k || '').trim().toUpperCase();
+    const o = v && typeof v === 'object' ? v : {};
+    if (!sym) continue;
+    let mn = Number(o.minLot) > 0 ? Math.round(Math.max(0.01, Math.min(100, Number(o.minLot))) * 100) / 100 : 0;
+    let mx = Number(o.maxLot) > 0 ? Math.round(Math.max(0.01, Math.min(100, Number(o.maxLot))) * 100) / 100 : 0;
+    if (mn && mx && mn > mx) mn = mx;
+    if (mn) mn = Math.min(Math.max(mn, gMin), gMax);
+    if (mx) mx = Math.max(Math.min(mx, gMax), gMin);
+    if (mn && mx && mn > mx) mn = mx;
+    const lim = {};
+    if (mn) lim.minLot = mn;
+    if (mx) lim.maxLot = mx;
+    if (lim.minLot || lim.maxLot) clean[sym] = lim;
+  }
+  f.symbolLimits = clean;
+}
+
 function finCfg() {
   if (!settings.finance || typeof settings.finance !== 'object') settings.finance = {};
   const f = settings.finance;
@@ -9448,8 +9475,10 @@ function finCfg() {
   if (!Number(f.intervalSec)) f.intervalSec = 120;
   if (!Number(f.minLot)) f.minLot = 0.01;
   if (!Number(f.maxLot)) f.maxLot = 0.1;
-  /* LOT ARALIĞI KILİDİ: min lot hiçbir zaman max lotu aşamaz */
+  /* LOT ARALIĞI KİLİDİ: min lot hiçbir zaman max lotu aşamaz */
   if (f.minLot > f.maxLot) f.minLot = f.maxLot;
+  /* SEMBOL BAZLI LOT LİMİTLERİ (trader kararı — mt5_limits symbol ile koyar) */
+  finNormalizeSymbolLimits(f);
   if (f.maxPositions == null) f.maxPositions = 3;
   /* KODLA DİSİPLİN (trader kuralları): hepsi 0 = kural kapalı */
   if (!Number.isFinite(Number(f.maxTradesPerDay))) f.maxTradesPerDay = 10;
@@ -11248,6 +11277,8 @@ function finLimitsSnapshot() {
     maxLot: Number(f.maxLot) || 0.1,
     maxPositions: Number(f.maxPositions) || 3,
     riskPerTradePct: Number(f.riskPerTradePct) || 0,
+    /* SEMBOL BAZLI LOT LİMİTLERİ (trader kararı) — genel aralığı daraltır */
+    symbols: { ...(f.symbolLimits && typeof f.symbolLimits === 'object' ? f.symbolLimits : {}) },
   };
 }
 
@@ -11262,21 +11293,22 @@ function finLimitsSessionAllowed(sid) {
   return true;
 }
 
-function finSyncLimitsToSessions() {
+function finSyncLimitsToSessions(extra) {
   const lim = finLimitsSnapshot();
+  const apply = { minLot: lim.minLot, maxLot: lim.maxLot, maxPositions: lim.maxPositions, symbolLimits: lim.symbols };
   if (engine) {
     try {
       for (const [sid] of financeState.agents) {
         const s = engine.cache.get(String(sid));
-        if (s) s.financeLimits = { minLot: lim.minLot, maxLot: lim.maxLot, maxPositions: lim.maxPositions };
+        if (s) s.financeLimits = { ...apply };
       }
       for (const [, s] of engine.cache) {
         if (!s || !s.finance || s.bgJob || !s.financeLimits) continue;
-        s.financeLimits = { minLot: lim.minLot, maxLot: lim.maxLot, maxPositions: lim.maxPositions };
+        s.financeLimits = { ...apply };
       }
     } catch {}
   }
-  finPush('limits', { ...lim });
+  finPush('limits', { ...lim, ...(extra && typeof extra === 'object' ? extra : {}) });
 }
 
 function finLimitsSet(patch, ctx) {
@@ -11286,6 +11318,54 @@ function finLimitsSet(patch, ctx) {
   }
   const f = finCfg();
   const notes = [];
+  /* SEMBOL BAZLI LOT LİMİTİ (symbol verilirse): trader sembole göre min/max lot
+     koyar — genel aralık taban/tavan olarak zorlanır. reset:true (ya da yalnız
+     symbol) → sembol limiti kaldırılır, genel aralık geçerli olur. */
+  const sym = String(patch.symbol || '').trim().toUpperCase();
+  if (sym) {
+    if (patch.maxPositions !== undefined) {
+      return { ok: false, error: 'maxPositions sembol bazlı değil — symbol vermeden genel limit olarak ayarla' };
+    }
+    const hasMin = patch.minLot !== undefined && patch.minLot !== null && patch.minLot !== '';
+    const hasMax = patch.maxLot !== undefined && patch.maxLot !== null && patch.maxLot !== '';
+    const reset = patch.reset === true || String(patch.reset || '').toLowerCase() === 'true';
+    if (!reset && !hasMin && !hasMax) {
+      return { ok: false, error: 'sembol güncellemesi için minLot/maxLot ver ya da reset:true' };
+    }
+    if (!f.symbolLimits || typeof f.symbolLimits !== 'object') f.symbolLimits = {};
+    if (reset) {
+      if (f.symbolLimits[sym]) {
+        delete f.symbolLimits[sym];
+        notes.push('sembol limiti kaldırıldı → genel aralık geçerli');
+      }
+    } else {
+      const cur = { ...(f.symbolLimits[sym] || {}) };
+      if (hasMin) {
+        const v = Number(patch.minLot);
+        if (!(v >= 0.01) || v > 100) return { ok: false, error: 'sembol minLot 0.01-100 arasında olmalı' };
+        cur.minLot = Math.round(v * 100) / 100;
+      }
+      if (hasMax) {
+        const v = Number(patch.maxLot);
+        if (!(v >= 0.01) || v > 100) return { ok: false, error: 'sembol maxLot 0.01-100 arasında olmalı' };
+        cur.maxLot = Math.round(v * 100) / 100;
+      }
+      /* genel aralığa kelepçe: sembol limiti geneli AŞAMAZ/ALTA İNEMEZ */
+      if (cur.minLot !== undefined && cur.minLot < f.minLot) { cur.minLot = f.minLot; notes.push(`minLot genel tabana kelepçelendi (${f.minLot})`); }
+      if (cur.maxLot !== undefined && cur.maxLot > f.maxLot) { cur.maxLot = f.maxLot; notes.push(`maxLot genel tavana kelepçelendi (${f.maxLot})`); }
+      if (cur.minLot !== undefined && cur.maxLot !== undefined && cur.minLot > cur.maxLot) { cur.minLot = cur.maxLot; notes.push(`minLot maxLot'a kelepçelendi (${cur.maxLot})`); }
+      if (cur.minLot === undefined && cur.maxLot === undefined) delete f.symbolLimits[sym];
+      else f.symbolLimits[sym] = cur;
+    }
+    try { saveSettings(); } catch {}
+    const e = f.symbolLimits[sym];
+    const line = `⚙️ SEMBOL LOT LİMİTİ: ${sym} → ${e ? `min ${e.minLot ?? f.minLot} · max ${e.maxLot ?? f.maxLot}` : 'genel aralığa döndü'}${sid ? ' (ajan kararı)' : ''}`;
+    financeLog('[limit] ' + line);
+    finSyncLimitsToSessions({ symbol: sym, note: line });
+    financeNotify(line, 'limit', true);
+    try { finJournal({ kind: 'limits', symbol: sym, minLot: e ? e.minLot : null, maxLot: e ? e.maxLot : null, sid }); } catch {}
+    return { ok: true, symbol: sym, limits: finLimitsSnapshot(), note: notes.length ? notes.join('; ') : undefined };
+  }
   if (patch.maxLot !== undefined) {
     const v = Number(patch.maxLot);
     if (!(v >= 0.01) || v > 100) return { ok: false, error: 'maxLot 0.01-100 arasında olmalı' };
@@ -11322,7 +11402,11 @@ function finLimitsSet(patch, ctx) {
 const FIN_LEARN_MAX_NOTES = 60;      /* sembol başına ders tavanı */
 const FIN_LEARN_MAX_TRADES = 60;
 const FIN_LEARN_MAX_SYMBOLS = 60;   /* toplam sembol tavanı — depo sınırsız büyümesin */
-const FIN_LEARN_MAX_NOTES_DAY = 12; /* sembol başına 24 saatte en fazla ders — ajan seli depoyu zehirlemesin */
+const FIN_LEARN_MAX_NOTES_DAY = 3;  /* sembol başına 24 saatte en fazla ders — ders SELİ depoyu zehirlemesin */
+/* DERS KALİTESİ: "günlük tutar gibi" uzun/genel metinler ders DEĞİLDİR —
+   yalnız kısa, somut, tekrar kullanılabilir bilgi kaydedilir. */
+const FIN_LEARN_NOTE_MIN = 12;      /* çok kısa/genel laf (ör. "iyi işlem") ders sayılmaz */
+const FIN_LEARN_NOTE_MAX = 200;     /* tek kısa cümle tavanı (karakter) */
 /* SÜREKLİ UNUTMA (bellek hijyeni): eski kayıtlar otomatik düşer — depo büyüyüp
    zehirlenmez, yalnız GÜNCEL dersler ve son performans kalır. */
 const FIN_LEARN_NOTE_TTL_MS = 30 * 24 * 60 * 60 * 1000;    /* 30 gün: eski ders unutulur */
@@ -11352,6 +11436,20 @@ function finLearnNoteKey(text) {
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, 140);
+}
+
+/* DERS KALİTE KAPISI: gerçekten öğrenilmiş, işe yarar bilgi kısa cümleyle;
+   günlük/özet tarzı metin ya da genel laf kaydedilmez. Hata metni ya da null. */
+function finLearnNoteQuality(text) {
+  const t = String(text || '').replace(/\s+/g, ' ').trim();
+  if (t.length < FIN_LEARN_NOTE_MIN) return 'ders çok kısa — tek cümlede somut ders yaz (ör. "Londra açılışı M5 EMA50 üstü momentum işledi")';
+  if (t.length > FIN_LEARN_NOTE_MAX) return `ders çok uzun (${t.length} karakter) — en fazla ${FIN_LEARN_NOTE_MAX} karakterlik TEK kısa cümle yaz; günlük/rapor metnini ders diye kaydetme`;
+  if (/^(bug[üu]n|g[üu]nl[üu]k|bu sabah|bu ak[şs]am|sabah|ak[şs]am)\b/i.test(t)) return 'günlük tarzı metin ders değildir — yalnız tekrar kullanılabilir somut ders yaz';
+  /* GENEL LAFLAR: kanıtsız/tavsiye cümleleri ders değildir (somut setup/ölçüm iste) */
+  if (/(dikkatli ol|dikkat et|sab[ıi]rl[ıi] ol|panik yapma|duygular[ıi]na kap[ıi]lma|disiplinli ol|temkinli ol)/i.test(t)) {
+    return 'genel tavsiye ders değildir — hangi setup/koşulda ne olduğunu somut yaz (ör. sembol+periyot+seviye+sonuç)';
+  }
+  return null;
 }
 
 /* sembolün son aktivitesi (kapanış / ders / eski istatistik) — tavan aşımında
@@ -11630,9 +11728,10 @@ function finBuildLearnDigest(symbols) {
 function finLearnApi() {
   const norm = (s) => String(s || '').trim().toUpperCase();
   return {
-    list: ({ symbol } = {}) => {
+    list: ({ symbol, limit } = {}) => {
       const learn = finLearnLoad();
       const sym = norm(symbol);
+      const take = Math.max(1, Math.min(25, Math.round(Number(limit) || 8)));
       if (sym) {
         const e = learn.symbols[sym];
         if (!e) return { ok: true, symbol: sym, count: 0, notes: [], trades: [], stats: finLearnEmptyStats(), summary: null };
@@ -11640,7 +11739,7 @@ function finLearnApi() {
           ok: true,
           symbol: sym,
           count: e.notes.length,
-          notes: e.notes.slice(-25),
+          notes: e.notes.slice(-take),
           trades: e.trades.slice(-12),
           stats: { ...finLearnEmptyStats(), ...(e.stats || {}) },
           summary: e.summary && e.summary.text ? e.summary : null,
@@ -11658,9 +11757,20 @@ function finLearnApi() {
       return { ok: true, count: rows.length, symbols: rows.slice(0, FIN_LEARN_MAX_SYMBOLS) };
     },
     stats: ({ symbol } = {}) => {
+      /* KOMPAKT OKUMA: istatistik + kalıcı özet + son 3 ders — ajan karar
+         öncesi bunu okur (hafızanın TAMAMI değil, sadece güncel öz) */
       const learn = finLearnLoad();
       const sym = norm(symbol);
-      if (sym) return { ok: true, symbol: sym, stats: { ...finLearnEmptyStats(), ...((learn.symbols[sym] || {}).stats || {}) } };
+      if (sym) {
+        const e = learn.symbols[sym] || {};
+        return {
+          ok: true,
+          symbol: sym,
+          stats: { ...finLearnEmptyStats(), ...(e.stats || {}) },
+          summary: e.summary && e.summary.text ? e.summary : null,
+          notes: Array.isArray(e.notes) ? e.notes.slice(-3) : [],
+        };
+      }
       const stats = {};
       for (const [s, e] of Object.entries(learn.symbols)) stats[s] = { ...finLearnEmptyStats(), ...(e.stats || {}) };
       return { ok: true, count: Object.keys(stats).length, stats };
@@ -11669,6 +11779,9 @@ function finLearnApi() {
       const sym = norm(symbol);
       const t = String(text || '').replace(/\s+/g, ' ').trim();
       if (!sym || !t) return { ok: false, error: 'symbol ve text gerekli' };
+      /* KALİTE KAPISI: kısa + somut + tekrar kullanılabilir — günlük tutma */
+      const q = finLearnNoteQuality(t);
+      if (q) return { ok: false, error: q, symbol: sym };
       const learn = finLearnLoad();
       const e = finLearnSym(sym);
       if (!e) return { ok: false, error: 'sembol yok' };
@@ -11693,7 +11806,7 @@ function finLearnApi() {
       const note = {
         id: 'l' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
         at: Date.now(),
-        text: t.slice(0, 600),
+        text: t.slice(0, FIN_LEARN_NOTE_MAX),
         kind: ['pattern', 'mistake', 'rule', 'observation'].includes(String(kind || '')) ? String(kind) : 'observation',
         tags: Array.isArray(tags) ? tags.map((x) => String(x || '').slice(0, 24)).filter(Boolean).slice(0, 6) : [],
         sid: String(sid || ''),
@@ -12157,7 +12270,10 @@ function finApplyTraderFields(s, symbolsOverride, role, isMain) {
   s.financeSymbols = Array.isArray(symbolsOverride) && symbolsOverride.length ? symbolsOverride : f.symbols;
   s.financeStrategy = String(f.strategy || '');
   s.financeShadow = !!f.shadowMode; /* shadow modda işlem araçları emir göndermez */
-  s.financeLimits = { minLot: f.minLot, maxLot: f.maxLot, maxPositions: f.maxPositions };
+  {
+    const lim = finLimitsSnapshot();
+    s.financeLimits = { minLot: lim.minLot, maxLot: lim.maxLot, maxPositions: lim.maxPositions, symbolLimits: lim.symbols };
+  }
   /* ZORUNLU TEK skill: rol ajanı → roleSkills[rol], ana trader → roleSkills.trader */
   const skillKey = r || (s.financePlaybook ? 'trader' : '');
   s.financeRoleSkills = (skillKey && f.roleSkills && f.roleSkills[skillKey]) || [];
@@ -12258,9 +12374,17 @@ function finTraderBrief(agent) {
   return [
     `Beast Finance ${who} başlatıldı — ilk tur: strateji çerçeveni kur ve piyasa taramasını yap.`,
     `Odak semboller: ${syms || '(boş — mt5_status ile terminale bak, mantıklı semboller seç)'}`,
-    `Tur aralığı: ${f.intervalSec} sn · Lot aralığı: ${f.minLot}–${f.maxLot} (min lot tabanı zorlanır, max lot tavanı aşılamaz) · Max eşzamanlı pozisyon: ${f.maxPositions}`,
+    `Tur aralığı: ${f.intervalSec} sn · Lot aralığı: ${f.minLot}–${f.maxLot} (genel taban/tavan; sembol bazlı limit daraltır) · Max eşzamanlı pozisyon: ${f.maxPositions}`,
+    (() => {
+      const rows = Object.entries(f.symbolLimits || {}).map(([s, v]) => {
+        const mn = Number(v && v.minLot) > 0 ? Number(v.minLot) : Number(f.minLot);
+        const mx = Number(v && v.maxLot) > 0 ? Number(v.maxLot) : Number(f.maxLot);
+        return `${s} ${mn}–${mx}`;
+      });
+      return rows.length ? `SEMBOL LOT LİMİTLERİN (senin kararın): ${rows.join(' · ')}` : '';
+    })(),
     agent && agent.main
-      ? `LİMİT YETKİN: volatilite/performansa göre mt5_limits {action:"set", minLot?, maxLot?, maxPositions?} ile limitleri SEN güncelleyebilirsin (değişiklik anında geçerli).`
+      ? `LİMİT YETKİN: volatilite/performansa göre mt5_limits ile SEN güncellersin (anında geçerli): genel {action:"set", minLot?, maxLot?, maxPositions?}; SEMBOL BAZLI {action:"set", symbol:"XAUUSD", minLot?, maxLot?} — her sembolün min/max lotunu kendi karakterine göre SEN belirle (volatilite, spread, marj); sembolü genele döndürmek için {action:"set", symbol:"XAUUSD", reset:true}.`
       : '',
     roleDef
       ? `UZMANLIK: ${roleDef.desc} — raporlarını bu çerçevede yaz; İŞLEM AÇMA, yalnız analiz + net öneri üret.`
@@ -12273,7 +12397,7 @@ function finTraderBrief(agent) {
     f.shadowMode ? 'SHADOW MOD AÇIK: emir gönderilmez — kararlarını gerekçesiyle raporla, gerçek işlem açılmaz.' : '',
     'Bu turda: mt5_status → hesap/pozisyon/fiyat verisi → mt5_rates/mt5_indicators ile teknik okuma → değerlendirme → kararlar (veya BEKLE: sebep) → kısa rapor.',
     'Önemli kararların gerekçesini mt5_note ile günlüğe yaz (haftalık performans raporu bu notları kullanır).',
-    'ÖĞRENME (ZORUNLU DÖNGÜ): her kapanıştan sonra aynı turda mt5_ogrenme {action:"add", symbol, text, kind} ile dersi kaydet; yeni karar öncesi mt5_ogrenme {action:"stats"/"list", symbol} ile o sembolün geçmişini oku.',
+    'ÖĞRENME (SEÇİCİ): yalnız gerçekten öğrenilmiş, tekrar kullanılabilir içgörüyü tek KISA cümleyle mt5_ogrenme {action:"add", symbol, text, kind} ile kaydet (günde en fazla 2-3); her kapanışa ders yazma, günlük/uzun metin kaydetme; yeni karar öncesi mt5_ogrenme {action:"stats"/"list", symbol} ile geçmişi oku.',
     'Risk otomasyonu main süreçte 5 sn döngüyle çalışır (+R BE, trailing, KÂR KORUMA: kâr 0.3R\'de kilitlenir, kısmi TP) — TP için RR ≥ 1.5 şartı YOK; 0.3-0.5R\'de kısmi kâr alıp kalanı korumalı trailing ile taşı (hızlı kâr toplama), SL/TP seviyelerini yine sen aktif yönet.',
     '⚡HIZLI AKSİYON: onaylı fırsatta market buy/sell ile ANINDA gir (mt5_trade {symbol, side, sl, tp, riskPct}); bekleyen emir vermek ZORUNLU DEĞİL — limit/stop yalnız seviye beklemede kurulur.',
     'Diğer finance/paralel ajanlarla koordinasyon için agent_dm aracı var (to: ajan başlığı anahtar kelimesi).',
@@ -12359,7 +12483,7 @@ async function finConsultPlan(f, agent, sid) {
     'Güncel piyasa bağlamı gerekiyorsa web_search kullan; kurulu bir skill konuyla ilgiliyse skill aracıyla oku.';
   const ctx = [
     `Odak semboller: ${agent && agent.symbols && agent.symbols.length ? agent.symbols.join(', ') : (f.symbols || []).join(', ') || '(boş — ajan kendi bulabilir)'}`,
-    `Otomatik işlem: ${auto} · lot aralığı ${f.minLot}–${f.maxLot} · max eşzamanlı pozisyon ${f.maxPositions}`,
+    `Otomatik işlem: ${auto} · lot aralığı ${f.minLot}–${f.maxLot} (genel; sembol bazlı limitler daraltır) · max eşzamanlı pozisyon ${f.maxPositions}`,
     account
       ? `Hesap: bakiye ${account.balance} ${account.currency} · özkaynak ${account.equity ?? '?'} · serbest marj ${account.margin_free ?? '?'} · kaldıraç 1:${account.leverage ?? '?'}`
       : 'Hesap verisi alınamadı.',
@@ -12500,7 +12624,7 @@ function finAgentRound(sid, opts) {
       : 'İşlem açabilirsin — limitlere uy, SL\u2019siz pozisyon bırakma.';
   const learnTip = roleDef
     ? ' İlgili sembolün geçmiş derslerini (mt5_ogrenme) oku ve önerine yansıt.'
-    : ' Kapanan her işlemden sonra mt5_ogrenme add ile sembol dersini yaz; karar öncesi mt5_ogrenme stats/list ile o sembolün geçmişini oku' + (agent.main ? '; volatiliteye göre mt5_limits ile lot/pozisyon limitlerini güncelleyebilirsin.' : '.');
+    : ' Yalnız gerçekten öğretici, tekrar kullanılabilir bir içgörü varsa TEK kısa cümleyle mt5_ogrenme add ile kaydet (her kapanışa ders yazma); karar öncesi mt5_ogrenme stats/list ile o sembolün geçmişini oku' + (agent.main ? '; volatiliteye göre mt5_limits ile genel ya da SEMBOL BAZLI (symbol) lot limitlerini güncelleyebilirsin.' : '.');
   const focus = agent.symbols.length ? `Odak: ${agent.symbols.join(', ')}. ` : '';
   const round = `FINANCE TUR #${agent.round}: ${focus}hesap + pozisyonlar + fiyatları çek; ${roleDef ? 'rolüne uygun analiz yap (mt5_rates/mt5_indicators ile) ve öneri ver.' : 'açık pozisyonları yönet (SL/TP güncelle, hedefe ulaşanı kapat); mt5_rates/mt5_indicators ile yeni fırsatları değerlendir. ⚡Onaylı fırsatta market buy/sell ile ANINDA gir (bekleyen emir ZORUNLU DEĞİL); lot için volume yerine riskPct+sl yeter.'} ${auto}${learnTip} Önemli kararların gerekçesini mt5_note ile günlüğe yaz. Kısa rapor ver.`;
   const launch = (planBlock) => {
@@ -12806,6 +12930,8 @@ ipcMain.handle('finance:settings', async (_e, patch) => {
   if (p.minLot !== undefined) f.minLot = Math.max(0.01, Math.min(100, Number(p.minLot) || 0.01));
   /* min lot max lotu aşamaz — hangisi sonra yazıldıysa diğerine kelepçelenir */
   if (f.minLot > f.maxLot) f.minLot = f.maxLot;
+  /* genel aralık değişti: sembol bazlı limitler yeni taban/tavana kelepçelenir */
+  if (p.minLot !== undefined || p.maxLot !== undefined) finNormalizeSymbolLimits(f);
   if (p.maxPositions !== undefined) f.maxPositions = Math.max(1, Math.min(20, Math.round(Number(p.maxPositions) || 3)));
   /* limit değişikliği koşan oturumlara ANINDA işlenir (sonraki turu beklemez) */
   if (p.minLot !== undefined || p.maxLot !== undefined || p.maxPositions !== undefined) {

@@ -24,7 +24,9 @@ function stepCeil(v, step) {
 
 /* info: MT5 symbol_info satırı. wanted: istenen lot. hardMax: kullanıcı üst
    limiti (max lot). hardMin: kullanıcı alt limiti (min lot) — istenen lot bu
-   tabanın altındaysa adıma yukarı yuvarlanır (raised). */
+   tabanın altındaysa adıma yukarı yuvarlanır (raised). Taban/tavan broker
+   adımına OTURMUYORSA (ör. min 0.15–max 0.19, adım 0.1) sessizce limit dışına
+   düşmek yerine net hata döner — aralığı mt5_limits ile düzelt. */
 function normalizeVolume(info, wanted, hardMax, hardMin) {
   const vmin = num(info && info.volume_min, 0.01);
   const vmax = num(info && info.volume_max, 100);
@@ -33,24 +35,32 @@ function normalizeVolume(info, wanted, hardMax, hardMin) {
   if (!(v > 0)) return { error: 'volume gerekli (pozitif sayı)' };
   const cap = Math.min(vmax > 0 ? vmax : Infinity, num(hardMax, 0) > 0 ? num(hardMax, 0) : Infinity);
   const floor = num(hardMin, 0) > 0 ? num(hardMin, 0) : 0;
+  const align = (x) => Math.round(x * 1e8) / 1e8;
+  const mismatch = () => ({
+    error: `lot aralığı broker adımıyla uyuşmuyor (min ${floor}, max ${cap === Infinity ? '∞' : cap}, adım ${step}) — mt5_limits ile aralığı düzelt`,
+  });
+  if (floor > cap + 1e-9) return mismatch();
   let capped = false;
   let raised = false;
   if (v > cap) {
-    v = stepFloor(cap, step);
+    v = align(stepFloor(cap, step));
     capped = true;
+    if (floor > 0 && v < floor - 1e-9) return mismatch();
   }
   if (v < floor - 1e-9) {
-    v = stepCeil(floor, step);
+    v = align(stepCeil(floor, step));
     raised = true;
+    if (v > cap + 1e-9) return mismatch();
   }
-  v = Math.round(stepFloor(v, step) * 1e8) / 1e8;
+  v = align(stepFloor(v, step));
+  if (floor > 0 && v < floor - 1e-9) { v = align(stepCeil(floor, step)); raised = true; }
   if (!(v > 0) || v < vmin - 1e-9) {
     return { error: `hacim broker minimumunun altında (min ${vmin} lot)` };
   }
   if (v > cap + 1e-9) {
-    /* min lot tabanı broker adımıyla üst limite sığmadı — üst limitte kal */
-    v = Math.round(stepFloor(cap, step) * 1e8) / 1e8;
+    v = align(stepFloor(cap, step));
     capped = true;
+    if (floor > 0 && v < floor - 1e-9) return mismatch();
     if (!(v > 0) || v < vmin - 1e-9) {
       return { error: `hacim broker minimumunun altında (min ${vmin} lot)` };
     }

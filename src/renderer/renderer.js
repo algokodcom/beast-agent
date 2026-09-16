@@ -226,6 +226,7 @@ const els = {
   finInterval: $('#finInterval'),
   finMinLot: $('#finMinLot'),
   finMaxLot: $('#finMaxLot'),
+  finSymLimits: $('#finSymLimits'),
   finStrategy: $('#finStrategy'),
   finMaxTradesDay: $('#finMaxTradesDay'),
   finLossStreak: $('#finLossStreak'),
@@ -9821,6 +9822,30 @@ function finSymBtnUpdate() {
   }
 }
 
+/* SEMBOL BAZLI LOT LİMİTLERİ (trader kararı — mt5_limits symbol ile):
+   genel min/max'tan sapmalar tek satırda gösterilir; trader sıfırlarsa satır kaybolur */
+function finSymLimitsRender(map) {
+  const box = els.finSymLimits;
+  if (!box) return;
+  const rows = Object.entries(map && typeof map === 'object' ? map : {})
+    .map(([sym, v]) => {
+      const o = v && typeof v === 'object' ? v : {};
+      const min = Number(o.minLot) > 0 ? Number(o.minLot) : 0;
+      const max = Number(o.maxLot) > 0 ? Number(o.maxLot) : 0;
+      if (!min && !max) return '';
+      if (min && max) return sym + ' ' + min + '–' + max;
+      return sym + (min ? ' ≥' + min : ' ≤' + max);
+    })
+    .filter(Boolean);
+  if (!rows.length) {
+    box.hidden = true;
+    box.textContent = '';
+    return;
+  }
+  box.hidden = false;
+  box.textContent = 'Sembol lot limitleri (trader): ' + rows.join(' · ');
+}
+
 function finTraderInputsSet(cfg) {
   if (!cfg) return;
   if (!finWatchDirty) finWatchSet(cfg.symbols);
@@ -9832,6 +9857,7 @@ function finTraderInputsSet(cfg) {
   if (els.finInterval && ae !== els.finInterval) els.finInterval.value = cfg.intervalSec || 120;
   if (els.finMinLot && ae !== els.finMinLot) els.finMinLot.value = cfg.minLot || 0.01;
   if (els.finMaxLot && ae !== els.finMaxLot) els.finMaxLot.value = cfg.maxLot || 0.1;
+  finSymLimitsRender(cfg.symbolLimits);
   if (els.finStrategy && ae !== els.finStrategy && !finStrategyDirty) els.finStrategy.value = cfg.strategy || '';
   if (els.finMaxTradesDay && ae !== els.finMaxTradesDay) els.finMaxTradesDay.value = Number(cfg.maxTradesPerDay) || 0;
   if (els.finLossStreak && ae !== els.finLossStreak) els.finLossStreak.value = Number(cfg.lossStreakLimit) || 0;
@@ -10204,14 +10230,17 @@ function finOnEvent(ev) {
       if (ev.minLot !== undefined) finCfgCache.minLot = ev.minLot;
       if (ev.maxLot !== undefined) finCfgCache.maxLot = ev.maxLot;
       if (ev.maxPositions !== undefined) finCfgCache.maxPositions = ev.maxPositions;
+      if (ev.symbols !== undefined) finCfgCache.symbolLimits = ev.symbols;
       finTraderInputsSet(finCfgCache);
     } else {
       const ae2 = document.activeElement;
       if (els.finMinLot && ae2 !== els.finMinLot && ev.minLot !== undefined) els.finMinLot.value = ev.minLot;
       if (els.finMaxLot && ae2 !== els.finMaxLot && ev.maxLot !== undefined) els.finMaxLot.value = ev.maxLot;
+      if (ev.symbols !== undefined) finSymLimitsRender(ev.symbols);
     }
     finLogLine('[limit] ' + (ev.note || ('min lot ' + ev.minLot + ' · max lot ' + ev.maxLot + ' · max pozisyon ' + ev.maxPositions)));
-    toast('Trader limitleri güncelledi: min ' + ev.minLot + ' / max ' + ev.maxLot);
+    if (ev.symbol) toast('Sembol lot limiti güncellendi: ' + ev.symbol);
+    else toast('Trader limitleri güncelledi: min ' + ev.minLot + ' / max ' + ev.maxLot);
   } else if (ev.fn === 'install') {
     finLogLine('[MT5] paket kurulumu tamamlandı (kod ' + ev.code + ')');
   }
@@ -11051,7 +11080,7 @@ if (els.finSkillsOverlay) {
    Çekirdekteki (main process) sembol bazlı öğrenme deposunu gösterir:
    otomatik istatistik + ajanın mt5_ogrenme ile yazdığı dersler. Tek ders
    silinebilir, sembol kaydı tümden bırakılabilir; depo tavanları
-   (60 sembol / 120 ders / 60 işlem / günlük 12 ders) çekirdekte uygulanır. */
+   (60 sembol / 60 ders / 60 işlem / günlük 3 ders; ders = kısa+somut) çekirdekte uygulanır. */
 const FIN_LEARN_TRASH_SVG =
   '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px"><path d="M3 6h18"/><path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>';
 
@@ -11211,7 +11240,7 @@ function finLearnSymEl(row) {
     body.hidden = false;
     finLearnOpenSym = sym;
     body.innerHTML = '<div class="fin-empty">yükleniyor…</div>';
-    const d = await finLearnCall({ action: 'list', symbol: sym });
+    const d = await finLearnCall({ action: 'list', symbol: sym, limit: 25 });
     if (!els.finLearnOverlay || els.finLearnOverlay.hidden) { busy = false; return; }
     finLearnDetail(body, sym, d);
     loaded = true;
@@ -11266,7 +11295,7 @@ function finLearnDetail(body, sym, d) {
   if (!notes.length) {
     const e = document.createElement('div');
     e.className = 'fin-empty';
-    e.textContent = 'Ders yok — ajan her kapanıştan sonra mt5_ogrenme ile buraya yazar.';
+    e.textContent = 'Ders yok — ajan yalnız gerçekten öğretici, kısa bir içgörü olunca mt5_ogrenme ile buraya yazar (her kapanışa ders yazmaz).';
     body.appendChild(e);
   } else {
     for (const n of notes.slice().reverse()) {

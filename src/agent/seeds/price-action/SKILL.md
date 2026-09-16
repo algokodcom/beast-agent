@@ -43,7 +43,8 @@ Kural: LTF sinyali HTF yönüne tersse işlem açma.
 - Giriş: BOS sonrası geri çekilme (pullback) + retest teyidi; kovalama yok.
 - SL: yapının arkasına (son swing low/high'ın ötesi) + spread/ATR payı. Yapının İÇİNE SL koyma.
 - Geniş SL tercih ediliyorsa: ~4×ATR SL, ~2×ATR'de BE (break-even) taşıma.
-- TP: bir sonraki HTF bölgesi; R:R en az 1.5–2. Kısmi kâr alımı serbest.
+- TP: bir sonraki HTF bölgesi. R:R ESNEKTİR — scalp/hızlı işlemlerde TP 0.3R–0.5R olabilir; R:R ≥ 1.5 ŞART DEĞİL. Kısmi kâr alımı serbest ve teşvik edilir: 0.3-0.5R'de pozisyonun bir kısmını realize et, kalanı korumalı trailing ile taşı.
+- KÂR KORUMA: +0.3R'de sistem SL'yi kilitler (en iyi kârın 0.15R gerisi); kârın eksiye dönmesine izin verme — gerekiyorsa 0.3-0.5R'de kısmi TP ile kârı cebe al.
 - BE'e çekmeden SL'siz/işlemsiz kalma; her pozisyonun SL'si olsun.
 
 ## 6) YASAKLAR

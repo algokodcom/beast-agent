@@ -53,8 +53,15 @@ function plan(pos, meta, st, cfg) {
   const trailDist = num(cfg && cfg.trailR, 0.5);
   const partialR = num(cfg && cfg.partialR, 0);
   const partialPct = num(cfg && cfg.partialPct, 50);
+  /* KÂR KORUMA (erken trailing): kâr protectStartR'ye ulaşınca SL, GÖRÜLEN EN
+     İYİ kârın protectDistR gerisine kilitlenir — spike dönüşlerinde kâr
+     eksiye dönmez (0 = kapalı; varsayılan main finCfg'de verilir). */
+  const protectStart = num(cfg && cfg.protectStartR, 0);
+  const protectDist = num(cfg && cfg.protectDistR, 0);
 
   const profit = isBuy ? ref - entry : entry - ref;
+  /* en iyi kâr: tick'ler arası spike'lar kaybolmasın — main st.bestProfit yazar */
+  const bestProfit = Math.max(profit, num(st && st.bestProfit, profit));
 
   /* ---- BE + trailing: hedef SL'yi birleştir, asla geriye taşıma ---- */
   if (r > 0) {
@@ -70,10 +77,21 @@ function plan(pos, meta, st, cfg) {
       if (!(desired > 0) || (isBuy ? trailSl > desired : trailSl < desired)) desired = trailSl;
       want = true;
     }
+    /* kâr kilidi: ulaşılan EN İYİ kârın bir kısmı garantiye alınır */
+    if (protectStart > 0 && protectDist > 0 && bestProfit >= protectStart * r) {
+      const locked = bestProfit - protectDist * r;
+      const lockSl = isBuy ? entry + locked : entry - locked;
+      if (locked > 0 && (!(desired > 0) || (isBuy ? lockSl > desired : lockSl < desired))) desired = lockSl;
+      want = true;
+    }
     if (want && desired > 0) {
       /* broker stop mesafesi: SL fiyata çok yakınsa geçersiz — kırp */
       desired = isBuy ? Math.min(desired, ref - minDist) : Math.max(desired, ref + minDist);
-      const improved = isBuy ? desired > sl + point * 0.5 : (sl === 0 || desired < sl - point * 0.5);
+      /* KIRPMA KİLİDİ BOZDU: fiyat geri çekildi, hedef SL girişin kaybına
+         indi — kâr kilidini kaybı kilitleyen SL'e çevirme; hiç yazma
+         (fiyat toparlayınca kilit yeniden uygulanır). */
+      const lockBroken = isBuy ? desired < entry : desired > entry;
+      const improved = !lockBroken && (isBuy ? desired > sl + point * 0.5 : (sl === 0 || desired < sl - point * 0.5));
       if (improved && desired > 0) {
         out.actions.push({ kind: 'modify', sl: roundTo(desired, digits) });
       }

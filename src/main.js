@@ -5578,6 +5578,10 @@ ipcMain.handle('sessions:create', () => {
     try {
       engine.markFinance(v.id, false);
       v.finance = true;
+      /* finance sohbeti TAM araç setiyle koşar (trader botu dahil):
+         bot skill kısıtı finance araçlarını (mt5_*) düşürmesin */
+      engine.setSessionTools(v.id, null);
+      engine.setSessionPerm(v.id, 'all');
     } catch {}
   }
   return v;
@@ -5639,7 +5643,17 @@ ipcMain.handle('agent:send', (_e, { sessionId, text }) => {
       const fsid = String(sessionId);
       let fsess = engine.cache.get(fsid);
       if (!fsess) { try { fsess = engine._load(fsid); } catch {} }
-      if (fsess && !fsess.botId && !fsess.bgJob && financeState.mode) {
+      /* botIdsiz sohbetler + Trader botu (finance'ın kendi botu) finance'a girer;
+         diğer müşteri botlarının kanalları finance izolasyonuna karışmaz */
+      const finBot = !fsess || !fsess.botId || fsess.botId === 'trader';
+      if (fsess && finBot && !fsess.bgJob && financeState.mode) {
+        /* Trader botu finance sohbetinde tam araç setiyle koşar (mt5_* açık) */
+        if (fsess.botId === 'trader') {
+          try {
+            engine.setSessionTools(fsid, null);
+            engine.setSessionPerm(fsid, 'all');
+          } catch {}
+        }
         if (!fsess.finance) {
           engine.markFinance(fsid, false);
           finApplyTraderFields(fsess);
@@ -9338,6 +9352,8 @@ const financeState = {
   hoursTimer: null, /* trade saatleri otomatik duraklatma denetimi (10 sn) */
   hoursPaused: null, /* pencere kapanınca durdurulan ajanların planı — açılınca geri gelir */
   alerts: [], /* fiyat alarmları (kalıcı: finance/alerts.json) */
+  learn: null, /* sembol bazlı öğrenme deposu (kalıcı: finance/ogrenme.json) */
+  learnReady: false, /* depo diskten yüklendi mi (tembel yükleme) */
   stats: null, /* son performans özeti (kalıcı: finance/stats.json) */
   statsAt: 0,
   lastStatsAt: 0,
@@ -9421,6 +9437,11 @@ function finCfg() {
   if (!Number.isFinite(Number(f.beOffsetR))) f.beOffsetR = 0.05;
   if (!Number.isFinite(Number(f.trailStartR))) f.trailStartR = 1.5;
   if (!Number.isFinite(Number(f.trailR))) f.trailR = 0.5;
+  /* KÂR KORUMA (erken trailing): kâr bu R'ye ulaşınca SL, görülen en iyi
+     kârın protectDistR gerisine kilitlenir — 0.3R'de başlar, kâr eksiye
+     dönmez (0 = kapalı) */
+  if (!Number.isFinite(Number(f.protectStartR))) f.protectStartR = 0.3;
+  if (!Number.isFinite(Number(f.protectDistR))) f.protectDistR = 0.15;
   if (!Number.isFinite(Number(f.partialR))) f.partialR = 0;
   if (!Number.isFinite(Number(f.partialPct))) f.partialPct = 50;
   /* BİLDİRİM: işlem/koruma/alarm olayları bağlı kanallara (TG/WA/Discord)
@@ -10624,6 +10645,8 @@ async function finRecordClose(ticket, st) {
   finExcFlush(true);
   const kind = finwatch.closeKind(closeReason);
   finJournal({ kind: 'close', ticket, symbol, net: rounded, side: (st && st.side) || '', mfe, mae, reason: kind || '' });
+  /* SEMBOL BAZLI SÜREKLİ ÖĞRENME: her kapanış istatistiğe işlenir (mt5_ogrenme) */
+  finLearnRecordClose({ symbol, side: (st && st.side) || '', net: rounded, mfe, mae, reason: kind || '' });
   const pl = rounded == null ? '' : ` · K/Z ${rounded >= 0 ? '+' : ''}${rounded.toFixed(2)}`;
   const line = `🏁 Pozisyon kapandı: ${symbol || '?'} #${ticket}${pl}`;
   financeLog('[watchdog] ' + line);
@@ -10837,6 +10860,11 @@ async function finWatchTick() {
           finJournal({ kind: 'open', ticket, symbol: st.symbol, side: st.side, volume: Number(p.volume) || 0, entry: st.entry, sl: Number(p.sl) || 0, tp: Number(p.tp) || 0 });
         }
         finWatchSave();
+      }
+      /* KÂR KORUMA: görülen EN İYİ kâr (fiyat farkı) tick aralarında da korunur */
+      {
+        const dist = st.side === 'buy' ? (Number(p.price_current) || 0) - st.entry : st.entry - (Number(p.price_current) || 0);
+        if (isFinite(dist) && !(Number(st.bestProfit) >= dist)) st.bestProfit = dist;
       }
       if (cfg.watchdog === false) continue;
       let meta = null;
@@ -11073,6 +11101,14 @@ function finTradeEvent(kRaw, dataRaw, sidRaw) {
     finJournal({ kind: 'note', sid, agent: who, symbol: d.symbol, note: d.note, ticket: d.ticket || 0, side: d.side || '' });
     return;
   }
+  /* SEMBOL BAZLI ÖĞRENME kaydı: günlüğe + AKIŞ paneline düşer */
+  if (k === 'learn') {
+    finJournal({ kind: 'learn', sid, agent: who, symbol: d.symbol, text: d.text, learnKind: d.kind || 'observation' });
+    const line = `🧠 ÖĞRENME: ${d.symbol || '?'} — ${String(d.text || '').replace(/\s+/g, ' ').slice(0, 160)}`;
+    financeLog('[ogrenme] ' + line);
+    finPush('trade', { line });
+    return;
+  }
   /* SHADOW: gerçek emir yok — karar teziyle günlüğe yazılır (test/ölçüm) */
   if (k === 'shadow') {
     finJournal({ kind: 'shadow', sid, agent: who, symbol: d.symbol, side: d.side || '', volume: d.volume, sl: d.sl || 0, tp: d.tp || 0, price: d.price || 0, type: d.type || '', reason: d.reason || '' });
@@ -11160,6 +11196,317 @@ try {
       }, sid);
     }
   });
+} catch {}
+
+/* ---------- LIMIT API (mt5_limits) ----------
+   Ana trader / finance sohbet oturumu min lot-max lot-pozisyon tavanını
+   güncelleyebilir; rol/işçi ajanları yalnız okur. Değişiklik ayarlara yazılır,
+   koşan oturumlara ANINDA işlenir ve panele duyurulur. */
+function finLimitsSnapshot() {
+  const f = finCfg();
+  return {
+    minLot: Number(f.minLot) || 0.01,
+    maxLot: Number(f.maxLot) || 0.1,
+    maxPositions: Number(f.maxPositions) || 3,
+    riskPerTradePct: Number(f.riskPerTradePct) || 0,
+  };
+}
+
+function finLimitsSessionAllowed(sid) {
+  const id = String(sid || '');
+  if (!id || !engine) return false;
+  let s = null;
+  try { s = engine.cache.get(id) || engine._load(id); } catch {}
+  if (!s || !s.finance) return false;
+  if (s.financeRole) return false; /* analiz ekibi rol ajanı — limit değiştiremez */
+  if (s.bgJob) return false; /* arka plan işçisi — limit değiştiremez */
+  return true;
+}
+
+function finSyncLimitsToSessions() {
+  const lim = finLimitsSnapshot();
+  if (engine) {
+    try {
+      for (const [sid] of financeState.agents) {
+        const s = engine.cache.get(String(sid));
+        if (s) s.financeLimits = { minLot: lim.minLot, maxLot: lim.maxLot, maxPositions: lim.maxPositions };
+      }
+      for (const [, s] of engine.cache) {
+        if (!s || !s.finance || s.bgJob || !s.financeLimits) continue;
+        s.financeLimits = { minLot: lim.minLot, maxLot: lim.maxLot, maxPositions: lim.maxPositions };
+      }
+    } catch {}
+  }
+  finPush('limits', { ...lim });
+}
+
+function finLimitsSet(patch, ctx) {
+  const sid = String((ctx && ctx.sessionId) || '');
+  if (!finLimitsSessionAllowed(sid)) {
+    return { ok: false, error: 'limit değiştirme yetkisi yalnız ana trader / finance sohbet oturumunda — rol ve işçi ajanları limit değiştiremez' };
+  }
+  const f = finCfg();
+  const notes = [];
+  if (patch.maxLot !== undefined) {
+    const v = Number(patch.maxLot);
+    if (!(v >= 0.01) || v > 100) return { ok: false, error: 'maxLot 0.01-100 arasında olmalı' };
+    f.maxLot = Math.round(v * 100) / 100;
+  }
+  if (patch.minLot !== undefined) {
+    const v = Number(patch.minLot);
+    if (!(v >= 0.01) || v > 100) return { ok: false, error: 'minLot 0.01-100 arasında olmalı' };
+    f.minLot = Math.round(v * 100) / 100;
+  }
+  if (patch.maxPositions !== undefined) {
+    const v = Math.round(Number(patch.maxPositions));
+    if (!(v >= 1) || v > 20) return { ok: false, error: 'maxPositions 1-20 arasında olmalı' };
+    f.maxPositions = v;
+  }
+  if (f.minLot > f.maxLot) {
+    notes.push(`minLot (${f.minLot}) maxLot'tan (${f.maxLot}) büyüktü → minLot ${f.maxLot} yapıldı`);
+    f.minLot = f.maxLot;
+  }
+  try { saveSettings(); } catch {}
+  finSyncLimitsToSessions();
+  const line = `⚙️ LİMİTLER GÜNCELLENDİ: min lot ${f.minLot} · max lot ${f.maxLot} · max pozisyon ${f.maxPositions}${sid ? ' (ajan kararı)' : ''}`;
+  financeLog('[limit] ' + line);
+  financeNotify(line, 'limit', true);
+  try { finJournal({ kind: 'limits', minLot: f.minLot, maxLot: f.maxLot, maxPositions: f.maxPositions, sid }); } catch {}
+  return { ok: true, limits: finLimitsSnapshot(), note: notes.length ? notes.join('; ') : undefined };
+}
+
+/* ---------- MT5 ÖĞRENME (mt5_ogrenme) — SEMBOL BAZLI SÜREKLİ ÖĞRENME ----------
+   finance/ogrenme.json: her sembol için (1) OTOMATİK istatistik (işlem sayısı,
+   kazanç/kayıp, net, MFE/MAE, kâr geri verme) (2) ajanın yazdığı dersler.
+   Trader turunda bu özet sistem promptuna gömülür — sistem kendi geçmişinden
+   öğrenir; her kapanış otomatik işlenir, dersleri ajan mt5_ogrenme ile yazar. */
+const FIN_LEARN_MAX_NOTES = 120;
+const FIN_LEARN_MAX_TRADES = 60;
+
+function finLearnEmptyStats() {
+  return {
+    trades: 0, wins: 0, losses: 0, net: 0,
+    mfe: 0, mae: 0, givebacks: 0, givebackAmount: 0,
+    lastAt: 0, lastNet: 0, streak: 0, bestNet: 0, worstNet: 0,
+  };
+}
+
+function finLearnLoad() {
+  if (financeState.learnReady) return financeState.learn;
+  financeState.learnReady = true;
+  const learn = { symbols: {}, updatedAt: 0 };
+  try {
+    const raw = finReadJson(finFile('ogrenme.json'), null);
+    if (raw && typeof raw === 'object' && raw.symbols && typeof raw.symbols === 'object') {
+      for (const [k, v] of Object.entries(raw.symbols)) {
+        const sym = String(k || '').trim().toUpperCase();
+        if (!sym || !v || typeof v !== 'object') continue;
+        learn.symbols[sym] = {
+          notes: Array.isArray(v.notes) ? v.notes.filter((n) => n && n.id && n.text).slice(-FIN_LEARN_MAX_NOTES) : [],
+          trades: Array.isArray(v.trades) ? v.trades.filter(Boolean).slice(-FIN_LEARN_MAX_TRADES) : [],
+          stats: v.stats && typeof v.stats === 'object' ? { ...finLearnEmptyStats(), ...v.stats } : finLearnEmptyStats(),
+        };
+      }
+      if (Number(raw.updatedAt)) learn.updatedAt = Number(raw.updatedAt);
+    }
+  } catch {}
+  financeState.learn = learn;
+  return learn;
+}
+
+function finLearnSave() {
+  const learn = finLearnLoad();
+  learn.updatedAt = Date.now();
+  try { finWriteJson(finFile('ogrenme.json'), learn); } catch {}
+}
+
+function finLearnSym(symbol) {
+  const sym = String(symbol || '').trim().toUpperCase();
+  if (!sym) return null;
+  const learn = finLearnLoad();
+  if (!learn.symbols[sym]) learn.symbols[sym] = { notes: [], trades: [], stats: finLearnEmptyStats() };
+  const e = learn.symbols[sym];
+  e.stats = { ...finLearnEmptyStats(), ...(e.stats || {}) };
+  return e;
+}
+
+/* Kapanan her işlem otomatik öğrenme girdisi olur (sembol bazlı) */
+function finLearnRecordClose({ symbol, side, net, mfe, mae, reason }) {
+  try {
+    if (net == null) return; /* K/Z okunamadı — sahte kayıt yazma */
+    const n = Number(net);
+    if (!isFinite(n) || !symbol) return;
+    const e = finLearnSym(symbol);
+    if (!e) return;
+    const st = e.stats;
+    const m = Number(mfe);
+    const ma = Number(mae);
+    st.trades += 1;
+    if (n >= 0) st.wins += 1;
+    else st.losses += 1;
+    st.net = Math.round((Number(st.net) + n) * 100) / 100;
+    st.lastAt = Date.now();
+    st.lastNet = Math.round(n * 100) / 100;
+    st.streak = n < 0 ? Number(st.streak || 0) + 1 : 0;
+    st.bestNet = Math.max(Number(st.bestNet) || 0, Math.round(n * 100) / 100);
+    st.worstNet = Math.min(Number(st.worstNet) || 0, Math.round(n * 100) / 100);
+    if (isFinite(m)) {
+      st.mfe = Math.round(((Number(st.mfe) || 0) + m) * 100) / 100;
+      if (m > 0 && n < 0) {
+        st.givebacks += 1;
+        st.givebackAmount = Math.round(((Number(st.givebackAmount) || 0) + m) * 100) / 100;
+      }
+    }
+    if (isFinite(ma)) st.mae = Math.round(((Number(st.mae) || 0) + ma) * 100) / 100;
+    e.trades.push({
+      at: Date.now(),
+      side: String(side || ''),
+      net: Math.round(n * 100) / 100,
+      mfe: isFinite(m) ? Math.round(m * 100) / 100 : null,
+      mae: isFinite(ma) ? Math.round(ma * 100) / 100 : null,
+      reason: String(reason || '').slice(0, 40),
+    });
+    while (e.trades.length > FIN_LEARN_MAX_TRADES) e.trades.shift();
+    finLearnSave();
+  } catch {}
+}
+
+/* Trader promptuna gömülen sembol bazlı öğrenme özeti */
+function finBuildLearnDigest(symbols) {
+  const learn = finLearnLoad();
+  const prefer = Array.isArray(symbols) ? symbols.map((s) => String(s || '').trim().toUpperCase()).filter(Boolean) : [];
+  const keys = [...new Set([...prefer, ...Object.keys(learn.symbols)])].filter((k) => learn.symbols[k]);
+  if (!keys.length) return '';
+  const L = [];
+  for (const sym of keys.slice(0, 10)) {
+    const e = learn.symbols[sym];
+    const st = { ...finLearnEmptyStats(), ...(e.stats || {}) };
+    if (st.trades > 0) {
+      const wr = Math.round((st.wins / st.trades) * 100);
+      const parts = [`${st.trades} işlem`, `%${wr} kazanç`, `net ${st.net >= 0 ? '+' : ''}${st.net}`];
+      if (st.streak >= 2) parts.push(`${st.streak} ardışık kayıp`);
+      if (st.givebacks > 0) parts.push(`${st.givebacks} kez kâr geri verildi (tepe kâr ${Math.round(st.givebackAmount * 100) / 100} eksiye döndü)`);
+      if (st.lastAt) parts.push(`son: ${st.lastNet >= 0 ? '+' : ''}${st.lastNet}`);
+      L.push(`- ${sym}: ${parts.join(' · ')}`);
+    }
+    if (e.notes.length) {
+      const last = e.notes[e.notes.length - 1];
+      const extra = e.notes.length > 1 ? ` (+${e.notes.length - 1} ders)` : '';
+      L.push(`  ders${extra}: "${String(last.text || '').slice(0, 160)}"`);
+    }
+  }
+  return L.join('\n');
+}
+
+function finLearnApi() {
+  const norm = (s) => String(s || '').trim().toUpperCase();
+  return {
+    list: ({ symbol } = {}) => {
+      const learn = finLearnLoad();
+      const sym = norm(symbol);
+      if (sym) {
+        const e = learn.symbols[sym];
+        if (!e) return { ok: true, symbol: sym, count: 0, notes: [], trades: [], stats: finLearnEmptyStats() };
+        return {
+          ok: true,
+          symbol: sym,
+          count: e.notes.length,
+          notes: e.notes.slice(-25),
+          trades: e.trades.slice(-12),
+          stats: { ...finLearnEmptyStats(), ...(e.stats || {}) },
+        };
+      }
+      const rows = Object.entries(learn.symbols)
+        .map(([s, e]) => ({
+          symbol: s,
+          notes: e.notes.length,
+          stats: { ...finLearnEmptyStats(), ...(e.stats || {}) },
+          lastNote: String(((e.notes[e.notes.length - 1] || {}).text) || ''),
+        }))
+        .sort((a, b) => (b.stats.lastAt || 0) - (a.stats.lastAt || 0));
+      return { ok: true, count: rows.length, symbols: rows.slice(0, 40) };
+    },
+    stats: ({ symbol } = {}) => {
+      const learn = finLearnLoad();
+      const sym = norm(symbol);
+      if (sym) return { ok: true, symbol: sym, stats: { ...finLearnEmptyStats(), ...((learn.symbols[sym] || {}).stats || {}) } };
+      const stats = {};
+      for (const [s, e] of Object.entries(learn.symbols)) stats[s] = { ...finLearnEmptyStats(), ...(e.stats || {}) };
+      return { ok: true, count: Object.keys(stats).length, stats };
+    },
+    add: ({ symbol, text, kind, tags, sid } = {}) => {
+      const sym = norm(symbol);
+      const t = String(text || '').replace(/\s+/g, ' ').trim();
+      if (!sym || !t) return { ok: false, error: 'symbol ve text gerekli' };
+      const e = finLearnSym(sym);
+      if (!e) return { ok: false, error: 'sembol yok' };
+      /* aynı ders tekrar yazılmasın (son 20 kayıtta aynı metin) */
+      const key = t.toLowerCase().slice(0, 120);
+      if (e.notes.slice(-20).some((n) => String(n.text || '').toLowerCase().slice(0, 120) === key)) {
+        return { ok: true, duplicate: true, symbol: sym, count: e.notes.length };
+      }
+      const note = {
+        id: 'l' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+        at: Date.now(),
+        text: t.slice(0, 600),
+        kind: ['pattern', 'mistake', 'rule', 'observation'].includes(String(kind || '')) ? String(kind) : 'observation',
+        tags: Array.isArray(tags) ? tags.map((x) => String(x || '').slice(0, 24)).filter(Boolean).slice(0, 6) : [],
+        sid: String(sid || ''),
+      };
+      e.notes.push(note);
+      while (e.notes.length > FIN_LEARN_MAX_NOTES) e.notes.shift();
+      finLearnSave();
+      return { ok: true, id: note.id, symbol: sym, count: e.notes.length };
+    },
+    remove: ({ id, symbol } = {}) => {
+      const learn = finLearnLoad();
+      const sym = norm(symbol);
+      const key = String(id || '');
+      if (!key) return { ok: false, error: 'id gerekli' };
+      let removed = 0;
+      const targets = sym ? [sym] : Object.keys(learn.symbols);
+      for (const s of targets) {
+        const e = learn.symbols[s];
+        if (!e) continue;
+        const before = e.notes.length;
+        e.notes = e.notes.filter((n) => String(n.id) !== key);
+        removed += before - e.notes.length;
+      }
+      if (removed) finLearnSave();
+      return { ok: true, removed, id: key };
+    },
+    clear: ({ ids = [], symbol, all } = {}) => {
+      const learn = finLearnLoad();
+      const sym = norm(symbol);
+      const list = Array.isArray(ids) ? ids.map((x) => String(x || '').trim()).filter(Boolean) : [];
+      let removed = 0;
+      const wipe = (e) => {
+        if (!e) return;
+        if (list.length) {
+          const before = e.notes.length;
+          e.notes = e.notes.filter((n) => !list.includes(String(n.id)));
+          removed += before - e.notes.length;
+        } else {
+          removed += e.notes.length;
+          e.notes = [];
+        }
+      };
+      if (all) for (const e of Object.values(learn.symbols)) wipe(e);
+      else if (sym) wipe(learn.symbols[sym]);
+      else return { ok: false, error: 'clear için symbol ya da all:true ver (ids de verilebilir)' };
+      if (removed) finLearnSave();
+      return { ok: true, removed };
+    },
+  };
+}
+
+/* LIMIT + ÖĞRENME kancalarını financetools'a bağla */
+try {
+  financetools.setLimits({
+    get: () => finLimitsSnapshot(),
+    set: (patch, ctx) => finLimitsSet(patch, ctx),
+  });
+  financetools.setLearning(finLearnApi());
 } catch {}
 
 /* KİŞİSEL TOOLLAR: çalışma kaydı renderer'a (TOOLS konsolu buradan beslenir) */
@@ -11540,6 +11887,8 @@ function finApplyTraderFields(s, symbolsOverride, role, isMain) {
   /* ZORUNLU TEK skill: rol ajanı → roleSkills[rol], ana trader → roleSkills.trader */
   const skillKey = r || (s.financePlaybook ? 'trader' : '');
   s.financeRoleSkills = (skillKey && f.roleSkills && f.roleSkills[skillKey]) || [];
+  /* SEMBOL BAZLI ÖĞRENME ÖZETİ: tur promptuna gömülür (kendi geçmişinden öğren) */
+  try { s.financeLearn = finBuildLearnDigest(s.financeSymbols); } catch { s.financeLearn = ''; }
   engine.cache.set(String(s.id), s);
 }
 
@@ -11636,6 +11985,9 @@ function finTraderBrief(agent) {
     `Beast Finance ${who} başlatıldı — ilk tur: strateji çerçeveni kur ve piyasa taramasını yap.`,
     `Odak semboller: ${syms || '(boş — mt5_status ile terminale bak, mantıklı semboller seç)'}`,
     `Tur aralığı: ${f.intervalSec} sn · Lot aralığı: ${f.minLot}–${f.maxLot} (min lot tabanı zorlanır, max lot tavanı aşılamaz) · Max eşzamanlı pozisyon: ${f.maxPositions}`,
+    agent && agent.main
+      ? `LİMİT YETKİN: volatilite/performansa göre mt5_limits {action:"set", minLot?, maxLot?, maxPositions?} ile limitleri SEN güncelleyebilirsin (değişiklik anında geçerli).`
+      : '',
     roleDef
       ? `UZMANLIK: ${roleDef.desc} — raporlarını bu çerçevede yaz; İŞLEM AÇMA, yalnız analiz + net öneri üret.`
       : 'Otomatik işlem AÇIK (daima): 6 emir tipinin HEPSİ açık — buy_market/sell_market (anlık piyasa), buy_limit/sell_limit ve buy_stop/sell_stop (bekleyen; price zorunlu). mt5_trade ya da mt5_pending İKİSİ de tüm tipleri kabul eder; ayrıca mt5_close/mt5_modify/mt5_cancel açık (limitler sistemce zorlanır). KISMİ KAPATMA yetkisi: kısmi TP (kâr al) ve kısmi stop (zarar kes) — mt5_close {percent, kind:"partial_tp"|"partial_sl"}; otomatik DEĞİL, gerek görürsen sen kullan. ALARM: mt5_alerts ile kurarken modu SEN seç — mode:"once" tek seferlik, mode:"repeat" + cooldownMin (dk) tekrarlı. Lot için mt5_risksize hesapla ya da mt5_trade’e riskPct ver; SL/TP broker stops_level mesafesine uymalı.',
@@ -11647,7 +11999,8 @@ function finTraderBrief(agent) {
     f.shadowMode ? 'SHADOW MOD AÇIK: emir gönderilmez — kararlarını gerekçesiyle raporla, gerçek işlem açılmaz.' : '',
     'Bu turda: mt5_status → hesap/pozisyon/fiyat verisi → mt5_rates/mt5_indicators ile teknik okuma → değerlendirme → kararlar (veya BEKLE: sebep) → kısa rapor.',
     'Önemli kararların gerekçesini mt5_note ile günlüğe yaz (haftalık performans raporu bu notları kullanır).',
-    'Risk otomasyonu main süreçte 5 sn döngüyle çalışır (+R BE, trailing, kısmi TP) — sen yine de SL/TP seviyelerini aktif yönet.',
+    'ÖĞRENME (ZORUNLU DÖNGÜ): her kapanıştan sonra aynı turda mt5_ogrenme {action:"add", symbol, text, kind} ile dersi kaydet; yeni karar öncesi mt5_ogrenme {action:"stats"/"list", symbol} ile o sembolün geçmişini oku.',
+    'Risk otomasyonu main süreçte 5 sn döngüyle çalışır (+R BE, trailing, KÂR KORUMA: kâr 0.3R\'de kilitlenir, kısmi TP) — TP için RR ≥ 1.5 şartı YOK; 0.3-0.5R\'de kısmi kâr alıp kalanı korumalı trailing ile taşı (hızlı kâr toplama), SL/TP seviyelerini yine sen aktif yönet.',
     '⚡HIZLI AKSİYON: onaylı fırsatta market buy/sell ile ANINDA gir (mt5_trade {symbol, side, sl, tp, riskPct}); bekleyen emir vermek ZORUNLU DEĞİL — limit/stop yalnız seviye beklemede kurulur.',
     'Diğer finance/paralel ajanlarla koordinasyon için agent_dm aracı var (to: ajan başlığı anahtar kelimesi).',
     agent && agent.main && !roleDef ? `İŞLEM GEÇMİŞİN:\n${finBuildDigest()}` : '',
@@ -11871,8 +12224,11 @@ function finAgentRound(sid, opts) {
     : shadow
       ? 'SHADOW MOD AÇIK: emir GÖNDERİLMEZ — kararını teziyle raporla (günlüğe yazılır).'
       : 'İşlem açabilirsin — limitlere uy, SL\u2019siz pozisyon bırakma.';
+  const learnTip = roleDef
+    ? ' İlgili sembolün geçmiş derslerini (mt5_ogrenme) oku ve önerine yansıt.'
+    : ' Kapanan her işlemden sonra mt5_ogrenme add ile sembol dersini yaz; karar öncesi mt5_ogrenme stats/list ile o sembolün geçmişini oku' + (agent.main ? '; volatiliteye göre mt5_limits ile lot/pozisyon limitlerini güncelleyebilirsin.' : '.');
   const focus = agent.symbols.length ? `Odak: ${agent.symbols.join(', ')}. ` : '';
-  const round = `FINANCE TUR #${agent.round}: ${focus}hesap + pozisyonlar + fiyatları çek; ${roleDef ? 'rolüne uygun analiz yap (mt5_rates/mt5_indicators ile) ve öneri ver.' : 'açık pozisyonları yönet (SL/TP güncelle, hedefe ulaşanı kapat); mt5_rates/mt5_indicators ile yeni fırsatları değerlendir. ⚡Onaylı fırsatta market buy/sell ile ANINDA gir (bekleyen emir ZORUNLU DEĞİL); lot için volume yerine riskPct+sl yeter.'} ${auto} Önemli kararların gerekçesini mt5_note ile günlüğe yaz. Kısa rapor ver.`;
+  const round = `FINANCE TUR #${agent.round}: ${focus}hesap + pozisyonlar + fiyatları çek; ${roleDef ? 'rolüne uygun analiz yap (mt5_rates/mt5_indicators ile) ve öneri ver.' : 'açık pozisyonları yönet (SL/TP güncelle, hedefe ulaşanı kapat); mt5_rates/mt5_indicators ile yeni fırsatları değerlendir. ⚡Onaylı fırsatta market buy/sell ile ANINDA gir (bekleyen emir ZORUNLU DEĞİL); lot için volume yerine riskPct+sl yeter.'} ${auto}${learnTip} Önemli kararların gerekçesini mt5_note ile günlüğe yaz. Kısa rapor ver.`;
   const launch = (planBlock) => {
     if (!financeState.agents.has(String(sid))) return;
     const ok = engine.send(sid, planBlock + round, { userAction: false });
@@ -12066,7 +12422,9 @@ ipcMain.handle('finance:mode', async (_e, payload) => {
     try {
       let s = engine.cache.get(sid);
       if (!s) { try { s = engine._load(sid); } catch {} }
-      if (s && !s.bgJob && (!s.botId || s.botId === 'beast')) {
+      /* 'trader' botu finance'ın kendi botudur (mod açılınca UI o bota döner) —
+         onun sohbeti de finance olarak işlenir; diğer müşteri botları karışmaz */
+      if (s && !s.bgJob && (!s.botId || s.botId === 'beast' || s.botId === 'trader')) {
         if (financeState.mode) {
           if (s.finance) {
             /* zaten finance oturumu — aynen sürdür */
@@ -12090,7 +12448,13 @@ ipcMain.handle('finance:mode', async (_e, payload) => {
      sohbet oturumu önerilir; hiç yoksa yeni oturum açılır. */
   if (financeState.mode && needNew && engine) {
     try {
-      const prev = (engine.listSessions() || []).find((v) => v && v.finance && !v.isBg && v.id);
+      const list = engine.listSessions() || [];
+      /* önce AKTİF BOTUN finance sohbeti (mod açılınca bot Trader'a döner),
+         yoksa en son finance sohbeti */
+      const actBot = String(settings.activeBotId || '');
+      const prev =
+        (actBot && list.find((v) => v && v.finance && !v.isBg && v.id && String(v.botId || '') === actBot)) ||
+        list.find((v) => v && v.finance && !v.isBg && v.id);
       if (prev) {
         resumeSid = String(prev.id);
         needNew = false;
@@ -12149,12 +12513,20 @@ ipcMain.handle('finance:settings', async (_e, patch) => {
   /* min lot max lotu aşamaz — hangisi sonra yazıldıysa diğerine kelepçelenir */
   if (f.minLot > f.maxLot) f.minLot = f.maxLot;
   if (p.maxPositions !== undefined) f.maxPositions = Math.max(1, Math.min(20, Math.round(Number(p.maxPositions) || 3)));
+  /* limit değişikliği koşan oturumlara ANINDA işlenir (sonraki turu beklemez) */
+  if (p.minLot !== undefined || p.maxLot !== undefined || p.maxPositions !== undefined) {
+    try { finSyncLimitsToSessions(); } catch {}
+  }
   /* RİSK OTOMASYONU + BİLDİRİM ayarları */
   if (p.watchdog !== undefined) f.watchdog = !!p.watchdog;
   if (p.beOnR !== undefined) f.beOnR = Math.max(0, Math.min(10, Number(p.beOnR) || 0));
   if (p.beOffsetR !== undefined) f.beOffsetR = Math.max(0, Math.min(1, Number(p.beOffsetR) || 0));
   if (p.trailStartR !== undefined) f.trailStartR = Math.max(0, Math.min(10, Number(p.trailStartR) || 0));
   if (p.trailR !== undefined) f.trailR = Math.max(0, Math.min(5, Number(p.trailR) || 0));
+  /* KÂR KORUMA: kâr protectStartR'ye ulaşınca SL, en iyi kârın protectDistR
+     gerisine kilitlenir (0 = kapalı) */
+  if (p.protectStartR !== undefined) f.protectStartR = Math.max(0, Math.min(10, Number(p.protectStartR) || 0));
+  if (p.protectDistR !== undefined) f.protectDistR = Math.max(0, Math.min(5, Number(p.protectDistR) || 0));
   if (p.partialR !== undefined) f.partialR = Math.max(0, Math.min(10, Number(p.partialR) || 0));
   if (p.partialPct !== undefined) f.partialPct = Math.max(0, Math.min(90, Number(p.partialPct) || 0));
   if (p.notifyTarget !== undefined) {

@@ -115,6 +115,102 @@ test('watchdog: SL yaklaşma ve SL’siz pozisyon uyarıları bir kez üretilir'
   assert.ok(noSl.actions.some((a) => a.kind === 'warnNoSL'));
 });
 
+/* ---------------- finwatch: kâr koruma (erken kilit) ---------------- */
+
+test('watchdog: kâr koruma — görülen en iyi kârın altına SL kilitlenir', () => {
+  /* spike +0.6R görüldü, fiyat +0.5R'de: SL = 0.6R - 0.15R = +0.45R'ye kilit */
+  const out = watch.plan(
+    pos({ price_current: 100.5, sl: 99 }),
+    META,
+    { r: 0, bestProfit: 0.6 },
+    { beOnR: 0, trailStartR: 0, partialR: 0, partialPct: 50, protectStartR: 0.3, protectDistR: 0.15 }
+  );
+  const mod = out.actions.find((a) => a.kind === 'modify');
+  assert.ok(mod, 'kâr kilidi modify bekleniyor');
+  assert.strictEqual(mod.sl, 100.45, 'SL en iyi kârın 0.15R gerisine kilitlenir');
+  /* güncel kâr en iyi kârı geçtiyse kilit güncel kâr üzerinden hesaplanır */
+  const hot = watch.plan(
+    pos({ price_current: 100.7, sl: 99 }),
+    META,
+    { r: 0, bestProfit: 0.6 },
+    { beOnR: 0, trailStartR: 0, partialR: 0, partialPct: 50, protectStartR: 0.3, protectDistR: 0.15 }
+  );
+  const mod2 = hot.actions.find((a) => a.kind === 'modify');
+  assert.ok(mod2 && mod2.sl === 100.55, 'kilit güncel kâr (0.7R) - 0.15R = 0.55R');
+});
+
+test('watchdog: kâr koruma — fiyat girişe dönerse kayıp SL yazılmaz (kırpma kilidi bozmaz)', () => {
+  const out = watch.plan(
+    pos({ price_current: 100.0, sl: 99 }),
+    META,
+    { r: 0, bestProfit: 0.6 },
+    { beOnR: 0, trailStartR: 0, partialR: 0, partialPct: 50, protectStartR: 0.3, protectDistR: 0.15 }
+  );
+  assert.ok(!out.actions.some((a) => a.kind === 'modify'), 'girişin altına SL yazılmamalı');
+});
+
+test('watchdog: kâr koruma ayarı yoksa (eski config) devreye girmez', () => {
+  const out = watch.plan(
+    pos({ price_current: 100.4, sl: 99 }),
+    META,
+    { r: 0 },
+    { beOnR: 0, trailStartR: 0, partialR: 0, partialPct: 50 }
+  );
+  assert.ok(!out.actions.some((a) => a.kind === 'modify'), 'protect anahtarları yokken modify üretilmemeli');
+});
+
+/* ---------------- financetools: mt5_limits + mt5_ogrenme ---------------- */
+
+test('mt5_limits: get/set API üzerinden çalışır, yetki main tarafında doğrulanır', async () => {
+  const ftools = require('../src/agent/financetools');
+  const calls = [];
+  ftools.setLimits({
+    get: () => ({ minLot: 0.01, maxLot: 0.5, maxPositions: 4 }),
+    set: (patch, ctx) => { calls.push({ patch, ctx }); return { ok: true, limits: { ...patch } }; },
+  });
+  try {
+    const g = await ftools.handlers.mt5_limits({ action: 'get' });
+    assert.strictEqual(g.ok, true);
+    assert.strictEqual(g.maxLot, 0.5);
+    const s = await ftools.handlers.mt5_limits({ action: 'set', maxLot: 0.2, maxPositions: 6 }, { sessionId: 's1' });
+    assert.strictEqual(s.ok, true);
+    assert.deepStrictEqual(calls[0].patch, { maxLot: 0.2, maxPositions: 6 });
+    assert.strictEqual(calls[0].ctx.sessionId, 's1');
+    const bad = await ftools.handlers.mt5_limits({ action: 'set' });
+    assert.strictEqual(bad.ok, false);
+    assert.match(String(bad.error), /minLot/);
+  } finally {
+    ftools.setLimits({ get: () => ({ minLot: 0.01, maxLot: 0.1, maxPositions: 3 }), set: () => ({ ok: false, error: 'x' }) });
+  }
+});
+
+test('mt5_ogrenme: sembol bazlı ders ekle/listele (API üzerinden)', async () => {
+  const ftools = require('../src/agent/financetools');
+  const store = [];
+  ftools.setLearning({
+    list: ({ symbol } = {}) => ({ ok: true, symbol: symbol || '', count: store.length, notes: store.slice() }),
+    add: ({ symbol, text, kind } = {}) => { store.push({ symbol, text, kind }); return { ok: true, id: 'x1', symbol, count: store.length }; },
+    remove: () => ({ ok: true, removed: 1 }),
+    clear: () => ({ ok: true, removed: store.length }),
+    stats: ({ symbol } = {}) => ({ ok: true, symbol: symbol || '', stats: { trades: 0 } }),
+  });
+  try {
+    const a = await ftools.handlers.mt5_ogrenme({ action: 'add', symbol: 'xauusd', text: 'Londra açılışı momentum işe yarıyor', kind: 'pattern' });
+    assert.strictEqual(a.ok, true);
+    assert.strictEqual(store[0].symbol, 'XAUUSD', 'sembol normalize edilir');
+    assert.strictEqual(store[0].kind, 'pattern');
+    const l = await ftools.handlers.mt5_ogrenme({ action: 'list', symbol: 'XAUUSD' });
+    assert.strictEqual(l.count, 1);
+    const noSym = await ftools.handlers.mt5_ogrenme({ action: 'add', text: 'sembolsüz' });
+    assert.strictEqual(noSym.ok, false);
+    assert.match(String(noSym.error), /symbol/);
+    const noText = await ftools.handlers.mt5_ogrenme({ action: 'add', symbol: 'XAUUSD' });
+    assert.strictEqual(noText.ok, false);
+  } finally {
+    ftools.setLearning({ list: () => ({}), add: () => ({}), remove: () => ({}), clear: () => ({}), stats: () => ({}) });
+  }
+});
+
 /* ---------------- finrisk ---------------- */
 
 const RINFO = {

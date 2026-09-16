@@ -222,13 +222,15 @@
             <div class="fin-card-title">RİSK OTOMASYONU <span id="finWatchDot" class="fin-dot off" title="Koruma döngüsü"></span><span id="finWatchInfo" class="fin-hint"></span></div>
             <div class="fin-field fin-check">
               <label title="5 saniyelik döngü: +R'da SL'yi başabaşa çeker, trailing uygular, kısmi TP alır — ajan turunu beklemez">
-                <input id="finWatchdog" type="checkbox" /> Aktif — BE + trailing + kısmi TP
+                <input id="finWatchdog" type="checkbox" /> Aktif — BE + trailing + kâr koruma + kısmi TP
               </label>
             </div>
             <div class="fin-grid2">
               <div class="fin-field"><span>BE (R)</span><input id="finBeOnR" type="number" min="0" max="10" step="0.1" title="Kâr kaç R'ye ulaşınca SL başabaşa çekilsin (0 = kapalı)" /></div>
               <div class="fin-field"><span>Trailing başlangıç (R)</span><input id="finTrailStartR" type="number" min="0" max="10" step="0.1" title="Kaç R kârdan sonra trailing başlasın (0 = kapalı)" /></div>
               <div class="fin-field"><span>Trailing mesafe (R)</span><input id="finTrailR" type="number" min="0" max="5" step="0.1" title="SL fiyattan kaç R geriden gelsin" /></div>
+              <div class="fin-field"><span>Kâr koruma başlangıç (R)</span><input id="finProtectStartR" type="number" min="0" max="10" step="0.1" title="Kâr bu R'ye ulaşınca SL kilitlenir: görülen EN İYİ kârın bir kısmı garantiye alınır — kâr eksiye dönmez (0 = kapalı, önerilen 0.3)" /></div>
+              <div class="fin-field"><span>Kâr koruma payı (R)</span><input id="finProtectDistR" type="number" min="0" max="5" step="0.05" title="Kilitlenen SL, görülen en iyi kârın kaç R gerisinde kalsın (ör. 0.15: +0.5R görüldüyse SL +0.35R'ye kilitlenir)" /></div>
               <div class="fin-field"><span>Kısmi TP (R)</span><input id="finPartialR" type="number" min="0" max="10" step="0.1" title="Kaç R kârda ajana kısmi TP fırsatı bildirilsin (0 = kapalı) — kapatma kararını AJAN verir, otomatik kapatılmaz" /></div>
               <div class="fin-field"><span>Kısmi TP (%)</span><input id="finPartialPct" type="number" min="0" max="90" step="5" title="Fırsat bildiriminde ajana önerilecek kısmi kapatma yüzdesi (kapatma kararı ajanın)" /></div>
               <div class="fin-field"><span>Günlük kayıp uyarı (%)</span><input id="finMaxDailyLoss" type="number" min="0" max="50" step="0.5" title="Gün içi düşüş bu yüzdeyi geçince aksiyon uygulanır (0 = kapalı)" /></div>

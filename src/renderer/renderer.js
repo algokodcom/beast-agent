@@ -267,6 +267,8 @@ const els = {
   finBeOnR: $('#finBeOnR'),
   finTrailStartR: $('#finTrailStartR'),
   finTrailR: $('#finTrailR'),
+  finProtectStartR: $('#finProtectStartR'),
+  finProtectDistR: $('#finProtectDistR'),
   finPartialR: $('#finPartialR'),
   finPartialPct: $('#finPartialPct'),
   finMaxDailyLoss: $('#finMaxDailyLoss'),
@@ -1061,16 +1063,19 @@ async function renderSessions(list) {
   els.sessList.innerHTML = '';
   /* BEAST FINANCE izolasyonu: finance modunda YALNIZ finance sohbetleri,
      normal modda finance olmayanlar listelenir */
-  list = (list || []).filter((s) => (financeModeOn() ? !!s.finance : !s.finance));
+  const finMode = financeModeOn();
+  list = (list || []).filter((s) => (finMode ? !!s.finance : !s.finance));
   /* elle sıra: sessionOrder'daki id'ler önde (o sırayla), diğerleri engine sırasıyla arkada */
   const rank = new Map(sessionOrder.map((id, i) => [id, i]));
   const withRank = list.map((s, i) => ({ s, r: rank.has(s.id) ? rank.get(s.id) : 1e6 + i }));
   withRank.sort((a, b) => a.r - b.r);
   /* aktif botun oturumları — botlar arası geçişte liste de o bota göre değişir.
      KATI KURAL: her oturum yalnız BAĞLI OLDUĞU botun listesinde görünür;
-     bot kaydı olmayan (eski) oturumlar Beast (varsayılan sahip) altında görünür. */
+     bot kaydı olmayan (eski) oturumlar Beast (varsayılan sahip) altında görünür.
+     İSTİSNA — finance modu: mod Trader botuna döner; TÜM finance sohbetleri
+     (eski Beast finance'ları dahil) listede kalır, kaybolmaz. */
   for (const { s } of withRank) {
-    if ((s.botId || 'beast') !== activeBotId) continue;
+    if (!finMode && (s.botId || 'beast') !== activeBotId) continue;
     const row = document.createElement('div');
     row.className = 'sess' + (s.id === activeId ? ' active' : '');
     row.dataset.sid = s.id; /* en üstteki sohbeti otomatik aktif etmek için */
@@ -4607,7 +4612,7 @@ function updateBotChip() {
 /* BOTLAR ARASI GEÇİŞ: kart tıklaması SADECE aktif botu değiştirir —
    yönetim sayfası (Ayarlar/Memory/Log/Watcher/İstatistik) bot satırındaki ⚙
    butonundan veya üstteki bot rozetinden (botChip) açılır. */
-async function switchBot(id) {
+async function switchBot(id, opts) {
   const b = botsCache.find((x) => x.id === id);
   if (!b) return;
   if (id === activeBotId) return;
@@ -4625,15 +4630,19 @@ async function switchBot(id) {
     }
   } catch {}
   try { localStorage.setItem('beast.activeBot', id); } catch {}
-  /* o botun en son oturumuna geç; hiç yoksa o bot için yeni sohbet aç */
-  try {
-    const list = (await beast.listSessions()).filter((s) => (s.botId || 'beast') === id);
-    if (list.length) await openSession(list[0].id);
-    else { const v = await beast.createSession(); await openSession(v.id); }
-  } catch {}
+  /* noOpen: oturum açma çağırana bırakılır (finance modu kendi finance
+     sohbetini açar/sürdürür — bot geçişi sohbeti değiştirmez) */
+  if (!(opts && opts.noOpen)) {
+    /* o botun en son oturumuna geç; hiç yoksa o bot için yeni sohbet aç */
+    try {
+      const list = (await beast.listSessions()).filter((s) => (s.botId || 'beast') === id);
+      if (list.length) await openSession(list[0].id);
+      else { const v = await beast.createSession(); await openSession(v.id); }
+    } catch {}
+  }
   /* picker, aktif botun kendi modelini göstersin */
   applyState();
-  toast(b.name + (b.admin ? '' : ' — ' + _t('bot_switched')));
+  if (!(opts && opts.silent)) toast(b.name + (b.admin ? '' : ' — ' + _t('bot_switched')));
 }
 
 function botOverlaySetOpen(open) {
@@ -9985,6 +9994,8 @@ function finRenderAutomation(cfg, watch) {
   setNum(els.finBeOnR, cfg.beOnR != null ? cfg.beOnR : 1);
   setNum(els.finTrailStartR, cfg.trailStartR != null ? cfg.trailStartR : 1.5);
   setNum(els.finTrailR, cfg.trailR != null ? cfg.trailR : 0.5);
+  setNum(els.finProtectStartR, cfg.protectStartR != null ? cfg.protectStartR : 0.3);
+  setNum(els.finProtectDistR, cfg.protectDistR != null ? cfg.protectDistR : 0.15);
   setNum(els.finPartialR, cfg.partialR != null ? cfg.partialR : 0);
   setNum(els.finPartialPct, cfg.partialPct != null ? cfg.partialPct : 50);
   setNum(els.finMaxDailyLoss, cfg.maxDailyLossPct != null ? cfg.maxDailyLossPct : 3);
@@ -10170,6 +10181,20 @@ function finOnEvent(ev) {
     else if (ev.state === 'hours-stop') finLogLine('[trader] trade saatleri kapandı — ' + (ev.count || 0) + ' finance ajanı otomatik durduruldu; pencere açılınca geri başlar');
     else if (ev.state === 'hours-resume') finLogLine('[trader] trade saatleri açıldı — duraklatılan ajanlar geri başlatıldı');
     else if (ev.state === 'stopped') finLogLine('[trader] durduruldu');
+  } else if (ev.fn === 'limits') {
+    /* trader mt5_limits ile limitleri değiştirdi — panel alanları ANINDA tazelenir */
+    if (finCfgCache) {
+      if (ev.minLot !== undefined) finCfgCache.minLot = ev.minLot;
+      if (ev.maxLot !== undefined) finCfgCache.maxLot = ev.maxLot;
+      if (ev.maxPositions !== undefined) finCfgCache.maxPositions = ev.maxPositions;
+      finTraderInputsSet(finCfgCache);
+    } else {
+      const ae2 = document.activeElement;
+      if (els.finMinLot && ae2 !== els.finMinLot && ev.minLot !== undefined) els.finMinLot.value = ev.minLot;
+      if (els.finMaxLot && ae2 !== els.finMaxLot && ev.maxLot !== undefined) els.finMaxLot.value = ev.maxLot;
+    }
+    finLogLine('[limit] ' + (ev.note || ('min lot ' + ev.minLot + ' · max lot ' + ev.maxLot + ' · max pozisyon ' + ev.maxPositions)));
+    toast('Trader limitleri güncelledi: min ' + ev.minLot + ' / max ' + ev.maxLot);
   } else if (ev.fn === 'install') {
     finLogLine('[MT5] paket kurulumu tamamlandı (kod ' + ev.code + ')');
   }
@@ -10186,6 +10211,16 @@ async function setFinanceMode(on) {
   const brandSub = document.querySelector('#brand .brand-sub');
   if (brandSub) brandSub.textContent = on ? 'Finance' : 'Agent';
   try { localStorage.setItem('beast.financeMode', on ? '1' : '0'); } catch {}
+  /* BEAST TRADER MODU: finance moduna geçilince aktif bot OTOMATİK Trader
+     botuna döner — oturum açma finance akışına bırakılır (noOpen) */
+  if (on) {
+    try {
+      if (!botsCache.length) await refreshBots();
+      if (activeBotId !== 'trader' && botsCache.some((b) => b.id === 'trader')) {
+        await switchBot('trader', { noOpen: true });
+      }
+    } catch {}
+  }
   const fm = await beast.financeMode(!!on, activeId).catch(() => ({}));
   /* finance modu açıldı ama aktif oturum NORMAL (örn. WhatsApp sohbeti) ise
      ASLA o oturumu finance'e çevirme — önce EN SON finance sohbetinden devam
@@ -10571,6 +10606,8 @@ const finAutoNum = (el, key, min, max, step) => {
 finAutoNum(els.finBeOnR, 'beOnR', 0, 10);
 finAutoNum(els.finTrailStartR, 'trailStartR', 0, 10);
 finAutoNum(els.finTrailR, 'trailR', 0, 5);
+finAutoNum(els.finProtectStartR, 'protectStartR', 0, 10);
+finAutoNum(els.finProtectDistR, 'protectDistR', 0, 5);
 finAutoNum(els.finPartialR, 'partialR', 0, 10);
 finAutoNum(els.finPartialPct, 'partialPct', 0, 90, 5);
 finAutoNum(els.finMaxDailyLoss, 'maxDailyLossPct', 0, 50);

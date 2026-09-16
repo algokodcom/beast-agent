@@ -30,6 +30,8 @@ version: 1.0.0
 - **Korelasyon**: XAUUSD/EURUSD ile DXY ters koreledir; aynı yönde iki korelasyonlu pozisyon riski katlar.
 - SL'siz pozisyon varsa ilk iş: SL tamamla veya kapat.
 - Hedefine ulaşan/kâra geçen pozisyonda BE veya kısmi kâr; trailing ATR bazlı.
+- **Kâr koruma:** +0.3R'de sistem SL'yi en iyi kârın 0.15R gerisine kilitler; +0.3-0.5R'de kısmi TP (ör. %50) ile kârı cebe al, kalanı trailing'e bırak. TP için R:R ≥ 1.5 şartı YOK — hızlı kâr toplama (scalp) serbest; ama kârı kale verme.
+- **Sembol bazlı öğrenme:** her kapanıştan sonra mt5_ogrenme add ile dersi yaz (ne işe yaradı/yaramadı); yeni işlem öncesi o sembolün stats/list geçmişini oku — aynı hatayı tekrarlama.
 
 ## 4) KAYIP LİMİTLERİ
 

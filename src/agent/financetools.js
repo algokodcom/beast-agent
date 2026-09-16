@@ -23,6 +23,8 @@ const NAMES = [
   'mt5_history',
   'mt5_alerts',
   'mt5_note',
+  'mt5_ogrenme',
+  'mt5_limits',
   'mt5_ea',
   'mt5_trade',
   'mt5_close',
@@ -43,6 +45,19 @@ let alertsApi = {
   set: () => null,
   remove: () => false,
 };
+/* LIMIT API (main enjekte eder): trader lot/pozisyon limitlerini okuyup yazar */
+let limitsApi = {
+  get: () => ({ minLot: 0.01, maxLot: 0.1, maxPositions: 3 }),
+  set: () => ({ ok: false, error: 'limit güncelleme kullanılamıyor' }),
+};
+/* ÖĞRENME API (main enjekte eder): sembol bazlı öğrenme deposu */
+let learningApi = {
+  list: () => ({ ok: false, error: 'öğrenme deposu kullanılamıyor' }),
+  add: () => ({ ok: false, error: 'öğrenme deposu kullanılamıyor' }),
+  remove: () => ({ ok: false, error: 'öğrenme deposu kullanılamıyor' }),
+  clear: () => ({ ok: false, error: 'öğrenme deposu kullanılamıyor' }),
+  stats: () => ({ ok: false, error: 'öğrenme deposu kullanılamıyor' }),
+};
 
 function setConfig(fn) {
   if (typeof fn === 'function') getCfg = fn;
@@ -58,6 +73,14 @@ function setAlerts(api) {
 
 function setDiscipline(fn) {
   if (typeof fn === 'function') discipline = fn;
+}
+
+function setLimits(api) {
+  if (api && typeof api === 'object') limitsApi = { ...limitsApi, ...api };
+}
+
+function setLearning(api) {
+  if (api && typeof api === 'object') learningApi = { ...learningApi, ...api };
 }
 
 async function bcall(method, params, timeoutMs) {
@@ -235,6 +258,38 @@ const definitions = NAMES.map((name) => {
           side: { type: 'string', enum: ['buy', 'sell', 'wait'] },
         },
         required: ['symbol', 'note'],
+      },
+    },
+    mt5_limits: {
+      description:
+        'LOT / POZİSYON LİMİTLERİNİ oku ve GÜNCELLE — trader karar mercii: mt5_limits {action:"get"|"set", minLot?, maxLot?, maxPositions?}. get: yürürlükteki min lot / max lot / max eşzamanlı pozisyon ve işlem riski %. set: yalnız ana trader (ve finance sohbet copilot\'ı) kullanabilir — rol/işçi ajanları değiştiremez. Volatilite rejimine göre limitleri sen ayarla (ör. sakin piyasada max lot artır, haber anında düşür); değişiklik ANINDA panelde ve sonraki turda geçerli olur. Kural: minLot maxLot\'u aşamaz.',
+      parameters: {
+        type: 'object',
+        properties: {
+          action: { type: 'string', enum: ['get', 'set'], description: 'get: mevcut limitler · set: güncelle' },
+          minLot: { type: 'number', description: 'set: yeni alt sınır (0.01-100)' },
+          maxLot: { type: 'number', description: 'set: yeni üst sınır (0.01-100)' },
+          maxPositions: { type: 'number', description: 'set: eşzamanlı pozisyon tavanı (1-20)' },
+        },
+        required: ['action'],
+      },
+    },
+    mt5_ogrenme: {
+      description:
+        'SEMBOL BAZLI ÖĞRENME HAFIZASI — Beast Finance sürekli öğrenir: mt5_ogrenme {action:"list"|"add"|"remove"|"clear"|"stats", symbol?, text?, kind?, tags?, id?, ids?, all?}. Her sembolün KENDİ istatistiği (işlem/kazanç/kayıp, net, kâr yakalama, kâr geri verme) OTOMATİK birikir; ayrıca işlemlerden çıkardığın DERSLERİ sen kaydedersin. KURALLAR: (1) Her kapanıştan sonra (özellikle stop/tp sonrası) sembol için tek cümle ders yaz: hangi setup işe yaradı/yaramadı, saat/seans, SL yeri, hata mı hata yok mu — kind:"pattern"|"mistake"|"rule"|"observation". (2) Yeni işlem kararından ÖNCE ilgili sembolün list/stats çıktısını oku; aynı hatayı tekrarlama, işleyen deseni kullan. (3) Yanlış çıkan/genel geçersiz dersi remove/clear ile sil. action:"list" symbol verilmezse tüm sembollerin özetini döner. Ör: {action:"add", symbol:"XAUUSD", text:"Londra açılışında M5 EMA50 üstü momentum girişleri iyi çalışıyor", kind:"pattern"}.',
+      parameters: {
+        type: 'object',
+        properties: {
+          action: { type: 'string', enum: ['list', 'add', 'remove', 'clear', 'stats'] },
+          symbol: { type: 'string', description: 'Sembol (ör. XAUUSD) — öğrenme sembol bazlıdır' },
+          text: { type: 'string', description: 'add: öğrenilen ders/desen (kısa, net, tek cümle)' },
+          kind: { type: 'string', enum: ['pattern', 'mistake', 'rule', 'observation'], description: 'add: kayıt türü (varsayılan observation)' },
+          tags: { type: 'array', items: { type: 'string' }, description: 'add: etiketler (ör. ["scalp","london"])' },
+          id: { type: 'string', description: 'remove: kayıt id' },
+          ids: { type: 'array', items: { type: 'string' }, description: 'clear: silinecek kayıt id listesi' },
+          all: { type: 'boolean', description: 'clear: true → tüm öğrenme kayıtları (dikkatli)' },
+        },
+        required: ['action'],
       },
     },
     mt5_ea: {
@@ -499,6 +554,53 @@ const handlers = {
       side: String(args.side || '').toLowerCase(),
     }, ctx || {});
     return { ok: true, saved: true };
+  },
+  async mt5_limits(args, ctx) {
+    const action = String(args.action || 'get').toLowerCase();
+    if (action === 'get') {
+      return { ok: true, ...limitsApi.get() };
+    }
+    if (action === 'set') {
+      const patch = {};
+      for (const k of ['minLot', 'maxLot', 'maxPositions']) {
+        if (args[k] !== undefined && args[k] !== null && args[k] !== '') patch[k] = Number(args[k]);
+      }
+      if (!Object.keys(patch).length) {
+        return { ok: false, error: 'set için en az bir alan ver: minLot / maxLot / maxPositions' };
+      }
+      return await limitsApi.set(patch, ctx || {});
+    }
+    return { ok: false, error: 'action: get|set' };
+  },
+  async mt5_ogrenme(args, ctx) {
+    const action = String(args.action || 'list').toLowerCase();
+    const symbol = String(args.symbol || '').trim().toUpperCase();
+    if (action === 'list') return learningApi.list({ symbol });
+    if (action === 'stats') return learningApi.stats({ symbol });
+    if (action === 'add') {
+      const text = String(args.text || '').replace(/\s+/g, ' ').trim();
+      if (!symbol) return { ok: false, error: 'symbol gerekli — öğrenme sembol bazlıdır' };
+      if (!text) return { ok: false, error: 'text gerekli (öğrenilen ders)' };
+      const kindRaw = String(args.kind || 'observation').toLowerCase();
+      const kind = ['pattern', 'mistake', 'rule', 'observation'].includes(kindRaw) ? kindRaw : 'observation';
+      const tags = Array.isArray(args.tags) ? args.tags.map((t) => String(t || '').trim()).filter(Boolean).slice(0, 6) : [];
+      const res = learningApi.add({ symbol, text: text.slice(0, 600), kind, tags, sid: (ctx && ctx.sessionId) || '' });
+      if (res && res.ok) {
+        noteTrade('learn', { symbol, text: text.slice(0, 300), kind }, ctx || {});
+      }
+      return res;
+    }
+    if (action === 'remove') {
+      const id = String(args.id || '').trim();
+      if (!id) return { ok: false, error: 'remove için id gerekli' };
+      return learningApi.remove({ id, symbol });
+    }
+    if (action === 'clear') {
+      const ids = Array.isArray(args.ids) ? args.ids.map((x) => String(x || '').trim()).filter(Boolean) : [];
+      const all = args.all === true || String(args.all || '').toLowerCase() === 'true';
+      return learningApi.clear({ ids, symbol, all });
+    }
+    return { ok: false, error: 'action: list|add|remove|clear|stats' };
   },
   async mt5_ea(args) {
     if (!mt5.running) return notConnected();
@@ -786,4 +888,4 @@ const handlers = {
   },
 };
 
-module.exports = { definitions, handlers, NAMES, setConfig, setNotify, setAlerts, setDiscipline };
+module.exports = { definitions, handlers, NAMES, setConfig, setNotify, setAlerts, setDiscipline, setLimits, setLearning };

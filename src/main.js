@@ -13000,6 +13000,11 @@ function finTsScore(ans, id) {
   return { score: Number(a.score) || 0, conf: Number(a.confidence) || 0, probs: a.probabilities || {} };
 }
 
+/* TypeSafe System One çağrısı — state + tipli sorular; tek giriş noktası */
+async function finTsAsk(state, questions) {
+  return await typesafeMod.systemOne({ state, questions });
+}
+
 function finTsFmtChoice(c) {
   if (!c) return 'yanıt yok';
   const probs = Object.entries(c.probs || {}).map(([k, v]) => `${k}=${(Number(v) || 0).toFixed(2)}`).join(' ');

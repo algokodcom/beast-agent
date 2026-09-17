@@ -10690,6 +10690,12 @@ function finWakeAgentDm(sid, text) {
     finTradeHoursBlockedLog('olay uyandırması');
     return false;
   }
+  /* TYPESAFE-ONLY: LLM turu BAŞLATILMAZ — olay TS turunu öne çeker; prompt/
+     pendingReports hattı (engine.send) bu modda hiç kullanılmaz */
+  if (finTsAgentMode(agent)) {
+    if (!agent.tsBusy) finTypeSafeKick(id, agent);
+    return true;
+  }
   try {
     const body = agent.role
       ? String(text || '') + "\n(ROL HATIRLATMASI: işlem AÇMA — durumu analiz et; gerekiyorsa agent_dm ile ANA TRADER'a bildir.)"
@@ -12863,6 +12869,441 @@ function finTeamWaitTick(sid) {
   finAgentRound(sid, { noTeamWait: true });
 }
 
+/* ---------- TYPESAFE-ONLY FİNANS MODU (LLM'SİZ) ----------
+   Rol→Skill eşleştirmesinde "typesafe-ai" seçiliyse ajan LLM HİÇ kullanmaz:
+   tur verisi (fiyat/gösterge/pozisyon/öğrenme geçmişi/ekip yanıtları) YALNIZ
+   TypeSafe System One'a gider; yanıtlar olasılık olarak döner, kararı KOD
+   uygular. Yanıtlar AJAN DM ekip grubuna yazılır — tüm ajanlar birbirinin
+   cevabını görür (son yanıtlar sonraki turların state'ine de girer) ve emirler
+   YALNIZ market buy/sell olarak açılır (bekleyen emir YOK). */
+const FIN_TS_ACTION_P = 0.6;    /* choice: işlem için min olasılık */
+const FIN_TS_MARGIN_P = 0.12;   /* birinci ile ikinci seçenek arası min fark */
+const FIN_TS_CONFIRM_P = 0.55;  /* noul teyit eşiği */
+const FIN_TS_EXIT_P = 0.62;     /* pozisyon kapatma eşiği */
+const FIN_TS_MAX_SYMBOLS = 3;   /* tur başına işlenecek sembol tavanı */
+const FIN_TS_ROLE_TF = { technic: 'M15', risk: 'H1', macro: 'H4', visual: 'M15' };
+const FIN_TS_ROLE_CRIT = {
+  technic: {
+    yukari: 'Boğa yapısı — HH/HL, yükseliş trendi, kırılım teyidi',
+    asagi: 'Ayı yapısı — LH/LL, düşüş trendi, kırılım teyidi',
+    yatay: 'Yatay/range — yön teyidi yok',
+  },
+  risk: {
+    uygun: 'Risk limitleri uygun — pozisyon açılabilir',
+    dikkat: 'Sınırda — küçük lot / ek teyit şart',
+    uygundegil: 'Uygun değil — açma, mevcudu küçült',
+  },
+  macro: {
+    pozitif: 'Makro akış pozitif (faiz/veri/jeopolitik destekliyor)',
+    negatif: 'Makro akış negatif (risk iştahı bozuk)',
+    notr: 'Makro etki nötr/belirsiz',
+  },
+  visual: {
+    yukari: 'Grafik yapısı yukarı (formasyon/trend yukarı)',
+    asagi: 'Grafik yapısı aşağı',
+    yatay: 'Yatay/sıkışma — formasyon yok',
+  },
+};
+
+function finTsAgentMode(agent) {
+  try {
+    const f = finCfg();
+    const key = agent && agent.main ? 'trader' : String((agent && agent.role) || '');
+    if (!key) return false;
+    const list = f.roleSkills && Array.isArray(f.roleSkills[key]) ? f.roleSkills[key] : [];
+    return list.some((s) => String(s || '').toLowerCase() === 'typesafe-ai');
+  } catch {
+    return false;
+  }
+}
+
+function finTsWho(agent, extra) {
+  const role = agent && agent.main ? 'TRADER' : ((finRoleDef(agent && agent.role) || {}).label || 'FİNANS').toUpperCase();
+  return 'TypeSafe · ' + role + (extra ? ' · ' + extra : '');
+}
+
+/* TypeSafe yanıtını AJAN DM ekip grubuna yaz (panelde görünür) + state için
+   besleme tamponuna ekle (ajanlar birbirini sonraki turda görür) */
+function finTsPost(sid, agent, text, topic) {
+  const body = String(text || '').trim();
+  if (!body) return;
+  try {
+    if (engine && typeof engine.agentDmGroupPost === 'function') {
+      engine.agentDmGroupPost({
+        gid: FIN_TEAM_GID,
+        title: FIN_TEAM_TITLE,
+        fromSid: String(sid),
+        fromTitle: finTsWho(agent),
+        topic: String(topic || 'typesafe'),
+        text: body,
+      });
+    }
+  } catch {}
+  try {
+    financeState.tsFeed = Array.isArray(financeState.tsFeed) ? financeState.tsFeed : [];
+    financeState.tsFeed.push({ at: Date.now(), sid: String(sid), who: finTsWho(agent, topic), text: body });
+    while (financeState.tsFeed.length > 30) financeState.tsFeed.shift();
+  } catch {}
+}
+
+function finTsFeedText(limit) {
+  const feed = Array.isArray(financeState.tsFeed) ? financeState.tsFeed.slice(-(Math.max(1, Number(limit) || 6))) : [];
+  if (!feed.length) return '(ekip yanıtı yok)';
+  return feed.map((x) => `- ${x.who}: ${String(x.text || '').replace(/\s+/g, ' ').slice(0, 220)}`).join('\n');
+}
+
+/* ZAMAN DİLİMİ BOT KARARI: önce öğrenmede en iyi net getiren periyot (>=3
+   işlem), sonra ajanın seçimi, sonra rol varsayılanı */
+function finTsPickTf(agent, symbol) {
+  try {
+    const sym = String(symbol || '').toUpperCase();
+    const e = finLearnLoad().symbols[sym];
+    const byTf = (e && e.stats && e.stats.byTf) || {};
+    let best = '';
+    let bestNet = -Infinity;
+    for (const [tf, s] of Object.entries(byTf)) {
+      if (!s || Number(s.trades) < 3) continue;
+      const n = Number(s.net) || 0;
+      if (n > bestNet) { bestNet = n; best = tf; }
+    }
+    if (best) return best;
+  } catch {}
+  const role = String((agent && agent.role) || '');
+  return finLearnNormTf(agent && agent.tsTf) || FIN_TS_ROLE_TF[role] || 'M15';
+}
+
+function finTsChoice(ans, id) {
+  const a = ans && ans.answers && ans.answers[id];
+  if (!a || a.type !== 'choice') return null;
+  const probs = a.probabilities && typeof a.probabilities === 'object' ? a.probabilities : {};
+  const top = String(a.choice || '');
+  let p = Number(probs[top]);
+  if (!isFinite(p)) { p = 0; for (const v of Object.values(probs)) p = Math.max(p, Number(v) || 0); }
+  let second = 0;
+  for (const [k, v] of Object.entries(probs)) {
+    if (k === top) continue;
+    second = Math.max(second, Number(v) || 0);
+  }
+  return { choice: top, p, second, conf: Number(a.confidence) || 0, probs };
+}
+
+function finTsNoul(ans, id) {
+  const a = ans && ans.answers && ans.answers[id];
+  if (!a || a.type !== 'noul') return null;
+  const n = Number(a.noul);
+  return isFinite(n) ? n : null;
+}
+
+function finTsScore(ans, id) {
+  const a = ans && ans.answers && ans.answers[id];
+  if (!a || a.type !== 'score') return null;
+  return { score: Number(a.score) || 0, conf: Number(a.confidence) || 0, probs: a.probabilities || {} };
+}
+
+function finTsFmtChoice(c) {
+  if (!c) return 'yanıt yok';
+  const probs = Object.entries(c.probs || {}).map(([k, v]) => `${k}=${(Number(v) || 0).toFixed(2)}`).join(' ');
+  return `${c.choice} (p=${c.p.toFixed(2)}, güven=${c.conf.toFixed(2)})` + (probs ? ' [' + probs + ']' : '');
+}
+
+function finTsIndLine(ind) {
+  if (!ind || ind.ok !== true) return null;
+  const g = (k) => {
+    const row = ind.indicators && ind.indicators[k];
+    return row && Array.isArray(row.last) ? Number(row.last[row.last.length - 1]) : null;
+  };
+  return {
+    atr14: g('ATR(14)'),
+    ema50: g('EMA(50)'),
+    ema200: g('EMA(200)'),
+    rsi14: g('RSI(14)'),
+    close: Number(ind.close) || null,
+    range20: ind.range20 || null,
+  };
+}
+
+function finTsSchedule(sid, agent, sec) {
+  if (!agent || !financeState.agents.has(String(sid))) return;
+  clearTimeout(agent.timer);
+  const s = Math.max(15, Math.min(3600, Math.round(Number(sec) || finPaceSec())));
+  agent.timer = setTimeout(() => { try { finAgentRound(String(sid)); } catch {} }, s * 1000);
+}
+
+function finTypeSafeKick(sid, agent) {
+  if (!agent) return;
+  clearTimeout(agent.timer);
+  agent.timer = setTimeout(() => { try { finAgentRound(String(sid)); } catch {} }, 800);
+}
+
+/* LLM'siz TypeSafe turu: veri → TypeSafe (noul/choice/score) → kod kararı →
+   AJAN DM yayını. Hata durumunda tur atlanır, LLM'e ASLA düşülmez. */
+async function finTypeSafeRound(sid, agent) {
+  if (!agent || !engine || agent.tsBusy) return;
+  agent.tsBusy = true;
+  const sidS = String(sid);
+  const isTrader = !!agent.main;
+  const role = String(agent.role || '');
+  const roleLabel = isTrader ? 'TRADER (ana karar verici)' : ((finRoleDef(role) || {}).label || role || 'finans');
+  try {
+    if (!typesafeMod.cfg().apiKey) {
+      const now = Date.now();
+      if (!agent.tsNoKeyAt || now - agent.tsNoKeyAt > 10 * 60 * 1000) {
+        agent.tsNoKeyAt = now;
+        finTsPost(sidS, agent, '⚠ TypeSafe API anahtarı yok — bu rol typesafe-ai modunda ve LLM KULLANILMIYOR; tur atlanıyor. Sahibe söyle: Ayarlar → TypeSafe sekmesinden anahtar girilmeli.', 'anahtar');
+      }
+      return;
+    }
+    if (!mt5bridge.running) {
+      const now = Date.now();
+      if (!agent.tsNoBridgeAt || now - agent.tsNoBridgeAt > 5 * 60 * 1000) {
+        agent.tsNoBridgeAt = now;
+        finTsPost(sidS, agent, '⚠ MT5 köprüsü bağlı değil — TypeSafe turu atlandı.', 'köprü');
+      }
+      return;
+    }
+    const f = finCfg();
+    const symbols = (Array.isArray(agent.symbols) && agent.symbols.length ? agent.symbols : f.symbols || [])
+      .map((x) => String(x || '').trim().toUpperCase()).filter(Boolean).slice(0, FIN_TS_MAX_SYMBOLS);
+    if (!symbols.length) {
+      const now = Date.now();
+      if (!agent.tsNoSymAt || now - agent.tsNoSymAt > 10 * 60 * 1000) {
+        agent.tsNoSymAt = now;
+        finTsPost(sidS, agent, '⚠ İzleme listesi boş — TypeSafe kararı üretilemiyor. Panele sembol ekle.', 'sembol');
+      }
+      return;
+    }
+    agent.round = (Number(agent.round) || 0) + 1;
+    if (isTrader) {
+      financeState.traderRounds = agent.round;
+      finPush('trader', { state: 'running', round: agent.round, mode: 'typesafe' });
+    }
+    /* VERİ: hesap + pozisyonlar + sembol fiyat/gösterge — hepsi KOD ile toplanır,
+       yalnız TypeSafe'e gönderilir; hiçbir LLM çağrısı yapılmaz */
+    const [accR, posR] = await Promise.all([
+      financetools.handlers.mt5_account({}),
+      financetools.handlers.mt5_positions({}),
+    ]);
+    const account = (accR && accR.account) || {};
+    const posList = (posR && posR.positions) || [];
+    const market = {};
+    for (const sym of symbols) {
+      const tf = finTsPickTf(agent, sym);
+      const [mktR, indR] = await Promise.all([
+        financetools.handlers.mt5_market({ symbols: [sym] }),
+        financetools.handlers.mt5_indicators({ symbol: sym, timeframe: tf, count: 300, indicators: ['ATR(14)', 'EMA(50)', 'EMA(200)', 'RSI(14)'] }),
+      ]);
+      market[sym] = {
+        row: (mktR && mktR.symbols && mktR.symbols[0]) || null,
+        tf,
+        ind: finTsIndLine(indR),
+      };
+    }
+    const state = {
+      rol: roleLabel,
+      yerel_saat: new Date().getHours(),
+      hesap: {
+        balance: Number(account.balance) || 0,
+        equity: Number(account.equity) || 0,
+        margin_free: Number(account.margin_free) || 0,
+        acik_pozisyon: posList.length,
+      },
+      limitler: { max_pozisyon: Number(f.maxPositions) || 3, min_lot: Number(f.minLot) || 0.01, max_lot: Number(f.maxLot) || 0.1 },
+      pozisyonlar: posList.map((p) => ({
+        ticket: p.ticket, sembol: p.symbol, yon: Number(p.type) === 0 ? 'buy' : 'sell',
+        hacim: p.volume, giris: p.price_open, sl: p.sl, tp: p.tp, kar: p.profit,
+      })),
+      piyasa: {},
+      ogrenme: finBuildLearnDigest(symbols),
+      ekip_yanitlari: finTsFeedText(6),
+    };
+    for (const sym of symbols) {
+      const d = market[sym];
+      const row = d.row || {};
+      state.piyasa[sym] = {
+        zaman_dilimi: d.tf,
+        bid: Number(row.bid) || null,
+        ask: Number(row.ask) || null,
+        spread: Number(row.spread) || null,
+        gosterge: d.ind,
+      };
+    }
+
+    /* ---------------- TRADER: yön + teyit + kapat kararı ---------------- */
+    if (isTrader) {
+      const posBySym = {};
+      for (const p of posList) {
+        const s = String(p.symbol || '').toUpperCase();
+        if (symbols.includes(s)) posBySym[s] = p;
+      }
+      const questions = {};
+      symbols.forEach((sym, i) => {
+        questions['yon_' + i] = {
+          type: 'choice',
+          instructions: `${sym} ${market[sym].tf} grafiğinde verilen fiyat, gösterge, pozisyon, öğrenme geçmişi ve ekip yanıtlarına göre kısa vadeli doğru aksiyon nedir? Emin değilsen bekle.`,
+          criteria: {
+            buy: 'LONG aç — yükseliş teyidi var (yapı/momentum/EMA eğimi destekliyor)',
+            sell: 'SHORT aç — düşüş teyidi var',
+            bekle: 'İşlem açma — teyit yok, belirsiz ya da riskli',
+          },
+        };
+        questions['teyit_' + i] = {
+          type: 'noul',
+          instructions: `${sym} fiyat yapısı ve momentum, 'yon_' + ${i} kararını gerçekten destekliyor mu?`,
+          criteria: { true: 'Net destekliyor', false: 'Zayıf/çelişkili' },
+        };
+        if (posBySym[sym]) {
+          const pp = posBySym[sym];
+          questions['kapat_' + i] = {
+            type: 'noul',
+            instructions: `${sym} açık pozisyon (${Number(pp.type) === 0 ? 'buy' : 'sell'}, kâr ${Number(pp.profit) || 0}) ŞİMDİ kapatılmalı mı? Kârı koruma, momentum dönüşü veya SL/TP yakınlığını değerlendir.`,
+            criteria: { true: 'Kapat — risk/kâr koruma', false: 'Açık kalsın — tez sürüyor' },
+          };
+        }
+      });
+      let ans = null;
+      try {
+        ans = await finTsAsk(state, questions);
+      } catch (e) {
+        const now = Date.now();
+        if (!agent.tsErrAt || now - agent.tsErrAt > 2 * 60 * 1000) {
+          agent.tsErrAt = now;
+          finTsPost(sidS, agent, '⚠ TypeSafe çağrısı başarısız: ' + String((e && e.message) || e).slice(0, 200), 'hata');
+        }
+        return;
+      }
+      const lines = [];
+      let opened = 0;
+      for (let i = 0; i < symbols.length; i++) {
+        const sym = symbols[i];
+        if (!financeState.agents.has(sidS)) return;
+        const c = finTsChoice(ans, 'yon_' + i);
+        const conf = finTsNoul(ans, 'teyit_' + i);
+        const pos = posBySym[sym];
+        if (pos) {
+          const ex = finTsNoul(ans, 'kapat_' + i);
+          if (ex != null && ex >= FIN_TS_EXIT_P) {
+            const r = await financetools.handlers.mt5_close(
+              { ticket: Number(pos.ticket), reason: `TypeSafe: kapat p=${ex.toFixed(2)}` },
+              { sessionId: sidS }
+            );
+            lines.push(`- ${sym}: KAPAT (p=${ex.toFixed(2)}) ${r && r.ok ? '✓ pozisyon kapatıldı' : '✗ ' + ((r && r.error) || 'hata')}`);
+          } else {
+            lines.push(`- ${sym}: pozisyon açık (kapat=${ex == null ? 'yanıt yok' : ex.toFixed(2)} < ${FIN_TS_EXIT_P}) — tez sürüyor`);
+          }
+          continue;
+        }
+        if (!c || (c.choice !== 'buy' && c.choice !== 'sell')) {
+          lines.push(`- ${sym}: ${finTsFmtChoice(c)} → BEKLE`);
+          continue;
+        }
+        if (!(c.p >= FIN_TS_ACTION_P) || c.p - c.second < FIN_TS_MARGIN_P) {
+          lines.push(`- ${sym}: ${finTsFmtChoice(c)} → eşik/fark altı, BEKLE`);
+          continue;
+        }
+        if (conf == null || conf < FIN_TS_CONFIRM_P) {
+          lines.push(`- ${sym}: ${finTsFmtChoice(c)} · teyit=${conf == null ? 'yok' : conf.toFixed(2)} < ${FIN_TS_CONFIRM_P} → BEKLE`);
+          continue;
+        }
+        if (opened >= 1 || posList.length >= (Number(f.maxPositions) || 3)) {
+          lines.push(`- ${sym}: sinyal güçlü (${c.choice} p=${c.p.toFixed(2)}) ama pozisyon sınırı dolu — bu tur açılmadı`);
+          continue;
+        }
+        /* SL/TP KOD ile: ATR(14) tabanlı — tip ve seviyeler deterministik */
+        const row = market[sym].row || {};
+        const price = c.choice === 'buy' ? Number(row.ask) || Number(row.bid) : Number(row.bid) || Number(row.ask);
+        if (!(price > 0)) { lines.push(`- ${sym}: fiyat okunamadı`); continue; }
+        const atr = Number(market[sym].ind && market[sym].ind.atr14) || 0;
+        const slDist = Math.max(atr > 0 ? atr * 1.5 : price * 0.003, price * 0.0004);
+        const tpDist = Math.max(atr > 0 ? atr * 2.5 : price * 0.006, slDist * 1.2);
+        const digits = Math.max(0, Math.min(8, Number(row.digits) || 2));
+        const rnd = (v) => Number(Number(v).toFixed(digits));
+        const sl = rnd(c.choice === 'buy' ? price - slDist : price + slDist);
+        const tp = rnd(c.choice === 'buy' ? price + tpDist : price - tpDist);
+        const riskPct = Number(f.riskPerTradePct) > 0 ? Number(f.riskPerTradePct) : 0.5;
+        const r = await financetools.handlers.mt5_trade(
+          {
+            symbol: sym,
+            side: c.choice,
+            type: 'market',
+            sl,
+            tp,
+            riskPct,
+            timeframe: market[sym].tf,
+            comment: 'TS',
+            reason: `TypeSafe: yön ${c.choice} p=${c.p.toFixed(2)} fark=${(c.p - c.second).toFixed(2)} teyit=${conf.toFixed(2)}`,
+          },
+          { sessionId: sidS }
+        );
+        if (r && r.ok) {
+          opened += 1;
+          lines.push(`- ${sym}: ⚡ MARKET ${c.choice.toUpperCase()} açıldı (lot ${r.opened && r.opened.volume}, SL ${sl}, TP ${tp}, risk %${riskPct}) · p=${c.p.toFixed(2)} teyit=${conf.toFixed(2)} · tf=${market[sym].tf}`);
+        } else {
+          lines.push(`- ${sym}: ${c.choice.toUpperCase()} sinyali reddedildi — ${(r && r.error) || 'hata'}`);
+        }
+      }
+      finTsPost(
+        sidS,
+        agent,
+        `🤖 TypeSafe karar turu #${agent.round} (LLM yok — girdi yalnız TypeSafe):\n` +
+          'TF KARARI: ' + symbols.map((s) => `${s}=${market[s].tf}`).join(', ') + '\n' +
+          lines.join('\n') +
+          (opened ? '' : '\nYeni pozisyon açılmadı (eşikler/limitler).'),
+        symbols.join(',')
+      );
+      return;
+    }
+
+    /* ---------------- ROL AJANI: analiz yanıtları (işlem açmaz) ---------------- */
+    const questions = {};
+    const crit = FIN_TS_ROLE_CRIT[role] || FIN_TS_ROLE_CRIT.technic;
+    symbols.forEach((sym, i) => {
+      questions['bias_' + i] = {
+        type: 'choice',
+        instructions: `${sym} ${market[sym].tf} için ${roleLabel} rolünde yön/eğilim değerlendirmen nedir? Verilen fiyat, gösterge, öğrenme geçmişi ve ekip yanıtlarını kullan.`,
+        criteria: crit,
+      };
+      questions['guc_' + i] = {
+        type: 'score',
+        instructions: `${sym} için bu değerlendirmenin gücü nedir? İstatistik ve gösterge teyidi zayıfsa düşük puan ver.`,
+        criteria: ['çok zayıf', 'zayıf', 'orta', 'güçlü', 'çok güçlü'],
+      };
+      questions['risk_' + i] = {
+        type: 'noul',
+        instructions: `${sym} için ${roleLabel} rolünde işlemi engelleyecek bir risk/uygunsuzluk var mı (volatilite, haber, limit, yapı belirsizliği)?`,
+        criteria: { true: 'Risk var — dikkat/engel', false: 'Risk normal' },
+      };
+    });
+    let ans = null;
+    try {
+      ans = await finTsAsk(state, questions);
+    } catch (e) {
+      const now = Date.now();
+      if (!agent.tsErrAt || now - agent.tsErrAt > 2 * 60 * 1000) {
+        agent.tsErrAt = now;
+        finTsPost(sidS, agent, '⚠ TypeSafe çağrısı başarısız: ' + String((e && e.message) || e).slice(0, 200), 'hata');
+      }
+      return;
+    }
+    const lines = symbols.map((sym, i) => {
+      const b = finTsChoice(ans, 'bias_' + i);
+      const g = finTsScore(ans, 'guc_' + i);
+      const rk = finTsNoul(ans, 'risk_' + i);
+      return (
+        `- ${sym} (tf=${market[sym].tf}): ${finTsFmtChoice(b)}` +
+        (g ? ` · güç=${g.score.toFixed(2)}/4 (güven=${g.conf.toFixed(2)})` : '') +
+        (rk == null ? '' : ` · risk=${rk.toFixed(2)}${rk >= 0.55 ? ' ⚠' : ''}`)
+      );
+    });
+    finTsPost(sidS, agent, `🧠 TypeSafe analiz (LLM yok — girdi yalnız TypeSafe):\n` + lines.join('\n'), symbols.join(','));
+  } catch (e) {
+    try { financeLog('[typesafe] tur hatası (' + sidS + '): ' + String((e && e.message) || e)); } catch {}
+  } finally {
+    agent.tsBusy = false;
+    finTsSchedule(sidS, agent, finPaceSec());
+    if (isTrader && financeState.agents.has(sidS)) finPush('trader', { state: 'idle', round: agent.round, mode: 'typesafe' });
+  }
+}
+
 /* Bir ajanın TEK turu: (opsiyonel) ana ajan planı + tur emri */
 function finAgentRound(sid, opts) {
   const agent = financeState.agents.get(String(sid));
@@ -12878,6 +13319,13 @@ function finAgentRound(sid, opts) {
   }
   if (engine.isBusy(sid)) {
     /* hâlâ çalışıyor — done eventinde tekrar planlanır */
+    return;
+  }
+  /* TYPESAFE-ONLY MODU: roleSkills'te typesafe-ai varsa LLM HİÇ kullanılmaz —
+     tur deterministik TypeSafe hattıyla koşar (girdi yalnız TypeSafe'e gider,
+     cevaplar AJAN DM'e düşer, emirler yalnız market buy/sell) */
+  if (finTsAgentMode(agent)) {
+    finTypeSafeRound(String(sid), agent).catch(() => {});
     return;
   }
   const f = finCfg();
@@ -13399,6 +13847,15 @@ async function financeTraderStart() {
   try { engine.setSessionModel(mainSid, f.traderSel || null); } catch {}
   financeState.traderOn = true;
   try { engine.clearStop(); } catch {}
+  /* TYPESAFE-ONLY: roleSkills.trader'da typesafe-ai varsa LLM'e HİÇ gidilmez */
+  if (finTsAgentMode(mainAgent)) {
+    financeState.lastRoundAt = Date.now();
+    financeLog('[trader] başlatıldı (TYPESAFE-ONLY — LLM kullanılmıyor, girdi yalnız TypeSafe)');
+    finPush('trader', { state: 'running', round: mainAgent.round, mode: 'typesafe' });
+    finTypeSafeKick(mainSid, mainAgent);
+    finTeamStart(f);
+    return { ok: true, sid: mainSid };
+  }
   const ok = engine.send(mainSid, finTraderBrief(mainAgent), { userAction: true });
   if (!ok) {
     financeState.traderOn = false;
@@ -13431,6 +13888,12 @@ function finTeamStart(f) {
     try {
       const created = finAgentCreate([], false, roleId);
       try { engine.setSessionModel(created.s.id, f.traderSel || null); } catch {}
+      /* TYPESAFE-ONLY: bu rolün skill eşleştirmesinde typesafe-ai varsa LLM yok */
+      if (finTsAgentMode(created.agent)) {
+        financeLog('[ekip] ' + roleDef.label + ' başladı (TYPESAFE-ONLY — LLM kullanılmıyor)');
+        finTypeSafeKick(String(created.s.id), created.agent);
+        continue;
+      }
       const ok = engine.send(created.s.id, finTraderBrief(created.agent), { userAction: true });
       if (!ok) {
         finAgentStop(String(created.s.id), 'oturum meşgul — ekip ajanı başlatılamadı');

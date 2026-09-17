@@ -1688,7 +1688,7 @@ async function renderWebSearchPane() {
 async function renderTypesafePane() {
   const pane = $('#tab-typesafe');
   if (!pane) return;
-  const ts = await beast.typesafeGet().catch(() => ({ set: false, apiKey: '', model: 'jev-latest' }));
+  const ts = await beast.typesafeGet().catch(() => ({ set: false, apiKey: '', model: 'jev-latest', enabled: true }));
   pane.innerHTML =
     '<h2>' + _t('ts_h2') + '</h2>' +
     '<div class="sub">' + _t('ts_sub') + '</div>' +
@@ -1697,6 +1697,8 @@ async function renderTypesafePane() {
     '<input id="tsKeyInp" class="inp" type="password" placeholder="ts_..." autocomplete="new-password" spellcheck="false" />' +
     '<label class="mem-label" style="margin-top:10px">' + _t('ts_model_label') + '</label>' +
     '<input id="tsModelInp" class="inp" type="text" placeholder="jev-latest" spellcheck="false" />' +
+    '<label class="mem-label" style="margin-top:10px;display:flex;align-items:center;gap:8px;cursor:pointer">' +
+    '<input id="tsEnabled" type="checkbox" /> ' + _t('ts_enabled_label') + '</label>' +
     '<div class="form-grid" style="grid-template-columns:auto auto auto;gap:8px;margin-top:10px">' +
     '<button id="tsSave" class="btn">' + _t('ts_save') + '</button>' +
     '<button id="tsTest" class="btn ghost">' + _t('ts_test') + '</button>' +
@@ -1704,9 +1706,13 @@ async function renderTypesafePane() {
     '<div class="sub" style="margin-top:10px">' + _t('ts_hint') + '</div>';
   const tsSt = $('#tsStatus');
   const tsModel = $('#tsModelInp');
+  const tsEnabled = $('#tsEnabled');
   tsModel.value = ts.model || 'jev-latest';
+  tsEnabled.checked = ts.enabled !== false;
   const setTsSt = (r) => {
-    tsSt.textContent = r.set ? _t('ts_status_set') + r.model : _t('ts_status_unset');
+    if (!r.set) tsSt.textContent = _t('ts_status_unset');
+    else if (r.enabled === false) tsSt.textContent = _t('ts_status_off');
+    else tsSt.textContent = _t('ts_status_set') + r.model;
   };
   setTsSt(ts);
   const tsTest = $('#tsTest');
@@ -1724,7 +1730,7 @@ async function renderTypesafePane() {
   $('#tsSave').addEventListener('click', async () => {
     const v = $('#tsKeyInp').value.trim();
     if (!v) { toast(_t('ts_empty_toast')); return; }
-    const rr = await beast.typesafeSet({ apiKey: v, model: tsModel.value.trim() }).catch(() => null);
+    const rr = await beast.typesafeSet({ apiKey: v, model: tsModel.value.trim(), enabled: tsEnabled.checked }).catch(() => null);
     $('#tsKeyInp').value = '';
     if (rr && rr.ok) {
       setTsSt(rr.typesafe || {});
@@ -1733,8 +1739,18 @@ async function renderTypesafePane() {
       toast(_t('ts_fail_toast'));
     }
   });
+  /* Anahtar zaten kayıtlıyken aç/kapa: maskeli anahtar geri gönderilir, anahtar korunur */
+  tsEnabled.addEventListener('change', async () => {
+    const rr = await beast.typesafeSet({ apiKey: ts.apiKey || '', model: tsModel.value.trim(), enabled: tsEnabled.checked }).catch(() => null);
+    if (rr && rr.ok) {
+      setTsSt(rr.typesafe || {});
+      toast(_t('ts_saved_toast'));
+    } else {
+      toast(_t('ts_fail_toast'));
+    }
+  });
   $('#tsClear').addEventListener('click', async () => {
-    await beast.typesafeSet({ apiKey: '', model: tsModel.value.trim() }).catch(() => {});
+    await beast.typesafeSet({ apiKey: '', model: tsModel.value.trim(), enabled: tsEnabled.checked }).catch(() => {});
     $('#tsKeyInp').value = '';
     setTsSt({ set: false, model: tsModel.value.trim() || 'jev-latest' });
     toast(_t('ts_cleared_toast'));

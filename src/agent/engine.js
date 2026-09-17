@@ -20,6 +20,8 @@ const memory = require('./memory');
 const mem0 = require('./mem0');
 const supermemory = require('./supermemory');
 const typesafe = require('./typesafe');
+const browseragent = require('./browseragent');
+const computeragent = require('./computeragent');
 const nightref = require('./nightref');
 const skills = require('./skills');
 const mcp = require('./mcp');
@@ -156,7 +158,7 @@ const PERM_TOOL_SETS = {
     'web_search', 'http_fetch', 'webfetch', 'deep_search',
     'browser_open', 'browser_read', 'browser_snapshot', 'browser_screenshot',
     'browser_click', 'browser_type', 'browser_press', 'browser_scroll', 'browser_select',
-    'browser_wait',
+    'browser_wait', 'browser_agent',
     'ocr_read', 'tool_request',
   ]),
   read: new Set([
@@ -193,8 +195,8 @@ const CEO_EXEC_TOOLS = new Set([
   'web_search', 'http_fetch', 'webfetch', 'deep_search',
   'browser_open', 'browser_read', 'browser_screenshot', 'browser_snapshot',
   'browser_click', 'browser_type', 'browser_press', 'browser_scroll', 'browser_select',
-  'browser_wait',
-  'computer_look', 'computer_act',
+  'browser_wait', 'browser_agent',
+  'computer_look', 'computer_act', 'computer_agent',
   'ocr_read',
   'channel_send', // dış kişilere mesaj: CEO devreder, kendisi atmaz
   'delegate_task', // senkron bekler — CEO hep asenkron run_background kullanır
@@ -2227,7 +2229,8 @@ class Engine {
             ' DIŞ TARAYICI İSTİSNASI: kullanıcı AÇIKÇA "chrome\u2019da aç", "firefox\u2019ta aç", "başka tarayıcıda aç", "normal tarayıcıda aç", "kendi tarayıcımda aç" derse O ZAMAN run_command ile `start "" <url>` çalıştır — sistem varsayılan (dış) tarayıcısında açılır. Kullanıcı dış tarayıcı istemedikçe ASLA dış tarayıcı açma.' +
             ' Görselleri GÖREMEMİYORSAN (metin-model) görüntüdeki metni okumak için ocr_read kullan: source:"browser" ile tarayıcı sayfasını, "screen" ile masaüstünü OCR\u2019la okursun (captcha/canvas/görsel metin dahil).' +
             (this.ceoMode ? ' (CEO: bu araçları KENDİN ÇAĞIRMA — içinde tarayıcı geçen işi run_background ile paralel ajana devret.)' : ''),
-          'Tarayıcı eylemlerinin yanıtındaki recent günlüğü ve navigated bilgisini takip et; eylem yanıtları zaten taze snapshot içerir — refler tutarsız görünürse yeni snapshot al.',
+          'Tarayıcı eylemlerinin yanıtındaki recent günlüğünü ve navigated bilgisini takip et; eylem yanıtları zaten taze snapshot içerir — refler tutarsız görünürse yeni snapshot al.',
+          'T3SFAST (Jev) HIZLI AJANLARI: Ayarlar → TypeSafe\'te anahtar VAR ve AÇIKSA çok adımlı işleri tek tek browser_click/browser_type yerine browser_agent\'a BİR doğal-dil hedefiyle ver (arama + form + filtre + tarih seçimi + sonuç açma gibi akışlar saniyeler içinde biter; her adımı TypeSafe Jev seçer, yalnız metin girişini küçük bir LLM yazar). "done" durumu KANIT DEĞİL — sonucu browser_read/browser_screenshot ile bağımsız doğrulamadan kullanıcıya başarılı deme. Masaüstü işleri için computer_agent\'ı aynı şekilde kullan (önce computer_act {op:"focus"} ile doğru pencereyi öne getir; sonucu computer_look ile doğrula); ekran OCR ile okunduğundan her adım yavaştır, hedefi net ver. Anahtar yoksa/kapalıysa bu araçlar hata döner — kullanıcıyı Ayarlar → TypeSafe\'e yönlendir.',
           'CONUŞMA ODAĞI SENDE KALSIN: kullanıcı seninle konuşurken iş çıkmışsa — uzun da olsa UFACIK da (tek komutluk dizin listesi, tek dosya okuma, tek arama…) — run_background ile PARALEL ajana devret; ana sohbet hiçbir işi beklemez; bittiğinde özet otomatik düşer.',
           'Python işleri için python_run kullan: küçük betikler inline code ile; tekrarlayan işler %APPDATA%\\beast\\scripts klasöründeki dosyalarla (ör. news.py = RSS haber toplayıcı: args ["--limit","8","--json"]). Python kurulu olmasa bile ilk çağrıda taşınabilir gömülü runtime otomatik iner.',
             'PYTHON DURUMU: makinede sistem Python\'u görünmese bile ŞAŞIRMA ve "python yok" DEME — python_run aracı kendi taşınabilir runtime\'ını (%APPDATA%\\beast\\py\\python.exe) otomatik indirir/kullanır ve bu klasör run_command PATH\'inde önceliklidir; yani run_command içinde de `python` çalışır. Ham Google/Bing scrape yerine önce web_search aracını kullan (SearXNG + stealth TLS + TinyFish + Python çoklu-motor destekli), script gerektiğinde python_run yaz.',
@@ -5912,6 +5915,39 @@ const skills = require('./skills');
         const r = await this.computer.act(op, args || {});
         return JSON.stringify(r);
       }
+      if (name === 'computer_agent') {
+        /* T3SFAST COMPUTER USE: TypeSafe (Jev) tipli karar + ekran OCR döngüsü.
+           GATE: yalnızca Ayarlar → TypeSafe'te anahtar VAR ve anahtar AÇIKken. */
+        if (!this.computer || typeof this.computer.observe !== 'function') {
+          return JSON.stringify({ ok: false, error: 'bilgisayar gözlemi yok (Electron ana süreç gerekli)' });
+        }
+        const tsGate = typesafe.unavailable();
+        if (tsGate) {
+          return JSON.stringify({ ok: false, error: tsGate + ' (computer_agent Jev kararları için anahtar + açık ayar gerektirir)' });
+        }
+        const ca = args || {};
+        const cgoal = String(ca.goal || ca.task || '').trim();
+        if (!cgoal) return JSON.stringify({ ok: false, error: 'goal gerekli — ulaşılacak hedefi doğal dille yaz' });
+        const cTextSel = this.modelFor('subagent') || this.sel;
+        emitSafe(this, sessionId, { type: 'status', status: 'T3SFast PC: Jev döngüsü başlıyor — ' + cgoal.slice(0, 80) });
+        const pcRun = await computeragent.run(
+          {
+            observe: () => this.computer.observe(),
+            act: (op, a) => this.computer.act(op, a),
+            wait: (a) => new Promise((res) => setTimeout(res, Math.max(0, Math.min(10000, Number(a && a.ms) || 400)))),
+            systemOne: (p) => typesafe.systemOne({ state: p.state, questions: p.questions, signal }),
+            textLlm: async (messages) => {
+              const res = await chatOnce(cTextSel, { messages, temperature: 0.2, max_tokens: 300 }, { signal });
+              return (res && res.content) || '';
+            },
+            textModel: (cTextSel && cTextSel.model) || '',
+            emit: (ev) => emitSafe(this, sessionId, ev),
+            signal,
+          },
+          { goal: cgoal, max_steps: ca.max_steps, budget_ms: ca.budget_ms }
+        );
+        return JSON.stringify(pcRun);
+      }
       if (name === 'deep_search') {
         /* agentic derin araştırma: çoklu sorgu + gizli tarayıcıda sayfa okuma.
            ARAMA zinciri web_search ile BİREBİR AYNI — sıralı zincir
@@ -5979,6 +6015,41 @@ const skills = require('./skills');
         }
         const r = await this.browser.wait(args || {}, signal, { sessionId });
         return JSON.stringify(r);
+      }
+      if (name === 'browser_agent') {
+        /* JEV ULTRAFAST: TypeSafe (Jev) tipli karar + dahili tarayıcı döngüsü.
+           GATE: yalnızca Ayarlar → TypeSafe'te anahtar VAR ve anahtar AÇIKken
+           çalışır; kapalıysa/anahtar yoksa hiç TypeSafe çağrısı yapılmaz. */
+        if (!this.browser || typeof this.browser.observe !== 'function') {
+          return JSON.stringify({ ok: false, error: 'dahili tarayıcı kullanılamıyor' });
+        }
+        const tsGate = typesafe.unavailable();
+        if (tsGate) {
+          return JSON.stringify({ ok: false, error: tsGate + ' (browser_agent Jev kararları için anahtar + açık ayar gerektirir)' });
+        }
+        const ba = args || {};
+        const goal = String(ba.goal || ba.task || '').trim();
+        if (!goal) return JSON.stringify({ ok: false, error: 'goal gerekli — ulaşılacak hedefi doğal dille yaz' });
+        const textSel = this.modelFor('subagent') || this.sel;
+        emitSafe(this, sessionId, { type: 'status', status: 'T3SFast: Jev döngüsü başlıyor — ' + goal.slice(0, 80) });
+        const fast = await browseragent.run(
+          {
+            openUrl: (u) => this.browser.openUrl(u, signal, { sessionId }),
+            observe: () => this.browser.observe(signal),
+            act: (kind, a) => this.browser.act(kind, a, signal, { sessionId }),
+            wait: (a) => this.browser.wait(a || {}, signal, { sessionId }),
+            systemOne: (p) => typesafe.systemOne({ state: p.state, questions: p.questions, signal }),
+            textLlm: async (messages) => {
+              const res = await chatOnce(textSel, { messages, temperature: 0.2, max_tokens: 300 }, { signal });
+              return (res && res.content) || '';
+            },
+            textModel: (textSel && textSel.model) || '',
+            emit: (ev) => emitSafe(this, sessionId, ev),
+            signal,
+          },
+          { goal, url: ba.url, max_steps: ba.max_steps, budget_ms: ba.budget_ms }
+        );
+        return JSON.stringify(fast);
       }
       /* Beast Apps: app__<id>__<tool> → apps host'a dispatch */
       if (String(name).startsWith('app__')) {
@@ -6602,6 +6673,27 @@ const TOOLS = [
   {
     type: 'function',
     function: {
+      name: 'computer_agent',
+      description:
+        'AUTONOMOUS FAST COMPUTER LOOP (T3SFast computer use): give it ONE natural-language goal for the Windows desktop; it OCRs the screen, picks one operation + OCR text target per step through TypeSafe Jev and only calls a small LLM when a field must be typed. Mouse clicks land on the CENTER of the chosen OCR text line; standard flow: CLICK the input (or its label) → TYPE_TEXT → PRESS_ENTER. Useful for desktop dialogs/forms/settings; if a specific window must be used, bring it to front first with computer_act {op:"focus"}. Returns {status: done|blocked|max_steps|aborted|budget, trace, text_calls, focused, screen_text}. A "done" status is NOT proof of success: verify the screen independently (computer_look / OCR) before telling the user it is complete. Requires the TypeSafe API key in Settings → TypeSafe (and the TypeSafe switch ON).',
+      parameters: {
+        type: 'object',
+        properties: {
+          goal: {
+            type: 'string',
+            description:
+              'Full natural-language goal with every value and the success condition, e.g. "Notepad açık; dosyaya \'Merhaba\' yaz ve Ctrl+S ile masaüstüne kaydet". Mention the app/window name.',
+          },
+          max_steps: { type: 'number', description: 'Max actions, default 15 (hard cap 40)' },
+          budget_ms: { type: 'number', description: 'Wall-clock budget in ms, default 180000 (hard cap 420000) — OCR makes each step slow' },
+        },
+        required: ['goal'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'email_list',
       description:
         'List recent emails from the configured inbox (newest first). Use when the user asks about incoming mail / inbox summary. Returns uid, from, subject, date.',
@@ -6803,6 +6895,28 @@ const TOOLS = [
           ms: { type: 'number', description: 'fixed wait in ms (max 10000); used alone or as extra delay' },
           timeout_ms: { type: 'number', description: 'condition timeout, default 10000 (max 30000)' },
         },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'browser_agent',
+      description:
+        'AUTONOMOUS FAST BROWSER LOOP (Jev Ultrafast): give it ONE natural-language goal; it watches the built-in browser page, picks one operation + element each step through TypeSafe Jev (no chat-model text for decisions, one TypeSafe request per step) and only calls a small LLM when a field must be filled. Use for multi-step flows (search, forms, filters, date pickers, multi-page navigation) instead of many manual browser_click/browser_type turns — typically finishes in seconds with far fewer calls. If "url" is omitted it runs on the page already open in the panel. Progress is shown live in the panel status line. Returns {status: done|blocked|max_steps|aborted|budget, trace, text_calls, url, title, page_text, snapshot}. A "done" status is NOT proof of success: independently verify the visible result (browser_read / browser_screenshot / page_text) before telling the user it is complete. Requires the TypeSafe API key in Settings → TypeSafe (and the TypeSafe switch ON).',
+      parameters: {
+        type: 'object',
+        properties: {
+          goal: {
+            type: 'string',
+            description:
+              'Full natural-language goal with EVERY value and filter, e.g. "Find one-way flights from Antalya to Istanbul on September 20, 2026, for one adult in economy. Stop when matching flight options are visible. Do not select or book."',
+          },
+          url: { type: 'string', description: 'Optional URL to open first; omit to run on the page currently open in the built-in browser' },
+          max_steps: { type: 'number', description: 'Max browser actions, default 20 (hard cap 40)' },
+          budget_ms: { type: 'number', description: 'Wall-clock budget in ms, default 120000 (hard cap 300000)' },
+        },
+        required: ['goal'],
       },
     },
   },

@@ -28,7 +28,17 @@ function cfg() {
   return {
     apiKey: String(c.apiKey || '').trim(),
     model: String(c.model || '').trim() || DEFAULT_MODEL,
+    enabled: c.enabled !== false,
   };
+}
+
+/* Ayar kapısı: anahtar yoksa ya da anahtar Ayarlar → TypeSafe'te KAPALIYSA
+   hiçbir TypeSafe çağrısı yapılmaz. Boş dönüş = hazır; dolu dönüş = hata metni. */
+function unavailable() {
+  const c = cfg();
+  if (!c.apiKey) return 'TypeSafe API anahtarı yok — Ayarlar → TypeSafe sekmesinden gir';
+  if (!c.enabled) return 'TypeSafe kapalı — Ayarlar → TypeSafe sekmesinden aç';
+  return '';
 }
 
 function errorForStatus(status, bodyText) {
@@ -80,7 +90,8 @@ function normalizeQuestions(questions) {
 /* systemOne çağrısı: state + questions → answers */
 async function systemOne({ state, questions, model, timeoutMs, signal } = {}) {
   const c = cfg();
-  if (!c.apiKey) throw new Error('TypeSafe API anahtarı yok — Ayarlar → TypeSafe sekmesinden gir');
+  const gate = unavailable();
+  if (gate) throw new Error(gate);
   if (state == null || (typeof state === 'string' && !state.trim())) {
     throw new Error('state boş — değerlendirilecek içerik gerekli (metin ya da JSON nesne/dizi)');
   }
@@ -222,10 +233,8 @@ function summarize(answers) {
 
 async function handler(args, ctx) {
   const a = args && typeof args === 'object' ? args : {};
-  const c = cfg();
-  if (!c.apiKey) {
-    return { ok: false, error: 'TypeSafe API anahtarı yok — Ayarlar → TypeSafe sekmesinden gir (kullanıcıya bunu söyle)' };
-  }
+  const gate = unavailable();
+  if (gate) return { ok: false, error: gate + ' (kullanıcıya bunu söyle)' };
   let state = a.state;
   if (typeof state === 'string') {
     const s = state.trim();
@@ -272,6 +281,7 @@ module.exports = {
   probe,
   setConfig,
   cfg,
+  unavailable,
   normalizeQuestions,
   BASE_URL,
   DEFAULT_MODEL,

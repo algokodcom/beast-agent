@@ -324,6 +324,7 @@ try {
   typesafeMod.setConfig(() => ({
     apiKey: settings.typesafe && settings.typesafe.apiKey,
     model: settings.typesafe && settings.typesafe.model,
+    enabled: !(settings.typesafe && settings.typesafe.enabled === false),
   }));
 } catch {}
 let wa = null;
@@ -515,9 +516,10 @@ function parseSettingsText(text) {
   /* TypeSafe (System One/Jev) — anahtar Ayarlar → TypeSafe sekmesinden girilir;
      boşken typesafe_decision aracı anlaşılır hata döner */
   if (!parsed.typesafe || typeof parsed.typesafe !== 'object') {
-    parsed.typesafe = { apiKey: '', model: 'jev-latest' };
+    parsed.typesafe = { apiKey: '', model: 'jev-latest', enabled: true };
   }
   if (typeof parsed.typesafe.model !== 'string' || !parsed.typesafe.model.trim()) parsed.typesafe.model = 'jev-latest';
+  if (typeof parsed.typesafe.enabled !== 'boolean') parsed.typesafe.enabled = true;
   return parsed;
 }
 
@@ -2375,7 +2377,7 @@ function botToolSet(cfg) {
   ]);
   if (s.web_search) { set.add('web_search'); set.add('http_fetch'); set.add('webfetch'); set.add('deep_search'); }
   if (s.browser) {
-    for (const t of ['browser_open', 'browser_read', 'browser_screenshot', 'browser_snapshot', 'browser_click', 'browser_type', 'browser_press', 'browser_scroll', 'browser_select', 'browser_wait', 'ocr_read', 'computer_look']) set.add(t);
+    for (const t of ['browser_open', 'browser_read', 'browser_screenshot', 'browser_snapshot', 'browser_click', 'browser_type', 'browser_press', 'browser_scroll', 'browser_select', 'browser_wait', 'browser_agent', 'ocr_read', 'computer_look']) set.add(t);
   }
   if (s.email) { set.add('email_list'); set.add('email_read'); set.add('email_send'); }
   if (s.run_command) {
@@ -3395,6 +3397,7 @@ function reloadBackend() {
     computer: {
       look: captureScreenDataUrl,
       act: (op, args) => computerActScaled(op, args),
+      observe: () => screenObserve(),
     },
     ocr: (o) => ocrRead(o),
     email: { list: emailList, read: emailRead, send: emailSend },
@@ -3404,6 +3407,7 @@ function reloadBackend() {
       readText: (s) => browserRead(s),
       screenshot: (s) => browserScreenshot(s),
       snapshot: (s) => browserSnapshot(s),
+      observe: (s) => browserObserve(s),
       act: (k, a, s) => browserAct(k, a, s),
       wait: (a, s) => browserWait(a, s),
     },
@@ -4762,7 +4766,7 @@ async function researchRead(rawUrl, signal) {
 /* Dahili OCR: görsel desteklemeyen modeller için tesseract.js ile metin okuma.
    Dil verisi ilk kullanımda %APPDATA%\beast\tessdata'ya iner, sonra offline çalışır. */
 const _ocrWorkers = new Map(); // lang -> worker (her çağrıda yeniden init olmasın)
-async function ocrRead({ image, lang = 'tur+eng' } = {}) {
+async function ocrRead({ image, lang = 'tur+eng', boxes = false } = {}) {
   try {
     if (!image) return { ok: false, error: 'görüntü yok' };
     const t = require('tesseract.js');
@@ -4789,15 +4793,60 @@ async function ocrRead({ image, lang = 'tur+eng' } = {}) {
     if (typeof input === 'string' && input.startsWith('data:')) {
       input = Buffer.from(input.split(',')[1] || '', 'base64');
     }
-    const { data } = await worker.recognize(input);
+    const { data } = boxes ? await worker.recognize(input, {}, { blocks: true, text: true }) : await worker.recognize(input);
     const text = String((data && data.text) || '')
       .replace(/[ \t]+\n/g, '\n')
       .replace(/\n{3,}/g, '\n\n')
       .trim();
+    if (boxes) {
+      /* T3SFast bilgisayar döngüsü için satır kutuları: OCR koordinatları
+         1280px görüntü uzayındadır; computer_act bu uzayı bekler. */
+      const lines = [];
+      for (const block of (data && data.blocks) || []) {
+        for (const para of block.paragraphs || []) {
+          for (const ln of para.lines || []) {
+            const bb = (ln && ln.bbox) || {};
+            const label = String((ln && ln.text) || '').replace(/\s+/g, ' ').trim();
+            if (!label || bb.x1 == null) continue;
+            const conf = Number(ln.confidence);
+            if (Number.isFinite(conf) && conf < 45) continue;
+            lines.push({
+              text: label.slice(0, 120),
+              x: Math.round((bb.x0 + bb.x1) / 2),
+              y: Math.round((bb.y0 + bb.y1) / 2),
+              x0: bb.x0,
+              y0: bb.y0,
+              x1: bb.x1,
+              y1: bb.y1,
+              confidence: Math.round(Number.isFinite(conf) ? conf : 0),
+            });
+          }
+        }
+      }
+      return { ok: !!text, chars: text.length, text: text.slice(0, 8000), lines: lines.slice(0, 120), lang: langKey };
+    }
     return { ok: !!text, chars: text.length, text: text.slice(0, 8000), lang: langKey };
   } catch (e) {
     return { ok: false, error: String((e && e.message) || e) };
   }
+}
+
+/* T3SFast bilgisayar gözlemi: ekranı yakala (1280px, lastScreenCapture
+   güncellenir) → OCR satırları + metin. Dönen kutu merkezleri computer_act'in
+   beklediği görüntü koordinatlarıdır. */
+async function screenObserve() {
+  const image = await captureScreenDataUrl();
+  if (!image) return { ok: false, error: 'ekran görüntüsü alınamadı' };
+  const cap = lastScreenCapture || {};
+  const ocr = await ocrRead({ image, boxes: true });
+  if (!ocr.ok) return { ok: false, error: ocr.error || 'OCR başarısız' };
+  return {
+    ok: true,
+    w: cap.imgW || 1280,
+    h: cap.imgH || 720,
+    text: ocr.text,
+    lines: ocr.lines || [],
+  };
 }
 
 /* Dahili tarayıcıyla arama (web_search'ün İLK adımı): gerçek Chromium +
@@ -5125,6 +5174,101 @@ const BROWSER_SNAPSHOT_JS = `(function(){
   return JSON.stringify({count:i,title:document.title,url:location.href,snapshot:lines.join('\\n'),boxes:boxes,vw:window.innerWidth,vh:window.innerHeight});
 })()`;
 
+/* JEV ULTRAFAST GÖZLEMİ: yapılı element tablosu (kind: click/fill/select),
+   rol/ad/değer/seçenek bilgileriyle. Refler window.__beMap'e yazılır — mevcut
+   browser_click/browser_type/browser_select ref çözümüyle BİREBİR uyumludur.
+   Yalnız görünür + viewport içi + enabled elemanlar; scroll/wait sentetik. */
+const BROWSER_OBSERVE_JS = `(function(){
+  if(!document.body) return JSON.stringify({url:location.href,title:document.title,w:innerWidth,h:innerHeight,text:'',scroll:{y:0,height:0},actions:[]});
+  window.__beIds=window.__beIds||new WeakMap();
+  window.__beNext=window.__beNext||0;
+  window.__beMap={};
+  const ids=window.__beIds;
+  const identity=(e)=>{ if(!ids.has(e)) ids.set(e,++window.__beNext); const id=ids.get(e); window.__beMap[id]=e; return id; };
+  const safe=(e)=>!['password','file','hidden'].includes(String(e.type||'').toLowerCase());
+  const visible=(e)=>{ try{ return !e.closest('[aria-hidden="true"],[inert]') && e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true}); }catch(err){ return false; } };
+  const name=(e,seen=new Set())=>{
+    if(!e||seen.has(e)) return '';
+    seen.add(e);
+    const referenced=(e.getAttribute('aria-labelledby')||'').split(/\\s+/).map((id)=>name(document.getElementById(id),seen)).filter(Boolean).join(' ');
+    return referenced || e.getAttribute('aria-label') ||
+      [...(e.labels||[])].map((l)=>name(l,seen)).filter(Boolean).join(' ') ||
+      (['button','submit','reset'].includes(String(e.type||'').toLowerCase()) ? e.value : '') || e.getAttribute('alt') ||
+      (e.tagName==='INPUT' ? '' : [...e.childNodes].map((n)=>n.nodeType===3 ? n.textContent :
+        n.nodeType===1 && n.getAttribute('aria-hidden')!=='true' ? name(n,seen) : '').join(' ').trim()) ||
+      e.getAttribute('title') || e.getAttribute('placeholder') || '';
+  };
+  const roles=['button','link','checkbox','radio','switch','tab','menuitem','menuitemradio',
+    'option','gridcell','combobox','textbox','searchbox','spinbutton'];
+  const selector='a[href],button,input,textarea,select,summary,[contenteditable="true"],'+
+    roles.map((role)=>'[role="'+role+'"]').join(',');
+  const role=(e)=>{
+    const explicit=e.getAttribute('role');
+    if(roles.includes(explicit)) return explicit;
+    if(e.tagName==='BUTTON' || e.tagName==='SUMMARY') return 'button';
+    if(e.tagName==='A') return 'link';
+    if(e.tagName==='SELECT') return 'combobox';
+    if(e.tagName==='TEXTAREA' || e.isContentEditable) return 'textbox';
+    if(e.tagName==='INPUT'){
+      const t=String(e.type||'').toLowerCase();
+      if(t==='checkbox'||t==='radio') return t;
+      if(['button','submit','reset','image'].includes(t)) return 'button';
+      if(t==='search') return 'searchbox';
+      if(t==='number') return 'spinbutton';
+      if(['text','email','url','tel'].includes(t)) return 'textbox';
+    }
+    return null;
+  };
+  const actions=[];
+  for(const e of document.querySelectorAll(selector)){
+    if(actions.length>=300) break;
+    if(!safe(e) || !visible(e) || e.matches(':disabled') || e.closest('[aria-disabled="true"]')) continue;
+    const r=e.getBoundingClientRect(), x=r.x+r.width/2, y=r.y+r.height/2, rname=role(e);
+    if(!rname || r.width<=0 || r.height<=0 || x<0 || y<0 || x>=innerWidth || y>=innerHeight) continue;
+    if(rname==='gridcell' && e.querySelector('button,[role="button"]')) continue;
+    const base={ref:identity(e),role:rname,label:name(e)||rname};
+    for(const key of ['checked','selected','expanded']){
+      const value=e.getAttribute('aria-'+key);
+      if(value!==null) base[key]=value;
+    }
+    const et=String(e.type||'').toLowerCase();
+    if(et==='checkbox'||et==='radio') base.checked=String(e.checked);
+    if(e.tagName==='SELECT'){
+      const current=[...e.selectedOptions].map((o)=>o.label).join(', ');
+      for(const o of e.options){
+        if(o.selected||o.disabled||o.closest('optgroup[disabled]')) continue;
+        actions.push({...base,kind:'select',value:o.value,current_value:current,label:base.label+' → '+o.label});
+      }
+    } else {
+      const editable=!e.readOnly && e.getAttribute('aria-readonly')!=='true' &&
+        (['textbox','searchbox','spinbutton'].includes(rname) ||
+          (rname==='combobox' && ['INPUT','TEXTAREA'].includes(e.tagName)));
+      const value='value' in e ? String(e.value) :
+        e.isContentEditable || rname==='combobox' ? String(e.innerText||'').trim() : '';
+      actions.push({...base,kind:editable?'fill':'click',value});
+      if(editable) actions.push({...base,kind:'click',value,label:'Open '+base.label});
+    }
+  }
+  const words=[], walker=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT);
+  const range=document.createRange(); let node, length=0;
+  while((node=walker.nextNode()) && length<6000){
+    const value=String(node.textContent||'').trim(), parent=node.parentElement;
+    if(!value || !parent || parent.closest('script,style,noscript,template') || !visible(parent)) continue;
+    range.selectNodeContents(node); const tr=range.getBoundingClientRect();
+    if(tr.width>0 && tr.height>0 && tr.bottom>0 && tr.top<innerHeight && tr.right>0 && tr.left<innerWidth){
+      words.push(value); length+=value.length;
+    }
+  }
+  const text=words.join('\\n').slice(0,6000), height=document.documentElement.scrollHeight;
+  const omitted=Math.max(0,actions.length-250);
+  actions.splice(250);
+  if(scrollY+innerHeight<height-2) actions.push({id:'scroll_down',kind:'scroll',label:'Scroll down',delta:560});
+  if(scrollY>0) actions.push({id:'scroll_up',kind:'scroll',label:'Scroll up',delta:-560});
+  actions.push({id:'wait',kind:'wait',label:'Wait for the page to update'});
+  return JSON.stringify({url:location.href,title:document.title,w:innerWidth,h:innerHeight,text:text,
+    scroll:{y:Math.round(scrollY),height:height},actions:actions,omitted_actions:omitted});
+})()`;
+
 function browserActionJs(kind, args) {
   const sel = JSON.stringify(String(args.selector || ''));
   const ref = JSON.stringify(args.ref === undefined ? null : Number(args.ref));
@@ -5291,6 +5435,22 @@ async function browserSnapshot(signal) {
       snapshot: obj.snapshot,
       note: 'eylemlerde ref numarasini kullan (orn: browser_click {ref:3})',
     };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+}
+
+/* Jev döngüsü için yapılı gözlem: elementler (kind/rol/değer/seçenek) + sayfa
+   metni + scroll bilgisi. window.__beMap tazelenir → dönen ref'ler mevcut
+   browser_click/browser_type/browser_select tarafından aynen kullanılabilir. */
+async function browserObserve(signal) {
+  if (!browser.view || !browser.open) return { ok: false, error: 'tarayıcı açık değil' };
+  const wc = browser.view.webContents;
+  const dlgAt = browser.lastDialog ? browser.lastDialog.at : 0;
+  try {
+    const raw = await wc.executeJavaScript(BROWSER_OBSERVE_JS, true);
+    const obj = JSON.parse(raw);
+    return { ok: true, ...obj, ...browserDialogNote(dlgAt) };
   } catch (e) {
     return { ok: false, error: String((e && e.message) || e) };
   }
@@ -7153,21 +7313,28 @@ ipcMain.handle('supermemory:get', () => {
    settings'ten CANLI okur (setConfig kancası) — kaydetmek yeterli. */
 ipcMain.handle('typesafe:get', () => {
   const t = settings.typesafe || {};
-  return { apiKey: t.apiKey ? SECRET_MASK : '', model: t.model || 'jev-latest', set: !!t.apiKey };
+  return { apiKey: t.apiKey ? SECRET_MASK : '', model: t.model || 'jev-latest', enabled: t.enabled !== false, set: !!t.apiKey };
 });
 ipcMain.handle('typesafe:set', (_e, cfg) => {
   try {
     const incomingKey = String((cfg && cfg.apiKey) || '').trim();
     const prevKey = settings.typesafe && settings.typesafe.apiKey ? String(settings.typesafe.apiKey) : '';
+    const prevEnabled = !(settings.typesafe && settings.typesafe.enabled === false);
     settings.typesafe = {
       /* maskeli anahtar geri gelirse mevcut korunur */
       apiKey: incomingKey === SECRET_MASK ? prevKey : incomingKey,
       model: String((cfg && cfg.model) || 'jev-latest').trim() || 'jev-latest',
+      enabled: cfg && typeof cfg.enabled === 'boolean' ? cfg.enabled : prevEnabled,
     };
     saveSettings();
     return {
       ok: true,
-      typesafe: { apiKey: settings.typesafe.apiKey ? SECRET_MASK : '', model: settings.typesafe.model, set: !!settings.typesafe.apiKey },
+      typesafe: {
+        apiKey: settings.typesafe.apiKey ? SECRET_MASK : '',
+        model: settings.typesafe.model,
+        enabled: settings.typesafe.enabled !== false,
+        set: !!settings.typesafe.apiKey,
+      },
     };
   } catch (e) {
     return { ok: false, error: String((e && e.message) || e) };

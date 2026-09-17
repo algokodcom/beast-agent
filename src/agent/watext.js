@@ -42,6 +42,8 @@ const TOOL_LABELS = {
   },
   http_fetch: (a) => `Sayfa: ${a.url || ''}`,
   browser_open: (a) => `Tarayıcı aç: ${a.url || ''}`,
+  browser_agent: (a) => `T3SFast ajan: ${String(a.goal || a.task || '').slice(0, 80)}`,
+  computer_agent: (a) => `T3SFast PC: ${String(a.goal || a.task || '').slice(0, 80)}`,
   browser_click: (a) => `Tıkla: ${a.ref ?? ''}`,
   browser_type: (a) => `Yaz: ${String(a.text || '').slice(0, 60)}`,
   browser_select: (a) => `Seç: ${a.ref ?? ''}`,

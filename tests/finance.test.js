@@ -230,6 +230,13 @@ test('mt5_trade: sembol bazlı lot limiti (mt5_limits symbol) hacmi kelepçeler'
     assert.strictEqual(r2.ok, true);
     assert.strictEqual(r2.opened.volume, 0.02, 'sembol min lotu hacmi yukarı iter');
     calls.length = 0;
+    /* ZAMAN DİLİMİ: ajanın seçtiği periyot emir yorumuna yazılır (kapanışta
+       öğrenme bu periyoda işlenir) */
+    const r3tf = await ftools.handlers.mt5_trade({ symbol: 'XAUUSD', side: 'buy', volume: 0.02, timeframe: 'm15', reason: 'tf testi' });
+    assert.strictEqual(r3tf.ok, true);
+    assert.strictEqual(r3tf.opened.timeframe, 'M15', 'periyot normalize edilir');
+    const marketCall = calls.find((c) => c.method === 'market');
+    assert.match(String(marketCall.params.comment), /^Beast M15/, 'emir yorumu Beast <TF> ile başlar');
     const r3 = await ftools.handlers.mt5_risksize({ symbol: 'XAUUSD', entry: 2000, sl: 1990, riskPct: 1 });
     assert.strictEqual(r3.ok, true);
     assert.strictEqual(r3.maxLot, 0.05);
@@ -241,23 +248,30 @@ test('mt5_trade: sembol bazlı lot limiti (mt5_limits symbol) hacmi kelepçeler'
   }
 });
 
-test('mt5_ogrenme: sembol bazlı ders ekle/listele (API üzerinden)', async () => {
+test('mt5_ogrenme: sembol bazlı ders ekle/listele + timeframe (API üzerinden)', async () => {
   const ftools = require('../src/agent/financetools');
   const store = [];
+  const seen = [];
   ftools.setLearning({
-    list: ({ symbol } = {}) => ({ ok: true, symbol: symbol || '', count: store.length, notes: store.slice() }),
-    add: ({ symbol, text, kind } = {}) => { store.push({ symbol, text, kind }); return { ok: true, id: 'x1', symbol, count: store.length }; },
+    list: ({ symbol, timeframe } = {}) => { seen.push({ op: 'list', symbol, timeframe }); return { ok: true, symbol: symbol || '', count: store.length, notes: store.slice() }; },
+    add: ({ symbol, text, kind, timeframe } = {}) => { store.push({ symbol, text, kind, timeframe }); return { ok: true, id: 'x1', symbol, count: store.length }; },
     remove: () => ({ ok: true, removed: 1 }),
     clear: () => ({ ok: true, removed: store.length }),
-    stats: ({ symbol } = {}) => ({ ok: true, symbol: symbol || '', stats: { trades: 0 } }),
+    stats: ({ symbol, timeframe } = {}) => { seen.push({ op: 'stats', symbol, timeframe }); return { ok: true, symbol: symbol || '', stats: { trades: 0 } }; },
   });
   try {
     const a = await ftools.handlers.mt5_ogrenme({ action: 'add', symbol: 'xauusd', text: 'Londra açılışı momentum işe yarıyor', kind: 'pattern' });
     assert.strictEqual(a.ok, true);
     assert.strictEqual(store[0].symbol, 'XAUUSD', 'sembol normalize edilir');
     assert.strictEqual(store[0].kind, 'pattern');
+    /* ZAMAN DİLİMİ: ders periyoda bağlanır (bot periyodu kendi seçer) */
+    const atm = await ftools.handlers.mt5_ogrenme({ action: 'add', symbol: 'XAUUSD', text: 'M5 teyitsiz kırılımda erken girdim', kind: 'mistake', timeframe: 'm5' });
+    assert.strictEqual(atm.ok, true);
+    assert.strictEqual(store[1].timeframe, 'M5', 'timeframe normalize edilip APIye geçer');
     const l = await ftools.handlers.mt5_ogrenme({ action: 'list', symbol: 'XAUUSD' });
-    assert.strictEqual(l.count, 1);
+    assert.strictEqual(l.count, 2);
+    await ftools.handlers.mt5_ogrenme({ action: 'stats', symbol: 'XAUUSD', timeframe: 'H1' });
+    assert.deepStrictEqual(seen[seen.length - 1], { op: 'stats', symbol: 'XAUUSD', timeframe: 'H1' });
     const noSym = await ftools.handlers.mt5_ogrenme({ action: 'add', text: 'sembolsüz' });
     assert.strictEqual(noSym.ok, false);
     assert.match(String(noSym.error), /symbol/);

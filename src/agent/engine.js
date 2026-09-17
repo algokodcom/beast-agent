@@ -19,6 +19,7 @@ const agentdefs = require('./agentdefs');
 const memory = require('./memory');
 const mem0 = require('./mem0');
 const supermemory = require('./supermemory');
+const typesafe = require('./typesafe');
 const nightref = require('./nightref');
 const skills = require('./skills');
 const mcp = require('./mcp');
@@ -1995,28 +1996,42 @@ class Engine {
         visual:
           'ROL: GÖRSEL ANALİZ AJANI 👁 — grafik/ekran görüntüsü uzmanısın, İşlem AÇMAZSIN (mt5_trade/mt5_pending KULLANMA — yeni işlem AÇMAZSIN; açık pozisyonda kısmi kapatma (mt5_close percent) ve SL/TP güncelleme (mt5_modify) SERBEST). MT5 grafiği için ÖNCE tool__mt5_shot kullan (BeastFinance EA "shot": gerçek grafik PNG + görsel SONRAKİ TURDA gözüne gelir; symbol/timeframe vererek başka sembol/periyot çekebilirsin; dönen path send_file ile gönderilebilir); gerekirse EA panosuna mt5_ea action:"note" ile plan/seviye yaz. ÇOKLU SEMBOL: symbols:["GOLD","EURUSD","BTCUSD"] ile izleme listesindeki tüm semboller TEK çağrıda çekilip etiketli TEK PNG\'de birleştirilir — ayrı ayrı 3 DM atmak yerine bu birleşik görseli gönder. web grafiklerinde browser_open + browser_screenshot; bilgisayar ekranı için computer_look; görsel göremeyen metin-model isen ocr_read (source:"screen"/"browser") kullan. Gördüğün yapıyı yorumla: trend, formasyon, mum yapısı, destek-direnç ve SL/TP çizgileri; sembol başına GÖRSEL TEYİT + AL/SAT/BEKLE notu üret. Önemli bulguyu GÖRSELİYLE paylaş: agent_dm image:true (son ekran görüntün) ya da image:"<mt5_shot path>" ile ANA TRADER\'a/ekibe gönder — karşı ajan görüntüyü GERÇEKTEN görür, AJAN DM panelinde açılır. NOT: image:true DAİMA oturumdaki EN SON görseli yollar — her sembolün fotoğrafını ayrı göndermen gerekirse dönen path\'leri kullan (image:"<path>").',
       })[String((session && session.financeRole) || '')] || '';
-    /* ROL → SKILL eşleştirmesi (ayarlar modalı): rol başına TEK ve ZORUNLU
-       skill; ANA TRADER için ayrıca PLAYBOOK skill'i (roleSkills.trader).
-       Seçili SKILL.md'nin TAM GÖVDESİ prompta gömülür — ajan skill aracını
+    /* ROL → SKILL eşleştirmesi (ayarlar modalı): rol başına EN FAZLA 2 skill;
+       ANA TRADER için ayrıca PLAYBOOK skill'leri (roleSkills.trader).
+       Seçili SKILL.md'lerin TAM GÖVDESİ prompta gömülür — ajan skill aracını
        çağırmayı atlasa bile prosedür KESİN uygulanır. */
     const roleSkills = Array.isArray(session && session.financeRoleSkills)
-      ? session.financeRoleSkills.map((s) => String(s || '').trim()).filter(Boolean).slice(0, 1)
+      ? session.financeRoleSkills.map((s) => String(s || '').trim()).filter(Boolean).slice(0, 2)
       : [];
     let roleSkillBlock = '';
     if (roleSkills.length) {
-      const roleSkillName = roleSkills[0];
-      const sb = this._skillBody({ name: roleSkillName });
       const what = roleBlock
         ? 'Bu rolün ZORUNLU skill\'i'
         : session && session.financePlaybook
           ? 'TRADER PLAYBOOK\'un (ZORUNLU skill)'
           : 'BU OTURUMUN ZORUNLU skill\'i';
-      roleSkillBlock =
-        ` ${what}: skill("${roleSkillName}")` +
-        (sb && sb.ok && sb.content
-          ? ' — aşağıda TAM prosedürü verilmiştir; HER TURDA birebir uygula (ayrıca okumana gerek yok):\n\n' +
-            `===== SKILL: ${roleSkillName} =====\n${sb.content}\n===== /SKILL =====`
-          : ' — ilk turda bu skill\'i mutlaka oku ve prosedürüne birebir uy.');
+      for (const roleSkillName of roleSkills) {
+        const sb = this._skillBody({ name: roleSkillName });
+        roleSkillBlock +=
+          ` ${what}: skill("${roleSkillName}")` +
+          (sb && sb.ok && sb.content
+            ? ' — aşağıda TAM prosedürü verilmiştir; HER TURDA birebir uygula (ayrıca okumana gerek yok):\n\n' +
+              `===== SKILL: ${roleSkillName} =====\n${sb.content}\n===== /SKILL =====`
+            : ' — ilk turda bu skill\'i mutlaka oku ve prosedürüne birebir uy.') +
+          '\n';
+      }
+    }
+    /* TYPESAFE ENTEGRASYONU: roleSkills'te "typesafe-ai" seçiliyse ajan tipli
+       kararlarını chat modeline yazdırmak yerine typesafe_decision aracıyla
+       TypeSafe System One'dan (Jev) alır — anahtar yoksa uyarır. */
+    const finTypeSkill = roleSkills.find((s) => s.toLowerCase() === 'typesafe-ai');
+    if (finTypeSkill) {
+      let tsReady = false;
+      try { tsReady = !!typesafe.cfg().apiKey; } catch {}
+      roleSkillBlock +=
+        tsReady
+          ? ' TYPESAFE (typesafe-ai skill) ZORUNLU: semantik/olasılıklı yargılarını (haber-makro etkisi, setup kalitesi, yön/aksiyon seçimi, tez doğrulama) chat modeline metin yazdırıp yorumlamak yerine typesafe_decision aracıyla TypeSafe System One\'a (Jev) sor: state içine tüm somut bağlamı (sembol, fiyat/seviye, haber metni, pozisyon) koy; aynı state üzerindeki bağımsız soruları TEK çağrıda birlikte sor (noul: evet olasılığı, choice: seçenek+dağılım, score: ağırlıklı puan+dağılım). Dönen olasılıkları eşikle yorumla (ör. >0.65 güçlü kanaat, 0.35-0.65 belirsiz → temkinli davran/teyit ara) ve kararının gerekçesine sayısal değerleri yaz. TypeSafe yargısı SENİN yerine karar vermez — nihai karar ve risk yönetimi sende.\n'
+          : ' TYPESAFE (typesafe-ai skill) SEÇİLİ ama API anahtarı ayarlı DEĞİL: kullanıcıya Ayarlar → TypeSafe sekmesinden anahtar girmesini söyle; o zamana kadar bu turda kendi analizinle devam et ve typesafe_decision aracını kullanma.\n';
     }
     const roleBlockFull = roleBlock + roleSkillBlock;
     /* FİNANS EKİBİ: tüm finance ajanları tek DM grubundadır — sohbet grup
@@ -2032,7 +2047,7 @@ class Engine {
       modeBlock2 + '\n' +
       (roleBlockFull ? roleBlockFull + '\n' : '') +
       (teamLine || '') +
-      'MT5 ARAÇLARI: mt5_status (bağlantı), mt5_account (hesap), mt5_market (canlı fiyat), mt5_positions (açık pozisyonlar), mt5_orders (bekleyen emirler), mt5_history (kapanan işlemler), mt5_alerts (fiyat alarmı: kur/listele/sil — modu SEN seçersin: once/repeat), mt5_ogrenme (SEMBOL BAZLI ÖĞRENME: işlem istatistiği + dersler — yalnız gerçekten öğretici kısa içgörüyü yaz, karar öncesi oku), mt5_limits (lot/pozisyon limitlerini gör/GÜNCELLE — yalnız trader; symbol ile SEMBOL BAZLI min/max lot — sembolün karakterine göre karar senin), mt5_ea (BeastFinance grafik panosu: status/ping/chart/note), mt5_trade (⚡PİYASA EMRİ: side:"buy"|"sell" ile ANLIK gir — bekleyen emir ZORUNLU DEĞİL; lot için volume yerine riskPct+sl ver, sistem hesaplar; limit/stop tipleri de kabul eder), mt5_close (TAM ya da KISMİ kapat: percent ile kısmi TP & kısmi stop — karar ajanın), mt5_modify (SL/TP), mt5_pending (BEKLEYEN emir: limit/stop + price — fiyatın seviyeye gelmesini beklemek için; anlık giriş için mt5_trade kullan), mt5_cancel (emir iptal).\n' +
+      'MT5 ARAÇLARI: mt5_status (bağlantı), mt5_account (hesap), mt5_market (canlı fiyat), mt5_positions (açık pozisyonlar), mt5_orders (bekleyen emirler), mt5_history (kapanan işlemler), mt5_alerts (fiyat alarmı: kur/listele/sil — modu SEN seçersin: once/repeat), mt5_ogrenme (SEMBOL + PERİYOT BAZLI ÖĞRENME: işlem istatistiği + periyot kırılımı + son hatalar + dersler — zarar/stop sonrası kind:"mistake" dersini ZORUNLU yaz, karar öncesi stats/list ile oku), mt5_limits (lot/pozisyon limitlerini gör/GÜNCELLE — yalnız trader; symbol ile SEMBOL BAZLI min/max lot — sembolün karakterine göre karar senin), mt5_ea (BeastFinance grafik panosu: status/ping/chart/note), mt5_trade (⚡PİYASA EMRİ: side:"buy"|"sell" ile ANLIK gir — bekleyen emir ZORUNLU DEĞİL; timeframe ver (M1..MN1, SEN seçersin — öğrenme o periyoda işlenir); lot için volume yerine riskPct+sl ver, sistem hesaplar; limit/stop tipleri de kabul eder), mt5_close (TAM ya da KISMİ kapat: percent ile kısmi TP & kısmi stop — karar ajanın), mt5_modify (SL/TP), mt5_pending (BEKLEYEN emir: limit/stop + price + timeframe — fiyatın seviyeye gelmesini beklemek için; anlık giriş için mt5_trade kullan), mt5_cancel (emir iptal).\n' +
       'EMİR TİPLERİ (6 tip — HEPSİ AÇIK): buy_market/sell_market = anlık piyasa emri (fiyat beklenmez), buy_limit/sell_limit = bekleyen limit (price zorunlu), buy_stop/sell_stop = bekleyen stop (price zorunlu). mt5_trade ve mt5_pending İKİSİ DE 6 tipi kabul eder; emir tipini net söyle (ör. type:"sell_limit").\n' +
       '⚡HIZLI AKSİYON (ZORUNLU ZİHNİYET): piyasa emri (market buy/sell) HER ZAMAN elinde ve bekleyen emir vermek ZORUNDA DEĞİLSİN. Fırsat anıksa / teyitli kırılım, momentum, haber veya seviye reddi anında mt5_trade {symbol, side:"buy"|"sell", sl, tp, riskPct ya da volume, reason} ile ANINDA market gir — type bile yazmana gerek yok. Bekleyen emir YALNIZ fiyatın seviyeye gelmesini beklemek gerçekten mantıklıysa kurulur (ör. geri çekilme limiti); "emir" diye her şeyi bekleyen emirle yapma. Hızlı girişte tek çağrı yeter: volume yerine riskPct+sl ver → lot otomatik hesaplanır.\n' +
       'ALARM KARARI SENDE: mt5_alerts ile alarm kurarken mode ZORUNLU — "once" (tek seferlik; ilk tetiklemede kapanır) ya da "repeat" (tekrarlı; alarm açık kalır, koşul sürdükçe cooldownMin dakikada bir tekrar uyarır + seni uyandırır; cooldownMin varsayılan 5). Tekrarlı mı tek seferlik mi olacağını sen seç, varsayılana bırakma; seviyenin önemine göre cooldownMin belirle (ör. 5/15/60).\n' +
@@ -2082,8 +2097,9 @@ class Engine {
       '- Martingale/kademeli lot artışı YASAK; kaybı geri kovalama (revenge trade) YASAK.\n' +
       '- Emin olmadığında İŞLEM YOK — "BEKLE: <sebep>" yaz. Sık işlem tek başına iyi işlem değil; ama onaylı fırsatta HIZLI gir, kârı hızlı topla.\n' +
       '- LOT KORKUSU YOK — önemli olan LOT DEĞİL, STOP YERİ ve risktir: SL yakın ve setup netse yüksek lot NORMALDİR (boyut zaten risk % + SL mesafesinden hesaplanır; sembol tavanı trader kararıdır). Tek işlemde serbest marjın tamamını riske atma; sık işlem için lotu değil, TUR RİTMİNİ (mt5_limits intervalSec) ve kısmi kâr alımını kullan.\n' +
-      (session && session.financeLearn ? `SEMBOL BAZLI ÖĞRENME HAFIZAN (otomatik istatistik + kendi derslerin — kararlarında kullan):\n${session.financeLearn}\n` : '') +
-      'ÖĞRENME DÖNGÜSÜ (SEÇİCİ — ders çıkarmak zorunlu DEĞİL): yalnız GERÇEKTEN öğrenilmiş, tekrar kullanılabilir, kanıtlı bir içgörü varsa tek KISA cümleyle kaydet: mt5_ogrenme {action:"add", symbol, text, kind}. İyi ders: "XAUUSD M5 EMA50 üstü Londra açılışı momentumu 3/4 işledi" gibi somut, sebep-sonuç içeren, en fazla ~20 kelimelik cümle. YASAK: her kapanışa ders yazmak, günlük/rapor tarzı uzun metin ("bugün şunu yaptım"), genel laf ("dikkatli olmalıyım"), tekrar. Emin değilsen HİÇ ders yazma — hafızayı çöple doldurma; günde en fazla 2-3 ders. Yeni karar öncesi mt5_ogrenme {action:"stats", symbol} ya da list ile o sembolün geçmişini oku (kalıcı özet + son dersler) — aynı hatayı tekrarlama, işleyen deseni kullan. Hafıza kendini sadeleştirir: eski dersler otomatik özetlenir ve süresi geçenler unutulur; gerekirse mt5_ogrenme {action:"compact", symbol} ile hemen özetlet, geçersiz dersi remove/clear ile sil.\n' +
+      'ZAMAN DİLİMİ SENİN KARARIN (BOT KARARI): işlemi hangi periyodun analizine dayandırdıysan mt5_trade/mt5_pending çağrısında timeframe ver (M1|M5|M15|M30|H1|H4|D1|W1|MN1). Kapanış otomatik o periyoda işlenir; aynı sembolde hangi periyot kazandırıyorsa onu kullan, NEGATİF periyotta riski düşür ya da teyit bekle. Hiçbir sabit periyoda bağlı kalma — istatistik neyi söylüyorsa onu seç.\n' +
+      (session && session.financeLearn ? `SEMBOL BAZLI ÖĞRENME HAFIZAN (otomatik istatistik + periyot kırılımı + son hatalar + kendi derslerin — kararlarında kullan):\n${session.financeLearn}\n` : '') +
+      'ÖĞRENME DÖNGÜSÜ (ZORUNLU KISIM: zarardan ders): ZARAR/STOP ile kapanan her işlemden sonra mt5_ogrenme {action:"add", symbol, timeframe, kind:"mistake", text:"yanlış neydi + bundan sonra kaçınma kuralı"} ile hatayı MUTLAKA yaz — bu ders bir sonraki turların karar girdisine girer (tek kısa cümle, sebep-sonuç; ör. "M5 destek kırılımında teyitsiz girdim; kapanış teyidi beklemeliydim"). İşe yarayan deseni ise kind:"pattern" ile yaz (her kapanışa ders değil; günde en fazla 2-3). YASAK: günlük/rapor tarzı uzun metin ("bugün şunu yaptım"), genel laf ("dikkatli olmalıyım"), aynı dersin tekrarı. Karar öncesi mt5_ogrenme {action:"stats"|"list", symbol, timeframe?} ile periyot istatistiğini ve son hataları oku; TEKRAR EDEN HATA uyarısı varsa o periyotta riski düşür/teyit ara; aynı hatayı tekrarlama, işleyen deseni kullan. Hafıza kendini sadeleştirir: eski dersler otomatik özetlenir ve süresi geçenler unutulur; gerekirse mt5_ogrenme {action:"compact", symbol} ile hemen özetlet, geçersiz dersi remove/clear ile sil.\n' +
       (session && session.financeStrategy ? `SAHİBİNİN STRATEJİ NOTU (önceliklidir):\n${session.financeStrategy}\n` : '') +
       (session && session.financeShadow ? 'SHADOW MOD AKTİF: mt5_trade/mt5_pending emir GÖNDERMEZ — kararını teziyle raporla; gerçek işlem açılmaz (karar günlüğe yazılır).\n' : '') +
       (session && session.financeDigest ? `İŞLEM PERFORMANS GEÇMİŞİN (kendi kayıtların — kararlarında ders çıkar):\n${session.financeDigest}\n` : '') +
@@ -5976,7 +5992,8 @@ const skills = require('./skills');
       if (
         !(name === 'run_command' || name === 'read_file' || name === 'write_file' || name === 'edit_file' ||
           name === 'list_dir' || name === 'grep' || name === 'glob' ||
-          name === 'web_search' || name === 'http_fetch' || name === 'webfetch' || name === 'python_run') &&
+          name === 'web_search' || name === 'http_fetch' || name === 'webfetch' || name === 'python_run' ||
+          name === 'typesafe_decision') &&
         !FINANCE_TOOL_SET.has(name)
       ) {
         return JSON.stringify({ ok: false, error: `unknown tool ${name}` });

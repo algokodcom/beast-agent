@@ -13,6 +13,7 @@ const searxng = require('./searxng');
 const gittools = require('./gittools');
 const repomap = require('./repomap');
 const xlsxtools = require('./xlsxtools');
+const typesafe = require('./typesafe');
 let financetools = null;
 try { financetools = require('./financetools'); } catch {}
 
@@ -1793,11 +1794,12 @@ function readCacheDrop(abs) {
 }
 
 const definitions = [
-  /* yerleşik modül araçları: git, repo haritası, excel, finance (MT5) */
+  /* yerleşik modül araçları: git, repo haritası, excel, finance (MT5), TypeSafe */
   ...gittools.definitions,
   ...repomap.definitions,
   ...xlsxtools.definitions,
   ...(financetools ? financetools.definitions : []),
+  ...typesafe.definitions,
   {
     type: 'function',
     function: {
@@ -2080,11 +2082,12 @@ const definitions = [
 
 async function exec(name, args, ctx) {
   const cwd = ctx.cwd;
-  /* modül araçları: gittools / repomap / xlsxtools / financetools — kendi handler'larında */
+  /* modül araçları: gittools / repomap / xlsxtools / financetools / typesafe — kendi handler'larında */
   const modHandler =
     gittools.handlers[name] ||
     repomap.handlers[name] ||
     xlsxtools.handlers[name] ||
+    typesafe.handlers[name] ||
     (financetools && financetools.handlers[name]);
   if (modHandler) {
     try {

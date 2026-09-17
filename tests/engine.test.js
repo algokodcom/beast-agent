@@ -147,19 +147,21 @@ test('finance: sistem promptu SKILLS kataloğunu içerir', () => {
   assert.ok(names.includes('tool-yazma'), 'tool-yazma skill varsayılan tohum olmalı');
   assert.ok(names.includes('mql5'), 'mql5 skill varsayılan tohum olmalı');
   assert.ok(names.includes('price-action') && names.includes('risk-yonetimi') && names.includes('haber-duygu'), 'finans skill tohumları kurulu olmalı');
-  /* rol → skill eşleştirmesi prompta gömülür: rol başına TEK ve ZORUNLU skill
-     (modal tek seçim yazar; eski çoklu dizide yalnız ilk isim kullanılır) */
+  assert.ok(names.includes('typesafe-ai'), 'typesafe-ai skill varsayılan tohum olmalı (rol eşleştirmesinde seçilebilir)');
+  /* rol → skill eşleştirmesi prompta gömülür: rol başına EN FAZLA 2 skill
+     (modal çoklu seçim yazar; fazlası düşer) */
   const s2 = eng._load(eng.createSession().id);
   s2.finance = true;
   s2.financeRole = 'technic';
-  s2.financeRoleSkills = ['price-action', 'ozel-skill'];
+  s2.financeRoleSkills = ['price-action', 'ozel-skill', 'ucuncu-skill'];
   const sys2 = eng.buildFinanceSystem(s2);
   assert.ok(sys2.includes('skill("price-action")'));
+  assert.ok(sys2.includes('skill("ozel-skill")'));
   assert.ok(sys2.includes('ZORUNLU skill'));
   /* seçili skill'in TAM GÖVDESİ prompta gömülür — ajan atlayamaz */
   assert.ok(sys2.includes('===== SKILL: price-action ====='), 'skill tam metni prompta gömülü olmalı');
   assert.ok(sys2.includes('===== /SKILL ====='), 'skill bloğu kapanmalı');
-  assert.ok(!sys2.includes('ozel-skill'), 'rol başına yalnız TEK skill prompta girer');
+  assert.ok(!sys2.includes('ucuncu-skill'), 'rol başına en fazla 2 skill prompta girer');
   /* eşleştirme BOŞSA (varsayılan) zorunlu skill satırı eklenmez — AI seçer */
   const s3 = eng._load(eng.createSession().id);
   s3.finance = true;
@@ -175,12 +177,13 @@ test('finance: trader playbook + işlem geçmişi digest prompta gömülür', ()
   s.finance = true;
   s.financeTrader = true;
   s.financePlaybook = true;
-  s.financeRoleSkills = ['price-action', 'yedek-skill'];
+  s.financeRoleSkills = ['price-action', 'yedek-skill', 'ucuncu-skill'];
   s.financeDigest = 'Bugün: 3 açılış · net -2.40\nDİKKAT: 2 ardışık kayıp';
   const sys = eng.buildFinanceSystem(s);
   assert.ok(sys.includes('TRADER PLAYBOOK'), 'playbook etiketi görünmeli');
   assert.ok(sys.includes('===== SKILL: price-action ====='), 'playbook tam metni gömülmeli');
-  assert.ok(!sys.includes('yedek-skill'), 'tek skill kuralı trader için de geçerli');
+  assert.ok(sys.includes('yedek-skill'), 'ikinci skill de prompta girer');
+  assert.ok(!sys.includes('ucuncu-skill'), 'en fazla 2 skill kuralı trader için de geçerli');
   assert.ok(sys.includes('İŞLEM PERFORMANS GEÇMİŞİN'), 'geri bildirim digest bloğu olmalı');
   assert.ok(sys.includes('net -2.40'));
   /* SHADOW modu promptta açıkça bildirilir */
@@ -195,6 +198,36 @@ test('finance: trader playbook + işlem geçmişi digest prompta gömülür', ()
   const sysW = eng.buildFinanceSystem(w);
   assert.ok(!sysW.includes('TRADER PLAYBOOK'));
   assert.ok(!sysW.includes('Bu rolün ZORUNLU'));
+});
+
+test('finance: zaman dilimi seçimi + hata dersi disiplini promptta', () => {
+  const eng = makeEngine();
+  const s = eng._load(eng.createSession().id);
+  s.finance = true;
+  s.financeTrader = true;
+  const sys = eng.buildFinanceSystem(s);
+  assert.ok(sys.includes('ZAMAN DİLİMİ SENİN KARARIN'), 'periyodu bot seçer kuralı promptta olmalı');
+  assert.ok(sys.includes('timeframe ver'), 'işlem açarken timeframe verilmesi istenmeli');
+  assert.ok(sys.includes('kind:"mistake"'), 'zarar sonrası hata dersi (kind:"mistake") kuralı olmalı');
+  assert.ok(sys.includes('TEKRAR EDEN HATA') || sys.includes('aynı hatayı tekrarlama'), 'hatadan ders çıkarma kuralı olmalı');
+});
+
+test('finance: typesafe-ai skill seçilince TypeSafe kullanım bloğu prompta girer', () => {  const eng = makeEngine();
+  const s = eng._load(eng.createSession().id);
+  s.finance = true;
+  s.financeRole = 'technic';
+  s.financeRoleSkills = ['typesafe-ai'];
+  const sys = eng.buildFinanceSystem(s);
+  assert.ok(sys.includes('skill("typesafe-ai")'), 'skill adı promptta olmalı');
+  assert.ok(sys.includes('typesafe_decision'), 'TypeSafe aracı anlatılmalı');
+  assert.ok(sys.includes('TYPESAFE'), 'TypeSafe entegrasyon bloğu gömülmeli');
+  /* seçilmeyen oturumda blok çıkmaz */
+  const s2 = eng._load(eng.createSession().id);
+  s2.finance = true;
+  s2.financeRole = 'technic';
+  s2.financeRoleSkills = ['price-action'];
+  const sys2 = eng.buildFinanceSystem(s2);
+  assert.ok(!sys2.includes('TYPESAFE (typesafe-ai skill)'), 'seçilmeyen rolde TypeSafe entegrasyon bloğu çıkmaz');
 });
 
 /* ---------- payload tool-çifti hizalama (HTTP 400 emniyeti) ---------- */

@@ -1369,6 +1369,7 @@ async function renderActiveSettingsTab() {
     case 'email': await renderEmailPane(); break;
     case 'integrations': await renderIntegrationsPane(); break;
     case 'websearch': await renderWebSearchPane(); break;
+    case 'typesafe': await renderTypesafePane(); break;
     case 'mcp': await renderMcpPane(); break;
     case 'events': await renderEventsPane(); break;
     case 'empati': await renderEmpatiPane(); break;
@@ -1459,7 +1460,7 @@ function switchTab(name) {
   document.querySelectorAll('#setTabs .tab').forEach((b) =>
     b.classList.toggle('active', b.dataset.tab === name)
   );
-    for (const p of ['lang', 'provider', 'fallout', 'skills', 'agents', 'tts', 'install', 'email', 'integrations', 'websearch', 'mcp', 'events', 'empati', 'cron', 'agenda', 'usage', 'squeeze', 'logs', 'dash', 'sec', 'update']) {
+    for (const p of ['lang', 'provider', 'fallout', 'skills', 'agents', 'tts', 'install', 'email', 'integrations', 'websearch', 'typesafe', 'mcp', 'events', 'empati', 'cron', 'agenda', 'usage', 'squeeze', 'logs', 'dash', 'sec', 'update']) {
     const el = $('#tab-' + p);
     if (el) el.hidden = p !== name; // guard: eksik pane tüm sekmeleri kilitlemesin
   }
@@ -1478,6 +1479,7 @@ function switchTab(name) {
   if (name === 'update') renderUpdatePane(true);
   if (name === 'agents') refreshAgentsPane();
   if (name === 'websearch') renderWebSearchPane();
+  if (name === 'typesafe') renderTypesafePane();
   if (name === 'mcp') renderMcpPane();
   /* Fallout: her açılışta güncel provider zincirini çek */
   if (name === 'fallout') refreshFalloutPane();
@@ -1677,6 +1679,65 @@ async function renderWebSearchPane() {
     $('#tfKeyInp').value = '';
     setTfSt({ set: false, masked: '' });
     toast(_t('tf_cleared_toast'));
+  });
+}
+
+/* TypeSafe sekmesi (System One / Jev): API anahtarı + model + bağlantı testi.
+   Anahtar kayıtlıysa ajanlar typesafe_decision aracıyla tipli kararlar alır;
+   Beast Finance rol→skill eşleştirmesinde "typesafe-ai" seçilirse kullanılır. */
+async function renderTypesafePane() {
+  const pane = $('#tab-typesafe');
+  if (!pane) return;
+  const ts = await beast.typesafeGet().catch(() => ({ set: false, apiKey: '', model: 'jev-latest' }));
+  pane.innerHTML =
+    '<h2>' + _t('ts_h2') + '</h2>' +
+    '<div class="sub">' + _t('ts_sub') + '</div>' +
+    '<div id="tsStatus" class="sub" style="text-align:left;margin-top:8px"></div>' +
+    '<label class="mem-label">' + _t('ts_key_label') + '</label>' +
+    '<input id="tsKeyInp" class="inp" type="password" placeholder="ts_..." autocomplete="new-password" spellcheck="false" />' +
+    '<label class="mem-label" style="margin-top:10px">' + _t('ts_model_label') + '</label>' +
+    '<input id="tsModelInp" class="inp" type="text" placeholder="jev-latest" spellcheck="false" />' +
+    '<div class="form-grid" style="grid-template-columns:auto auto auto;gap:8px;margin-top:10px">' +
+    '<button id="tsSave" class="btn">' + _t('ts_save') + '</button>' +
+    '<button id="tsTest" class="btn ghost">' + _t('ts_test') + '</button>' +
+    '<button id="tsClear" class="btn ghost">' + _t('ts_clear') + '</button></div>' +
+    '<div class="sub" style="margin-top:10px">' + _t('ts_hint') + '</div>';
+  const tsSt = $('#tsStatus');
+  const tsModel = $('#tsModelInp');
+  tsModel.value = ts.model || 'jev-latest';
+  const setTsSt = (r) => {
+    tsSt.textContent = r.set ? _t('ts_status_set') + r.model : _t('ts_status_unset');
+  };
+  setTsSt(ts);
+  const tsTest = $('#tsTest');
+  const runTest = async () => {
+    tsTest.disabled = true;
+    const old = tsTest.textContent;
+    tsTest.textContent = _t('ts_testing');
+    const r = await beast.typesafeTest({ apiKey: $('#tsKeyInp').value.trim(), model: tsModel.value.trim() }).catch(() => null);
+    tsTest.disabled = false;
+    tsTest.textContent = old;
+    if (r && r.ok) toast(_t('ts_test_ok') + (r.model || ''));
+    else toast(_t('ts_test_fail') + ((r && r.error) || '?'));
+  };
+  tsTest.addEventListener('click', runTest);
+  $('#tsSave').addEventListener('click', async () => {
+    const v = $('#tsKeyInp').value.trim();
+    if (!v) { toast(_t('ts_empty_toast')); return; }
+    const rr = await beast.typesafeSet({ apiKey: v, model: tsModel.value.trim() }).catch(() => null);
+    $('#tsKeyInp').value = '';
+    if (rr && rr.ok) {
+      setTsSt(rr.typesafe || {});
+      toast(_t('ts_saved_toast'));
+    } else {
+      toast(_t('ts_fail_toast'));
+    }
+  });
+  $('#tsClear').addEventListener('click', async () => {
+    await beast.typesafeSet({ apiKey: '', model: tsModel.value.trim() }).catch(() => {});
+    $('#tsKeyInp').value = '';
+    setTsSt({ set: false, model: tsModel.value.trim() || 'jev-latest' });
+    toast(_t('ts_cleared_toast'));
   });
 }
 
@@ -10954,8 +11015,9 @@ function finSymPickerClose() {
 
 /* ---------- ROL → SKILL eşleştirme modalı ----------
    Roller sunucudan (snapshot.roles), skill listesi KURULU katalogdan gelir —
-   yeni skill eklendiğinde modalda otomatik görünür. Seçim finance ayarına
-   (roleSkills) yazılır; rol ajanı her turda o skill'leri okumakla yükümlüdür. */
+   yeni skill eklendiğinde modalda otomatik görünür. Rol başına EN FAZLA 2
+   skill seçilir; seçim finance ayarına (roleSkills) yazılır; rol ajanı her
+   turda o skill'leri okumakla yükümlüdür (ör. price-action + typesafe-ai). */
 let finSkillNames = [];
 
 async function finSkillsOpen() {
@@ -10976,7 +11038,7 @@ function finRenderSkills() {
   if (!box) return;
   const cfg = finCfgCache || {};
   const map = cfg.roleSkills && typeof cfg.roleSkills === 'object' ? cfg.roleSkills : {};
-  /* ANA KARAR VERİCİ (trader) da bir satır: playbook skill'i zorunlu tek seçim */
+  /* ANA KARAR VERİCİ (trader) da bir satır: playbook skill'leri (en fazla 2) */
   const roles = [
     { id: 'trader', label: 'TRADER (Ana Karar Verici)', desc: 'playbook: hangi setup\'lar serbest, giriş/çıkış/iptal kuralları, seans ve risk disiplini — asıl karar vericinin skill\'i (boş = ajan kendi seçer)' },
   ].concat(Array.isArray(finRolesCatalog) ? finRolesCatalog : []);
@@ -10997,22 +11059,21 @@ function finRenderSkills() {
     head.innerHTML =
       '<b>' + escapeHtml(String(r.label || r.id)) + '</b>' +
       '<span>' + escapeHtml(String(r.desc || '').slice(0, 110)) + '</span>';
-    const cur = Array.isArray(map[r.id]) ? map[r.id].map((x) => String(x || '').trim()).filter(Boolean) : [];
-    const active = cur.length ? cur[0] : '';
-    /* ÇÖP: rolün skill atamasını kaldır — boş bırakmak da geçerli bir seçim
-       (o zaman ajan skill'i göreve göre SKILLS kataloğundan kendi seçer) */
+    const cur = Array.isArray(map[r.id]) ? map[r.id].map((x) => String(x || '').trim()).filter(Boolean).slice(0, 2) : [];
+    /* ÇÖP: rolün TÜM skill atamasını kaldır — boş bırakmak da geçerli bir
+       seçim (o zaman ajan skill'i göreve göre SKILLS kataloğundan kendi seçer) */
     const clearBtn = document.createElement('button');
     clearBtn.type = 'button';
     clearBtn.className = 'fin-skill-clear';
-    clearBtn.title = active
-      ? 'Skill atamasını kaldır (' + active + ') — boş kalırsa ajan göreve göre kendi seçer'
+    clearBtn.title = cur.length
+      ? 'Skill atamalarını kaldır (' + cur.join(', ') + ') — boş kalırsa ajan göreve göre kendi seçer'
       : 'Atama yok — boş bırakılabilir';
     clearBtn.innerHTML =
       '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px"><path d="M3 6h18"/><path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>';
     clearBtn.addEventListener('click', (e) => {
       e.preventDefault();
       e.stopPropagation();
-      const was = active;
+      const was = cur.join(', ');
       finCfgCache = finCfgCache || {};
       finCfgCache.roleSkills = finCfgCache.roleSkills || {};
       finCfgCache.roleSkills[r.id] = [];
@@ -11023,38 +11084,64 @@ function finRenderSkills() {
       finRenderSkills();
     });
     head.appendChild(clearBtn);
-    if (!active) {
+    if (!cur.length) {
       const warn = document.createElement('span');
       warn.className = 'fin-skill-req';
       warn.textContent = 'atama yok — ajan göreve göre kendi seçer';
       head.appendChild(warn);
+    } else if (cur.length > 1) {
+      const cnt = document.createElement('span');
+      cnt.className = 'fin-skill-req';
+      cnt.textContent = cur.length + '/2 skill';
+      head.appendChild(cnt);
     }
     row.appendChild(head);
     const chips = document.createElement('div');
     chips.className = 'fin-skill-chips';
     for (const s of finSkillNames) {
-      const on = active === s.name;
+      const on = cur.includes(s.name);
       const chip = document.createElement('label');
       chip.className = 'fin-skill-chip' + (on ? ' on' : '');
       chip.title = s.description || s.name;
       const cb = document.createElement('input');
-      cb.type = 'radio';
-      cb.name = 'fin-skill-role-' + r.id;
+      cb.type = 'checkbox';
       cb.checked = on;
-      /* TEK seçim: yeni skill seçilir; kaldırmak için çöp ikonu kullanılır */
+      /* EN FAZLA 2 seçim: yeni skill işaretlenir, sınır aşılırsa uyarır;
+         kaldırmak için işaret kaldırılır ya da çöp ikonu kullanılır */
       cb.addEventListener('change', () => {
-        if (!cb.checked) return;
-        const next = [s.name];
-        /* yerel önbelleğe anında yaz — 3 sn'lik snapshot eski değeri geri getirmesin */
         finCfgCache = finCfgCache || {};
         finCfgCache.roleSkills = finCfgCache.roleSkills || {};
+        const curNow = (Array.isArray(finCfgCache.roleSkills[r.id]) ? finCfgCache.roleSkills[r.id] : []).map((x) => String(x || '').trim()).filter(Boolean);
+        let next;
+        if (cb.checked) {
+          if (curNow.length >= 2) {
+            cb.checked = false;
+            toast((r.label || r.id) + ' → en fazla 2 skill; önce birini kaldır');
+            return;
+          }
+          next = [...curNow, s.name];
+        } else {
+          next = curNow.filter((x) => x !== s.name);
+        }
+        next = next.slice(0, 2);
+        /* yerel önbelleğe anında yaz — 3 sn'lik snapshot eski değeri geri getirmesin */
         finCfgCache.roleSkills[r.id] = next;
-        chips.querySelectorAll('.fin-skill-chip').forEach((el) => el.classList.remove('on'));
-        chip.classList.add('on');
+        chip.classList.toggle('on', next.includes(s.name));
         const w = head.querySelector('.fin-skill-req');
         if (w) w.remove();
+        if (!next.length) {
+          const warn = document.createElement('span');
+          warn.className = 'fin-skill-req';
+          warn.textContent = 'atama yok — ajan göreve göre kendi seçer';
+          head.appendChild(warn);
+        } else if (next.length > 1) {
+          const cnt = document.createElement('span');
+          cnt.className = 'fin-skill-req';
+          cnt.textContent = next.length + '/2 skill';
+          head.appendChild(cnt);
+        }
         finSaveCfg({ roleSkills: { [r.id]: next } });
-        toast((r.label || r.id) + ' → ' + s.name + ' (tek skill)');
+        toast((r.label || r.id) + ' → ' + (next.length ? next.join(' + ') : 'atama kaldırıldı') + ' (' + next.length + '/2)');
       });
       chip.appendChild(cb);
       chip.appendChild(document.createTextNode(s.name));
@@ -11123,6 +11210,12 @@ function finLearnStatsText(st) {
   if (Number(st.streak) >= 2) parts.push(Number(st.streak) + ' ardışık kayıp');
   if (Number(st.givebacks) > 0) parts.push(Number(st.givebacks) + ' kez kâr geri verildi');
   if (st.lastAt) parts.push('son ' + finLearnSign(st.lastNet));
+  /* EN İYİ PERİYOT: bot zaman dilimini buna göre seçer */
+  const tfRows = Object.entries((st && st.byTf) || {}).filter(([, s]) => s && Number(s.trades) > 0);
+  if (tfRows.length) {
+    tfRows.sort((a, b) => (Number(b[1].net) || 0) - (Number(a[1].net) || 0));
+    parts.push('en iyi ' + tfRows[0][0]);
+  }
   return parts.join(' · ');
 }
 
@@ -11271,6 +11364,47 @@ function finLearnDetail(body, sym, d) {
   info.textContent = bits.join(' — ');
   body.appendChild(info);
 
+  /* PERİYOT KIRILIMI: hangi zaman dilimi kazandırıyor — bot işlem periyodunu
+     (timeframe) buna göre SEÇER; negatif periyotta risk düşürülür */
+  const tfRows = Object.entries(st.byTf || {}).filter(([, s]) => s && Number(s.trades) > 0);
+  if (tfRows.length) {
+    const tfHead = document.createElement('div');
+    tfHead.className = 'fin-learn-sec';
+    tfHead.textContent = 'ZAMAN DİLİMLERİ (işlem periyodunu bot seçer — en iyi net üstte)';
+    body.appendChild(tfHead);
+    tfRows.sort((a, b) => (Number(b[1].net) || 0) - (Number(a[1].net) || 0));
+    for (const [tf, s] of tfRows) {
+      const tr = document.createElement('div');
+      tr.className = 'fin-learn-trade ' + (Number(s.net) < 0 ? 'loss' : 'win');
+      const w = Math.round((Number(s.wins) / Number(s.trades)) * 100);
+      tr.textContent = `${tf} · ${s.trades} işlem · %${w} kazanç · net ${finLearnSign(s.net)}` +
+        (Number(s.givebacks) > 0 ? ` · ${Number(s.givebacks)} kâr geri verme` : '') +
+        (Number(s.net) < 0 ? ' · NEGATİF: riski düşür/teyit ara' : '');
+      body.appendChild(tr);
+    }
+  }
+
+  /* YAPILAN YANLIŞLAR: zararla kapananlar otomatik kaydedilir — ajan bunlardan
+     hata dersi (kind:"mistake") çıkarır; tekrar eden kalıp burada görünür */
+  const mistakes = (d && Array.isArray(d.mistakes)) ? d.mistakes : [];
+  if (mistakes.length) {
+    const mHead = document.createElement('div');
+    mHead.className = 'fin-learn-sec';
+    mHead.textContent = 'YAPILAN YANLIŞLAR (' + mistakes.length + ' — ders çıkar, tekrarlama)';
+    body.appendChild(mHead);
+    for (const m of mistakes.slice().reverse()) {
+      const tr = document.createElement('div');
+      tr.className = 'fin-learn-trade loss';
+      const side = String(m.side || '').toLowerCase();
+      const sideTxt = side === 'buy' ? 'AL' : side === 'sell' ? 'SAT' : (side || '?');
+      tr.textContent = `${finLearnTime(m.at)} · ${m.tf || 'periyot?'} · ${sideTxt} · ${finLearnSign(m.net)}` +
+        (m.reason ? ` · ${String(m.reason)}` : '') +
+        (m.giveback ? ' · kâr geri verildi' : '') +
+        (m.mae != null ? ` · MAE ${finLearnSign(m.mae)}` : '');
+      body.appendChild(tr);
+    }
+  }
+
   /* KALICI ÖZET (opencode tarzı compaction): eski derslerin modele
      özetlettirilmiş hâli — ham dersler silinse de bilgi burada kalır */
   const summ = d && d.summary && d.summary.text ? d.summary : null;
@@ -11307,6 +11441,13 @@ function finLearnDetail(body, sym, d) {
       const kind = document.createElement('span');
       kind.className = 'fin-learn-kind k-' + String(n.kind || 'observation');
       kind.textContent = finLearnKindLabel(n.kind);
+      let tfEl = null;
+      if (n.tf) {
+        tfEl = document.createElement('span');
+        tfEl.className = 'fin-learn-kind';
+        tfEl.textContent = String(n.tf);
+        tfEl.title = 'Bu dersin zaman dilimi';
+      }
       const txt = document.createElement('span');
       txt.className = 'fin-learn-note-text';
       txt.textContent = String(n.text || '');
@@ -11329,6 +11470,7 @@ function finLearnDetail(body, sym, d) {
         }
       });
       rowEl.appendChild(kind);
+      if (tfEl) rowEl.appendChild(tfEl);
       rowEl.appendChild(txt);
       rowEl.appendChild(at);
       rowEl.appendChild(del);
@@ -11347,7 +11489,7 @@ function finLearnDetail(body, sym, d) {
       tr.className = 'fin-learn-trade ' + (Number(t.net) < 0 ? 'loss' : 'win');
       const side = String(t.side || '').toLowerCase();
       const sideTxt = side === 'buy' ? 'AL' : side === 'sell' ? 'SAT' : (side || '?');
-      tr.textContent = `${finLearnTime(t.at)} · ${sideTxt} · ${finLearnSign(t.net)}` +
+      tr.textContent = `${finLearnTime(t.at)} · ${t.tf ? t.tf + ' · ' : ''}${sideTxt} · ${finLearnSign(t.net)}` +
         (t.mfe != null ? ` · MFE ${finLearnSign(t.mfe)}` : '') +
         (t.mae != null ? ` · MAE ${finLearnSign(t.mae)}` : '') +
         (t.reason ? ` · ${String(t.reason)}` : '');

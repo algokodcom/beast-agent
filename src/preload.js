@@ -107,6 +107,10 @@ contextBridge.exposeInMainWorld('beast', {
   /* Supermemory (lokal) bellek katmanı ayarları */
   supermemoryGet: () => ipcRenderer.invoke('supermemory:get'),
   supermemorySet: (cfg) => ipcRenderer.invoke('supermemory:set', cfg),
+  /* TypeSafe (System One/Jev) — typesafe_decision aracı için API anahtarı */
+  typesafeGet: () => ipcRenderer.invoke('typesafe:get'),
+  typesafeSet: (cfg) => ipcRenderer.invoke('typesafe:set', cfg),
+  typesafeTest: (payload) => ipcRenderer.invoke('typesafe:test', payload),
   studioSend: (msg, attachments) => ipcRenderer.invoke('studio:send', { msg, attachments }),
   studioStop: () => ipcRenderer.invoke('studio:stop'),
   studioNew: () => ipcRenderer.invoke('studio:new'),

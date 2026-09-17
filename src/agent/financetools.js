@@ -101,6 +101,18 @@ function tickPrice(row, side) {
   return Number(row && row.bid) || Number(row && row.ask) || 0;
 }
 
+/* ZAMAN DİLİMİ: ajanın seçtiği periyot — işlem yorumuna yazılır ("Beast M15"),
+   watchdog pozisyondan okur ve kapanışta periyot bazlı öğrenmeye işler. */
+const TF_VALID = new Set(['M1', 'M5', 'M15', 'M30', 'H1', 'H4', 'D1', 'W1', 'MN1']);
+function normTimeframe(v) {
+  const s = String(v || '').trim().toUpperCase();
+  if (!s) return '';
+  const m = s.match(/^(M|H|D|W|MN)\s*(\d+)$/);
+  if (!m) return '';
+  const key = m[1] === 'MN' ? 'MN1' : m[1] + m[2];
+  return TF_VALID.has(key) ? key : '';
+}
+
 /* SEMBOL BAZLI LOT ARALIĞI (trader mt5_limits ile koyar): sembol limiti
    varsa genel aralığın yerine geçer — yoksa genel minLot/maxLot kullanılır.
    İki değer de broker normalizasyonuna girer (adım/min/max sembolden gelir). */
@@ -293,14 +305,15 @@ const definitions = NAMES.map((name) => {
     },
     mt5_ogrenme: {
       description:
-        'SEMBOL BAZLI ÖĞRENME HAFIZASI — Beast Finance sürekli öğrenir: mt5_ogrenme {action:"list"|"add"|"remove"|"clear"|"stats"|"compact"|"forget", symbol?, text?, kind?, tags?, id?, ids?, all?, limit?}. Her sembolün KENDİ istatistiği (işlem/kazanç/kayıp, net, kâr yakalama, kâr geri verme) OTOMATİK birikir; ayrıca gerçekten öğrendiğin dersleri sen kaydedersin. DERS KURALLARI (SEÇİCİ): (1) Her kapanışa ders YAZMA — yalnız gerçekten öğrenilmiş, tekrar kullanılabilir, kanıtlı içgörüyü TEK KISA cümleyle kaydet (en fazla ~20 kelime / 200 karakter); ör. "XAUUSD M5 EMA50 üstü Londra açılışı momentumu 3/4 işledi". YASAK: günlük/rapor tarzı uzun metin ("bugün şunu yaptım"), genel laf ("dikkatli olmalıyım"), her turda ders, tekrar. Emin değilsen HİÇ kaydetme. (2) Yeni işlem kararından ÖNCE ilgili sembolün stats (kompakt: istatistik + kalıcı özet + son 3 ders) ya da list (son 8 ders; limit ile artır) çıktısını oku; aynı hatayı tekrarlama, işleyen deseni kullan. (3) Yanlış çıkan/genel geçersiz dersi remove/clear ile sil. Aynı ders tekrar yazılamaz; sembol başına 24 saatte en fazla 3 ders kabul edilir (kalite kapısı: çok kısa/uzun, günlük tarzı ve genel tavsiye metinleri reddedilir). HAFIZA KENDİNİ SADELEŞTİRİR (opencode tarzı compaction): ham dersler birikince (24+) ESKİ dersler OTOMATİK olarak modele özetlettirilir ve tek KALICI ÖZETE sıkıştırılır — ham yalnız son dersler kalır; 30 günden eski dersler, 90 günden eski işlem kayıtları ve 120 gün hareketsiz semboller otomatik unutulur. Gerekirse compact {symbol} ile hemen özetlet, forget ile süresi geçenleri temizle. action:"list" symbol verilmezse tüm sembollerin özetini döner (kalıcı özet dahil).',
+        'SEMBOL + ZAMAN DİLİMİ BAZLI ÖĞRENME HAFIZASI — Beast Finance sürekli öğrenir: mt5_ogrenme {action:"list"|"add"|"remove"|"clear"|"stats"|"compact"|"forget", symbol?, timeframe?, text?, kind?, tags?, id?, ids?, all?, limit?}. Her sembolün KENDİ istatistiği (işlem/kazanç/kayıp, net, kâr yakalama, kâr geri verme) OTOMATİK birikir; timeframe verilirse PERİYOT kırılımı da tutulur (M5/M15/H1… hangi periyot kazandırıyor) ve yanlışlar hata kaydı olur. ZAMAN DİLİMİ SENİN KARARIN: işlemi mt5_trade/mt5_pending timeframe ile açarsan kapanış otomatik o periyoda işlenir; istatistikler periyot bazlıdır. DERS KURALLARI (SEÇİCİ): (1) Her kapanışa ders YAZMA — yalnız gerçekten öğrenilmiş, tekrar kullanılabilir, kanıtlı içgörüyü TEK KISA cümleyle kaydet (en fazla ~20 kelime / 200 karakter); ör. "XAUUSD M5 EMA50 üstü Londra açılışı momentumu 3/4 işledi". ZARAR/STOP olan her kapanışta İSE hata dersini SEN yazmalısın: kind:"mistake", text "yanlış neydi + bundan sonra kaçınma kuralı" (ör. "M5 destek kırılımında erken girdim; kapanış teyidi beklemeliydim"). YASAK: günlük/rapor tarzı uzun metin ("bugün şunu yaptım"), genel laf ("dikkatli olmalıyım"), tekrar. (2) Yeni işlem kararından ÖNCE ilgili sembolün stats (kompakt: istatistik + periyot kırılımı + kalıcı özet + son 3 ders + son hatalar) ya da list (son 8 ders; limit ile artır) çıktısını oku; aynı hatayı tekrarlama, işleyen deseni kullan, NEGATİF periyotta riski düşür. (3) Yanlış çıkan/genel geçersiz dersi remove/clear ile sil. Aynı ders tekrar yazılamaz; sembol başına 24 saatte en fazla 3 ders kabul edilir (kalite kapısı: çok kısa/uzun, günlük tarzı ve genel tavsiye metinleri reddedilir). HAFIZA KENDİNİ SADELEŞTİRİR (opencode tarzı compaction): ham dersler birikince (24+) ESKİ dersler OTOMATİK olarak modele özetlettirilir ve tek KALICI ÖZETE sıkıştırılır — ham yalnız son dersler kalır; 30 günden eski dersler, 90 günden eski işlem kayıtları ve 120 gün hareketsiz semboller otomatik unutulur. Gerekirse compact {symbol} ile hemen özetlet, forget ile süresi geçenleri temizle. action:"list" symbol verilmezse tüm sembollerin özetini döner (periyot kırılımı + kalıcı özet dahil).',
       parameters: {
         type: 'object',
         properties: {
           action: { type: 'string', enum: ['list', 'add', 'remove', 'clear', 'stats', 'compact', 'forget'] },
           symbol: { type: 'string', description: 'Sembol (ör. XAUUSD) — öğrenme sembol bazlıdır' },
-          text: { type: 'string', description: 'add: öğrenilen ders — TEK kısa cümle (en fazla ~20 kelime/200 karakter), somut ve tekrar kullanılabilir; günlük/uzun metin kaydetme' },
-          kind: { type: 'string', enum: ['pattern', 'mistake', 'rule', 'observation'], description: 'add: kayıt türü (varsayılan observation)' },
+          timeframe: { type: 'string', description: 'Zaman dilimi (M1|M5|M15|M30|H1|H4|D1|W1|MN1) — add: dersin periyodu; list/stats: yalnız o periyodu filtrele (boş = tümü)' },
+          text: { type: 'string', description: 'add: öğrenilen ders — TEK kısa cümle (en fazla ~20 kelime/200 karakter), somut ve tekrar kullanılabilir; zarar sonrası kind:"mistake" ile "yanlış + kaçınma kuralı" yaz' },
+          kind: { type: 'string', enum: ['pattern', 'mistake', 'rule', 'observation'], description: 'add: kayıt türü (zarar/stop sonrası hata dersi → mistake)' },
           tags: { type: 'array', items: { type: 'string' }, description: 'add: etiketler (ör. ["scalp","london"])' },
           id: { type: 'string', description: 'remove: kayıt id' },
           ids: { type: 'array', items: { type: 'string' }, description: 'clear: silinecek kayıt id listesi' },
@@ -335,7 +348,7 @@ const definitions = NAMES.map((name) => {
     },
     mt5_trade: {
       description:
-        'ANLIK PİYASA EMRİ AÇAR — ⚡HIZLI AKSİYON; bekleyen emir vermek ZORUNLU DEĞİL: mt5_trade {symbol, side:"buy"|"sell", volume?|riskPct?, sl?, tp?, type?, comment?, reason?}. Fırsat anıksa / teyitli kırılım-momentum-haber anında market buy/sell ile HEMEN gir — side:"buy"|"sell" yeter (type gerekmez; type:"market"|"buy_market"|"sell_market" de anlıktır). BEKLEYEN emir yalnız fiyatın bir seviyeye gelmesini beklemek gerçekten mantıklıysa kurulur: type:"buy_limit"|"sell_limit"|"buy_stop"|"sell_stop" + price (bu tipler otomatik mt5_pending hattına gider). LOT: volume ver ya da volume yerine riskPct + sl ver — sistem SL mesafesinden lotu hesaplar (tek çağrıda giriş; ayardaki işlem riski % varsayılan). Lot limiti, max pozisyon, marj ve yoğunluk sistemce zorlanır. SL vermek ŞİDDETLİ önerilir. reason: kararın tek cümlelik tezi (günlüğe yazılır).',
+        'ANLIK PİYASA EMRİ AÇAR — ⚡HIZLI AKSİYON; bekleyen emir vermek ZORUNLU DEĞİL: mt5_trade {symbol, side:"buy"|"sell", volume?|riskPct?, sl?, tp?, timeframe?, type?, comment?, reason?}. Fırsat anıksa / teyitli kırılım-momentum-haber anında market buy/sell ile HEMEN gir — side:"buy"|"sell" yeter (type gerekmez; type:"market"|"buy_market"|"sell_market" de anlıktır). BEKLEYEN emir yalnız fiyatın bir seviyeye gelmesini beklemek gerçekten mantıklıysa kurulur: type:"buy_limit"|"sell_limit"|"buy_stop"|"sell_stop" + price (bu tipler otomatik mt5_pending hattına gider). ZAMAN DİLİMİ SENİN KARARIN: işlemi hangi periyodun (M5/M15/H1…) analizine dayandırdıysan timeframe ile ver — öğrenme bu periyoda yazılır; aynı sembolde en iyi istatistik gösteren periyodu tercih et, negatif periyotta riski düşür. LOT: volume ver ya da volume yerine riskPct + sl ver — sistem SL mesafesinden lotu hesaplar (tek çağrıda giriş; ayardaki işlem riski % varsayılan). Lot limiti, max pozisyon, marj ve yoğunluk sistemce zorlanır. SL vermek ŞİDDETLİ önerilir. reason: kararın tek cümlelik tezi (günlüğe yazılır).',
       parameters: {
         type: 'object',
         properties: {
@@ -346,6 +359,7 @@ const definitions = NAMES.map((name) => {
             enum: ['market', 'buy_market', 'sell_market', 'buy_limit', 'sell_limit', 'buy_stop', 'sell_stop'],
             description: 'Emir tipi. Boş/side verilirse piyasa (anlık); limit/stop verilirse bekleyen emir (price zorunlu olur).',
           },
+          timeframe: { type: 'string', description: 'İşlemin dayandığı periyot (M1|M5|M15|M30|H1|H4|D1|W1|MN1) — SEN seçersin; öğrenme/istatistik bu periyoda yazılır (boş = belirsiz)' },
           volume: { type: 'number', description: 'Lot (min/max lot sınırına tabi) — boşsa riskPct + sl ile OTOMATİK hesaplanır' },
           riskPct: { type: 'number', description: 'İşlem riski % (ör. 0.5-2) — volume yerine ver: SL mesafesinden lot hesaplanır (sl zorunlu)' },
           price: { type: 'number', description: 'Limit/stop emirlerinde tetik fiyatı (piyasa emrinde gerekmez)' },
@@ -386,7 +400,7 @@ const definitions = NAMES.map((name) => {
     },
     mt5_pending: {
       description:
-        'BEKLEYEN EMİR (limit/stop) AÇAR: mt5_pending {symbol, type:"buy_limit"|"sell_limit"|"buy_stop"|"sell_stop", volume, price, sl?, tp?, reason?}. Fiyatın seviyeye gelmesini beklemek için kullanılır. ⚡ANLIK giriş (hızlı aksiyon) için bunu kullanma — mt5_trade {symbol, side} ile market gir (buy_market/sell_market tipleri burada da kabul edilir ve anlık emre yönlenir). Otomatik işlem anahtarına tabidir. reason: kararın tezi (günlüğe yazılır).',
+        'BEKLEYEN EMİR (limit/stop) AÇAR: mt5_pending {symbol, type:"buy_limit"|"sell_limit"|"buy_stop"|"sell_stop", volume, price, sl?, tp?, timeframe?, reason?}. Fiyatın seviyeye gelmesini beklemek için kullanılır. ⚡ANLIK giriş (hızlı aksiyon) için bunu kullanma — mt5_trade {symbol, side} ile market gir (buy_market/sell_market tipleri burada da kabul edilir ve anlık emre yönlenir). ZAMAN DİLİMİ SENİN KARARIN: timeframe ile işlemin dayandığı periyodu ver — öğrenme o periyoda yazılır. Otomatik işlem anahtarına tabidir. reason: kararın tezi (günlüğe yazılır).',
       parameters: {
         type: 'object',
         properties: {
@@ -396,6 +410,7 @@ const definitions = NAMES.map((name) => {
             enum: ['buy_limit', 'sell_limit', 'buy_stop', 'sell_stop', 'buy_market', 'sell_market'],
             description: 'Limit/stop = bekleyen (price zorunlu); buy_market/sell_market = anlık piyasa emri',
           },
+          timeframe: { type: 'string', description: 'İşlemin dayandığı periyot (M1|M5|M15|M30|H1|H4|D1|W1|MN1) — SEN seçersin; öğrenme bu periyoda yazılır' },
           volume: { type: 'number' },
           price: { type: 'number', description: 'Tetik fiyatı — limit/stop için zorunlu, market tiplerinde gerekmez' },
           sl: { type: 'number' },
@@ -599,13 +614,14 @@ const handlers = {
   async mt5_ogrenme(args, ctx) {
     const action = String(args.action || 'list').toLowerCase();
     const symbol = String(args.symbol || '').trim().toUpperCase();
+    const timeframe = normTimeframe(args.timeframe);
     if (action === 'list') {
       /* kompakt okuma: varsayılan son 8 ders (limit ile artırılır, max 25) —
          hafızanın tamamı ajana gönderilmez */
       const limit = Math.round(Number(args.limit) || 0);
-      return learningApi.list({ symbol, limit: limit > 0 ? limit : 8 });
+      return learningApi.list({ symbol, timeframe, limit: limit > 0 ? limit : 8 });
     }
-    if (action === 'stats') return learningApi.stats({ symbol });
+    if (action === 'stats') return learningApi.stats({ symbol, timeframe });
     if (action === 'add') {
       const text = String(args.text || '').replace(/\s+/g, ' ').trim();
       if (!symbol) return { ok: false, error: 'symbol gerekli — öğrenme sembol bazlıdır' };
@@ -615,9 +631,9 @@ const handlers = {
       const tags = Array.isArray(args.tags) ? args.tags.map((t) => String(t || '').trim()).filter(Boolean).slice(0, 6) : [];
       /* metin AYNEN geçer: kalite kapısı (kısa+somut) main tarafında çalışır —
          uzun/günlük metin sessizce kırpılmaz, ajan net hata alıp kısaltır */
-      const res = learningApi.add({ symbol, text, kind, tags, sid: (ctx && ctx.sessionId) || '' });
+      const res = learningApi.add({ symbol, text, kind, tags, timeframe, sid: (ctx && ctx.sessionId) || '' });
       if (res && res.ok) {
-        noteTrade('learn', { symbol, text: text.slice(0, 200), kind }, ctx || {});
+        noteTrade('learn', { symbol, text: text.slice(0, 200), kind, timeframe }, ctx || {});
       }
       return res;
     }
@@ -752,6 +768,11 @@ const handlers = {
     const side = t.side;
     const symbol = String(args.symbol || '').trim().toUpperCase();
     if (!symbol) return { ok: false, error: 'symbol gerekli' };
+    /* ZAMAN DİLİMİ (bot kararı): emir yorumuna yazılır — watchdog pozisyondan
+       okur, kapanışta periyot bazlı öğrenmeye işler */
+    const timeframe = normTimeframe(args.timeframe);
+    const baseComment = String(args.comment || '').trim();
+    const orderComment = (timeframe ? `Beast ${timeframe}${baseComment ? ' ' + baseComment : ''}` : baseComment || 'Beast').slice(0, 26);
     const range = lotRange(cfg, symbol);
     const sl = Number(args.sl) || 0;
     const tp = Number(args.tp) || 0;
@@ -796,13 +817,14 @@ const handlers = {
         volume: vol,
         sl,
         tp,
+        timeframe,
         reason: String(args.reason || '').slice(0, 500),
         risk: riskInfo,
       }, ctx);
       return {
         ok: true,
         shadow: true,
-        planned: { symbol, side, volume: vol, sl, tp },
+        planned: { symbol, side, volume: vol, sl, tp, timeframe: timeframe || null },
         risk: riskInfo,
         note: 'SHADOW MOD: emir GÖNDERİLMEDİ, karar günlüğe yazıldı. Gerçek işlem için TRADE AJANI ayarlarından shadow modu kapat.',
       };
@@ -814,10 +836,10 @@ const handlers = {
       sl,
       tp,
       deviation: 20,
-      comment: String(args.comment || 'Beast').slice(0, 26),
+      comment: orderComment,
     }, 20000);
-    noteTrade('trade', { symbol, side, volume: vol, sl, tp, risk: riskInfo, comment: String(args.comment || ''), reason: String(args.reason || '').slice(0, 500), result: data && data.result }, ctx);
-    return { ok: true, opened: { symbol, side, volume: vol, sl, tp }, risk: riskInfo, result: data && data.result };
+    noteTrade('trade', { symbol, side, volume: vol, sl, tp, timeframe, risk: riskInfo, comment: String(args.comment || ''), reason: String(args.reason || '').slice(0, 500), result: data && data.result }, ctx);
+    return { ok: true, opened: { symbol, side, volume: vol, sl, tp, timeframe: timeframe || null }, risk: riskInfo, result: data && data.result };
   },
   async mt5_close(args, ctx) {
     if (!mt5.running) return notConnected();
@@ -890,6 +912,11 @@ const handlers = {
     if (!mt5.running) return notConnected();
     const symbol = String(args.symbol || '').trim().toUpperCase();
     if (!symbol) return { ok: false, error: 'symbol gerekli' };
+    /* ZAMAN DİLİMİ (bot kararı): yorumla birlikte saklanır; pozisyon aktifleşip
+       kapandığında öğrenme bu periyoda yazılır */
+    const timeframe = normTimeframe(args.timeframe);
+    const baseComment = String(args.comment || '').trim();
+    const orderComment = (timeframe ? `Beast ${timeframe}${baseComment ? ' ' + baseComment : ''}` : baseComment || 'Beast').slice(0, 26);
     const info = await symInfoRow(symbol);
     if (!info) return { ok: false, error: 'sembol bulunamadı: ' + symbol + ' (MT5 Market Watch?)' };
     const range = lotRange(cfg, symbol);
@@ -907,7 +934,7 @@ const handlers = {
     if (discErr) return { ok: false, error: discErr };
     /* SHADOW MOD: bekleyen emir de GÖNDERİLMEZ — tez günlüğe düşer */
     if (cfg.shadowMode) {
-      noteTrade('shadow', { symbol, type: ptype, side: pside, volume: vol, price: Number(args.price) || 0, sl: Number(args.sl) || 0, tp: Number(args.tp) || 0, reason: String(args.reason || '').slice(0, 500) }, ctx);
+      noteTrade('shadow', { symbol, type: ptype, side: pside, volume: vol, price: Number(args.price) || 0, sl: Number(args.sl) || 0, tp: Number(args.tp) || 0, timeframe, reason: String(args.reason || '').slice(0, 500) }, ctx);
       return { ok: true, shadow: true, note: 'SHADOW MOD: bekleyen emir GÖNDERİLMEDİ, karar günlüğe yazıldı.' };
     }
     const data = await bcall('pending', {
@@ -917,10 +944,10 @@ const handlers = {
       price: Number(args.price) || 0,
       sl: Number(args.sl) || 0,
       tp: Number(args.tp) || 0,
-      comment: String(args.comment || 'Beast').slice(0, 26),
+      comment: orderComment,
     }, 20000);
-    noteTrade('pending', { symbol, type: ptype, volume: vol, reason: String(args.reason || '').slice(0, 500) }, ctx);
-    return { ok: true, result: data && data.result };
+    noteTrade('pending', { symbol, type: ptype, volume: vol, timeframe, reason: String(args.reason || '').slice(0, 500) }, ctx);
+    return { ok: true, result: data && data.result, timeframe: timeframe || null };
   },
   async mt5_cancel(args, ctx) {
     if (!mt5.running) return notConnected();

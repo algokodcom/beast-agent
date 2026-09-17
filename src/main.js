@@ -32,6 +32,7 @@ const log = require('./agent/logger');
 const squeeze = require('./agent/squeeze');
 const chansessions = require('./agent/channelsessions');
 const typesafeMod = require('./agent/typesafe');
+const tslearn = require('./agent/tslearn');
 const QRCode = require('qrcode'); /* Expo Go QR (bc-expurl) — whatsapp ile aynı paket */
 
 /* Renderer'a sır gönderirken kullanılan maske; kaydederken aynen geri gelirse
@@ -10778,6 +10779,12 @@ async function finRecordClose(ticket, st) {
   /* SEMBOL + PERİYOT BAZLI SÜREKLİ ÖĞRENME: her kapanış istatistiğe işlenir;
      zararla kapananlar yapılandırılmış hata kaydı olur (mt5_ogrenme) */
   finLearnRecordClose({ symbol, side: (st && st.side) || '', net: rounded, mfe, mae, reason: kind || '', timeframe: tf });
+  /* TYPESAFE KARAR GÜNLÜĞÜ: kapanış kararla eşleştirilir (kalibrasyon verisi)
+     ve TypeSafe'e hata/desen sınıflandırması sorulup otomatik ders yazılır */
+  try {
+    const dec = finTsDecClose({ symbol, side: (st && st.side) || '', net: rounded, mfe, mae, reason: kind || '' });
+    if (dec) finTsAutoLesson(dec).catch(() => {});
+  } catch {}
   const pl = rounded == null ? '' : ` · K/Z ${rounded >= 0 ? '+' : ''}${rounded.toFixed(2)}`;
   const line = `🏁 Pozisyon kapandı: ${symbol || '?'} #${ticket}${tf ? ' · ' + tf : ''}${pl}`;
   financeLog('[watchdog] ' + line);
@@ -12001,6 +12008,10 @@ function finBuildLearnDigest(symbols) {
     /* SON HATALAR: yapılan yanlışlar + tekrar eden kalıp uyarısı */
     const mLine = finBuildLearnMistakeLine(e);
     if (mLine) L.push('  ' + mLine);
+    /* TYPESAFE KALİBRASYONU + KURALLAR: öğrenerek gelişme verisi — eşik/risk
+       çarpanı ve hangi koşulun kazandırdığı her turda karar girdisine girer */
+    const calLine = finTsCalText(sym, null);
+    if (calLine) L.push('  ' + calLine);
     /* KALICI ÖZET (compaction): eski derslerin sıkıştırılmış hâli — ham ders
        sayısı azalsa da birikmiş bilgi prompta girer */
     if (e.summary && e.summary.text) {
@@ -12080,7 +12091,7 @@ function finLearnApi() {
       for (const [s, e] of Object.entries(learn.symbols)) stats[s] = finLearnNormStats(e.stats);
       return { ok: true, count: Object.keys(stats).length, stats };
     },
-    add: ({ symbol, text, kind, tags, timeframe, sid } = {}) => {
+    add: ({ symbol, text, kind, tags, timeframe, sid, auto } = {}) => {
       const sym = norm(symbol);
       const t = String(text || '').replace(/\s+/g, ' ').trim();
       const tf = finLearnNormTf(timeframe);
@@ -12098,16 +12109,22 @@ function finLearnApi() {
         return { ok: true, duplicate: true, symbol: sym, count: e.notes.length };
       }
       /* GÜNLÜK DERS LİMİTİ: ajan aynı gün aynı sembole ders yağdıramaz —
-         hafıza öğrenmeyle zehirlenmesin, özet son dersleri temsil etsin */
+         hafıza öğrenmeyle zehirlenmesin. OTOMATİK (TypeSafe) derslerin ayrı
+         kotası vardır (3/24s): ajan ders hakkını onlar yemesin */
       const dayAgo = Date.now() - 24 * 60 * 60 * 1000;
-      const today = e.notes.filter((n) => Number(n.at) >= dayAgo).length;
-      if (today >= FIN_LEARN_MAX_NOTES_DAY) {
-        return {
-          ok: false,
-          error: `günlük ders limiti doldu (${FIN_LEARN_MAX_NOTES_DAY}/24s) — ders kaydedilmedi`,
-          symbol: sym,
-          count: e.notes.length,
-        };
+      if (auto) {
+        const autoToday = e.notes.filter((n) => n && n.auto && Number(n.at) >= dayAgo).length;
+        if (autoToday >= 3) return { ok: true, skipped: true, reason: 'otomatik ders kotası doldu (3/24s)', symbol: sym };
+      } else {
+        const today = e.notes.filter((n) => n && !n.auto && Number(n.at) >= dayAgo).length;
+        if (today >= FIN_LEARN_MAX_NOTES_DAY) {
+          return {
+            ok: false,
+            error: `günlük ders limiti doldu (${FIN_LEARN_MAX_NOTES_DAY}/24s) — ders kaydedilmedi`,
+            symbol: sym,
+            count: e.notes.length,
+          };
+        }
       }
       const note = {
         id: 'l' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
@@ -12116,6 +12133,7 @@ function finLearnApi() {
         kind: ['pattern', 'mistake', 'rule', 'observation'].includes(String(kind || '')) ? String(kind) : 'observation',
         tags: Array.isArray(tags) ? tags.map((x) => String(x || '').slice(0, 24)).filter(Boolean).slice(0, 6) : [],
         tf: tf || '',
+        auto: !!auto,
         sid: String(sid || ''),
       };
       e.notes.push(note);
@@ -12192,6 +12210,235 @@ function finLearnApi() {
       return finLearnCompactSymbol(sym, true);
     },
   };
+}
+
+/* ---------- TYPESAFE KARAR GÜNLÜĞÜ + ÖĞRENEREK GELİŞME ----------
+   Her TypeSafe kararı (p, teyit, tf, trend uyumu, RSI, saat) diske yazılır;
+   pozisyon kapanınca gerçek sonuçla (net/MFE/MAE) eşleştirilir. Bu etiketli
+   veriden KOD şunları öğrenir: (1) ampirik kazanç oranına göre eylem eşiği,
+   (2) risk çarpanı, (3) hangi kural/koşul kazandırıyor. Kapanan her işlem
+   AYRICA TypeSafe'e sorulur (LLM'siz): "hata/desen türü ne?" → otomatik ders
+   yazılır. Veri: finance/tskarar.json */
+const FIN_TS_DEC_MAX = 240;         /* karar kaydı tavanı (eskiler düşer) */
+const FIN_TS_DEFAULT_TH = tslearn.DEFAULT_TH; /* öğrenilmiş eşik yoksa varsayılan */
+let finTsDecReady = false;
+const finTsDecCache = { decisions: [], updatedAt: 0 };
+
+function finTsDecLoad() {
+  if (finTsDecReady) return finTsDecCache;
+  finTsDecReady = true;
+  try {
+    const raw = finReadJson(finFile('tskarar.json'), null);
+    if (raw && typeof raw === 'object' && Array.isArray(raw.decisions)) {
+      finTsDecCache.decisions = raw.decisions.filter((d) => d && d.at && d.symbol).slice(-FIN_TS_DEC_MAX);
+      finTsDecCache.updatedAt = Number(raw.updatedAt) || 0;
+    }
+  } catch {}
+  return finTsDecCache;
+}
+
+function finTsDecSave() {
+  finTsDecCache.updatedAt = Date.now();
+  try { finWriteJson(finFile('tskarar.json'), finTsDecCache); } catch {}
+}
+
+/* Açılan her TypeSafe işlemi karar kaydı olur (özellikler + karar) */
+function finTsDecRecord(rec) {
+  try {
+    const d = finTsDecLoad();
+    const item = {
+      id: 'd' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5),
+      at: Date.now(),
+      sid: String((rec && rec.sid) || ''),
+      role: String((rec && rec.role) || ''),
+      symbol: String((rec && rec.symbol) || '').toUpperCase(),
+      tf: finLearnNormTf(rec && rec.tf),
+      action: String((rec && rec.action) || ''),
+      p: Number(rec && rec.p) || 0,
+      pSecond: Number(rec && rec.pSecond) || 0,
+      confirm: Number(rec && rec.confirm) || 0,
+      hour: Number(rec && rec.hour) || 0,
+      emaAlign: rec && rec.emaAlign === true ? 1 : rec && rec.emaAlign === false ? 0 : null,
+      rsi: Number.isFinite(Number(rec && rec.rsi)) ? Number(rec.rsi) : null,
+      atrPct: Number.isFinite(Number(rec && rec.atrPct)) ? Number(rec.atrPct) : null,
+      riskPct: Number(rec && rec.riskPct) || 0,
+      closedAt: 0, net: null, mfe: null, mae: null, reason: '',
+    };
+    d.decisions.push(item);
+    while (d.decisions.length > FIN_TS_DEC_MAX) d.decisions.shift();
+    finTsDecSave();
+    return item.id;
+  } catch {
+    return '';
+  }
+}
+
+/* Kapanışta karar kaydını sonuçla eşleştir (en yeni eşleşmeyen kayıt) */
+function finTsDecClose({ symbol, side, net, mfe, mae, reason }) {
+  try {
+    const sym = String(symbol || '').toUpperCase();
+    const act = String(side || '').toLowerCase();
+    if (!sym || !act || net == null) return null;
+    const d = finTsDecLoad();
+    const now = Date.now();
+    let hit = null;
+    for (let i = d.decisions.length - 1; i >= 0; i--) {
+      const x = d.decisions[i];
+      if (x.closedAt || x.symbol !== sym || x.action !== act) continue;
+      if (now - Number(x.at) > 24 * 60 * 60 * 1000) continue;
+      hit = x;
+      break;
+    }
+    if (!hit) return null;
+    hit.closedAt = now;
+    hit.net = Math.round((Number(net) || 0) * 100) / 100;
+    hit.mfe = Number.isFinite(Number(mfe)) ? Math.round(Number(mfe) * 100) / 100 : null;
+    hit.mae = Number.isFinite(Number(mae)) ? Math.round(Number(mae) * 100) / 100 : null;
+    hit.reason = String(reason || '').slice(0, 40);
+    finTsDecSave();
+    return hit;
+  } catch {
+    return null;
+  }
+}
+
+/* KALİBRASYON + KURAL (saf matematik tslearn.js'te — test edilebilir):
+   bunlar diskteki karar günlüğünü okutup sonucu döndüren ince sarmalayıcılar */
+function finTsCalibration(symbol, tf) {
+  return tslearn.calibration(finTsDecLoad().decisions, symbol, tf);
+}
+
+function finTsRules(symbol) {
+  return tslearn.rules(finTsDecLoad().decisions, symbol);
+}
+
+function finTsRulesText(symbol) {
+  return tslearn.rulesText(tslearn.rules(finTsDecLoad().decisions, symbol));
+}
+
+function finTsCalText(symbol, tf) {
+  try {
+    return tslearn.calText(finTsDecLoad().decisions, symbol, tf);
+  } catch {
+    return '';
+  }
+}
+
+/* Tur state'i için kompakt kalibrasyon satırı (TypeSafe'e girecek) */
+function finTsCalState(symbol, tf) {
+  try {
+    return tslearn.calState(finTsDecLoad().decisions, symbol, tf);
+  } catch {
+    return '';
+  }
+}
+
+/* OTOMATİK DERS (TypeSafe, LLM'siz): kapanan işlemi sınıflandır → ders yaz.
+   Aynı anda tek analiz; hata olsa bile tur döngüsünü etkilemez. */
+let finTsLessonAt = 0;
+async function finTsAutoLesson(dec) {
+  try {
+    if (!dec || !typesafeMod.cfg().apiKey) return;
+    const now = Date.now();
+    if (now - finTsLessonAt < 20000) return; /* ders seli yok: 20 sn'de bir analiz */
+    finTsLessonAt = now;
+    const loss = (Number(dec.net) || 0) < 0;
+    const state = {
+      sembol: dec.symbol,
+      zaman_dilimi: dec.tf || null,
+      yon: dec.action,
+      net: dec.net,
+      mfe: dec.mfe,
+      mae: dec.mae,
+      kapanis_nedeni: dec.reason || null,
+      karar: {
+        p: dec.p,
+        teyit: dec.confirm,
+        trend_uyumlu: dec.emaAlign === 1,
+        rsi: dec.rsi,
+        atr_yuzdesi: dec.atrPct,
+        yerel_saat: dec.hour,
+      },
+    };
+    const questions = loss
+      ? {
+          hata: {
+            type: 'choice',
+            instructions: 'Bu ZARARLA kapanan işlemde en olası hata türü hangisi?',
+            criteria: {
+              erken_giris: 'Teyit/kapanış gelmeden erken girildi',
+              yanlis_yon: 'Yön/tez yanlıştı — trende karşı işlem',
+              sl_yakin: 'SL çok yakındı; normal gürültüde stop oldu',
+              sl_uzak: 'SL çok uzaktı; gereğinden büyük zarar yazdı',
+              kar_geri: 'Kâr vardı, çıkış zamanlaması kötüydü (geri verildi)',
+              teyitsiz: 'Momentum/teyit zayıftı, sinyal güvenilmezdi',
+              haber: 'Haber/ani hareket etkisiyle ters kaldı',
+              diger: 'Diğer',
+            },
+          },
+          tekrar: {
+            type: 'noul',
+            instructions: 'Aynı koşullar tekrar oluşursa bu hata tekrarlanabilir mi?',
+            criteria: { true: 'Tekrar riski yüksek', false: 'Tek seferlik/tesadüfi' },
+          },
+        }
+      : {
+          desen: {
+            type: 'choice',
+            instructions: 'Bu KAZANÇLI işlemde işe yarayan ana desen hangisi?',
+            criteria: {
+              trend_uyumu: 'Trend yönünde giriş (EMA/yapı uyumu)',
+              seviye_reddi: 'Destek/direnç reddi',
+              kirilim_retest: 'Kırılım + geri çekilme teyidi',
+              momentum: 'Momentum devamı',
+              haber: 'Haber/katalizör',
+              diger: 'Diğer',
+            },
+          },
+          tekrarlanabilir: {
+            type: 'noul',
+            instructions: 'Bu desen tekrar kullanılabilir mi (kurallaşabilir mi)?',
+            criteria: { true: 'Evet, kural olabilir', false: 'Tesadüfi' },
+          },
+        };
+    const ans = await finTsAsk(state, questions);
+    const tfTxt = dec.tf ? `[${dec.tf}] ` : '';
+    if (loss) {
+      const c = finTsChoice(ans, 'hata');
+      const t = finTsNoul(ans, 'tekrar');
+      if (!c) return;
+      const label = {
+        erken_giris: 'erken giriş (teyit gelmeden)',
+        yanlis_yon: 'yanlış yön — trende karşı',
+        sl_yakin: 'SL çok yakın (gürültüde stop)',
+        sl_uzak: 'SL çok uzak — zarar büyük',
+        kar_geri: 'kâr geri verildi (çıkış zamanlaması)',
+        teyitsiz: 'teyitsiz/zayıf momentum',
+        haber: 'haber/ani hareket',
+        diger: 'sınıflandırılamadı',
+      }[c.choice] || c.choice;
+      const text = `${tfTxt}HATA: ${label} (p=${c.p.toFixed(2)})` +
+        (t != null && t >= 0.6 ? ' — tekrar riski yüksek: bu koşulda teyit artır/küçük risk al' : '') +
+        ` · net ${dec.net}`;
+      finLearnApi().add({ symbol: dec.symbol, text, kind: 'mistake', timeframe: dec.tf, auto: true });
+    } else {
+      const c = finTsChoice(ans, 'desen');
+      const t = finTsNoul(ans, 'tekrarlanabilir');
+      if (!c) return;
+      const label = {
+        trend_uyumu: 'trend uyumlu giriş',
+        seviye_reddi: 'seviye reddi',
+        kirilim_retest: 'kırılım + retest',
+        momentum: 'momentum devamı',
+        haber: 'haber/katalizör',
+        diger: 'sınıflandırılamadı',
+      }[c.choice] || c.choice;
+      const text = `${tfTxt}DESEN: ${label} (p=${c.p.toFixed(2)})` +
+        (t != null && t >= 0.6 ? ' — tekrarlanabilir, kullan' : '') +
+        ` · net +${dec.net}`;
+      finLearnApi().add({ symbol: dec.symbol, text, kind: 'pattern', timeframe: dec.tf, auto: true });
+    }
+  } catch {}
 }
 
 /* LIMIT + ÖĞRENME kancalarını financetools'a bağla */
@@ -12876,7 +13123,6 @@ function finTeamWaitTick(sid) {
    uygular. Yanıtlar AJAN DM ekip grubuna yazılır — tüm ajanlar birbirinin
    cevabını görür (son yanıtlar sonraki turların state'ine de girer) ve emirler
    YALNIZ market buy/sell olarak açılır (bekleyen emir YOK). */
-const FIN_TS_ACTION_P = 0.6;    /* choice: işlem için min olasılık */
 const FIN_TS_MARGIN_P = 0.12;   /* birinci ile ikinci seçenek arası min fark */
 const FIN_TS_CONFIRM_P = 0.55;  /* noul teyit eşiği */
 const FIN_TS_EXIT_P = 0.62;     /* pozisyon kapatma eşiği */
@@ -13119,6 +13365,8 @@ async function finTypeSafeRound(sid, agent) {
       })),
       piyasa: {},
       ogrenme: finBuildLearnDigest(symbols),
+      /* KALİBRASYON: öğrenilmiş eşik + risk çarpanı + kazandıran kurallar */
+      kalibrasyon: symbols.map((s) => finTsCalState(s, market[s] && market[s].tf)).filter(Boolean).join('\n') || '(kalibrasyon verisi henüz yok)',
       ekip_yanitlari: finTsFeedText(6),
     };
     for (const sym of symbols) {
@@ -13184,6 +13432,10 @@ async function finTypeSafeRound(sid, agent) {
         const c = finTsChoice(ans, 'yon_' + i);
         const conf = finTsNoul(ans, 'teyit_' + i);
         const pos = posBySym[sym];
+        /* ÖĞRENİLMİŞ EŞİK + RİSK ÇARPANI: kalibrasyon verisi biriktikçe kod
+           eşiği ve riski kendisi ayarlar (sistem öğrendikçe o karar verir) */
+        const cal = finTsCalibration(sym, market[sym].tf);
+        const thAction = cal.action;
         if (pos) {
           const ex = finTsNoul(ans, 'kapat_' + i);
           if (ex != null && ex >= FIN_TS_EXIT_P) {
@@ -13201,8 +13453,8 @@ async function finTypeSafeRound(sid, agent) {
           lines.push(`- ${sym}: ${finTsFmtChoice(c)} → BEKLE`);
           continue;
         }
-        if (!(c.p >= FIN_TS_ACTION_P) || c.p - c.second < FIN_TS_MARGIN_P) {
-          lines.push(`- ${sym}: ${finTsFmtChoice(c)} → eşik/fark altı, BEKLE`);
+        if (!(c.p >= thAction) || c.p - c.second < FIN_TS_MARGIN_P) {
+          lines.push(`- ${sym}: ${finTsFmtChoice(c)} → öğrenilmiş eşik p≥${thAction.toFixed(2)}/fark altı, BEKLE`);
           continue;
         }
         if (conf == null || conf < FIN_TS_CONFIRM_P) {
@@ -13224,7 +13476,8 @@ async function finTypeSafeRound(sid, agent) {
         const rnd = (v) => Number(Number(v).toFixed(digits));
         const sl = rnd(c.choice === 'buy' ? price - slDist : price + slDist);
         const tp = rnd(c.choice === 'buy' ? price + tpDist : price - tpDist);
-        const riskPct = Number(f.riskPerTradePct) > 0 ? Number(f.riskPerTradePct) : 0.5;
+        const riskBase = Number(f.riskPerTradePct) > 0 ? Number(f.riskPerTradePct) : 0.5;
+        const riskPct = Math.max(0.1, Math.min(2, Math.round(riskBase * cal.riskMult * 100) / 100));
         const r = await financetools.handlers.mt5_trade(
           {
             symbol: sym,
@@ -13239,9 +13492,34 @@ async function finTypeSafeRound(sid, agent) {
           },
           { sessionId: sidS }
         );
-        if (r && r.ok) {
+        if (r && r.ok && !r.shadow) {
           opened += 1;
-          lines.push(`- ${sym}: ⚡ MARKET ${c.choice.toUpperCase()} açıldı (lot ${r.opened && r.opened.volume}, SL ${sl}, TP ${tp}, risk %${riskPct}) · p=${c.p.toFixed(2)} teyit=${conf.toFixed(2)} · tf=${market[sym].tf}`);
+          /* KARAR KAYDI: özellikler + karar diske yazılır; kapanışta sonuçla
+             eşleşir → kalibrasyon/eşik/risk öğrenmesi bu veriyle çalışır */
+          try {
+            const ind = market[sym].ind || {};
+            finTsDecRecord({
+              sid: sidS,
+              role: 'trader',
+              symbol: sym,
+              tf: market[sym].tf,
+              action: c.choice,
+              p: c.p,
+              pSecond: c.second,
+              confirm: conf,
+              hour: new Date().getHours(),
+              emaAlign: ind.ema50 != null && ind.ema200 != null ? (ind.ema50 > ind.ema200) === (c.choice === 'buy') : null,
+              rsi: ind.rsi14,
+              atrPct: atr > 0 && price > 0 ? atr / price : null,
+              riskPct,
+            });
+          } catch {}
+          lines.push(
+            `- ${sym}: ⚡ MARKET ${c.choice.toUpperCase()} açıldı (lot ${r.opened && r.opened.volume}, SL ${sl}, TP ${tp}, risk %${riskPct}${cal.riskMult !== 1 ? ` ×${cal.riskMult}` : ''}) · p=${c.p.toFixed(2)} teyit=${conf.toFixed(2)} · tf=${market[sym].tf}` +
+              (thAction !== FIN_TS_DEFAULT_TH.action ? ` · öğrenilmiş eşik p≥${thAction.toFixed(2)}` : '')
+          );
+        } else if (r && r.ok && r.shadow) {
+          lines.push(`- ${sym}: SHADOW mod — emir gönderilmedi (${c.choice} p=${c.p.toFixed(2)})`);
         } else {
           lines.push(`- ${sym}: ${c.choice.toUpperCase()} sinyali reddedildi — ${(r && r.error) || 'hata'}`);
         }
@@ -13251,6 +13529,14 @@ async function finTypeSafeRound(sid, agent) {
         agent,
         `🤖 TypeSafe karar turu #${agent.round} (LLM yok — girdi yalnız TypeSafe):\n` +
           'TF KARARI: ' + symbols.map((s) => `${s}=${market[s].tf}`).join(', ') + '\n' +
+          'ÖĞRENİLMİŞ: ' +
+          symbols
+            .map((s) => {
+              const c = finTsCalibration(s, market[s].tf);
+              return `${s} eşik p≥${c.action.toFixed(2)} risk×${c.riskMult}${c.n ? ` (%${Math.round((c.wins / c.n) * 100)}/${c.n})` : ' (veri yok)'}`;
+            })
+            .join(' · ') +
+          '\n' +
           lines.join('\n') +
           (opened ? '' : '\nYeni pozisyon açılmadı (eşikler/limitler).'),
         symbols.join(',')

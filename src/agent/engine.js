@@ -206,6 +206,20 @@ const CEO_EXEC_TOOLS = new Set([
    açmasın ve kendini iptal edemesin — işi bitirip rapor yazsın. */
 const BG_HIDDEN_TOOLS = new Set(['run_background', 'tasks_list', 'task_status', 'task_cancel']);
 
+/* T3SFAST araç politikası: TypeSafe Jev AÇIKken elle tarayıcı/masaüstü eylem
+   araçları listeden düşer — eylemler browser_agent/computer_agent'a gider
+   (okuma/doğrulama araçları açık kalır). Anahtar yoksa/kapalıysa liste aynen
+   döner; ilgili Jev aracı listede yoksa (kısıtlı izin/beyaz liste) dokunulmaz. */
+const TS_MANUAL_BROWSER_TOOLS = ['browser_click', 'browser_type', 'browser_press', 'browser_scroll', 'browser_select'];
+function filterTypesafeTools(tools, tsAvailable) {
+  if (!tsAvailable || !Array.isArray(tools)) return tools;
+  const has = (n) => tools.some((t) => t && t.function && t.function.name === n);
+  const forced = new Set();
+  if (has('browser_agent')) for (const n of TS_MANUAL_BROWSER_TOOLS) forced.add(n);
+  if (has('computer_agent')) forced.add('computer_act');
+  return forced.size ? tools.filter((t) => !forced.has(t.function.name)) : tools;
+}
+
 function uid() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 }
@@ -2230,7 +2244,7 @@ class Engine {
             ' Görselleri GÖREMEMİYORSAN (metin-model) görüntüdeki metni okumak için ocr_read kullan: source:"browser" ile tarayıcı sayfasını, "screen" ile masaüstünü OCR\u2019la okursun (captcha/canvas/görsel metin dahil).' +
             (this.ceoMode ? ' (CEO: bu araçları KENDİN ÇAĞIRMA — içinde tarayıcı geçen işi run_background ile paralel ajana devret.)' : ''),
           'Tarayıcı eylemlerinin yanıtındaki recent günlüğünü ve navigated bilgisini takip et; eylem yanıtları zaten taze snapshot içerir — refler tutarsız görünürse yeni snapshot al.',
-          'T3SFAST (Jev) HIZLI AJANLARI: Ayarlar → TypeSafe\'te anahtar VAR ve AÇIKSA çok adımlı tarayıcı işlerini tek tek browser_click/browser_type yerine HER ZAMAN browser_agent\'a BİR doğal-dil hedefiyle ver (arama + form + filtre + tarih seçimi + sonuç açma gibi akışlar saniyeler içinde biter; her adımı TypeSafe Jev seçer, yalnız metin girişini küçük bir LLM yazar; gerçek fare/klavye girdisi + DONE için aynı istekte noul doğrulaması yapılır). "done" durumu hâlâ KANIT DEĞİL — sonucu browser_read/browser_screenshot ile bağımsız doğrulamadan kullanıcıya başarılı deme. Masaüstü işleri için computer_agent\'ı aynı şekilde kullan — pencereyi "window" alanıyla otomatik öne getirt (ör. window:"Notepad"), sonucu computer_look ile doğrula; değişmeyen ekran karelerinde OCR önbelleği devreye girer, hedefi net ver (uygulama + alan + değer). Anahtar yoksa/kapalıysa bu araçlar hata döner — kullanıcıyı Ayarlar → TypeSafe\'e yönlendir.',
+          'T3SFAST (Jev) HIZLI AJANLARI: Ayarlar → TypeSafe\'te anahtar VAR ve AÇIKSA çok adımlı tarayıcı işlerini tek tek browser_click/browser_type yerine HER ZAMAN browser_agent\'a BİR doğal-dil hedefiyle ver (arama + form + filtre + tarih seçimi + sonuç açma gibi akışlar saniyeler içinde biter; her adımı TypeSafe Jev seçer, yalnız metin girişini küçük bir LLM yazar; gerçek fare/klavye girdisi + DONE için aynı istekte noul doğrulaması yapılır). "done" durumu hâlâ KANIT DEĞİL — sonucu browser_read/browser_screenshot ile bağımsız doğrulamadan kullanıcıya başarılı deme. Masaüstü işleri için computer_agent\'ı aynı şekilde kullan — pencereyi "window" alanıyla otomatik öne getirt (ör. window:"Notepad"), sonucu computer_look ile doğrula; değişmeyen ekran karelerinde OCR önbelleği devreye girer, hedefi net ver (uygulama + alan + değer). Anahtar yoksa/kapalıysa bu araçlar hata döner — kullanıcıyı Ayarlar → TypeSafe\'e yönlendir. TypeSafe AÇIKKEN elle browser_click/browser_type/browser_scroll/browser_select/browser_press ve computer_act araçları araç listesinden ÇIKARILIR; tarayıcı/masaüstü eylemini YALNIZCA browser_agent/computer_agent\'a tek doğal-dil hedefi vererek yap (okuma/doğrulama için browser_open/browser_read/browser_screenshot/browser_snapshot/browser_wait/computer_look açık kalır).',
           'CONUŞMA ODAĞI SENDE KALSIN: kullanıcı seninle konuşurken iş çıkmışsa — uzun da olsa UFACIK da (tek komutluk dizin listesi, tek dosya okuma, tek arama…) — run_background ile PARALEL ajana devret; ana sohbet hiçbir işi beklemez; bittiğinde özet otomatik düşer.',
           'Python işleri için python_run kullan: küçük betikler inline code ile; tekrarlayan işler %APPDATA%\\beast\\scripts klasöründeki dosyalarla (ör. news.py = RSS haber toplayıcı: args ["--limit","8","--json"]). Python kurulu olmasa bile ilk çağrıda taşınabilir gömülü runtime otomatik iner.',
             'PYTHON DURUMU: makinede sistem Python\'u görünmese bile ŞAŞIRMA ve "python yok" DEME — python_run aracı kendi taşınabilir runtime\'ını (%APPDATA%\\beast\\py\\python.exe) otomatik indirir/kullanır ve bu klasör run_command PATH\'inde önceliklidir; yani run_command içinde de `python` çalışır. Ham Google/Bing scrape yerine önce web_search aracını kullan (SearXNG + stealth TLS + TinyFish + Python çoklu-motor destekli), script gerektiğinde python_run yaz.',
@@ -3991,6 +4005,12 @@ class Engine {
     if (adef && adef.prompt) {
       system += `\n\n# AJAN: ${adef.name}\n${adef.prompt}`;
     }
+    /* T3SFAST DAYATMA: TypeSafe anahtarı VAR ve AÇIKken elle eylem araçları
+       gizlenir (yalnız ilgili Jev aracı listede varsa): tarayıcı/masaüstü
+       eylemleri browser_agent/computer_agent üzerinden yürür; okuma ve
+       doğrulama araçları (open/read/screenshot/snapshot/wait, computer_look)
+       açık kalır. Anahtar yoksa/kapalıysa hiçbir şey gizlenmez. */
+    activeTools = filterTypesafeTools(activeTools, !typesafe.unavailable());
     /* önek-cache disiplini (opencode request.ts:184): araç sırası oturum
        boyunca sabit olmalı — alfabetik sıralama sağlayıcı önbelleğini bozmaz */
     activeTools = [...activeTools].sort((a, b) =>
@@ -5906,6 +5926,17 @@ const skills = require('./skills');
         });
       }
       if (name === 'computer_act') {
+        /* T3SFAST DAYATMA: TypeSafe açıkken elle masaüstü eylemleri kapalı —
+           eylem computer_agent'a (window alanıyla), doğrulama computer_look'a. */
+        if (!typesafe.unavailable()) {
+          return JSON.stringify({
+            ok: false,
+            redirected: 'computer_agent',
+            error:
+              'TypeSafe açık: elle masaüstü eylemleri kapalıdır — computer_agent {goal, window?} ile yaptır ' +
+              '(ekranı doğrulamak için computer_look açık)',
+          });
+        }
         if (!this.computer || typeof this.computer.act !== 'function') {
           return JSON.stringify({ ok: false, error: 'fare/klavye erişimi yok' });
         }
@@ -6003,6 +6034,17 @@ const skills = require('./skills');
         return JSON.stringify(r);
       }
       if (name === 'browser_click' || name === 'browser_type' || name === 'browser_press' || name === 'browser_scroll' || name === 'browser_select') {
+        /* T3SFAST DAYATMA: TypeSafe açıkken elle eylem yolu kapalı — sağlayıcı
+           araç listesi dışından çağırırsa bile Jev'e yönlendirilir. */
+        if (!typesafe.unavailable()) {
+          return JSON.stringify({
+            ok: false,
+            redirected: 'browser_agent',
+            error:
+              'TypeSafe açık: elle tarayıcı eylemleri kapalıdır — hedefi browser_agent {goal, url?} ile TEK çağrıda yaptır ' +
+              '(sayfayı okumak/doğrulamak için browser_read/browser_screenshot/browser_snapshot açık)',
+          });
+        }
         if (!this.browser || typeof this.browser.act !== 'function') {
           return JSON.stringify({ ok: false, error: 'dahili tarayıcı kullanılamıyor' });
         }
@@ -7734,6 +7776,7 @@ module.exports.sanitizeTodoItems = sanitizeTodoItems;
 module.exports.parseReflectionJson = parseReflectionJson;
 module.exports.CEO_EXEC_TOOLS = CEO_EXEC_TOOLS;
 module.exports.BG_HIDDEN_TOOLS = BG_HIDDEN_TOOLS;
+module.exports.filterTypesafeTools = filterTypesafeTools;
 module.exports.PERM_TOOL_SETS = PERM_TOOL_SETS;
 module.exports.PERM_LEVELS = PERM_LEVELS;
 module.exports.normalizePerms = normalizePerms;

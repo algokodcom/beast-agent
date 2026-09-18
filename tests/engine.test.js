@@ -7,7 +7,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const { Engine, sanitizeTodoItems, stripAiDashes } = require('../src/agent/engine');
+const { Engine, sanitizeTodoItems, stripAiDashes, filterTypesafeTools } = require('../src/agent/engine');
 
 function makeEngine(extra = {}) {
   const sessionsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'beast-sess-'));
@@ -62,6 +62,29 @@ test('dash: kod blokları ve satır içi kod korunur', () => {
   const fenced = 'örnek:\n```\nconst s = "a — b–c";\n```\nbitti';
   assert.ok(stripAiDashes(fenced).includes('"a — b–c"'));
   assert.ok(stripAiDashes('şu `a — b` kalsın').includes('`a — b`'));
+});
+
+/* ---------- T3SFAST araç politikası ---------- */
+
+test('filterTypesafeTools: TypeSafe açıkken elle eylem araçları gizlenir', () => {
+  const t = (name) => ({ type: 'function', function: { name } });
+  const tools = [
+    t('browser_open'), t('browser_click'), t('browser_type'), t('browser_press'),
+    t('browser_scroll'), t('browser_select'), t('browser_read'), t('browser_agent'),
+    t('computer_act'), t('computer_look'), t('computer_agent'),
+  ];
+  const open = filterTypesafeTools(tools, true).map((x) => x.function.name);
+  for (const hidden of ['browser_click', 'browser_type', 'browser_press', 'browser_scroll', 'browser_select', 'computer_act']) {
+    assert.ok(!open.includes(hidden), hidden + ' gizlenmeli');
+  }
+  for (const kept of ['browser_agent', 'computer_agent', 'browser_read', 'browser_open', 'computer_look']) {
+    assert.ok(open.includes(kept), kept + ' açık kalmalı');
+  }
+  /* anahtar kapalıysa hiçbir şey gizlenmez */
+  assert.equal(filterTypesafeTools(tools, false).length, tools.length);
+  /* Jev aracının kendisi listede yoksa elle araç da gizlenmez */
+  const limited = [t('browser_click'), t('computer_act')];
+  assert.equal(filterTypesafeTools(limited, true).length, 2);
 });
 
 /* ---------- clearTodos (/deltodo) ---------- */

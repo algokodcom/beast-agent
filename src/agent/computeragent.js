@@ -25,10 +25,14 @@ match the goal; prefer specific, unique labels over generic words. Choose only a
 
 const OPERATION_LABELS = {
   CLICK: 'Click an OCR text line on the screen (button, field, link, menu item).',
-  TYPE_TEXT: 'Type text into the control focused by the most recent CLICK. A small LLM supplies the value.',
+  DOUBLE_CLICK: 'Double-click an OCR text line (open file/folder, select word).',
+  RIGHT_CLICK: 'Right-click an OCR text line (context menu).',
+  TYPE_TEXT: 'Type text into the control focused by the most recent click. A small LLM supplies the value.',
   DONE: 'Every requirement is visibly satisfied on screen.',
   BLOCKED: 'No supported operation can progress.',
 };
+
+const LINE_OPS = new Set(['CLICK', 'DOUBLE_CLICK', 'RIGHT_CLICK']);
 
 const KEYS = {
   PRESS_ENTER: { label: 'Press Enter (submit / confirm)', combo: 'enter' },
@@ -36,8 +40,19 @@ const KEYS = {
   PRESS_ESC: { label: 'Press Escape (close popup / cancel)', combo: 'esc' },
   PRESS_DOWN: { label: 'Press Arrow Down (list / dropdown)', combo: 'down' },
   PRESS_UP: { label: 'Press Arrow Up (list / dropdown)', combo: 'up' },
+  PRESS_LEFT: { label: 'Press Arrow Left', combo: 'left' },
+  PRESS_RIGHT: { label: 'Press Arrow Right', combo: 'right' },
   PRESS_BACKSPACE: { label: 'Press Backspace (delete one character)', combo: 'backspace' },
+  PRESS_DELETE: { label: 'Press Delete', combo: 'delete' },
   SELECT_ALL: { label: 'Select all text in the focused field (Ctrl+A)', combo: 'ctrl+a' },
+  CTRL_S: { label: 'Save (Ctrl+S)', combo: 'ctrl+s' },
+  CTRL_Z: { label: 'Undo (Ctrl+Z)', combo: 'ctrl+z' },
+  CTRL_C: { label: 'Copy (Ctrl+C)', combo: 'ctrl+c' },
+  CTRL_V: { label: 'Paste (Ctrl+V)', combo: 'ctrl+v' },
+  CTRL_X: { label: 'Cut (Ctrl+X)', combo: 'ctrl+x' },
+  CTRL_F: { label: 'Find (Ctrl+F)', combo: 'ctrl+f' },
+  ALT_TAB: { label: 'Switch window (Alt+Tab)', combo: 'alt+tab' },
+  ALT_F4: { label: 'Close window (Alt+F4)', combo: 'alt+f4' },
 };
 
 const SCROLLS = {
@@ -77,7 +92,11 @@ function lineTargets(lines) {
 }
 
 function operationSet(clickTargets, focusedLabel) {
-  const operations = { CLICK: OPERATION_LABELS.CLICK };
+  const operations = {
+    CLICK: OPERATION_LABELS.CLICK,
+    DOUBLE_CLICK: OPERATION_LABELS.DOUBLE_CLICK,
+    RIGHT_CLICK: OPERATION_LABELS.RIGHT_CLICK,
+  };
   if (focusedLabel) operations.TYPE_TEXT = OPERATION_LABELS.TYPE_TEXT;
   for (const [key, value] of Object.entries(KEYS)) operations[key] = value.label;
   for (const [key, value] of Object.entries(SCROLLS)) operations[key] = value.label + ' (screen)';
@@ -139,7 +158,7 @@ async function choose(deps, page, goal, history, focusedLabel) {
     verifyAnswer && Number.isFinite(Number(verifyAnswer.noul)) ? Number(verifyAnswer.noul) : null;
   let target = null;
   let targetAnswer = null;
-  if (operation === 'CLICK') {
+  if (LINE_OPS.has(operation)) {
     targetAnswer = validateChoice(answers.click_target || {}, Object.keys(clickTargets));
     target = targetAnswer.choice;
   } else if (operation === 'TYPE_TEXT') {
@@ -149,7 +168,7 @@ async function choose(deps, page, goal, history, focusedLabel) {
   return {
     operation,
     target,
-    line: operation === 'CLICK' ? clickTargets[target] : null,
+    line: LINE_OPS.has(operation) ? clickTargets[target] : null,
     confidence: targetAnswer ? targetAnswer.confidence : operationAnswer.confidence,
     target_probability: target != null && targetAnswer ? targetAnswer.probabilities[target] : null,
     verification,
@@ -222,7 +241,7 @@ async function run(deps, options) {
        OCR maliyeti olmadan önbellekten okuruz (screenObserve → sig). */
     const sig = page.sig != null ? String(page.sig) : String(page.w) + '|' + String(page.h) + '|' + String((page.lines || []).length) + '|' + String(page.text || '').length;
     const last = history.length ? history[history.length - 1] : null;
-    if (last && last.kind === 'click' && !last.failed) {
+    if (last && ['click', 'dblclick', 'rightclick'].includes(last.kind) && !last.failed) {
       if (last.page_changed == null) last.page_changed = prevSig != null ? sig !== prevSig : null;
       if (last.page_changed === false) {
         noChangeStreak++;
@@ -277,9 +296,9 @@ async function run(deps, options) {
     let text = null;
     let kind = '';
     try {
-      if (operation === 'CLICK') {
-        kind = 'click';
-        result = await deps.act('click', { x: decision.line.x, y: decision.line.y, fast: true });
+      if (LINE_OPS.has(operation)) {
+        kind = operation === 'CLICK' ? 'click' : operation === 'DOUBLE_CLICK' ? 'dblclick' : 'rightclick';
+        result = await deps.act(kind, { x: decision.line.x, y: decision.line.y, fast: true });
         if (!result || result.ok !== false) focusedLabel = baseLabel(decision.line.label);
         await deps.wait({ ms: 150 });
       } else if (operation === 'TYPE_TEXT') {

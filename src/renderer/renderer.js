@@ -1920,11 +1920,11 @@ async function renderProviderPane() {
     `</div>` +
     `<button id="cpFetch" class="btn ghost">${_t('p_fetch')}</button>` +
     `<div id="cpPicks" class="model-picks" hidden></div>` +
-    `<div id="cpManualWrap" hidden>` +
+    `<div id="cpManualWrap">` +
     `<label class="mem-label">${_t('p_models_manual')}</label>` +
-    `<textarea id="cpManual" class="mem-area" rows="4" placeholder="model-adi-1&#10;model-adi-2"></textarea>` +
+    `<textarea id="cpManual" class="mem-area" rows="3" placeholder="model-adi-1&#10;model-adi-2"></textarea>` +
     `</div>` +
-    `<button id="cpSave" class="btn" hidden>${_t('p_save')}</button>`;
+    `<button id="cpSave" class="btn">${_t('p_save')}</button>`;
   pane.appendChild(form);
 
   let discovered = [];
@@ -1981,11 +1981,11 @@ async function renderProviderPane() {
 
   const collectedModels = () => {
     const picked = [...document.querySelectorAll('#cpPicks input:checked')].map((c) => c.value);
-    if (picked.length) return picked;
-    return ($('#cpManual').value || '')
+    const manual = ($('#cpManual').value || '')
       .split(/[\n,]+/)
       .map((s) => s.trim())
       .filter(Boolean);
+    return [...new Set([...picked, ...manual])];
   };
 
   $('#cpFetch').addEventListener('click', async () => {
@@ -2005,24 +2005,20 @@ async function renderProviderPane() {
     discovered = res.ok ? res.models : [];
     const picks = $('#cpPicks');
     if (discovered.length) {
-      $('#cpManualWrap').hidden = true;
       picks.hidden = false;
       picks.innerHTML = discovered
         .map((m) => `<label><input type="checkbox" value="${escapeHtml(m)}" checked> ${escapeHtml(m)}</label>`)
         .join('');
-      $('#cpSave').hidden = false;
-      toast(discovered.length + ' model bulundu');
+      toast(discovered.length + ' model bulundu — listeden seç ya da elle ekle');
     } else {
       picks.hidden = true;
       picks.innerHTML = '';
-      $('#cpManualWrap').hidden = false;
-      $('#cpSave').hidden = false;
       toast('Model çekilemedi (' + (res.error || 'boş') + ') — elle girebilirsin');
     }
   });
 
   $('#cpSave').addEventListener('click', async () => {
-    const models = [...new Set(collectedModels())];
+    const models = collectedModels();
     const url = $('#cpUrl').value.trim();
     if (!/^https?:\/\//i.test(url)) { toast('Geçerli API adresi gir'); return; }
     if (!models.length) { toast('En az bir model gir ya da seç'); return; }

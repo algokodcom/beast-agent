@@ -3818,6 +3818,17 @@ function ensureShortcuts() {
 /* TTS otomatik seslendirme: kullanıcı jesti olmadan Audio.play() çalışsın */
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
 
+/* DAHİLİ TARAYICI CDP (HER AÇILIŞTA AÇIK): Jev (browser_agent) ve toollar
+   (browser_js) daima DAHİLİ panelde çalışsın diye remote debug portu otomatik
+   açılır — bat/argüman gerekmez. Chromium gerçek portu %APPDATA%\Beast Agent\
+   DevToolsActivePort dosyasına yazar; browser_js önce o dosyayı okur, paneli
+   bulamazsa zaten hata verir (yardımcı Chrome'a düşmez). Kullanıcı kendi
+   --remote-debugging-port argümanını verdiyse ona dokunulmaz. */
+try {
+  const hasPort = process.argv.some((a) => /^--remote-debugging-port(=|$)/.test(String(a)));
+  if (!hasPort) app.commandLine.appendSwitch('remote-debugging-port', '9234');
+} catch {}
+
 app.whenReady().then(() => {
     // Tailscale modu: paketli uygulamada Windows ile otomatik başlat (sessiz, tepside)
     if (app.isPackaged) {

@@ -5370,12 +5370,14 @@ const BROWSER_OBSERVE_JS = `(function(){
     return null;
   };
   const actions=[];
+  const added=new WeakSet();
   for(const e of document.querySelectorAll(selector)){
     if(actions.length>=300) break;
     if(!safe(e) || !visible(e) || e.matches(':disabled') || e.closest('[aria-disabled="true"]')) continue;
     const r=e.getBoundingClientRect(), x=r.x+r.width/2, y=r.y+r.height/2, rname=role(e);
     if(!rname || r.width<=0 || r.height<=0 || x<0 || y<0 || x>=innerWidth || y>=innerHeight) continue;
     if(rname==='gridcell' && e.querySelector('button,[role="button"]')) continue;
+    added.add(e);
     const base={ref:identity(e),role:rname,label:name(e)||rname};
     const et=String(e.type||'').toLowerCase();
     if(et) base.input_type=et;
@@ -5399,6 +5401,29 @@ const BROWSER_OBSERVE_JS = `(function(){
       actions.push({...base,kind:editable?'fill':'click',value});
       if(editable) actions.push({...base,kind:'click',value,label:'Open '+base.label});
     }
+  }
+  /* İLAVE TIKLANABİLİRLER: <a>/<button> dışı gerçek hedef olan kategori/menü
+     kutuları (li, custom div/span butonlar). Kısıtlı aday seti + cursor:pointer
+     (ya da onclick) + metin + makul kutu şartı. İçinde gerçek link/buton olan
+     kapsayıcılar atlanır (onlar zaten ana listede). */
+  const extraSel='li,[onclick],[class*="categor" i],[class*="kategor" i],[class*="menu" i],[class*="nav" i],[class*="tab" i],[role="treeitem"],[role="menuitem"]';
+  let extra=0;
+  for(const e of document.querySelectorAll(extraSel)){
+    if(extra>=80 || actions.length>=300) break;
+    if(added.has(e) || e.closest('a[href],button,[role="button"]')) continue;
+    if(e.querySelector('a[href],button,[role="button"]')) continue;
+    if(!visible(e) || e.matches(':disabled') || e.closest('[aria-disabled="true"]')) continue;
+    let pointer=false;
+    try{ pointer=getComputedStyle(e).cursor==='pointer'||e.hasAttribute('onclick'); }catch(err){}
+    if(!pointer) continue;
+    const r=e.getBoundingClientRect(), x=r.x+r.width/2, y=r.y+r.height/2;
+    if(r.width<16||r.height<12||r.width>innerWidth*0.85||r.height>innerHeight*0.4) continue;
+    if(x<0||y<0||x>=innerWidth||y>=innerHeight) continue;
+    const label=String(name(e)||'').replace(/\\s+/g,' ').trim();
+    if(!label||label.length>80) continue;
+    added.add(e);
+    actions.push({ref:identity(e),role:'button',label:label,kind:'click',value:''});
+    extra++;
   }
   const words=[], walker=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT);
   const range=document.createRange(); let node, length=0;
@@ -5568,6 +5593,22 @@ function browserActionJs(kind, args) {
       res(JSON.stringify({selected:true,target:t.how,value:opt.text.trim()}));
     }catch(e){res(JSON.stringify({selected:false,reason:String(e)}));}});})()`;
   }
+  if (kind === 'hover') {
+    return `(function(){${BROWSER_JS_HELPERS}${resolveTarget}
+      try{
+        const t=__target();
+        if(!t) return JSON.stringify({hovered:false,reason:'eleman bulunamadi (ref eski olabilir)'});
+        const el=t.el;
+        el.scrollIntoView({block:'center'});
+        const r=el.getBoundingClientRect(), x=Math.round(r.x+r.width/2), y=Math.round(r.y+r.height/2);
+        const opt={bubbles:true,cancelable:true,clientX:x,clientY:y};
+        ['pointerover','pointerenter','mouseover','mouseenter','mousemove'].forEach(function(type){
+          try{ el.dispatchEvent(new MouseEvent(type,opt)); }catch(e){}
+        });
+        return JSON.stringify({hovered:true,target:t.how});
+      }catch(e){return JSON.stringify({hovered:false,reason:String(e)});}
+    })()`;
+  }
   return `JSON.stringify({ok:false,error:'bilinmeyen eylem'})`;
 }
 
@@ -5660,7 +5701,7 @@ async function browserAct(kind, args, signal) {
   /* JEV HIZLI YOLU: TypeSafe ajanı her adımda zaten taze observe yapar —
      ağır imza + taze snapshot + uzun bekleme gereksizdir. */
   const fast = !!a.fast;
-  const trusted = !!a.trusted && ['click', 'type'].includes(kind) && browser.attached;
+  const trusted = !!a.trusted && ['click', 'type', 'hover'].includes(kind) && browser.attached;
   /* DOĞRULAMA: eylem öncesi görsel parmak izi (yalnız anlamlı eylemlerde) */
   const verify = ['click', 'type', 'select', 'press'].includes(kind) && !fast && !(a.verify === false);
   const sigBefore = verify ? await pageSignature(wc) : null;
@@ -5671,12 +5712,20 @@ async function browserAct(kind, args, signal) {
       let point = {};
       try { point = JSON.parse(pointRaw); } catch { point = { ok: false, reason: 'koordinat alinamadi' }; }
       if (!point.ok) {
-        obj = kind === 'click' ? { clicked: false, ...point } : { typed: false, ...point };
+        obj = kind === 'click' ? { clicked: false, ...point }
+          : kind === 'hover' ? { hovered: false, ...point }
+          : { typed: false, ...point };
       } else if (kind === 'type' && /^(date|time|month|week|datetime-local)$/.test(String(point.input_type || ''))) {
         /* native tarih/saat alanı: gerçek klavye yerine programatik değer + event
            (tarayıcı segment segment yazmayı reddeder) */
         const raw = await wc.executeJavaScript(browserActionJs(kind, a), true);
         try { obj = JSON.parse(raw); } catch { obj = { result: String(raw).slice(0, 300) }; }
+      } else if (kind === 'hover') {
+        /* GERÇEK fare: yalnız mouseMove — tıklama YOK; kategori/mega menü
+           hover ile açılır, sonraki gözlemde alt menü hedefleri görünür olur. */
+        wc.sendInputEvent({ type: 'mouseMove', x: point.x, y: point.y });
+        await new Promise((r) => setTimeout(r, 260));
+        obj = { hovered: true, trusted: true, target: point.how };
       } else {
         wc.sendInputEvent({ type: 'mouseMove', x: point.x, y: point.y });
         wc.sendInputEvent({ type: 'mouseDown', x: point.x, y: point.y, button: 'left', clickCount: 1 });
@@ -5741,6 +5790,7 @@ async function browserAct(kind, args, signal) {
     blog(
       kind,
       obj.clicked ? obj.target
+        : obj.hovered ? ('üzerine gelindi ' + obj.target)
         : obj.typed ? ('"' + obj.value + '" → ' + obj.target)
         : obj.selected ? ('"' + obj.value + '" seçildi')
         : obj.pressed ? ('tuş ' + obj.pressed)

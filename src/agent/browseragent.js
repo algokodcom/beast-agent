@@ -20,6 +20,8 @@ Submit populated search fields before opening a result; a populated field alone 
 WAIT only when the needed control is absent/disabled, or submitted results are still loading.
 If Search/Submit is visible and the required fields are ready, CLICK it immediately.
 Recent WAIT actions are not evidence of loading. Prefer a useful visible control over WAIT.
+Category/nav items that reveal a submenu only on hover: choose HOVER on the category first,
+then CLICK the submenu item that becomes visible. HOVER never navigates by itself.
 DONE requires visible evidence that ALL requirements are satisfied. If asked to open a result,
 a matching link is not enough. BLOCKED means no supported operation can make progress.
 Before the goal itself: if a modal, cookie or consent band, campaign popup,
@@ -50,6 +52,7 @@ const OPERATION_LABELS = {
   TYPE_TEXT: 'Enter or replace text in an editable field. A small LLM will supply the value from the goal.',
   SELECT: 'Select an observed dropdown value.',
   PRESS: 'Press a keyboard key (Escape closes modals and popups).',
+  HOVER: 'Move the mouse over an element WITHOUT clicking (opens hover menus / mega menus).',
   DONE: 'Every requirement is visibly satisfied.',
   BLOCKED: 'No supported operation can progress.',
 };
@@ -142,6 +145,7 @@ function operationsFor(targets, controls) {
   for (const key of Object.keys(targets)) operations[key] = OPERATION_LABELS[key] || key;
   for (const [key, value] of Object.entries(controls)) operations[key] = value.label || key;
   operations.PRESS = OPERATION_LABELS.PRESS;
+  operations.HOVER = OPERATION_LABELS.HOVER;
   for (const key of ['DONE', 'BLOCKED']) operations[key] = OPERATION_LABELS[key];
   return operations;
 }
@@ -165,10 +169,12 @@ function targetCriteria(candidates) {
    istekte gider. Yalnız seçilen operation'ın target başlığı doğrulanır. */
 async function choose(deps, page, goal, history, space) {
   const { elements, targets, controls } = space;
+  /* HOVER, CLICK hedeflerini kullanır: kategori/mega menüler önce hover ister */
+  const targetOps = targets.CLICK ? Object.assign({ HOVER: targets.CLICK }, targets) : targets;
   const questions = {
     operation: {
       type: 'choice',
-      criteria: operationsFor(targets, controls),
+      criteria: operationsFor(targetOps, controls),
       instructions: { goal, rules: NEXT_ACTION },
     },
     verification: {
@@ -176,7 +182,7 @@ async function choose(deps, page, goal, history, space) {
       instructions: { goal, rules: [NEXT_ACTION, VERIFY] },
     },
   };
-  for (const [operation, candidates] of Object.entries(targets)) {
+  for (const [operation, candidates] of Object.entries(targetOps)) {
     questions[operation.toLowerCase() + '_target'] = {
       type: 'choice',
       criteria: targetCriteria(candidates),
@@ -199,21 +205,21 @@ async function choose(deps, page, goal, history, space) {
   const started = Date.now();
   const result = await (deps.systemOne || systemOne)({ state, questions });
   const answers = (result && result.answers) || {};
-  const operationAnswer = validateChoice(answers.operation || {}, Object.keys(operationsFor(targets, controls)));
+  const operationAnswer = validateChoice(answers.operation || {}, Object.keys(operationsFor(targetOps, controls)));
   const operation = operationAnswer.choice;
   const verifyAnswer = answers.verification && typeof answers.verification === 'object' ? answers.verification : null;
   const verification =
     verifyAnswer && Number.isFinite(Number(verifyAnswer.noul)) ? Number(verifyAnswer.noul) : null;
   let target = null;
   let targetAnswer = null;
-  if (targets[operation]) {
-    targetAnswer = validateChoice(answers[operation.toLowerCase() + '_target'] || {}, Object.keys(targets[operation]));
+  if (targetOps[operation]) {
+    targetAnswer = validateChoice(answers[operation.toLowerCase() + '_target'] || {}, Object.keys(targetOps[operation]));
     target = targetAnswer.choice;
   }
   return {
     operation,
     target,
-    action: target != null ? targets[operation][target] : controls[operation] || { id: operation, kind: operation.toLowerCase(), label: operation },
+    action: target != null ? targetOps[operation][target] : controls[operation] || { id: operation, kind: operation.toLowerCase(), label: operation },
     confidence: targetAnswer ? targetAnswer.confidence : operationAnswer.confidence,
     target_probability: target != null && targetAnswer ? targetAnswer.probabilities[target] : null,
     verification,
@@ -322,7 +328,7 @@ async function run(deps, options) {
        Değişmeyen sayfada 3. eylemde döngü kendini bloke ilan eder. */
     const rev = page.rev != null ? String(page.rev) : String(page.url || '') + '|' + String(page.title || '');
     const last = history.length ? history[history.length - 1] : null;
-    if (last && last.kind !== 'wait' && last.kind !== 'scroll' && !last.stale) {
+    if (last && last.kind !== 'wait' && last.kind !== 'scroll' && last.kind !== 'hover' && !last.stale) {
       if (last.page_changed == null) last.page_changed = prevRev != null ? rev !== prevRev : null;
       if (last.page_changed === false) {
         if (!last.covered) noChangeStreak++;
@@ -374,7 +380,7 @@ async function run(deps, options) {
     if (operation === 'BLOCKED') return finish('blocked');
 
     const action = decision.action || {};
-    const kind = String(action.kind || '');
+    const kind = operation === 'HOVER' ? 'hover' : String(action.kind || '');
     const expect = page.url ? { url: page.url } : null;
     let result = null;
     let text = null;
@@ -408,6 +414,10 @@ async function run(deps, options) {
       } else if (kind === 'click') {
         result = await deps.act('click', { ref: Number(action.ref), fast: true, trusted: true, expect });
         await deps.wait({ ms: 60 });
+      } else if (kind === 'hover') {
+        /* alt menü/mega menü: tıkla değil, üzerine gel — menü açılsın */
+        result = await deps.act('hover', { ref: Number(action.ref), fast: true, trusted: true, expect });
+        await deps.wait({ ms: 180 });
       } else if (kind === 'select') {
         const value = action.value != null && String(action.value) !== '' ? action.value : baseLabel(action.label);
         result = await deps.act('select', { ref: Number(action.ref), value: String(value), fast: true, expect });

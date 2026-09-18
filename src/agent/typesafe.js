@@ -87,7 +87,26 @@ function normalizeQuestions(questions) {
   return out;
 }
 
-/* systemOne çağrısı: state + questions → answers */
+/* systemOne çağrısı: state + questions → answers.
+   Geçici hatalarda (429/5xx/ağ/zaman aşımı) kısa backoff ile 2 kez yeniden
+   denenir — tek dalgalı hata tüm Jev döngüsünü düşürmesin. */
+const RETRY_DELAYS_MS = [400, 1000];
+
+function sleep(ms, signal) {
+  return new Promise((resolve, reject) => {
+    if (signal && signal.aborted) return reject(new Error('TypeSafe çağrısı iptal edildi'));
+    const t = setTimeout(() => {
+      if (signal && typeof signal.removeEventListener === 'function') signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    function onAbort() {
+      clearTimeout(t);
+      reject(new Error('TypeSafe çağrısı iptal edildi'));
+    }
+    if (signal && typeof signal.addEventListener === 'function') signal.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
 async function systemOne({ state, questions, model, timeoutMs, signal } = {}) {
   const c = cfg();
   const gate = unavailable();
@@ -97,37 +116,58 @@ async function systemOne({ state, questions, model, timeoutMs, signal } = {}) {
   }
   const qs = normalizeQuestions(questions);
   const body = { state, model: String(model || '').trim() || c.model, questions: qs };
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), Number(timeoutMs) > 0 ? Number(timeoutMs) : DEFAULT_TIMEOUT_MS);
-  const onAbort = () => ctrl.abort();
-  if (signal && typeof signal.addEventListener === 'function') signal.addEventListener('abort', onAbort, { once: true });
-  try {
-    const res = await fetch(BASE_URL + '/v1/systemone', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', authorization: 'Bearer ' + c.apiKey },
-      body: JSON.stringify(body),
-      signal: ctrl.signal,
-    });
-    if (!res.ok) {
-      const txt = await res.text().catch(() => '');
-      throw new Error(errorForStatus(res.status, txt));
+  const perTry = Number(timeoutMs) > 0 ? Number(timeoutMs) : DEFAULT_TIMEOUT_MS;
+  let lastError = null;
+  for (let attempt = 0; attempt <= RETRY_DELAYS_MS.length; attempt++) {
+    if (signal && signal.aborted) throw new Error('TypeSafe çağrısı iptal edildi');
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), perTry);
+    const onAbort = () => ctrl.abort();
+    if (signal && typeof signal.addEventListener === 'function') signal.addEventListener('abort', onAbort, { once: true });
+    try {
+      const res = await fetch(BASE_URL + '/v1/systemone', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: 'Bearer ' + c.apiKey },
+        body: JSON.stringify(body),
+        signal: ctrl.signal,
+      });
+      if (!res.ok) {
+        const txt = await res.text().catch(() => '');
+        const err = new Error(errorForStatus(res.status, txt));
+        err.status = res.status;
+        throw err;
+      }
+      const data = await res.json();
+      return {
+        model: String((data && data.model) || body.model),
+        answers: (data && data.answers) || {},
+        usage: (data && data.usage) || null,
+      };
+    } catch (e) {
+      const abortedByUser = !!(signal && signal.aborted);
+      if (abortedByUser) throw new Error('TypeSafe çağrısı iptal edildi');
+      const timedOut = !!(e && (e.name === 'AbortError' || e.name === 'TimeoutError'));
+      const network = e instanceof TypeError;
+      const retryable = timedOut || network || e.status === 429 || (Number(e.status) >= 500 && Number(e.status) <= 599);
+      lastError = e;
+      if (retryable && attempt < RETRY_DELAYS_MS.length) {
+        try {
+          await sleep(RETRY_DELAYS_MS[attempt], signal);
+        } catch (abortErr) {
+          throw new Error('TypeSafe çağrısı iptal edildi');
+        }
+        continue;
+      }
+      if (timedOut) {
+        throw new Error('TypeSafe zaman aşımı — istek ' + Math.round(perTry / 1000) + ' sn içinde yanıtlanmadı');
+      }
+      throw e;
+    } finally {
+      clearTimeout(timer);
+      if (signal && typeof signal.removeEventListener === 'function') signal.removeEventListener('abort', onAbort);
     }
-    const data = await res.json();
-    return {
-      model: String((data && data.model) || body.model),
-      answers: (data && data.answers) || {},
-      usage: (data && data.usage) || null,
-    };
-  } catch (e) {
-    if (e && (e.name === 'AbortError' || e.name === 'TimeoutError')) {
-      if (signal && signal.aborted) throw new Error('TypeSafe çağrısı iptal edildi');
-      throw new Error('TypeSafe zaman aşımı — istek ' + Math.round((Number(timeoutMs) > 0 ? Number(timeoutMs) : DEFAULT_TIMEOUT_MS) / 1000) + ' sn içinde yanıtlanmadı');
-    }
-    throw e;
-  } finally {
-    clearTimeout(timer);
-    if (signal && typeof signal.removeEventListener === 'function') signal.removeEventListener('abort', onAbort);
   }
+  throw lastError || new Error('TypeSafe çağrısı başarısız');
 }
 
 /* Anahtar testi: tek soruluk ucuz systemOne çağrısı (bağlantı + auth doğrular) */

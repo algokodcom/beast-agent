@@ -2230,7 +2230,7 @@ class Engine {
             ' Görselleri GÖREMEMİYORSAN (metin-model) görüntüdeki metni okumak için ocr_read kullan: source:"browser" ile tarayıcı sayfasını, "screen" ile masaüstünü OCR\u2019la okursun (captcha/canvas/görsel metin dahil).' +
             (this.ceoMode ? ' (CEO: bu araçları KENDİN ÇAĞIRMA — içinde tarayıcı geçen işi run_background ile paralel ajana devret.)' : ''),
           'Tarayıcı eylemlerinin yanıtındaki recent günlüğünü ve navigated bilgisini takip et; eylem yanıtları zaten taze snapshot içerir — refler tutarsız görünürse yeni snapshot al.',
-          'T3SFAST (Jev) HIZLI AJANLARI: Ayarlar → TypeSafe\'te anahtar VAR ve AÇIKSA çok adımlı işleri tek tek browser_click/browser_type yerine browser_agent\'a BİR doğal-dil hedefiyle ver (arama + form + filtre + tarih seçimi + sonuç açma gibi akışlar saniyeler içinde biter; her adımı TypeSafe Jev seçer, yalnız metin girişini küçük bir LLM yazar). "done" durumu KANIT DEĞİL — sonucu browser_read/browser_screenshot ile bağımsız doğrulamadan kullanıcıya başarılı deme. Masaüstü işleri için computer_agent\'ı aynı şekilde kullan (önce computer_act {op:"focus"} ile doğru pencereyi öne getir; sonucu computer_look ile doğrula); ekran OCR ile okunduğundan her adım yavaştır, hedefi net ver. Anahtar yoksa/kapalıysa bu araçlar hata döner — kullanıcıyı Ayarlar → TypeSafe\'e yönlendir.',
+          'T3SFAST (Jev) HIZLI AJANLARI: Ayarlar → TypeSafe\'te anahtar VAR ve AÇIKSA çok adımlı tarayıcı işlerini tek tek browser_click/browser_type yerine HER ZAMAN browser_agent\'a BİR doğal-dil hedefiyle ver (arama + form + filtre + tarih seçimi + sonuç açma gibi akışlar saniyeler içinde biter; her adımı TypeSafe Jev seçer, yalnız metin girişini küçük bir LLM yazar; gerçek fare/klavye girdisi + DONE için aynı istekte noul doğrulaması yapılır). "done" durumu hâlâ KANIT DEĞİL — sonucu browser_read/browser_screenshot ile bağımsız doğrulamadan kullanıcıya başarılı deme. Masaüstü işleri için computer_agent\'ı aynı şekilde kullan — pencereyi "window" alanıyla otomatik öne getirt (ör. window:"Notepad"), sonucu computer_look ile doğrula; değişmeyen ekran karelerinde OCR önbelleği devreye girer, hedefi net ver (uygulama + alan + değer). Anahtar yoksa/kapalıysa bu araçlar hata döner — kullanıcıyı Ayarlar → TypeSafe\'e yönlendir.',
           'CONUŞMA ODAĞI SENDE KALSIN: kullanıcı seninle konuşurken iş çıkmışsa — uzun da olsa UFACIK da (tek komutluk dizin listesi, tek dosya okuma, tek arama…) — run_background ile PARALEL ajana devret; ana sohbet hiçbir işi beklemez; bittiğinde özet otomatik düşer.',
           'Python işleri için python_run kullan: küçük betikler inline code ile; tekrarlayan işler %APPDATA%\\beast\\scripts klasöründeki dosyalarla (ör. news.py = RSS haber toplayıcı: args ["--limit","8","--json"]). Python kurulu olmasa bile ilk çağrıda taşınabilir gömülü runtime otomatik iner.',
             'PYTHON DURUMU: makinede sistem Python\'u görünmese bile ŞAŞIRMA ve "python yok" DEME — python_run aracı kendi taşınabilir runtime\'ını (%APPDATA%\\beast\\py\\python.exe) otomatik indirir/kullanır ve bu klasör run_command PATH\'inde önceliklidir; yani run_command içinde de `python` çalışır. Ham Google/Bing scrape yerine önce web_search aracını kullan (SearXNG + stealth TLS + TinyFish + Python çoklu-motor destekli), script gerektiğinde python_run yaz.',
@@ -5944,7 +5944,7 @@ const skills = require('./skills');
             emit: (ev) => emitSafe(this, sessionId, ev),
             signal,
           },
-          { goal: cgoal, max_steps: ca.max_steps, budget_ms: ca.budget_ms }
+          { goal: cgoal, window: ca.window || ca.focus, max_steps: ca.max_steps, budget_ms: ca.budget_ms }
         );
         return JSON.stringify(pcRun);
       }
@@ -6675,7 +6675,7 @@ const TOOLS = [
     function: {
       name: 'computer_agent',
       description:
-        'AUTONOMOUS FAST COMPUTER LOOP (T3SFast computer use): give it ONE natural-language goal for the Windows desktop; it OCRs the screen, picks one operation + OCR text target per step through TypeSafe Jev and only calls a small LLM when a field must be typed. Mouse clicks land on the CENTER of the chosen OCR text line; standard flow: CLICK the input (or its label) → TYPE_TEXT → PRESS_ENTER. Useful for desktop dialogs/forms/settings; if a specific window must be used, bring it to front first with computer_act {op:"focus"}. Returns {status: done|blocked|max_steps|aborted|budget, trace, text_calls, focused, screen_text}. A "done" status is NOT proof of success: verify the screen independently (computer_look / OCR) before telling the user it is complete. Requires the TypeSafe API key in Settings → TypeSafe (and the TypeSafe switch ON).',
+        'AUTONOMOUS FAST COMPUTER LOOP (T3SFast computer use): give it ONE natural-language goal for the Windows desktop; it OCRs the screen (unchanged frames are served from an OCR cache), picks one operation + OCR text target per step through TypeSafe Jev, uses speculative operation+target heads, retries stale/ineffective actions less, and only calls a small LLM when a field must be typed. Real mouse/keyboard actions are unverified (fast mode) because the loop re-observes the screen right after. Mouse clicks land on the CENTER of the chosen OCR text line; standard flow: CLICK the input (or its label) → TYPE_TEXT → PRESS_ENTER. Useful for desktop dialogs/forms/settings; pass window:"<title part>" to bring the right window to front first. Returns {status: done|blocked|max_steps|aborted|budget, trace, text_calls, focused, screen_text}. DONE is additionally checked by a same-request TypeSafe verification question, but a "done" status is still NOT proof of success: verify the screen independently (computer_look / OCR) before telling the user it is complete. Requires the TypeSafe API key in Settings → TypeSafe (and the TypeSafe switch ON).',
       parameters: {
         type: 'object',
         properties: {
@@ -6684,8 +6684,9 @@ const TOOLS = [
             description:
               'Full natural-language goal with every value and the success condition, e.g. "Notepad açık; dosyaya \'Merhaba\' yaz ve Ctrl+S ile masaüstüne kaydet". Mention the app/window name.',
           },
+          window: { type: 'string', description: 'Optional window title substring to bring to front before starting (e.g. "Notepad") — avoids clicking the wrong window' },
           max_steps: { type: 'number', description: 'Max actions, default 15 (hard cap 40)' },
-          budget_ms: { type: 'number', description: 'Wall-clock budget in ms, default 180000 (hard cap 420000) — OCR makes each step slow' },
+          budget_ms: { type: 'number', description: 'Wall-clock budget in ms, default 180000 (hard cap 420000)' },
         },
         required: ['goal'],
       },
@@ -6903,7 +6904,7 @@ const TOOLS = [
     function: {
       name: 'browser_agent',
       description:
-        'AUTONOMOUS FAST BROWSER LOOP (Jev Ultrafast): give it ONE natural-language goal; it watches the built-in browser page, picks one operation + element each step through TypeSafe Jev (no chat-model text for decisions, one TypeSafe request per step) and only calls a small LLM when a field must be filled. Use for multi-step flows (search, forms, filters, date pickers, multi-page navigation) instead of many manual browser_click/browser_type turns — typically finishes in seconds with far fewer calls. If "url" is omitted it runs on the page already open in the panel. Progress is shown live in the panel status line. Returns {status: done|blocked|max_steps|aborted|budget, trace, text_calls, url, title, page_text, snapshot}. A "done" status is NOT proof of success: independently verify the visible result (browser_read / browser_screenshot / page_text) before telling the user it is complete. Requires the TypeSafe API key in Settings → TypeSafe (and the TypeSafe switch ON).',
+        'AUTONOMOUS FAST BROWSER LOOP (Jev Ultrafast): give it ONE natural-language goal; it watches the built-in browser page, picks one operation + element each step through TypeSafe Jev (no chat-model text for decisions, one TypeSafe request per step, speculative operation+target heads) and only calls a small LLM when a field must be filled. Real trusted mouse/keyboard input, stale-decision retry, and a same-request TypeSafe verification question before accepting DONE. Use for multi-step flows (search, forms, filters, date pickers, multi-page navigation) instead of many manual browser_click/browser_type turns — typically finishes in seconds with far fewer calls. If "url" is omitted it runs on the page already open in the panel. Progress is shown live in the panel status line. Returns {status: done|blocked|max_steps|aborted|budget, trace, text_calls, url, title, page_text, snapshot}. A "done" status is still NOT proof of success: independently verify the visible result (browser_read / browser_screenshot / page_text) before telling the user it is complete. Requires the TypeSafe API key in Settings → TypeSafe (and the TypeSafe switch ON).',
       parameters: {
         type: 'object',
         properties: {

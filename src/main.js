@@ -4833,20 +4833,37 @@ async function ocrRead({ image, lang = 'tur+eng', boxes = false } = {}) {
 
 /* T3SFast bilgisayar gözlemi: ekranı yakala (1280px, lastScreenCapture
    güncellenir) → OCR satırları + metin. Dönen kutu merkezleri computer_act'in
-   beklediği görüntü koordinatlarıdır. */
+   beklediği görüntü koordinatlarıdır.
+   OCR ÖNBELLEĞİ: ekran karesi öncekiyle aynıysa (ince parmak izi) tesseract
+   hiç çalıştırılmaz — Jev döngüsünün en pahalı adımı atlanır. */
+const OCR_OBSERVE_CACHE_MS = 15000;
+let lastScreenObserve = { key: '', at: 0, result: null };
+
+function screenObserveKey(cells) {
+  return Array.isArray(cells) ? cells.map((n) => Math.round(n)).join(',') : '';
+}
+
 async function screenObserve() {
-  const image = await captureScreenDataUrl();
-  if (!image) return { ok: false, error: 'ekran görüntüsü alınamadı' };
+  const frame = await captureScreenFrame();
+  if (!frame) return { ok: false, error: 'ekran görüntüsü alınamadı' };
   const cap = lastScreenCapture || {};
-  const ocr = await ocrRead({ image, boxes: true });
+  const key = screenObserveKey(imageSignature(frame.img));
+  const now = Date.now();
+  if (key && lastScreenObserve.key === key && lastScreenObserve.result && now - lastScreenObserve.at < OCR_OBSERVE_CACHE_MS) {
+    return { ...lastScreenObserve.result, cached: true, sig: key };
+  }
+  const ocr = await ocrRead({ image: frame.data, boxes: true });
   if (!ocr.ok) return { ok: false, error: ocr.error || 'OCR başarısız' };
-  return {
+  const result = {
     ok: true,
     w: cap.imgW || 1280,
     h: cap.imgH || 720,
     text: ocr.text,
     lines: ocr.lines || [],
+    sig: key,
   };
+  lastScreenObserve = { key, at: now, result };
+  return { ...result };
 }
 
 /* Dahili tarayıcıyla arama (web_search'ün İLK adımı): gerçek Chromium +
@@ -5215,7 +5232,7 @@ const BROWSER_OBSERVE_JS = `(function(){
       if(['button','submit','reset','image'].includes(t)) return 'button';
       if(t==='search') return 'searchbox';
       if(t==='number') return 'spinbutton';
-      if(['text','email','url','tel'].includes(t)) return 'textbox';
+      if(['text','email','url','tel','date','time','month','week','datetime-local'].includes(t)) return 'textbox';
     }
     return null;
   };
@@ -5227,11 +5244,12 @@ const BROWSER_OBSERVE_JS = `(function(){
     if(!rname || r.width<=0 || r.height<=0 || x<0 || y<0 || x>=innerWidth || y>=innerHeight) continue;
     if(rname==='gridcell' && e.querySelector('button,[role="button"]')) continue;
     const base={ref:identity(e),role:rname,label:name(e)||rname};
+    const et=String(e.type||'').toLowerCase();
+    if(et) base.input_type=et;
     for(const key of ['checked','selected','expanded']){
       const value=e.getAttribute('aria-'+key);
       if(value!==null) base[key]=value;
     }
-    const et=String(e.type||'').toLowerCase();
     if(et==='checkbox'||et==='radio') base.checked=String(e.checked);
     if(e.tagName==='SELECT'){
       const current=[...e.selectedOptions].map((o)=>o.label).join(', ');
@@ -5266,12 +5284,14 @@ const BROWSER_OBSERVE_JS = `(function(){
   if(scrollY>0) actions.push({id:'scroll_up',kind:'scroll',label:'Scroll up',delta:-560});
   actions.push({id:'wait',kind:'wait',label:'Wait for the page to update'});
   return JSON.stringify({url:location.href,title:document.title,w:innerWidth,h:innerHeight,text:text,
-    scroll:{y:Math.round(scrollY),height:height},actions:actions,omitted_actions:omitted});
+    scroll:{y:Math.round(scrollY),height:height},actions:actions,omitted_actions:omitted,
+    rev:location.href+'|'+document.title+'|'+actions.length+'|'+text.length+'|'+Math.round(scrollY)+'|'+height});
 })()`;
 
 function browserActionJs(kind, args) {
   const sel = JSON.stringify(String(args.selector || ''));
   const ref = JSON.stringify(args.ref === undefined ? null : Number(args.ref));
+  const expect = JSON.stringify(args.expect || null);
 
   const resolveTarget = `
     function __target(){
@@ -5285,11 +5305,19 @@ function browserActionJs(kind, args) {
 
   if (kind === 'click') {
     return `(function(){${BROWSER_JS_HELPERS}${resolveTarget};return new Promise((res)=>{try{
+      const ex=${expect};
+      if(ex&&ex.url&&location.href!==ex.url) return res(JSON.stringify({clicked:false,stale:true,reason:'sayfa degisti — karar bayat'}));
       const t=__target();
       if(!t) return res(JSON.stringify({clicked:false,reason:'eleman bulunamadi (ref eski olabilir - browser_snapshot al)'}));
       const how=t.how,el=t.el;
       el.scrollIntoView({block:'center'});
       setTimeout(()=>{try{
+        const r=el.getBoundingClientRect(), cx=r.x+r.width/2, cy=r.y+r.height/2;
+        const top=document.elementFromPoint(cx,cy);
+        if(top&&top!==el&&!el.contains(top)&&!top.contains(el)&&!(top.labels&&[...top.labels].includes(el))){
+          let cover='';try{cover=__label(top);}catch(e){}
+          return res(JSON.stringify({clicked:false,covered:true,reason:'hedef katman altinda: <'+top.tagName.toLowerCase()+'> "'+cover+'"'}));
+        }
         el.click();
         res(JSON.stringify({clicked:true,target:how+' <'+el.tagName.toLowerCase()+'> "'+__label(el)+'"'}));
       }catch(e){res(JSON.stringify({clicked:false,reason:String(e)}));}},80);
@@ -5319,6 +5347,8 @@ function browserActionJs(kind, args) {
       }
       /*__DT_HELPERS_END__*/
       return new Promise((res)=>{try{
+      const ex=${expect};
+      if(ex&&ex.url&&location.href!==ex.url) return res(JSON.stringify({typed:false,stale:true,reason:'sayfa degisti — karar bayat'}));
       const t=__target();
       if(!t) return res(JSON.stringify({typed:false,reason:'eleman bulunamadi (ref eski olabilir - browser_snapshot al)'}));
       const how=t.how,el=t.el;
@@ -5390,6 +5420,8 @@ function browserActionJs(kind, args) {
   if (kind === 'select') {
     const value = JSON.stringify(String(args.value ?? ''));
     return `(function(){${BROWSER_JS_HELPERS}${resolveTarget};return new Promise((res)=>{try{
+      const ex=${expect};
+      if(ex&&ex.url&&location.href!==ex.url) return res(JSON.stringify({selected:false,stale:true,reason:'sayfa degisti — karar bayat'}));
       const t=__target();
       if(!t) return res(JSON.stringify({selected:false,reason:'eleman bulunamadi'}));
       const el=t.el;
@@ -5403,6 +5435,33 @@ function browserActionJs(kind, args) {
     }catch(e){res(JSON.stringify({selected:false,reason:String(e)}));}});})()`;
   }
   return `JSON.stringify({ok:false,error:'bilinmeyen eylem'})`;
+}
+
+/* GÜVENİLİR GİRDİ (trusted) için hedef koordinatı: renderer'a gönderilen
+   gerçek fare/tuş olayları React/canvas/otocomplete widget'larında programatik
+   click'ten güvenilirdir. Aynı zamanda katman (occlusion) kontrolü yapar. */
+function browserPointJs(args) {
+  const sel = JSON.stringify(String(args.selector || ''));
+  const ref = JSON.stringify(args.ref === undefined ? null : Number(args.ref));
+  return `(function(){${BROWSER_JS_HELPERS}
+    try{
+      let el=null,how='';
+      if(${ref}!==null){el=__resolveRef(${ref});how='ref['+${ref}+']';}
+      else{el=__resolve(${sel});how='selector';}
+      if(!el) return JSON.stringify({ok:false,reason:'eleman bulunamadi (ref eski olabilir)'});
+      el.scrollIntoView({block:'center'});
+      const r=el.getBoundingClientRect(), x=r.x+r.width/2, y=r.y+r.height/2;
+      if(r.width<=0||r.height<=0||x<0||y<0||x>=innerWidth||y>=innerHeight) return JSON.stringify({ok:false,reason:'ekran disi'});
+      const top=document.elementFromPoint(x,y);
+      if(top&&top!==el&&!el.contains(top)&&!top.contains(el)&&!(top.labels&&[...top.labels].includes(el))){
+        let cover='';try{cover=__label(top);}catch(e){}
+        return JSON.stringify({ok:false,covered:true,reason:'hedef katman altinda: <'+top.tagName.toLowerCase()+'> "'+cover+'"'});
+      }
+      const editable=!!(el.isContentEditable||el.tagName==='INPUT'||el.tagName==='TEXTAREA');
+      return JSON.stringify({ok:true,how:how,x:Math.round(x),y:Math.round(y),editable:editable,
+        input_type:String((el.getAttribute&&el.getAttribute('type'))||'').toLowerCase()});
+    }catch(e){return JSON.stringify({ok:false,reason:String(e)});}
+  })()`;
 }
 
 /* eylem günlüğü — her yanıtın sonuna son hamleler eklenir */
@@ -5459,28 +5518,64 @@ async function browserObserve(signal) {
 async function browserAct(kind, args, signal) {
   if (!browser.view || !browser.open) return { ok: false, error: 'tarayıcı açık değil' };
   const wc = browser.view.webContents;
+  const a = args || {};
   const dlgAt = browser.lastDialog ? browser.lastDialog.at : 0;
+  /* JEV HIZLI YOLU: TypeSafe ajanı her adımda zaten taze observe yapar —
+     ağır imza + taze snapshot + uzun bekleme gereksizdir. */
+  const fast = !!a.fast;
+  const trusted = !!a.trusted && ['click', 'type'].includes(kind) && browser.attached;
   /* DOĞRULAMA: eylem öncesi görsel parmak izi (yalnız anlamlı eylemlerde) */
-  const verify = ['click', 'type', 'select', 'press'].includes(kind) && !(args && args.verify === false);
+  const verify = ['click', 'type', 'select', 'press'].includes(kind) && !fast && !(a.verify === false);
   const sigBefore = verify ? await pageSignature(wc) : null;
   try {
-    const raw = await wc.executeJavaScript(browserActionJs(kind, args || {}), true);
     let obj = {};
-    try { obj = JSON.parse(raw); } catch { obj = { result: String(raw).slice(0, 300) }; }
+    if (trusted) {
+      const pointRaw = await wc.executeJavaScript(browserPointJs(a), true);
+      let point = {};
+      try { point = JSON.parse(pointRaw); } catch { point = { ok: false, reason: 'koordinat alinamadi' }; }
+      if (!point.ok) {
+        obj = kind === 'click' ? { clicked: false, ...point } : { typed: false, ...point };
+      } else if (kind === 'type' && /^(date|time|month|week|datetime-local)$/.test(String(point.input_type || ''))) {
+        /* native tarih/saat alanı: gerçek klavye yerine programatik değer + event
+           (tarayıcı segment segment yazmayı reddeder) */
+        const raw = await wc.executeJavaScript(browserActionJs(kind, a), true);
+        try { obj = JSON.parse(raw); } catch { obj = { result: String(raw).slice(0, 300) }; }
+      } else {
+        wc.sendInputEvent({ type: 'mouseMove', x: point.x, y: point.y });
+        wc.sendInputEvent({ type: 'mouseDown', x: point.x, y: point.y, button: 'left', clickCount: 1 });
+        wc.sendInputEvent({ type: 'mouseUp', x: point.x, y: point.y, button: 'left', clickCount: 1 });
+        if (kind === 'click') {
+          obj = { clicked: true, trusted: true, target: point.how };
+        } else {
+          /* gerçek klavye: önce mevcut değeri seç, sonra yaz — otocomplete tetiklenir */
+          await new Promise((r) => setTimeout(r, 40));
+          try { wc.selectAll(); } catch {}
+          wc.insertText(String(a.text == null ? '' : a.text));
+          if (a.submit) {
+            wc.sendInputEvent({ type: 'keyDown', keyCode: 'Enter' });
+            wc.sendInputEvent({ type: 'keyUp', keyCode: 'Enter' });
+          }
+          obj = { typed: true, trusted: true, target: point.how, value: String(a.text == null ? '' : a.text) };
+        }
+      }
+    } else {
+      const raw = await wc.executeJavaScript(browserActionJs(kind, a), true);
+      try { obj = JSON.parse(raw); } catch { obj = { result: String(raw).slice(0, 300) }; }
+    }
 
     // tıklama/form gönderimi sonrası kısa gezinme bekleme
     let navigated = false;
-    if (kind === 'click' || (kind === 'type' && args && args.submit) || kind === 'press') {
+    if (kind === 'click' || (kind === 'type' && a.submit) || kind === 'press') {
       await new Promise((resolve) => {
         let done = false;
         const onNav = () => { navigated = true; setTimeout(fin, 400); };
         const fin = () => { if (!done) { done = true; clearTimeout(t); wc.removeListener('did-navigate', onNav); resolve(); } };
-        const t = setTimeout(fin, 1800);
+        const t = setTimeout(fin, fast ? 500 : 1800);
         wc.on('did-navigate', onNav);
       });
     }
     /* SPA: sayfa değiştiyse DOM oturmadan snapshot alınmaz */
-    if (navigated) await browserSettle(wc, signal, 2500);
+    if (navigated) await browserSettle(wc, signal, fast ? 500 : 2500);
 
     /* DOĞRULAMA: eylem sonrası değişim oranı — "tıkladım ama bir şey olmadı" tuzağını yakalar */
     let changed = null;
@@ -5504,8 +5599,9 @@ async function browserAct(kind, args, signal) {
         : (obj.reason || 'tamam')
     );
 
-    /* HIZ: eylem cevabına taze snapshot göm — model ayrı browser_snapshot çağırmaz (tur sayısı yarıya iner) */
-    const freshSnap = await browserSnapshotNow(wc);
+    /* HIZ: eylem cevabına taze snapshot göm — model ayrı browser_snapshot çağırmaz (tur sayısı yarıya iner).
+       Jev hızlı yolunda snapshot gömülmez; döngü zaten observe eder. */
+    const freshSnap = fast ? null : await browserSnapshotNow(wc);
 
     return {
       ok: true,
@@ -5514,6 +5610,7 @@ async function browserAct(kind, args, signal) {
       url: wc.getURL(),
       title: wc.getTitle(),
       navigated,
+      ...(fast ? { fast: true } : {}),
       ...(changed != null ? { changed, changeRatio } : {}),
       ...(changed === false && ['click', 'type', 'select'].includes(kind)
         ? {
@@ -5525,11 +5622,13 @@ async function browserAct(kind, args, signal) {
         : {}),
       ...browserDialogNote(dlgAt),
       ...(freshSnap ? { snapshot: freshSnap.snapshot, refCount: freshSnap.count } : {}),
-      ...(navigated
-        ? { note: 'sayfa degisti — yanıtta güncel snapshot var; refler eskiyse yeni browser_snapshot al' }
-        : freshSnap
-          ? { note: 'yanıtta güncel snapshot (' + freshSnap.count + ' ref) — sonraki hamlede bunları kullan, ayrıca snapshot alma' }
-          : {}),
+      ...(fast
+        ? {}
+        : navigated
+          ? { note: 'sayfa degisti — yanıtta güncel snapshot var; refler eskiyse yeni browser_snapshot al' }
+          : freshSnap
+            ? { note: 'yanıtta güncel snapshot (' + freshSnap.count + ' ref) — sonraki hamlede bunları kullan, ayrıca snapshot alma' }
+            : {}),
       recent: recentLog(),
     };
   } catch (e) {
@@ -16858,7 +16957,7 @@ async function annotateScreenShot(img) {
 /* Ana ekrandan JPEG dataURL yakalar (computer_use ve screen:capture ortak).
    opts.annotate: ızgara + imleç işareti (yalnız ajan computer_look kullanır;
    OCR/komut yolları düz görüntü ister). */
-async function captureScreenDataUrl(opts) {
+async function captureScreenFrame(opts) {
   try {
     const sources = await desktopCapturer.getSources({
       types: ['screen'],
@@ -16889,10 +16988,15 @@ async function captureScreenDataUrl(opts) {
     }
     if (!jpeg || !jpeg.length) jpeg = img.toJPEG(72);
     if (!jpeg || !jpeg.length) return null;
-    return 'data:image/jpeg;base64,' + jpeg.toString('base64');
+    return { data: 'data:image/jpeg;base64,' + jpeg.toString('base64'), img };
   } catch {
     return null;
   }
+}
+
+async function captureScreenDataUrl(opts) {
+  const frame = await captureScreenFrame(opts);
+  return frame ? frame.data : null;
 }
 
 /* ---- görsel parmak izi: aksiyon "işe yaradı mı" (verify) ---- */
@@ -16951,7 +17055,10 @@ async function computerActScaled(op, args) {
   }
   const opName = String(op || '').toLowerCase();
   const scaled = cap && cap.imgW > 0 ? computeruse.scaleArgs(a, cap) : a;
-  const verify = CU_VERIFY_OPS.has(opName) && a.verify !== false;
+  /* JEV HIZLI YOLU: T3SFast döngüsü ekranı zaten observe ile izler — ağır
+     imza + 350 ms bekleme gereksiz. */
+  const fast = !!a.fast;
+  const verify = CU_VERIFY_OPS.has(opName) && !fast && a.verify !== false;
   const before = verify ? await screenSignature() : null;
   let r;
   try {

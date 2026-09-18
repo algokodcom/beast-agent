@@ -111,7 +111,12 @@ test('browseragent: run CLICK → DONE akışını uçtan uca yürütür', async
   );
   assert.equal(result.ok, true);
   assert.equal(result.status, 'done');
-  assert.deepEqual(calls, [{ kind: 'click', ref: 1 }]);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].kind, 'click');
+  assert.equal(calls[0].ref, 1);
+  assert.equal(calls[0].fast, true, 'Jev hızlı yolu kullanılmalı');
+  assert.equal(calls[0].trusted, true, 'gerçek girdi istenmeli');
+  assert.deepEqual(calls[0].expect, { url: 'https://example.com' });
   assert.equal(result.trace.length, 1);
   assert.equal(result.trace[0].operation, 'CLICK');
   assert.match(result.note, /KANIT DEĞİL/);
@@ -165,7 +170,9 @@ test('browseragent: TYPE_TEXT küçük LLM metnini yazar ve raporlar', async () 
     { goal: 'Antalya yaz', max_steps: 4 }
   );
   assert.equal(result.status, 'done');
-  assert.deepEqual(calls[0], { kind: 'type', ref: 2, text: 'Antalya' });
+  assert.equal(calls[0].kind, 'type');
+  assert.equal(calls[0].ref, 2);
+  assert.equal(calls[0].text, 'Antalya');
   assert.equal(result.text_calls[0].value, 'Antalya');
   assert.equal(result.trace[0].text, 'Antalya');
 });
@@ -190,6 +197,118 @@ test('browseragent: eylem başarısız olursa ısrar etmez, hata döner', async 
   );
   assert.equal(result.ok, false);
   assert.match(result.error, /başarısız/);
+});
+
+test('browseragent: DONE, aynı istekteki noul doğrulaması düşükse reddedilir', async () => {
+  const answers = [
+    {
+      model: 'jev-test',
+      answers: {
+        operation: answer('DONE', { CLICK: 0.02, WAIT: 0.03, DONE: 0.93, BLOCKED: 0.02 }, 0.93),
+        verification: { type: 'noul', noul: 0.2 },
+      },
+    },
+    {
+      model: 'jev-test',
+      answers: {
+        operation: answer('DONE', { CLICK: 0.01, WAIT: 0.02, DONE: 0.95, BLOCKED: 0.02 }, 0.95),
+        verification: { type: 'noul', noul: 0.95 },
+      },
+    },
+  ];
+  const result = await browseragent.run(
+    {
+      observe: async () => clickPage(),
+      act: async () => ({ ok: true }),
+      wait: async () => ({ ok: true }),
+      systemOne: async () => answers.shift(),
+      textLlm: async () => '',
+      emit: () => {},
+    },
+    { goal: 'bitir', max_steps: 4 }
+  );
+  assert.equal(result.status, 'done');
+  assert.equal(result.trace.length, 1);
+  assert.equal(result.trace[0].operation, 'VERIFY');
+  assert.ok(Math.abs(result.verification - 0.95) < 1e-9);
+});
+
+test('browseragent: bayat karar yenilenir, metin isteği cache\'den yeniden kullanılır', async () => {
+  const fillPage = {
+    ok: true,
+    url: 'https://x.test',
+    title: 'X',
+    text: '',
+    actions: [
+      { ref: 2, kind: 'fill', role: 'textbox', label: 'Where from?', value: '' },
+      { ref: 2, kind: 'click', role: 'textbox', label: 'Open Where from?', value: '' },
+      { id: 'wait', kind: 'wait', label: 'Wait for the page to update' },
+    ],
+  };
+  let observeCount = 0;
+  let actCount = 0;
+  let textCalls = 0;
+  const typeAnswer = {
+    model: 'jev-test',
+    answers: {
+      operation: answer('TYPE_TEXT', { TYPE_TEXT: 0.9, CLICK: 0.03, WAIT: 0.03, DONE: 0.02, BLOCKED: 0.02 }, 0.9),
+      type_text_target: answer('1', { 1: 1 }, 1),
+    },
+  };
+  const answers = [
+    typeAnswer,
+    typeAnswer,
+    {
+      model: 'jev-test',
+      answers: { operation: answer('DONE', { CLICK: 0.02, WAIT: 0.03, DONE: 0.93, BLOCKED: 0.02 }, 0.93) },
+    },
+  ];
+  const result = await browseragent.run(
+    {
+      observe: async () => (observeCount++ < 2 ? fillPage : clickPage()),
+      act: async () => {
+        actCount++;
+        if (actCount === 1) return { ok: true, typed: false, stale: true, reason: 'sayfa degisti' };
+        return { ok: true, typed: true };
+      },
+      wait: async () => ({ ok: true }),
+      systemOne: async () => answers.shift(),
+      textLlm: async () => {
+        textCalls++;
+        return '{"text": "Zurich"}';
+      },
+      emit: () => {},
+    },
+    { goal: 'Zurich yaz', max_steps: 5 }
+  );
+  assert.equal(result.status, 'done');
+  assert.equal(textCalls, 1, 'bayat denemede metin LLM ikinci kez çağrılmamalı');
+  assert.equal(actCount, 2);
+  assert.equal(result.trace.filter((t) => t.kind === 'verify').length, 0);
+  assert.equal(result.text_calls.filter((t) => t.cached).length, 1);
+});
+
+test('typesafe: 429 sonrası backoff ile yeniden dener', async () => {
+  typesafe.setConfig(() => ({ apiKey: 'k', model: 'jev-latest', enabled: true }));
+  const origFetch = global.fetch;
+  let calls = 0;
+  global.fetch = async () => {
+    calls++;
+    if (calls === 1) return { ok: false, status: 429, text: async () => 'rate limited' };
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({ model: 'jev-latest', answers: { q: { type: 'noul', noul: 0.8 } } }),
+    };
+  };
+  try {
+    const r = await typesafe.systemOne({ state: 'x', questions: { q: { type: 'noul', instructions: '?' } } });
+    assert.equal(calls, 2);
+    assert.equal(r.answers.q.noul, 0.8);
+  } finally {
+    global.fetch = origFetch;
+    typesafe.setConfig(() => ({ apiKey: '', model: 'jev-latest' }));
+  }
 });
 
 test('typesafe: aç/kapa kapısı anahtar varken de kapatır', async () => {

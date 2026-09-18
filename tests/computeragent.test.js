@@ -71,7 +71,11 @@ test('computeragent: CLICK → DONE akışı koordinata tıklar', async () => {
     { goal: 'aramaya tıkla' }
   );
   assert.equal(result.status, 'done');
-  assert.deepEqual(calls, [{ op: 'click', x: 200, y: 300 }]);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].op, 'click');
+  assert.equal(calls[0].x, 200);
+  assert.equal(calls[0].y, 300);
+  assert.equal(calls[0].fast, true, 'Jev hızlı yolu kullanılmalı');
   assert.equal(result.trace[0].action, 'Arama kutusu');
   assert.match(result.note, /KANIT DEĞİL/);
 });
@@ -106,10 +110,65 @@ test('computeragent: CLICK → TYPE_TEXT → DONE akışı metni yazar', async (
     { goal: 'aramaya Antalya yaz', max_steps: 5 }
   );
   assert.equal(result.status, 'done');
-  assert.deepEqual(calls[0], { op: 'click', x: 200, y: 300 });
-  assert.deepEqual(calls[1], { op: 'type', text: 'Antalya' });
+  assert.equal(calls[0].op, 'click');
+  assert.equal(calls[0].x, 200);
+  assert.equal(calls[0].y, 300);
+  assert.equal(calls[1].op, 'type');
+  assert.equal(calls[1].text, 'Antalya');
+  assert.equal(calls[1].fast, true, 'yazma da hızlı yolda');
   assert.equal(result.text_calls[0].value, 'Antalya');
   assert.equal(result.focused, 'Arama kutusu');
+});
+
+test('computeragent: DONE, aynı istekteki noul doğrulaması düşükse reddedilir', async () => {
+  const keysNoFocus = Object.keys(computeragent.operationSet(computeragent.lineTargets(LINES), null));
+  const answers = [
+    {
+      model: 'jev-test',
+      answers: { operation: answer('DONE', keysNoFocus), verification: { type: 'noul', noul: 0.15 } },
+    },
+    {
+      model: 'jev-test',
+      answers: { operation: answer('DONE', keysNoFocus), verification: { type: 'noul', noul: 0.94 } },
+    },
+  ];
+  const result = await computeragent.run(
+    {
+      observe: async () => screen({ sig: 'abc' }),
+      act: async () => ({ ok: true }),
+      wait: async () => ({ ok: true }),
+      systemOne: async () => answers.shift(),
+      textLlm: async () => '',
+      emit: () => {},
+    },
+    { goal: 'bitir', max_steps: 4 }
+  );
+  assert.equal(result.status, 'done');
+  assert.equal(result.trace.length, 1);
+  assert.equal(result.trace[0].operation, 'VERIFY');
+  assert.ok(Math.abs(result.verification - 0.94) < 1e-9);
+});
+
+test('computeragent: window verilirse önce focus çağrılır', async () => {
+  const calls = [];
+  const keysNoFocus = Object.keys(computeragent.operationSet(computeragent.lineTargets(LINES), null));
+  const result = await computeragent.run(
+    {
+      observe: async () => screen(),
+      act: async (op, a) => {
+        calls.push({ op, ...a });
+        return { ok: true };
+      },
+      wait: async () => ({ ok: true }),
+      systemOne: async () => ({ model: 'jev-test', answers: { operation: answer('DONE', keysNoFocus) } }),
+      textLlm: async () => '',
+      emit: () => {},
+    },
+    { goal: 'bitir', window: 'Notepad', max_steps: 2 }
+  );
+  assert.equal(result.status, 'done');
+  assert.equal(calls[0].op, 'focus');
+  assert.equal(calls[0].title, 'Notepad');
 });
 
 test('computeragent: OCR boşsa bloklanır, eylem yapılmaz', async () => {

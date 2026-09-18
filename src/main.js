@@ -4471,8 +4471,10 @@ function browserDialogNote(sinceAt) {
 }
 
 /* SPA/DOM oturması: readyState complete + içerik uzunluğu İKİ turdur sabitse
-   dön (en çok maxMs). Böylece hidrasyon bitmeden snapshot/okuma yapılmaz. */
-async function browserSettle(wc, signal, maxMs = 4000) {
+   dön (en çok maxMs). Böylece hidrasyon bitmeden snapshot/okuma yapılmaz.
+   stepMs: hızlı yol 70 ms tarar (eski 300 ms sabiti tur başına ~600 ms
+   ekliyordu); yavaş yol 300 ms'de kalır. */
+async function browserSettle(wc, signal, maxMs = 4000, stepMs = 300) {
   const t0 = Date.now();
   let lastLen = -1;
   let stable = 0;
@@ -4498,8 +4500,32 @@ async function browserSettle(wc, signal, maxMs = 4000) {
       if (len === 0 && Date.now() - t0 > 1500) return;
     }
     lastLen = len;
-    await new Promise((r) => setTimeout(r, 300));
+    await new Promise((r) => setTimeout(r, stepMs));
   }
+}
+
+/* did-navigate sonrası yükleme bitişini bekle: sayfa hazırsa SIFIR bekleme;
+   olay kaçarsa 90 ms poll isLoading false olunca çıkar (maxMs tavan). */
+async function browserLoadWait(wc, signal, maxMs = 4000) {
+  try {
+    if (typeof wc.isLoading === 'function' && !wc.isLoading()) return;
+  } catch {
+    return;
+  }
+  await new Promise((resolve) => {
+    let done = false;
+    const fin = () => {
+      if (done) return;
+      done = true;
+      clearTimeout(t);
+      clearInterval(p);
+      try { wc.removeListener('did-stop-loading', fin); } catch {}
+      resolve();
+    };
+    const t = setTimeout(fin, maxMs);
+    const p = setInterval(() => { try { if (!wc.isLoading()) fin(); } catch { fin(); } }, 90);
+    wc.on('did-stop-loading', fin);
+  });
 }
 
 /* snapshot al (hatayı yut) — navigate/act yanıtlarına gömmek için */
@@ -5150,10 +5176,104 @@ const BROWSER_JS_HELPERS = `
     const el=m[n];
     return (el&&el.isConnected)?el:null;
   }
+  function __norm(s){
+    return String(s==null?'':s).toLowerCase()
+      .replace(/[ıİ]/g,'i').replace(/[şŞ]/g,'s').replace(/[ğĞ]/g,'g')
+      .replace(/[üÜ]/g,'u').replace(/[öÖ]/g,'o').replace(/[çÇ]/g,'c')
+      .replace(/\\s+/g,' ').trim();
+  }
+  /* Çerez onayı + promosyon/modal katmanlarını OTOMATİK kapatır — Jev bu
+     katmanlar için adım harcamaz. Yalnız kapsamı belli kutulara dokunur:
+     çerez/CMP konteynerleri ile promosyon/bülten/uygulama modal katmanları.
+     Form içeren kritik diyaloglara (giriş/arama) dokunulmaz; aynı eleman
+     ikinci kez tıklanmaz (WeakSet). Dönüş: kapatılanların listesi. */
+  function __autoDismiss(){
+    const out=[];
+    const clicked=window.__beDismissed||(window.__beDismissed=new WeakSet());
+    const clickEl=(e,what)=>{
+      try{
+        if(clicked.has(e)) return false;
+        clicked.add(e);
+        try{ e.scrollIntoView({block:'center'}); }catch(_){}
+        if(typeof e.click==='function') e.click();
+        out.push({what:what,label:String(__label(e)||'').slice(0,40)});
+        return true;
+      }catch(_){ return false; }
+    };
+    const VENDOR='#onetrust-accept-btn-handler,#CybotCookiebotDialogBodyLevelButtonLevelOptinAllowAll,#didomi-notice-agree-button,#truste-consent-button,[data-testid="cookie-policy-manage-dialog-accept-button"]';
+    const COOKIE='[id*="cookie" i],[class*="cookie" i],[id*="consent" i],[class*="consent" i],[id*="gdpr" i],[class*="gdpr" i],[class*="onetrust" i],[class*="cookiebot" i],[class*="didomi" i],[class*="usercentrics" i],[class*="quantcast" i],[class*="truste" i],[class*="osano" i],[class*="iubenda" i],[class*="klaro" i],[class*="axeptio" i],[class*="complianz" i]';
+    const PROMO='[role="dialog"],[aria-modal="true"],[class*="modal" i],[id*="modal" i],[class*="popup" i],[id*="popup" i],[class*="lightbox" i],[class*="newsletter" i],[class*="subscribe" i],[class*="promo" i],[class*="campaign" i],[class*="interstitial" i],[class*="smartbanner" i],[class*="app-banner" i],[id*="app-banner" i],[class*="app-download" i],[class*="overlay" i],[id*="overlay" i]';
+    const PROMO_TEXT=['bulten','newsletter','abone','subscribe','indirim','kampanya','firsat','kupon','coupon','discount','promo','sale','special offer','mobil uygulama','uygulamamiz','app download','bildirim','notification','hediye','cekilis','anket','survey','feedback','puan kazan'];
+    const ACCEPT=['accept all','allow all','accept cookies','accept all cookies','agree to all','agree and continue','consent to all','i accept','tumunu kabul','tum cerezleri kabul','tum cerezleri onayla','cerezleri kabul','kabul ediyorum','tumunu onayla','alle akzeptieren','alle cookies akzeptieren','zustimmen','tout accepter',"j'accepte",'accepter et continuer','aceptar todo','aceptar y continuar','aceitar todos','accetta tutti','accetta e continua','kabul et','onayla','accept','agree','allow','anladim','tamam','ok','okay'];
+    const CLOSE=['close','kapat','dismiss','daha sonra','simdi degil','simdi olmaz','not now','maybe later','no thanks','hayir tesekkurler','skip','atla','gec','sonra','later','x','×','✕','✖','╳'];
+    const btnSel='button,[role="button"],a,input[type="submit"],input[type="button"],[aria-label]';
+    const accepts=(lbl)=>{
+      for(const p of ACCEPT){
+        if(lbl===p) return true;
+        if(p.length>=6 && lbl.indexOf(p)>=0 && lbl.length<=p.length+24) return true;
+      }
+      return false;
+    };
+    const closes=(lbl)=>{
+      for(const p of CLOSE){
+        if(lbl===p) return true;
+        if(p.length>=5 && lbl.indexOf(p)>=0 && lbl.length<=p.length+16) return true;
+      }
+      return false;
+    };
+    const controlIn=(s)=>{
+      for(const c of [...s.querySelectorAll(btnSel)]){
+        if(!__vis(c)) continue;
+        const lbl=__norm(__label(c));
+        if(accepts(lbl)||closes(lbl)) return c;
+      }
+      try{
+        const byAttr=s.querySelector('[class*="close" i],[id*="close" i],[class*="dismiss" i],[id*="dismiss" i],[aria-label*="close" i],[aria-label*="kapat" i],[title*="close" i],[title*="kapat" i]');
+        if(byAttr&&__vis(byAttr)) return byAttr;
+      }catch(_){}
+      return null;
+    };
+    /* 1) bilinen CMP düğmeleri */
+    try{
+      for(const sel of VENDOR.split(',')){
+        const el=document.querySelector(sel);
+        if(el&&__vis(el)){ clickEl(el,'cerez'); return out; }
+      }
+    }catch(_){}
+    /* 2) çerez onay katmanları */
+    for(const s of document.querySelectorAll(COOKIE)){
+      if(!__vis(s)) continue;
+      const c=controlIn(s);
+      if(c&&clickEl(c,'cerez')) return out;
+    }
+    /* 3) promosyon/modal katmanları — form içeren kritik diyaloglara dokunma */
+    let promoSeen=false;
+    for(const s of document.querySelectorAll(PROMO)){
+      if(!__vis(s)) continue;
+      const r=s.getBoundingClientRect();
+      if(r.width<150||r.height<80) continue;
+      const txt=__norm(s.innerText||'').slice(0,600);
+      const promo=txt&&PROMO_TEXT.some((k)=>txt.indexOf(k)>=0);
+      if(!promo&&s.querySelector('input:not([type="hidden"]),textarea,select')) continue;
+      promoSeen=true;
+      const c=controlIn(s);
+      if(c&&clickEl(c,'popup')) return out;
+    }
+    /* 4) kapatma yok ama promosyon katmanı var → tek Escape denemesi */
+    if(promoSeen&&!out.length){
+      try{
+        const t=document.activeElement&&document.activeElement!==document.body?document.activeElement:document.body;
+        ['keydown','keyup'].forEach((type)=>t.dispatchEvent(new KeyboardEvent(type,{key:'Escape',code:'Escape',keyCode:27,which:27,bubbles:true,cancelable:true})));
+        out.push({what:'escape',label:'Escape'});
+      }catch(_){}
+    }
+    return out;
+  }
 `;
 
 const BROWSER_SNAPSHOT_JS = `(function(){
   ${BROWSER_JS_HELPERS}
+  const autoDismissed=__autoDismiss();
   const sel='a[href],button,input:not([type="hidden"]),textarea,select,[role="button"],[role="link"],[role="tab"],[role="option"],[role="menuitem"],[role="gridcell"],[role="checkbox"],[role="switch"],[role="combobox"],[role="textbox"],[role="searchbox"],[contenteditable="true"],summary';
   /* açık popup/takvim/dialog varsa içindekiler ÖNCE listelenir (tarih seçici, özel dropdown vb.) */
   const popSel='[role="dialog"],dialog,[role="listbox"],[role="menu"],.flatpickr-calendar,.ui-datepicker,[class*="datepicker" i],[class*="calendar" i],[class*="dropdown" i],[class*="popup" i]';
@@ -5188,7 +5308,7 @@ const BROWSER_SNAPSHOT_JS = `(function(){
     lines.push('--- SAYFA ---');
   }
   for(const e of document.querySelectorAll(sel)){ if(i>=100) break; add(e); }
-  return JSON.stringify({count:i,title:document.title,url:location.href,snapshot:lines.join('\\n'),boxes:boxes,vw:window.innerWidth,vh:window.innerHeight});
+  return JSON.stringify({count:i,title:document.title,url:location.href,snapshot:lines.join('\\n'),boxes:boxes,vw:window.innerWidth,vh:window.innerHeight,auto_dismissed:autoDismissed.length?autoDismissed:undefined});
 })()`;
 
 /* JEV ULTRAFAST GÖZLEMİ: yapılı element tablosu (kind: click/fill/select),
@@ -5196,7 +5316,9 @@ const BROWSER_SNAPSHOT_JS = `(function(){
    browser_click/browser_type/browser_select ref çözümüyle BİREBİR uyumludur.
    Yalnız görünür + viewport içi + enabled elemanlar; scroll/wait sentetik. */
 const BROWSER_OBSERVE_JS = `(function(){
+  ${BROWSER_JS_HELPERS}
   if(!document.body) return JSON.stringify({url:location.href,title:document.title,w:innerWidth,h:innerHeight,text:'',scroll:{y:0,height:0},actions:[]});
+  const autoDismissed=__autoDismiss();
   window.__beIds=window.__beIds||new WeakMap();
   window.__beNext=window.__beNext||0;
   window.__beMap={};
@@ -5285,6 +5407,7 @@ const BROWSER_OBSERVE_JS = `(function(){
   actions.push({id:'wait',kind:'wait',label:'Wait for the page to update'});
   return JSON.stringify({url:location.href,title:document.title,w:innerWidth,h:innerHeight,text:text,
     scroll:{y:Math.round(scrollY),height:height},actions:actions,omitted_actions:omitted,
+    auto_dismissed:autoDismissed.length?autoDismissed:undefined,
     rev:location.href+'|'+document.title+'|'+actions.length+'|'+text.length+'|'+Math.round(scrollY)+'|'+height});
 })()`;
 
@@ -5507,6 +5630,9 @@ async function browserObserve(signal) {
   const wc = browser.view.webContents;
   const dlgAt = browser.lastDialog ? browser.lastDialog.at : 0;
   try {
+    /* yarım DOM'la Jev kararı verilmesin: sayfa hâlâ yükleniyorsa kısa bekle
+       (sayfa hazırsa SIFIR gecikme — isLoading false anında döner) */
+    try { if (wc.isLoading && wc.isLoading()) await browserLoadWait(wc, signal, 1200); } catch {}
     const raw = await wc.executeJavaScript(BROWSER_OBSERVE_JS, true);
     const obj = JSON.parse(raw);
     return { ok: true, ...obj, ...browserDialogNote(dlgAt) };
@@ -5563,19 +5689,31 @@ async function browserAct(kind, args, signal) {
       try { obj = JSON.parse(raw); } catch { obj = { result: String(raw).slice(0, 300) }; }
     }
 
-    // tıklama/form gönderimi sonrası kısa gezinme bekleme
+    // tıklama/form gönderimi sonrası gezinme bekleme: olay ANINDA döner —
+    // hızlı yolda gezinme yoksa yalnız 140 ms beklenir (eski 500 ms ölü süre).
     let navigated = false;
     if (kind === 'click' || (kind === 'type' && a.submit) || kind === 'press') {
       await new Promise((resolve) => {
         let done = false;
-        const onNav = () => { navigated = true; setTimeout(fin, 400); };
-        const fin = () => { if (!done) { done = true; clearTimeout(t); wc.removeListener('did-navigate', onNav); resolve(); } };
-        const t = setTimeout(fin, fast ? 500 : 1800);
+        const onNav = () => { navigated = true; fin(); };
+        const fin = () => {
+          if (done) return;
+          done = true;
+          clearTimeout(t);
+          wc.removeListener('did-navigate', onNav);
+          wc.removeListener('did-navigate-in-page', onNav);
+          resolve();
+        };
+        const t = setTimeout(fin, fast ? 140 : 1800);
         wc.on('did-navigate', onNav);
+        wc.on('did-navigate-in-page', onNav);
       });
     }
-    /* SPA: sayfa değiştiyse DOM oturmadan snapshot alınmaz */
-    if (navigated) await browserSettle(wc, signal, fast ? 500 : 2500);
+    /* SPA: sayfa değiştiyse yükleme bitişi + kısa DOM oturması (fast: 420 ms tavan) */
+    if (navigated) {
+      await browserLoadWait(wc, signal, fast ? 1200 : 4000);
+      await browserSettle(wc, signal, fast ? 420 : 2500, fast ? 70 : 300);
+    }
 
     /* DOĞRULAMA: eylem sonrası değişim oranı — "tıkladım ama bir şey olmadı" tuzağını yakalar */
     let changed = null;

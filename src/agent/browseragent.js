@@ -21,7 +21,13 @@ WAIT only when the needed control is absent/disabled, or submitted results are s
 If Search/Submit is visible and the required fields are ready, CLICK it immediately.
 Recent WAIT actions are not evidence of loading. Prefer a useful visible control over WAIT.
 DONE requires visible evidence that ALL requirements are satisfied. If asked to open a result,
-a matching link is not enough. BLOCKED means no supported operation can make progress.`;
+a matching link is not enough. BLOCKED means no supported operation can make progress.
+Before the goal itself: if a modal, cookie or consent band, campaign popup,
+app-download prompt or chat overlay is open, dismiss it FIRST with CLICK on its
+close control (X, Kapat, Anladım, Kabul Et, Daha sonra) or PRESS Escape.
+Never start or continue the goal while such a layer covers the page.
+If the last action reported the target is covered by a layer, close that layer
+instead of repeating the same element.`;
 
 const VERIFY = `Judge only from the visible evidence on the CURRENT page and the original goal.
 Answer yes only if every required field, filter, and result is visibly present right now.
@@ -43,6 +49,7 @@ const OPERATION_LABELS = {
   CLICK: 'Click an element, button, menu option, autocomplete suggestion, or calendar day.',
   TYPE_TEXT: 'Enter or replace text in an editable field. A small LLM will supply the value from the goal.',
   SELECT: 'Select an observed dropdown value.',
+  PRESS: 'Press a keyboard key (Escape closes modals and popups).',
   DONE: 'Every requirement is visibly satisfied.',
   BLOCKED: 'No supported operation can progress.',
 };
@@ -51,8 +58,8 @@ const DEFAULT_MAX_STEPS = 20;
 const HARD_MAX_STEPS = 40;
 const DEFAULT_BUDGET_MS = 120000;
 const HARD_BUDGET_MS = 300000;
-const FILL_SETTLE_MS = 180;
-const WAIT_MS = 450;
+const FILL_SETTLE_MS = 90;
+const WAIT_MS = 300;
 
 function clamp(n, lo, hi) {
   return Math.max(lo, Math.min(hi, n));
@@ -134,6 +141,7 @@ function operationsFor(targets, controls) {
   const operations = {};
   for (const key of Object.keys(targets)) operations[key] = OPERATION_LABELS[key] || key;
   for (const [key, value] of Object.entries(controls)) operations[key] = value.label || key;
+  operations.PRESS = OPERATION_LABELS.PRESS;
   for (const key of ['DONE', 'BLOCKED']) operations[key] = OPERATION_LABELS[key];
   return operations;
 }
@@ -317,8 +325,8 @@ async function run(deps, options) {
     if (last && last.kind !== 'wait' && last.kind !== 'scroll' && !last.stale) {
       if (last.page_changed == null) last.page_changed = prevRev != null ? rev !== prevRev : null;
       if (last.page_changed === false) {
-        noChangeStreak++;
-        if (noChangeStreak >= 3) return finish('blocked', { reason: 'üst üste 3 eylem sayfayı değiştirmedi' });
+        if (!last.covered) noChangeStreak++;
+        if (noChangeStreak >= 4) return finish('blocked', { reason: 'üst üste ' + noChangeStreak + ' eylem sayfayı değiştirmedi' });
       } else if (last.page_changed === true) {
         noChangeStreak = 0;
       }
@@ -399,14 +407,17 @@ async function run(deps, options) {
         await deps.wait({ ms: FILL_SETTLE_MS });
       } else if (kind === 'click') {
         result = await deps.act('click', { ref: Number(action.ref), fast: true, trusted: true, expect });
-        await deps.wait({ ms: 120 });
+        await deps.wait({ ms: 60 });
       } else if (kind === 'select') {
         const value = action.value != null && String(action.value) !== '' ? action.value : baseLabel(action.label);
         result = await deps.act('select', { ref: Number(action.ref), value: String(value), fast: true, expect });
-        await deps.wait({ ms: 120 });
+        await deps.wait({ ms: 60 });
+      } else if (kind === 'press') {
+        result = await deps.act('press', { key: action.key || 'Escape', fast: true });
+        await deps.wait({ ms: 60 });
       } else if (kind === 'scroll') {
         result = await deps.act('scroll', { direction: Number(action.delta) < 0 ? 'up' : 'down', fast: true });
-        await deps.wait({ ms: 120 });
+        await deps.wait({ ms: 60 });
       } else if (kind === 'wait') {
         await deps.wait({ ms: WAIT_MS });
         result = { ok: true, waited: true };

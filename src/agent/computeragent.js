@@ -64,7 +64,7 @@ const DEFAULT_MAX_STEPS = 15;
 const HARD_MAX_STEPS = 40;
 const DEFAULT_BUDGET_MS = 180000;
 const HARD_BUDGET_MS = 420000;
-const WAIT_MS = 600;
+const WAIT_MS = 350;
 
 function clamp(n, lo, hi) {
   return Math.max(lo, Math.min(hi, n));
@@ -225,7 +225,7 @@ async function run(deps, options) {
   if (opts.window) {
     emit({ type: 'status', status: 'T3SFast PC: pencere öne alınıyor — ' + String(opts.window).slice(0, 60) });
     try { await deps.act('focus', { title: String(opts.window) }); } catch {}
-    await deps.wait({ ms: 350 });
+    await deps.wait({ ms: 250 });
   }
 
   for (let step = 1; step <= maxSteps; step++) {
@@ -300,7 +300,7 @@ async function run(deps, options) {
         kind = operation === 'CLICK' ? 'click' : operation === 'DOUBLE_CLICK' ? 'dblclick' : 'rightclick';
         result = await deps.act(kind, { x: decision.line.x, y: decision.line.y, fast: true });
         if (!result || result.ok !== false) focusedLabel = baseLabel(decision.line.label);
-        await deps.wait({ ms: 150 });
+        await deps.wait({ ms: 80 });
       } else if (operation === 'TYPE_TEXT') {
         kind = 'type';
         const context = textContext(goal, focusedLabel, page, history);
@@ -321,15 +321,15 @@ async function run(deps, options) {
           textCalls.push({ field: focusedLabel || '', value: text });
         }
         result = await deps.act('type', { text, fast: true });
-        await deps.wait({ ms: 200 });
+        await deps.wait({ ms: 100 });
       } else if (KEYS[operation]) {
         kind = 'key';
         result = await deps.act('key', { combo: KEYS[operation].combo, fast: true });
-        await deps.wait({ ms: 200 });
+        await deps.wait({ ms: 100 });
       } else if (SCROLLS[operation]) {
         kind = 'scroll';
         result = await deps.act('scroll', { x: Math.round(page.w / 2), y: Math.round(page.h / 2), dy: SCROLLS[operation].dy, fast: true });
-        await deps.wait({ ms: 150 });
+        await deps.wait({ ms: 80 });
       } else if (operation === 'WAIT') {
         kind = 'wait';
         await deps.wait({ ms: WAIT_MS });

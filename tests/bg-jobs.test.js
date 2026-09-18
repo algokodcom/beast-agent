@@ -394,6 +394,47 @@ test('task_cancel reason ZORUNLU: sebep iş kaydına ve note mesajına düşer',
   assert.ok(eng._abortReasons.get(id2).includes('task_cancel'), 'varsayılan sebep CEO kaynağını söyler');
 });
 
+/* ---------- T3SFast PC: computer_agent varsayılan arka plan ---------- */
+
+test('computer_agent: ana sohbetten çağrı arka plan ajanına devredilir, tur kilitlenmez', async () => {
+  const { eng } = tmpEngine();
+  const typesafe = require('../src/agent/typesafe');
+  typesafe.setConfig(() => ({ apiKey: 'test-key', model: 'jev-latest', enabled: true }));
+  let observeCalls = 0;
+  eng.computer = {
+    observe: async () => { observeCalls++; return { ok: true, w: 100, h: 100, lines: [], text: '' }; },
+    act: async () => ({ ok: true }),
+  };
+  eng.send = () => true; // arka plan turu testte LLM'e gitmesin
+  const sid = eng.createSession().id;
+
+  const out = JSON.parse(
+    await eng._execTool('computer_agent', { goal: 'Notepad aç ve "merhaba" yaz', window: 'Notepad' }, {}, sid)
+  );
+  assert.strictEqual(out.ok, true);
+  assert.strictEqual(out.background, true, 'varsayılan arka plan');
+  assert.ok(out.backgroundId);
+  const job = eng._bgJobs.get(out.backgroundId);
+  assert.ok(job, 'arka plan işi kaydı açıldı');
+  assert.strictEqual(job.parentId, sid);
+  assert.ok(String(job.task).includes('computer_agent'), 'iş tanımı aracı çağırmayı söyler');
+  assert.ok(String(job.task).includes('Notepad'), 'hedef + pencere işe geçti');
+  assert.strictEqual(observeCalls, 0, 'Jev döngüsü ana turda koşmaz (ekran ana oturumda okunmaz)');
+
+  /* background:false → satır içi yol (boş OCR → yine de ağsız bloklanır) */
+  const inline = JSON.parse(
+    await eng._execTool('computer_agent', { goal: 'boş ekran', background: false }, {}, sid)
+  );
+  assert.strictEqual(inline.status, 'blocked');
+  assert.strictEqual(observeCalls, 1, 'background:false satır içi gözlem yapar');
+
+  await sleep(100);
+  eng._bgJobs.delete(out.backgroundId);
+  eng.deleteSession(out.backgroundId);
+  eng.deleteSession(sid);
+  typesafe.setConfig(() => ({ apiKey: '', model: 'jev-latest' }));
+});
+
 /* ---------- /stop anahtarı ---------- */
 test('stopAll: koşan turları keser, paralel ajanı aborted işaretler', async () => {  const { eng } = tmpEngine();
   const r = eng.runBackground('pS', 'koşan iş', 'Koşu');

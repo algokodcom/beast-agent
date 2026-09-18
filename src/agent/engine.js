@@ -2244,7 +2244,7 @@ class Engine {
             ' Görselleri GÖREMEMİYORSAN (metin-model) görüntüdeki metni okumak için ocr_read kullan: source:"browser" ile tarayıcı sayfasını, "screen" ile masaüstünü OCR\u2019la okursun (captcha/canvas/görsel metin dahil).' +
             (this.ceoMode ? ' (CEO: bu araçları KENDİN ÇAĞIRMA — içinde tarayıcı geçen işi run_background ile paralel ajana devret.)' : ''),
           'Tarayıcı eylemlerinin yanıtındaki recent günlüğünü ve navigated bilgisini takip et; eylem yanıtları zaten taze snapshot içerir — refler tutarsız görünürse yeni snapshot al.',
-          'T3SFAST (Jev) HIZLI AJANLARI: Ayarlar → TypeSafe\'te anahtar VAR ve AÇIKSA çok adımlı tarayıcı işlerini tek tek browser_click/browser_type yerine HER ZAMAN browser_agent\'a BİR doğal-dil hedefiyle ver (arama + form + filtre + tarih seçimi + sonuç açma gibi akışlar saniyeler içinde biter; her adımı TypeSafe Jev seçer, yalnız metin girişini küçük bir LLM yazar; gerçek fare/klavye girdisi + DONE için aynı istekte noul doğrulaması yapılır). "done" durumu hâlâ KANIT DEĞİL — sonucu browser_read/browser_screenshot ile bağımsız doğrulamadan kullanıcıya başarılı deme. Masaüstü işleri için computer_agent\'ı aynı şekilde kullan — pencereyi "window" alanıyla otomatik öne getirt (ör. window:"Notepad"), sonucu computer_look ile doğrula; değişmeyen ekran karelerinde OCR önbelleği devreye girer, hedefi net ver (uygulama + alan + değer). Anahtar yoksa/kapalıysa bu araçlar hata döner — kullanıcıyı Ayarlar → TypeSafe\'e yönlendir. TypeSafe AÇIKKEN elle browser_click/browser_type/browser_scroll/browser_select/browser_press ve computer_act araçları araç listesinden ÇIKARILIR; tarayıcı/masaüstü eylemini YALNIZCA browser_agent/computer_agent\'a tek doğal-dil hedefi vererek yap (okuma/doğrulama için browser_open/browser_read/browser_screenshot/browser_snapshot/browser_wait/computer_look açık kalır).',
+          'T3SFAST (Jev) HIZLI AJANLARI: Ayarlar → TypeSafe\'te anahtar VAR ve AÇIKSA çok adımlı tarayıcı işlerini tek tek browser_click/browser_type yerine HER ZAMAN browser_agent\'a BİR doğal-dil hedefiyle ver (arama + form + filtre + tarih seçimi + sonuç açma gibi akışlar saniyeler içinde biter; her adımı TypeSafe Jev seçer, yalnız metin girişini küçük bir LLM yazar; gerçek fare/klavye girdisi + DONE için aynı istekte noul doğrulaması yapılır). "done" durumu hâlâ KANIT DEĞİL — sonucu browser_read/browser_screenshot ile bağımsız doğrulamadan kullanıcıya başarılı deme. Masaüstü işleri için computer_agent\'ı aynı şekilde kullan — VARSAYILAN OLARAK arka plan ajanına devredilir: çağrı anında {background:true, backgroundId} döner, ana sohbet beklemez; Jev döngüsü arka planda koşar, bitince 3-5 satırlık rapor otomatik düşer. Pencereyi "window" alanıyla otomatik öne getirt (ör. window:"Notepad"); rapor gelmeden sonucu "yapıldı" sayma. Yalnızca aynı turda sonuca ihtiyacın varsa background:false ver (tur döngü boyunca kilitlenir). Değişmeyen ekran karelerinde OCR önbelleği devreye girer, hedefi net ver (uygulama + alan + değer). Anahtar yoksa/kapalıysa bu araçlar hata döner — kullanıcıyı Ayarlar → TypeSafe\'e yönlendir. TypeSafe AÇIKKEN elle browser_click/browser_type/browser_scroll/browser_select/browser_press ve computer_act araçları araç listesinden ÇIKARILIR; tarayıcı/masaüstü eylemini YALNIZCA browser_agent/computer_agent\'a tek doğal-dil hedefi vererek yap (okuma/doğrulama için browser_open/browser_read/browser_screenshot/browser_snapshot/browser_wait/computer_look açık kalır).',
           'CONUŞMA ODAĞI SENDE KALSIN: kullanıcı seninle konuşurken iş çıkmışsa — uzun da olsa UFACIK da (tek komutluk dizin listesi, tek dosya okuma, tek arama…) — run_background ile PARALEL ajana devret; ana sohbet hiçbir işi beklemez; bittiğinde özet otomatik düşer.',
           'Python işleri için python_run kullan: küçük betikler inline code ile; tekrarlayan işler %APPDATA%\\beast\\scripts klasöründeki dosyalarla (ör. news.py = RSS haber toplayıcı: args ["--limit","8","--json"]). Python kurulu olmasa bile ilk çağrıda taşınabilir gömülü runtime otomatik iner.',
             'PYTHON DURUMU: makinede sistem Python\'u görünmese bile ŞAŞIRMA ve "python yok" DEME — python_run aracı kendi taşınabilir runtime\'ını (%APPDATA%\\beast\\py\\python.exe) otomatik indirir/kullanır ve bu klasör run_command PATH\'inde önceliklidir; yani run_command içinde de `python` çalışır. Ham Google/Bing scrape yerine önce web_search aracını kullan (SearXNG + stealth TLS + TinyFish + Python çoklu-motor destekli), script gerektiğinde python_run yaz.',
@@ -5959,6 +5959,35 @@ const skills = require('./skills');
         const ca = args || {};
         const cgoal = String(ca.goal || ca.task || '').trim();
         if (!cgoal) return JSON.stringify({ ok: false, error: 'goal gerekli — ulaşılacak hedefi doğal dille yaz' });
+        const curPc = this.cache.get(String(sessionId || '')) || this._load(String(sessionId || ''));
+        /* T3SFAST PC ARKA PLAN VARSAYILANI: masaüstü döngüsü ana sohbetin turunu
+           KİLİTLEMEZ — iş ayrı bir arka plan oturumuna devredilir; Jev kararları
+           orada akar, bitince 3-5 satırlık rapor bu sohbete otomatik düşer.
+           Zaten arka plan işinin içinden çağrıldıysa (ya da background:false
+           verildiyse) döngü çağıran turda satır içi koşar. */
+        if (ca.background !== false && !(curPc && curPc.bgJob)) {
+          const pcTask =
+            '[MASAÜSTÜ OTOMASYONU — T3SFast PC / Jev]\n' +
+            'Hedef: ' + JSON.stringify(cgoal) + '\n' +
+            (ca.window ? 'Pencere: ' + JSON.stringify(String(ca.window)) + ' (computer_agent window alanına aynen geçir)\n' : '') +
+            '\nYÖNTEM: computer_agent aracını BİR kez çağır (goal' +
+            (ca.window ? ' + window' : '') +
+            (ca.max_steps ? ' + max_steps:' + Number(ca.max_steps) : '') +
+            (ca.budget_ms ? ' + budget_ms:' + Number(ca.budget_ms) : '') +
+            '). Dönen status "done" olsa bile KANIT DEĞİL — son ekranı computer_look (ya da OCR) ile bağımsız doğrula.\n' +
+            'RAPOR (3-5 satır): yapılan adımlar, son ekranda görünen sonuç, doğrulama, varsa hata.';
+          const pcBg = this.runBackground(sessionId, pcTask, 'PC: ' + cgoal.slice(0, 60));
+          if (!pcBg.ok) return JSON.stringify(pcBg);
+          return JSON.stringify({
+            ok: true,
+            background: true,
+            backgroundId: pcBg.backgroundId,
+            code: pcBg.code,
+            note:
+              'masaüstü görevi arka plan ajanına devredildi (T3SFast PC / Jev) — ana sohbet bloklanmaz; ' +
+              'bitince 3-5 satırlık rapor otomatik düşer. Rapor gelmeden "yapıldı" deme; durumu tasks_list/task_status ile izleyebilirsin.',
+          });
+        }
         const cTextSel = this.modelFor('subagent') || this.sel;
         emitSafe(this, sessionId, { type: 'status', status: 'T3SFast PC: Jev döngüsü başlıyor — ' + cgoal.slice(0, 80) });
         const pcRun = await computeragent.run(
@@ -6717,7 +6746,7 @@ const TOOLS = [
     function: {
       name: 'computer_agent',
       description:
-        'AUTONOMOUS FAST COMPUTER LOOP (T3SFast computer use): give it ONE natural-language goal for the Windows desktop; it OCRs the screen (unchanged frames are served from an OCR cache), picks one operation + OCR text target per step through TypeSafe Jev, uses speculative operation+target heads, retries stale/ineffective actions less, and only calls a small LLM when a field must be typed. Real mouse/keyboard actions are unverified (fast mode) because the loop re-observes the screen right after. Mouse clicks land on the CENTER of the chosen OCR text line; standard flow: CLICK the input (or its label) → TYPE_TEXT → PRESS_ENTER. Useful for desktop dialogs/forms/settings; pass window:"<title part>" to bring the right window to front first. Returns {status: done|blocked|max_steps|aborted|budget, trace, text_calls, focused, screen_text}. DONE is additionally checked by a same-request TypeSafe verification question, but a "done" status is still NOT proof of success: verify the screen independently (computer_look / OCR) before telling the user it is complete. Requires the TypeSafe API key in Settings → TypeSafe (and the TypeSafe switch ON).',
+        'AUTONOMOUS FAST COMPUTER LOOP (T3SFast computer use): give it ONE natural-language goal for the Windows desktop; it OCRs the screen (unchanged frames are served from an OCR cache), picks one operation + OCR text target per step through TypeSafe Jev, uses speculative operation+target heads, retries stale/ineffective actions less, and only calls a small LLM when a field must be typed. Real mouse/keyboard actions are unverified (fast mode) because the loop re-observes the screen right after. Mouse clicks land on the CENTER of the chosen OCR text line; standard flow: CLICK the input (or its label) → TYPE_TEXT → PRESS_ENTER. Useful for desktop dialogs/forms/settings; pass window:"<title part>" to bring the right window to front first. BACKGROUND BY DEFAULT: from a normal chat the whole loop is delegated to a parallel background agent and this call returns immediately ({background:true, backgroundId, code}) without blocking the conversation; Jev decisions run there and a 3-5 line report drops into this chat automatically when it finishes. Do NOT claim success before that report; track it with tasks_list/task_status. Set background:false only when you need the inline result in this same turn (the turn stays locked for the whole loop). Returns {status: done|blocked|max_steps|aborted|budget, trace, text_calls, focused, screen_text}. DONE is additionally checked by a same-request TypeSafe verification question, but a "done" status is still NOT proof of success: verify the screen independently (computer_look / OCR) before telling the user it is complete. Requires the TypeSafe API key in Settings → TypeSafe (and the TypeSafe switch ON).',
       parameters: {
         type: 'object',
         properties: {
@@ -6729,6 +6758,7 @@ const TOOLS = [
           window: { type: 'string', description: 'Optional window title substring to bring to front before starting (e.g. "Notepad") — avoids clicking the wrong window' },
           max_steps: { type: 'number', description: 'Max actions, default 15 (hard cap 40)' },
           budget_ms: { type: 'number', description: 'Wall-clock budget in ms, default 180000 (hard cap 420000)' },
+          background: { type: 'boolean', description: 'Default true: run the loop in a parallel background agent so this chat is not blocked; the report arrives automatically. Set false to await the loop inline in this turn.' },
         },
         required: ['goal'],
       },

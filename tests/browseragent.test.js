@@ -84,14 +84,14 @@ test('browseragent: run CLICK → DONE akışını uçtan uca yürütür', async
     {
       model: 'jev-test',
       answers: {
-        operation: answer('CLICK', { CLICK: 0.9, WAIT: 0.05, DONE: 0.03, BLOCKED: 0.02 }, 0.9),
+        operation: answer('CLICK', { CLICK: 0.88, WAIT: 0.05, DONE: 0.03, BLOCKED: 0.02, PRESS: 0.02 }, 0.9),
         click_target: answer('1', { 1: 1 }, 1),
       },
     },
     {
       model: 'jev-test',
       answers: {
-        operation: answer('DONE', { CLICK: 0.02, WAIT: 0.03, DONE: 0.93, BLOCKED: 0.02 }, 0.93),
+        operation: answer('DONE', { CLICK: 0.02, WAIT: 0.03, DONE: 0.91, BLOCKED: 0.02, PRESS: 0.02 }, 0.93),
       },
     },
   ];
@@ -122,6 +122,68 @@ test('browseragent: run CLICK → DONE akışını uçtan uca yürütür', async
   assert.match(result.note, /KANIT DEĞİL/);
 });
 
+test('browseragent: PRESS Escape ile modal/popup kapatır', async () => {
+  const calls = [];
+  const answers = [
+    {
+      model: 'jev-test',
+      answers: {
+        operation: answer('PRESS', { CLICK: 0.1, WAIT: 0.05, DONE: 0.02, BLOCKED: 0.03, PRESS: 0.8 }, 0.8),
+      },
+    },
+    {
+      model: 'jev-test',
+      answers: {
+        operation: answer('DONE', { CLICK: 0.02, WAIT: 0.03, DONE: 0.92, BLOCKED: 0.01, PRESS: 0.02 }, 0.92),
+      },
+    },
+  ];
+  const result = await browseragent.run(
+    {
+      observe: async () => clickPage(),
+      act: async (kind, a) => {
+        calls.push({ kind, ...a });
+        return { ok: true, changed: false };
+      },
+      wait: async () => ({ ok: true }),
+      systemOne: async () => answers.shift(),
+      textLlm: async () => '',
+      emit: () => {},
+    },
+    { goal: 'açık modalı kapat', max_steps: 4 }
+  );
+  assert.equal(result.status, 'done');
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].kind, 'press');
+  assert.equal(calls[0].key, 'Escape', 'PRESS varsayılanı Escape');
+  assert.equal(calls[0].fast, true, 'Jev hızlı yolu kullanılmalı');
+  assert.equal(result.trace[0].operation, 'PRESS');
+});
+
+test('browseragent: katman altında kalan tıklamalar sayacı artırmaz (erken blocked yok)', async () => {
+  const clickAnswer = {
+    model: 'jev-test',
+    answers: {
+      operation: answer('CLICK', { CLICK: 0.88, WAIT: 0.05, DONE: 0.03, BLOCKED: 0.02, PRESS: 0.02 }, 0.88),
+      click_target: answer('1', { 1: 1 }, 1),
+    },
+  };
+  const result = await browseragent.run(
+    {
+      observe: async () => clickPage(),
+      act: async () => ({ ok: true, clicked: false, covered: true, changed: false, reason: 'hedef katman altinda' }),
+      wait: async () => ({ ok: true }),
+      systemOne: async () => clickAnswer,
+      textLlm: async () => '',
+      emit: () => {},
+    },
+    { goal: 'katman kapat', max_steps: 5 }
+  );
+  assert.equal(result.status, 'max_steps', 'covered tıklamalar erken blocked tetiklemez');
+  assert.equal(result.steps, 5);
+  assert.ok(result.trace.every((t) => t.covered === true && t.failed === false));
+});
+
 test('browseragent: TYPE_TEXT küçük LLM metnini yazar ve raporlar', async () => {
   const calls = [];
   const pages = [
@@ -142,13 +204,13 @@ test('browseragent: TYPE_TEXT küçük LLM metnini yazar ve raporlar', async () 
     {
       model: 'jev-test',
       answers: {
-        operation: answer('TYPE_TEXT', { TYPE_TEXT: 0.85, CLICK: 0.05, WAIT: 0.05, DONE: 0.03, BLOCKED: 0.02 }, 0.85),
+        operation: answer('TYPE_TEXT', { TYPE_TEXT: 0.83, CLICK: 0.05, WAIT: 0.05, DONE: 0.03, BLOCKED: 0.02, PRESS: 0.02 }, 0.85),
         type_text_target: answer('1', { 1: 1 }, 1),
       },
     },
     {
       model: 'jev-test',
-      answers: { operation: answer('DONE', { CLICK: 0.02, WAIT: 0.03, DONE: 0.91, BLOCKED: 0.04 }, 0.91) },
+      answers: { operation: answer('DONE', { CLICK: 0.02, WAIT: 0.03, DONE: 0.9, BLOCKED: 0.04, PRESS: 0.01 }, 0.91) },
     },
   ];
   let observeCount = 0;
@@ -186,7 +248,7 @@ test('browseragent: eylem başarısız olursa ısrar etmez, hata döner', async 
       systemOne: async () => ({
         model: 'jev-test',
         answers: {
-          operation: answer('CLICK', { CLICK: 0.9, WAIT: 0.05, DONE: 0.03, BLOCKED: 0.02 }, 0.9),
+          operation: answer('CLICK', { CLICK: 0.88, WAIT: 0.05, DONE: 0.03, BLOCKED: 0.02, PRESS: 0.02 }, 0.9),
           click_target: answer('1', { 1: 1 }, 1),
         },
       }),
@@ -204,14 +266,14 @@ test('browseragent: DONE, aynı istekteki noul doğrulaması düşükse reddedil
     {
       model: 'jev-test',
       answers: {
-        operation: answer('DONE', { CLICK: 0.02, WAIT: 0.03, DONE: 0.93, BLOCKED: 0.02 }, 0.93),
+        operation: answer('DONE', { CLICK: 0.02, WAIT: 0.03, DONE: 0.91, BLOCKED: 0.02, PRESS: 0.02 }, 0.93),
         verification: { type: 'noul', noul: 0.2 },
       },
     },
     {
       model: 'jev-test',
       answers: {
-        operation: answer('DONE', { CLICK: 0.01, WAIT: 0.02, DONE: 0.95, BLOCKED: 0.02 }, 0.95),
+        operation: answer('DONE', { CLICK: 0.01, WAIT: 0.02, DONE: 0.94, BLOCKED: 0.02, PRESS: 0.01 }, 0.95),
         verification: { type: 'noul', noul: 0.95 },
       },
     },
@@ -251,7 +313,7 @@ test('browseragent: bayat karar yenilenir, metin isteği cache\'den yeniden kull
   const typeAnswer = {
     model: 'jev-test',
     answers: {
-      operation: answer('TYPE_TEXT', { TYPE_TEXT: 0.9, CLICK: 0.03, WAIT: 0.03, DONE: 0.02, BLOCKED: 0.02 }, 0.9),
+      operation: answer('TYPE_TEXT', { TYPE_TEXT: 0.88, CLICK: 0.03, WAIT: 0.03, DONE: 0.02, BLOCKED: 0.02, PRESS: 0.02 }, 0.9),
       type_text_target: answer('1', { 1: 1 }, 1),
     },
   };
@@ -260,7 +322,7 @@ test('browseragent: bayat karar yenilenir, metin isteği cache\'den yeniden kull
     typeAnswer,
     {
       model: 'jev-test',
-      answers: { operation: answer('DONE', { CLICK: 0.02, WAIT: 0.03, DONE: 0.93, BLOCKED: 0.02 }, 0.93) },
+      answers: { operation: answer('DONE', { CLICK: 0.02, WAIT: 0.03, DONE: 0.91, BLOCKED: 0.02, PRESS: 0.02 }, 0.93) },
     },
   ];
   const result = await browseragent.run(

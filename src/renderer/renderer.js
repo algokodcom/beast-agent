@@ -10949,7 +10949,7 @@ function finHelpHtml(which) {
         ['<code>günlük zarar %3</code><code>max günlük kayıp 3</code>',
           '<b>Kod otomatik uygular.</b> Limit aşılırsa yeni işlem açılmaz; günlük kayıp otomasyonunun limiti bu olur.'],
         ['<code>aynı anda en fazla 10 işlem</code><code>en fazla 10 pozisyon</code><code>günde en fazla 10 işlem</code>',
-          '<b>Kod otomatik uygular.</b> "aynı anda/en fazla pozisyon" = eşzamanlı tavan (pozisyon + bekleyen emir). <b>Günlük işlem limiti varsayılan olarak KAPALI (sınırsız)</b>; yalnız "günde en fazla N işlem" yazarsan o gün için devreye girer. Ayarlar\'daki değer 0 = sınırsız.'],
+          '<b>Kod otomatik uygular.</b> "aynı anda/en fazla pozisyon" = eşzamanlı tavan (pozisyon + bekleyen emir). <b>Günlük işlem limiti kaldırıldı (varsayılan sınırsız)</b>; yalnız "günde en fazla N işlem" yazarsan o gün için devreye girer — Ayarlar\'daki günlük limit alanı artık kullanılmıyor.'],
         ['<code>sembol başına 5 işlem</code><code>aynı sembolde en fazla 3 pozisyon</code>',
           '<b>Kod otomatik uygular.</b> Aynı sembolde çoklu işlem tavanı (toplam tavanı aşamaz). Toplam tavan yazarsan ("aynı anda en fazla 10 işlem") aynı sembolde de o tavana kadar işlem açılabilir; yazmazsan Ayarlar → maks/pay değeri geçerlidir.'],
         ['<code>zararda işlem kapatma</code><code>sadece karda kapat</code><code>kârda değilse kapatma</code>',

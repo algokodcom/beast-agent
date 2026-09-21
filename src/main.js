@@ -10006,16 +10006,10 @@ function finCfg() {
   finNormalizeSymbolLimits(f);
   if (f.maxPositions == null) f.maxPositions = 3;
   /* KODLA DİSİPLİN (trader kuralları): hepsi 0 = kural kapalı */
-  /* GÜNLÜK İŞLEM LİMİTİ KALDIRILDI (varsayılan KAPALI/0 = sınırsız): eski
-     sürümün zorla koyduğu 10 değeri BİR KEZ sıfırlanır; kullanıcı bilerek
-     başka değer girdiyse dokunulmaz. Talimatta "günde en fazla N işlem"
-     yazılıysa not yine geçerlidir (bilinçli opt-in). */
-  if (!Number.isFinite(Number(f.maxTradesPerDay))) f.maxTradesPerDay = 0;
-  if (f.maxTradesPerDayDefaultCleared !== true) {
-    f.maxTradesPerDayDefaultCleared = true;
-    if (Number(f.maxTradesPerDay) === 10) f.maxTradesPerDay = 0;
-    try { saveSettings(); } catch {}
-  }
+  /* GÜNLÜK İŞLEM LİMİTİ TAMAMEN KALDIRILDI: ayar değeri artık uygulanmaz
+     (0'a sabitlenir). Günlük limit YALNIZ talimata "günde en fazla N işlem"
+     yazılırsa (not) devreye girer — varsayılan SINIRSIZ. */
+  f.maxTradesPerDay = 0;
   if (!Number.isFinite(Number(f.lossStreakLimit))) f.lossStreakLimit = 2;
   if (!Number.isFinite(Number(f.lossStreakPauseMin))) f.lossStreakPauseMin = 30;
   /* RE-ENTRY BEKLEME: kural VARSAYILAN KAPALI (0) — isteyen Gelişmiş
@@ -10422,18 +10416,18 @@ function finTeamDigest() {
 function finDisciplineError(side, symbol, positions) {
   try {
     const cfg = finCfg();
-    /* TALİMAT: "günde en fazla N işlem" → günlük işlem tavanını ezer */
-    if (Number(cfg.maxTradesPerDayNote) > 0) {
-      return finrisk.disciplineError(
-        finJournalTail(400),
-        Date.now(),
-        { ...cfg, maxTradesPerDay: Number(cfg.maxTradesPerDayNote) },
-        side,
-        symbol,
-        positions
-      );
-    }
-    return finrisk.disciplineError(finJournalTail(400), Date.now(), cfg, side, symbol, positions);
+    /* GÜNLÜK İŞLEM LİMİTİ: yalnız TALİMAT notu uygulanır ("günde en fazla N
+       işlem"); ayarlardaki değer KALDIRILDI. Not yoksa kural kapalı = sınırsız
+       (günlük işlem sayısı asla yeni girişi engellemez). */
+    const dayNote = Number(cfg.maxTradesPerDayNote) > 0 ? Number(cfg.maxTradesPerDayNote) : 0;
+    return finrisk.disciplineError(
+      finJournalTail(400),
+      Date.now(),
+      { ...cfg, maxTradesPerDay: dayNote },
+      side,
+      symbol,
+      positions
+    );
   } catch {
     return null;
   }

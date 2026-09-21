@@ -126,6 +126,20 @@ function lotRange(cfg, symbol) {
   return { minLot, maxLot };
 }
 
+/* LOT ÇARPANI (martingale/kademe): risk lotu hesaplandıktan SONRA hacim
+   çarpılır ve broker adımına normalize edilir; maxLot ile kırpılır.
+   1. işlem 0.01 lot ise martingale kademesi 0.012'ye çıkar (adıma yuvarlanır)
+   — kâra geçince çarpan kalkar, taban lota dönülür. */
+function scaleVolume(info, vol, mult, minLot, maxLot) {
+  const m = Number(mult);
+  if (!(m > 0) || m === 1) return vol;
+  const lo = Number(minLot) > 0 ? Number(minLot) : 0.01;
+  const hi = Number(maxLot) > 0 ? Number(maxLot) : vol * m;
+  const want = Math.max(lo, Math.min(hi, vol * m));
+  const n = finrisk.normalizeVolume(info, want, maxLot, minLot);
+  return !n.error && Number(n.volume) > 0 ? Number(n.volume) : vol;
+}
+
 /* İşlem öncesi risk katmanı: stops_level + yoğunluk + marj kalkanı.
    Hata metni ya da null döner. positions çağıran tarafından verilir. */
 async function preTradeCheck(cfg, side, symbol, info, price, volume, sl, tp, positions) {
@@ -792,6 +806,8 @@ const handlers = {
        mesafesinden hesaplanır; aksi halde volume broker kuralına normalize edilir */
     const explicitRisk = Number(args.riskPct) > 0 ? Number(args.riskPct) : 0;
     const wantVolume = Number(args.volume);
+    /* MARTİNGALE/KADEME ÇARPANI: risk lotu hesaplandıktan sonra hacme uygulanır */
+    const sizeMult = Number(args.sizeMult) > 0 ? Math.min(20, Number(args.sizeMult)) : 1;
     let vol = 0;
     let riskInfo = null;
     if (explicitRisk > 0 || (!(wantVolume > 0) && Number(cfg.riskPerTradePct) > 0)) {
@@ -803,7 +819,15 @@ const handlers = {
       const rr = finrisk.calcRiskLot(info, price, sl, riskAmount, range.maxLot, range.minLot);
       if (rr.error) return { ok: false, error: rr.error };
       vol = rr.volume;
-      riskInfo = { riskPct, riskAmount: Math.round(riskAmount * 100) / 100, lossPerLot: rr.lossPerLot, raised: !!rr.raised };
+      if (sizeMult !== 1) vol = scaleVolume(info, vol, sizeMult, range.minLot, range.maxLot);
+      const perLot = Number(rr.lossPerLot) || 0;
+      riskInfo = {
+        riskPct,
+        riskAmount: Math.round((perLot > 0 ? perLot * vol : riskAmount) * 100) / 100,
+        lossPerLot: rr.lossPerLot,
+        raised: !!rr.raised,
+        sizeMult,
+      };
     } else {
       const norm = finrisk.normalizeVolume(info, wantVolume, range.maxLot, range.minLot);
       if (norm.error) return { ok: false, error: norm.error };
@@ -939,6 +963,8 @@ const handlers = {
     /* LOT: riskPct verilirse BEKLEYEN EMİR fiyatı + SL mesafesinden hesaplanır
        (piyasa emriyle aynı risk hattı); volume verilmişse normalize edilir. */
     const explicitRisk = Number(args.riskPct) > 0 ? Number(args.riskPct) : 0;
+    /* MARTİNGALE/KADEME ÇARPANI: risk lotu hesaplandıktan sonra hacme uygulanır */
+    const sizeMult = Number(args.sizeMult) > 0 ? Math.min(20, Number(args.sizeMult)) : 1;
     let vol = 0;
     let riskInfo = null;
     if (explicitRisk > 0 || (!(Number(args.volume) > 0) && Number(cfg.riskPerTradePct) > 0)) {
@@ -951,7 +977,15 @@ const handlers = {
       const rr = finrisk.calcRiskLot(info, entryPrice, slRef, riskAmount, range.maxLot, range.minLot);
       if (rr.error) return { ok: false, error: rr.error };
       vol = rr.volume;
-      riskInfo = { riskPct, riskAmount: Math.round(riskAmount * 100) / 100, lossPerLot: rr.lossPerLot, raised: !!rr.raised };
+      if (sizeMult !== 1) vol = scaleVolume(info, vol, sizeMult, range.minLot, range.maxLot);
+      const perLot = Number(rr.lossPerLot) || 0;
+      riskInfo = {
+        riskPct,
+        riskAmount: Math.round((perLot > 0 ? perLot * vol : riskAmount) * 100) / 100,
+        lossPerLot: rr.lossPerLot,
+        raised: !!rr.raised,
+        sizeMult,
+      };
     } else {
       const norm = finrisk.normalizeVolume(info, args.volume, range.maxLot, range.minLot);
       if (norm.error) return { ok: false, error: norm.error };

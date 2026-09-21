@@ -10006,7 +10006,16 @@ function finCfg() {
   finNormalizeSymbolLimits(f);
   if (f.maxPositions == null) f.maxPositions = 3;
   /* KODLA DİSİPLİN (trader kuralları): hepsi 0 = kural kapalı */
-  if (!Number.isFinite(Number(f.maxTradesPerDay))) f.maxTradesPerDay = 10;
+  /* GÜNLÜK İŞLEM LİMİTİ KALDIRILDI (varsayılan KAPALI/0 = sınırsız): eski
+     sürümün zorla koyduğu 10 değeri BİR KEZ sıfırlanır; kullanıcı bilerek
+     başka değer girdiyse dokunulmaz. Talimatta "günde en fazla N işlem"
+     yazılıysa not yine geçerlidir (bilinçli opt-in). */
+  if (!Number.isFinite(Number(f.maxTradesPerDay))) f.maxTradesPerDay = 0;
+  if (f.maxTradesPerDayDefaultCleared !== true) {
+    f.maxTradesPerDayDefaultCleared = true;
+    if (Number(f.maxTradesPerDay) === 10) f.maxTradesPerDay = 0;
+    try { saveSettings(); } catch {}
+  }
   if (!Number.isFinite(Number(f.lossStreakLimit))) f.lossStreakLimit = 2;
   if (!Number.isFinite(Number(f.lossStreakPauseMin))) f.lossStreakPauseMin = 30;
   /* RE-ENTRY BEKLEME: kural VARSAYILAN KAPALI (0) — isteyen Gelişmiş
@@ -11333,19 +11342,28 @@ async function finRecordClose(ticket, st) {
   let net = null;
   let symbol = (st && st.symbol) || '';
   let closeReason = null; /* kapanışı yapan son deal'in nedeni (4=SL, 5=TP, 6=stop-out) */
-  try {
-    const r = await mt5bridge.call('deals', { days: 3 }, 12000);
-    const deals = (r && r.ok && r.data && r.data.deals) || [];
-    const mine = deals.filter((d) => String(d.position_id) === String(ticket));
-    if (mine.length) {
-      net = 0;
-      for (const d of mine) {
-        net += (Number(d.profit) || 0) + (Number(d.swap) || 0) + (Number(d.commission) || 0);
-        if (Number(d.entry) === 1) closeReason = Number(d.reason);
+  /* DEAL GECİKMESİ: kapanıştan hemen sonra deal listesi boş dönebilir — kısa
+     gecikmeyle 1 kez daha dene. K/Z kaydı kaçarsa martingale kayıp serisi,
+     öğrenme istatistiği ve kalibrasyon boş kalır (martingale çalışmaz). */
+  for (let attempt = 0; attempt < 2 && net == null; attempt++) {
+    if (attempt > 0) await new Promise((res) => setTimeout(res, 2000));
+    try {
+      const r = await mt5bridge.call('deals', { days: 3 }, 12000);
+      const deals = (r && r.ok && r.data && r.data.deals) || [];
+      const mine = deals.filter((d) => String(d.position_id) === String(ticket));
+      if (mine.length) {
+        net = 0;
+        for (const d of mine) {
+          net += (Number(d.profit) || 0) + (Number(d.swap) || 0) + (Number(d.commission) || 0);
+          if (Number(d.entry) === 1) closeReason = Number(d.reason);
+        }
+        symbol = String(mine[0].symbol || symbol);
       }
-      symbol = String(mine[0].symbol || symbol);
-    }
-  } catch {}
+    } catch {}
+  }
+  if (net == null) {
+    try { financeLog(`[watchdog] kapanış K/Z okunamadı (ticket ${ticket}, ${symbol || '?'}) — deal kaydı yok`); } catch {}
+  }
   const rounded = net == null ? null : Math.round(net * 100) / 100;
   /* MAE/MFE: pozisyonun gördüğü en iyi/en kötü seviyeler kapanışa iliştirilir */
   const ex = financeState.excursions.get(String(ticket)) || null;
@@ -13868,7 +13886,7 @@ function finInstrMoney(v) {
 
 function finParseInstructions(text) {
   const low = String(text || '').toLowerCase();
-  const out = { riskPct: null, lotMult: null, martingale: null, partial: null, startBalance: null, dailyLossPct: null };
+  const out = { riskPct: null, lotMult: null, martingale: null, partial: null, startBalance: null, dailyLossPct: null, noLossClose: false };
   if (!low.trim()) return out;
   /* "risk %2", "%2 risk", "risk yüzde 2", "riski 2 yap" → 2 (ilk sayı) */
   let m = low.match(
@@ -13898,7 +13916,9 @@ function finParseInstructions(text) {
        sayılar faktör sayılmaz (varsayılan ×2 kalır). Geçerli aralık 1.01-5. */
     const pats = [
       /mart[ıi]ngale\s*(?:x|×|çarpan[ıi]?|carpan[ıi]?|oran[ıi]?|fakt[öo]r[üu]?|kat[ıi]?)?\s*(\d+(?:[.,]\d+)?)(?!\s*r\b)/,
-      /(\d+(?:[.,]\d+)?)\s*(?:x|×|kat[ıi]?)?\s*mart[ıi]ngale/,
+      /* "1.2x martingale" — çarpan kelimesi (x/kat) ZORUNLU: yoksa "risk %2
+         martingale" cümlesindeki 2 yanlışlıkla faktör sanılırdı */
+      /(\d+(?:[.,]\d+)?)\s*(?:x|×|kat[ıi]?)\s*mart[ıi]ngale/,
       /mart[ıi]ngale[^0-9%\n]{0,24}?(\d+(?:[.,]\d+)?)\s*(?:x|×|kat[ıi]?)/,
       /mart[ıi]ngale[^0-9%\n]{0,24}?(\d+[.,]\d+)(?!\s*r\b)/,
     ];
@@ -13924,12 +13944,34 @@ function finParseInstructions(text) {
     m = low.match(/(?:k[ıi]smi|partial)[^%\d]{0,24}%\s*(\d+(?:[.,]\d+)?)/);
     if (m) out.partial = { atR: 1, pct: finInstrNum(m[1]) };
   }
+  if (!out.partial) {
+    /* "0.5R'de yarısını kapat", "0.5R karda partial close ile yarısını kapat" */
+    m = low.match(/(\d+(?:[.,]\d+)?)\s*r[^.\n]{0,40}?(?:yar[ıi]s[ıi](?:n[ıi])?|half)/);
+    if (m) out.partial = { atR: finInstrNum(m[1]), pct: 50 };
+  }
+  if (!out.partial) {
+    /* R yazılmamış: "partial close ile yarısını kapat" → 1R varsayılan */
+    m = low.match(/(?:k[ıi]smi|partial|yar[ıi]s[ıi](?:n[ıi])?)[^.\n]{0,30}?(?:yar[ıi]s[ıi](?:n[ıi])?|%\s*50)/);
+    if (m) out.partial = { atR: 1, pct: 50 };
+  }
   if (out.partial) {
     const p = out.partial;
     if (!(p.atR > 0)) p.atR = 1;
     p.atR = Math.min(10, Math.round(p.atR * 100) / 100);
     if (!(p.pct >= 5 && p.pct <= 90)) out.partial = null;
     else p.pct = Math.round(p.pct);
+  }
+  /* ZARARDA KAPATMA YASAĞI (KOD uygular): "zararda işlem kapatma",
+     "zararına kapatma", "sadece karda kapat", "kârda değilse kapatma" →
+     kapatma kararı zarardayken REDDEDİLİR (SL/TP hariç — stop çalışır). */
+  if (
+    /(?:zarar(?:da|ına|dayken|day[ıi]m)?|eksi(?:de|ye))[^.\n]{0,24}?kapatma/.test(low) ||
+    /kapatma[^.\n]{0,24}?(?:zarar|eksi)/.test(low) ||
+    /(?:sadece|yaln[ıi]z)[^.\n]{0,24}?k[âa]r(?:da|daysa|dayken)?\b/.test(low) ||
+    /k[âa]rda de[ğg]il(?:se)?[^.\n]{0,20}?kapatma/.test(low) ||
+    /k[âa]r olmadan[^.\n]{0,16}?kapatma/.test(low)
+  ) {
+    out.noLossClose = true;
   }
   return out;
 }
@@ -13947,7 +13989,11 @@ function finParsedInstr() {
       startBalance: trade.startBalance != null ? trade.startBalance : mgr.startBalance,
       dailyLossPct: trade.dailyLossPct != null ? trade.dailyLossPct : mgr.dailyLossPct,
     },
-    manage: { partial: mgr.partial || trade.partial },
+    manage: {
+      partial: mgr.partial || trade.partial,
+      /* YÖNETİM KURALI: zararda kapatma yasağı iki nottan birinde varsa geçerli */
+      noLossClose: !!(mgr.noLossClose || trade.noLossClose),
+    },
   };
 }
 
@@ -13960,7 +14006,8 @@ function finInstrSummary(ins) {
     if (ins.entry.martingale != null) p.push(`martingale ×${ins.entry.martingale}`);
     if (ins.entry.startBalance != null) p.push(`gün başı ${ins.entry.startBalance}`);
     if (ins.entry.dailyLossPct != null) p.push(`günlük zarar limiti %${ins.entry.dailyLossPct}`);
-    if (ins.manage.partial) p.push(`kısmi %${ins.manage.partial.pct} @${ins.manage.partial.atR}R`);
+    if (ins.manage.partial) p.push(`kısmi %${ins.manage.partial.pct} @${ins.manage.partial.atR}R (yalnız kârda)`);
+    if (ins.manage.noLossClose) p.push('zararda kapatma YOK');
     try {
       const f = finCfg();
       if (Number(f.maxPositionsNote) > 0) p.push(`maks ${f.maxPositionsNote} pozisyon`);
@@ -14151,8 +14198,10 @@ async function finTsManageOpen(sidS, agent, sym, pos, mkt, ans, qi, lines) {
   const pct = par && par.p >= FIN_TS_CONFIRM_P && par.p - par.second >= FIN_TS_MARGIN_P
     ? ({ yuzde25: 25, yuzde50: 50, yuzde75: 75 }[String(par.choice)] || 0)
     : 0;
-  if (pct > 0 && !partialDone) {
-    const kind = profitDist >= 0 ? 'partial_tp' : 'partial_sl';
+  if (pct > 0 && profitDist > 0 && !partialDone) {
+    /* YALNIZ KÂRDA: sahip kuralı "kısmi kapatma sadece kardaysa" — zararda
+       kısmi kapatma (partial_sl) UYGULANMAZ; zarar kesme kararı SL'ye aittir. */
+    const kind = 'partial_tp';
     let r = null;
     try {
       r = await financetools.handlers.mt5_close(
@@ -14160,7 +14209,7 @@ async function finTsManageOpen(sidS, agent, sym, pos, mkt, ans, qi, lines) {
           ticket: Number(pos.ticket),
           percent: pct,
           kind,
-          reason: `TypeSafe: kısmi %${pct} p=${par.p.toFixed(2)} (${kind === 'partial_tp' ? 'kâr al' : 'zarar kes'})`,
+          reason: `TypeSafe: kısmi %${pct} p=${par.p.toFixed(2)} (kâr al)`,
         },
         { sessionId: sidS }
       );
@@ -14171,12 +14220,14 @@ async function finTsManageOpen(sidS, agent, sym, pos, mkt, ans, qi, lines) {
       if (st) { st.partial = true; finWatchSave(); }
       if (agent) { agent.tsPartials = agent.tsPartials || new Set(); agent.tsPartials.add(String(pos.ticket)); }
       lines.push(
-        `- ${sym} #${pos.ticket}: KISMİ %${pct} ${kind === 'partial_tp' ? 'TP ✓' : 'STOP ✓'}` +
+        `- ${sym} #${pos.ticket}: KISMİ %${pct} TP ✓` +
           ` (p=${par.p.toFixed(2)}${r.remaining != null ? ', kalan ' + r.remaining + ' lot' : ''})`
       );
     } else {
       lines.push(`- ${sym} #${pos.ticket}: kısmi %${pct} reddedildi — ${(r && r.error) || 'hata'}`);
     }
+  } else if (pct > 0 && profitDist <= 0) {
+    lines.push(`- ${sym} #${pos.ticket}: kısmi atlandı — kârda değil (talimat: sadece kârda)`);
   } else if (pct > 0 && partialDone) {
     lines.push(`- ${sym} #${pos.ticket}: kısmi atlandı — daha önce alındı`);
   }
@@ -14459,6 +14510,12 @@ async function finPosManagerRound(positions, account) {
       piyasa: {},
       alarmlar: (financeState.alerts || []).slice(0, 8).map((a) => ({ sembol: a.symbol, yon: a.direction, fiyat: a.price, mod: a.once ? 'tek' : 'tekrarlı' })),
       sahip_talimati: String(f.posManagerNote || '').slice(0, 1500) || '(yok — genel disiplin: kârı koru, zararı sınırla, SL/TP aktif yönet)',
+      /* TRADE TALİMATI da yöneticiye görünür: iki kartın kuralları çelişmesin */
+      trader_talimati: finTsStrategyText() ? String(finTsStrategyText()).slice(0, 1000) : '',
+      /* KOD KURALI ÖZETİ: Jev bunları ihlal eden seçim yapmasın */
+      kapatma_kurali: ins.manage.noLossClose
+        ? 'ZARARDA KAPATMA YOK (kod uygular): zarardaki pozisyonun kapatma kararı reddedilir — SL/TP kapatması serbest; kısmi kapatma YALNIZ kârda'
+        : 'zararda kapatma serbest',
       talimat_ayarlari: instrTxt || '(sayısal kural yok)',
       gun_durumu: (() => {
         try {
@@ -14526,7 +14583,16 @@ async function finPosManagerRound(positions, account) {
       const pp = positions[i];
       const sym = String(pp.symbol || '').toUpperCase();
       const ex = finTsNoul(ans, 'kapat_' + i);
-      if (ex != null && ex >= FIN_TS_EXIT_P) {
+      const psNow = finTsPosState(pp);
+      /* ZARARDA KAPATMA YASAĞI (talimat — KOD uygular): zarardaki pozisyonun
+         kapatma kararı REDDEDİLİR. SL/TP kapatması bundan etkilenmez. */
+      const inLoss = Number(pp.profit) < 0 || (psNow.kz_r != null && psNow.kz_r < 0);
+      if (ex != null && ex >= FIN_TS_EXIT_P && ins.manage.noLossClose && inLoss) {
+        lines.push(
+          `- ${sym} #${pp.ticket}: KAPATILMADI — talimat "zararda kapatma" ` +
+            `(K/Z ${Math.round((Number(pp.profit) || 0) * 100) / 100}${psNow.kz_r != null ? ' · ' + psNow.kz_r + 'R' : ''})`
+        );
+      } else if (ex != null && ex >= FIN_TS_EXIT_P) {
         let r = null;
         try {
           r = await financetools.handlers.mt5_close(
@@ -14538,9 +14604,9 @@ async function finPosManagerRound(positions, account) {
         }
         lines.push(`- ${sym} #${pp.ticket}: KAPAT (p=${ex.toFixed(2)}) ${r && r.ok ? '✓ kapatıldı' : '✗ ' + ((r && r.error) || 'hata')}`);
         continue;
+      } else {
+        lines.push(`- ${sym} #${pp.ticket}: açık (kapat=${ex == null ? 'yanıt yok' : ex.toFixed(2)} < ${FIN_TS_EXIT_P}) · ${psNow.kz_r == null ? 'kâr ?' : 'kâr ' + psNow.kz_r + 'R'}`);
       }
-      const psNow = finTsPosState(pp);
-      lines.push(`- ${sym} #${pp.ticket}: açık (kapat=${ex == null ? 'yanıt yok' : ex.toFixed(2)} < ${FIN_TS_EXIT_P}) · ${psNow.kz_r == null ? 'kâr ?' : 'kâr ' + psNow.kz_r + 'R'}`);
       /* TALİMAT KISMİ KURALI (kod): "+atR'de %pct kapat" → otomatik uygula */
       const rule = ins.manage.partial;
       if (rule) {
@@ -14889,7 +14955,13 @@ async function finTypeSafeRound(sid, agent) {
             lines.push(`- ${sym}: pozisyon açık #${pos.ticket} — yönetim Pozisyon Yöneticisi'nde (${finPosMgrSec()} sn Jev turu)`);
           } else {
             const ex = finTsNoul(ans, 'kapat_' + i);
-            if (ex != null && ex >= FIN_TS_EXIT_P) {
+            const psT = finTsPosState(pos);
+            const inLossT = Number(pos.profit) < 0 || (psT.kz_r != null && psT.kz_r < 0);
+            if (ex != null && ex >= FIN_TS_EXIT_P && ins.manage.noLossClose && inLossT) {
+              lines.push(`- ${sym}: kapat REDDEDİLDİ — talimat "zararda kapatma" (K/Z ${Math.round((Number(pos.profit) || 0) * 100) / 100})`);
+              /* yönetim kararları (kısmi/SL) yine değerlendirilir */
+              try { await finTsManageOpen(sidS, agent, sym, pos, market[sym], ans, i, lines); } catch {}
+            } else if (ex != null && ex >= FIN_TS_EXIT_P) {
               const r = await financetools.handlers.mt5_close(
                 { ticket: Number(pos.ticket), reason: `TypeSafe: kapat p=${ex.toFixed(2)}` },
                 { sessionId: sidS }
@@ -14999,7 +15071,10 @@ async function finTypeSafeRound(sid, agent) {
             martNote = ` · martingale ×${ins.entry.martingale}^${pow} (${pow}. ardışık kayıp sonrası)`;
           }
         }
-        if (sizeMult !== 1) riskPct = Math.max(0.1, Math.min(10, Math.round(riskPct * sizeMult * 100) / 100));
+        /* MARTİNGALE/LOT ÇARPANI: riskPct TABAN kalır; çarpan LOTA uygulanır
+           (araç: risk lotu × sizeMult, broker adımı + maxLot kelepçesi).
+           Gösterim ve karar kaydı için efektif risk yüzdesi hesaplanır. */
+        const effRiskPct = Math.max(0.1, Math.min(30, Math.round(riskPct * sizeMult * 100) / 100));
         const riskNote = ins.entry.riskPct != null ? ' · TALİMAT risk %' + ins.entry.riskPct : '';
         const emirLabel =
           orderType === 'market' ? 'MARKET' :
@@ -15015,6 +15090,7 @@ async function finTypeSafeRound(sid, agent) {
             sl,
             tp,
             riskPct,
+            sizeMult,
             timeframe: market[sym].tf,
             comment: 'TS',
             reason:
@@ -15051,11 +15127,11 @@ async function finTypeSafeRound(sid, agent) {
               emaAlign: ind.ema50 != null && ind.ema200 != null ? (ind.ema50 > ind.ema200) === (c.choice === 'buy') : null,
               rsi: ind.rsi14,
               atrPct: atr > 0 && entryRef > 0 ? atr / entryRef : null,
-              riskPct,
+              riskPct: effRiskPct,
               orderType,
             });
           } catch {}
-          const riskTxt = `risk %${riskPct}${ins.entry.riskPct == null && cal.riskMult !== 1 ? ` ×${cal.riskMult}` : ''}${riskNote}${martNote}`;
+          const riskTxt = `risk %${effRiskPct}${ins.entry.riskPct == null && cal.riskMult !== 1 ? ` ×${cal.riskMult}` : ''}${riskNote}${martNote}`;
           lines.push(
             (orderType === 'market'
               ? `- ${sym}: ⚡ MARKET ${c.choice.toUpperCase()} açıldı (lot ${r.opened && r.opened.volume}, SL ${sl}, TP ${tp}, ${riskTxt})`

@@ -10949,9 +10949,13 @@ function finHelpHtml(which) {
         ['<code>günlük zarar %3</code><code>max günlük kayıp 3</code>',
           '<b>Kod otomatik uygular.</b> Limit aşılırsa yeni işlem açılmaz; günlük kayıp otomasyonunun limiti bu olur.'],
         ['<code>aynı anda en fazla 10 işlem</code><code>en fazla 10 pozisyon</code><code>günde en fazla 10 işlem</code>',
-          '<b>Kod otomatik uygular.</b> Eşzamanlı tavan (pozisyon + bekleyen emir) ya da günlük işlem tavanı. Talimatta yazdığın sürece Ayarlar\'daki değeri ezer; metinden kaldırınca ayar geçerli olur.'],
+          '<b>Kod otomatik uygular.</b> "aynı anda/en fazla pozisyon" = eşzamanlı tavan (pozisyon + bekleyen emir). <b>Günlük işlem limiti varsayılan olarak KAPALI (sınırsız)</b>; yalnız "günde en fazla N işlem" yazarsan o gün için devreye girer. Ayarlar\'daki değer 0 = sınırsız.'],
         ['<code>sembol başına 5 işlem</code><code>aynı sembolde en fazla 3 pozisyon</code>',
           '<b>Kod otomatik uygular.</b> Aynı sembolde çoklu işlem tavanı (toplam tavanı aşamaz). Toplam tavan yazarsan ("aynı anda en fazla 10 işlem") aynı sembolde de o tavana kadar işlem açılabilir; yazmazsan Ayarlar → maks/pay değeri geçerlidir.'],
+        ['<code>zararda işlem kapatma</code><code>sadece karda kapat</code><code>kârda değilse kapatma</code>',
+          '<b>Kod otomatik uygular.</b> Zarardaki pozisyonun kapatma kararı REDDEDİLİR — SL/TP çalışmaya devam eder (stop = martingale serisinin parçası). Kârdaki/başabaştaki pozisyon normal kapatılır.'],
+        ['<code>0.5R karda yarısını kapat</code><code>partial close ile yarısını kapat</code>',
+          '<b>Kod otomatik uygular.</b> Kâr +0.5R\'ye ulaşınca pozisyonun %50\'si kapatılır — <b>yalnız kârdayken</b> uygulanır (zararda kısmi stop yapılmaz).'],
       ];
   const example = posmgr
     ? `1- 1R'de %50 kısmi kapat\n2- kâr 2R'ye gelince kalanı kapat\n3- zarar -0.5R'yi geçerse kes`

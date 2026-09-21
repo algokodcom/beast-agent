@@ -13818,13 +13818,28 @@ function finParseInstructions(text) {
   if (m) out.lotMult = finInstrNum(m[1] || m[2] || m[3]);
   if (out.lotMult != null) out.lotMult = Math.max(1, Math.min(5, out.lotMult));
   if (/martingale|mart[ıi]ngale/.test(low)) {
-    /* Faktör serbest: "martingale 1.2", "martingale x1.20", "martingale 1,2",
-       "martingale çarpanı 1.2", "1.2x martingale", "1.2 kat martingale".
-       Yalnız bilinen bağlaçlardan sonra sayı okunur — "martingale kullan, 1R..."
-       gibi metinden yanlış sayı kapmaz. Varsayılan ×2 (1.01–5 arası geçerli). */
-    m = low.match(/(?:mart[ıi]ngale\s*(?:x|×|çarpan[ıi]?|carpan[ıi]?|oran[ıi]?|fakt[öo]r[üu]?|kat[ıi]?)?\s*(\d+(?:[.,]\d+)?))|(?:(\d+(?:[.,]\d+)?)\s*(?:x|×|kat[ıi]?)?\s*mart[ıi]ngale)/);
-    const mf = m ? finInstrNum(m[1] || m[2]) : null;
-    out.martingale = Math.max(1.01, Math.min(5, mf != null && mf > 1 ? mf : 2));
+    /* FAKTÖR SERBEST — doğal yazımların hepsi denenir:
+         "martingale 1.2"        "martingale x1.20"     "martingale 1,2"
+         "martingale çarpanı 1.2" "1.2x martingale"      "1.2 kat martingale"
+         "martingale kullan, 1.2 kat"  "martingale kullan (x1.2)"  "martingale e 1.2x"
+       Yanlış sayı kapmamak için: "1R de %50" gibi R-yüzdeleri ve 1 ve altı
+       sayılar faktör sayılmaz (varsayılan ×2 kalır). Geçerli aralık 1.01-5. */
+    const pats = [
+      /mart[ıi]ngale\s*(?:x|×|çarpan[ıi]?|carpan[ıi]?|oran[ıi]?|fakt[öo]r[üu]?|kat[ıi]?)?\s*(\d+(?:[.,]\d+)?)(?!\s*r\b)/,
+      /(\d+(?:[.,]\d+)?)\s*(?:x|×|kat[ıi]?)?\s*mart[ıi]ngale/,
+      /mart[ıi]ngale[^0-9%\n]{0,24}?(\d+(?:[.,]\d+)?)\s*(?:x|×|kat[ıi]?)/,
+      /mart[ıi]ngale[^0-9%\n]{0,24}?(\d+[.,]\d+)(?!\s*r\b)/,
+    ];
+    let mf = null;
+    for (const p of pats) {
+      m = low.match(p);
+      const v = m ? finInstrNum(m[1]) : null;
+      if (v != null && v > 1 && v <= 5) {
+        mf = v;
+        break;
+      }
+    }
+    out.martingale = Math.max(1.01, Math.min(5, mf != null ? mf : 2));
   }
   /* kısmi kapatma: "1R'de %50" → atR=1, pct=50; "%50 1R" → aynı; "kısmi %50" → atR=1 */
   m = low.match(/(\d+(?:[.,]\d+)?)\s*r[^%\d]{0,28}%\s*(\d+(?:[.,]\d+)?)/);

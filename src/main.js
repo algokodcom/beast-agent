@@ -13986,12 +13986,25 @@ function finTsStrategyTf() {
 }
 
 /* Talimat "zorunlu giriş" istiyor mu? ("her mumda işlem açmak zorundasın" gibi)
-   Olumsuz yazım ("zorunlu değil") modu AÇMAZ. */
+   SADECE açık emir cümleleri modu açar; teyit cümleleri ("her mum kapanışını
+   bekle", "her mumda alarm kur") modu AÇMAZ → girişler İSTEĞE BAĞLI kalır
+   (eşik + teyit kapıları çalışır). Olumsuz yazım ("zorunlu değil / zorunda
+   değil / mecbur değil") modu kapatır. */
 function finTsMandatoryEntry() {
-  const s = String(finTsStrategyText() || '').toLowerCase();
+  const s = String(finTsStrategyText() || '')
+    .toLocaleLowerCase('tr')
+    .replace(/\u0307/g, ''); /* İ → i̇ (birleşik nokta) temizliği */
   if (!s) return false;
   if (/zorunlu değil|mecbur değil|zorunda değil/.test(s)) return false;
-  return /her mum|her barda?|her mumda|işlem açmak zorunda|her zaman işlem|sürekli işlem|durmadan işlem|zorunlu (?:olarak )?(?:işlem|giriş|al|sat)|mecbur/.test(s);
+  const trade = '(?:i[şs]lem|trade|giri[şs]|pozisyon|emir|al\\b|sat\\b|a[çc]\\b)';
+  return (
+    new RegExp('her\\s*(?:mum(?:da|de)?|bar(?:da|de)?)[^.\\n]{0,24}?' + trade).test(s) ||
+    new RegExp('(?:i[şs]lem|giri[şs]|pozisyon|emir)\\s*(?:a[çc]mak|a[çc]ma)?\\s*zorunda').test(s) ||
+    new RegExp('her\\s*zaman\\s*' + trade).test(s) ||
+    new RegExp('(?:s[üu]rekli|durmadan)\\s*' + trade).test(s) ||
+    new RegExp('zorunlu\\s*(?:olarak\\s*)?' + trade).test(s) ||
+    /\bmecbur\b/.test(s)
+  );
 }
 
 /* Ritim: talimatta M1 → işlem ajanı turları en hızlı 60 sn, M5 → 300 sn
@@ -15072,6 +15085,11 @@ async function finTypeSafeRound(sid, agent) {
         agent,
         `🤖 TypeSafe karar turu #${agent.round} (LLM yok — girdi yalnız TypeSafe):\n` +
           (insTxt ? 'TALİMAT AYARLARI (kod uygular): ' + insTxt + '\n' : '') +
+          /* giriş serbestliği görünür olsun: zorunlu mod yalnız talimat açıkça
+             isterse; yoksa girişler eşik/teyit kapılı (isteğe bağlı) */
+          (talimatZorunlu
+            ? 'TALİMAT MODU: ZORUNLU GİRİŞ — talimat gereği bu turda giriş zorunlu\n'
+            : 'GİRİŞ MODU: İSTEĞE BAĞLI — yalnız eşik/teyit geçen sinyalde işlem açılır\n') +
           'TF KARARI: ' + symbols.map((s) => `${s}=${market[s].tf}`).join(', ') + '\n' +
           'ÖĞRENİLMİŞ: ' +
           symbols

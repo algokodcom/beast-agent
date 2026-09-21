@@ -755,7 +755,7 @@
       mail_need_to: 'Alıcı adresi gerekli',
       /* TypeSafe (System One / Jev) */
       ts_h2: 'TypeSafe (System One · Jev)',
-      ts_sub: 'Tipli karar motoru: metin üretmeden olasılıklı yanıt (noul/choice/score). Anahtar girilince ajanlar typesafe_decision aracını kullanır; Beast Finance rol→skill eşleştirmesinde "typesafe-ai" seçilirse roller bu kararları kullanır.',
+      ts_sub: 'Tipli karar motoru: metin üretmeden olasılıklı yanıt (noul/choice/score). Beast Finance ajanları (Trader + analiz ekibi + sembol işçileri) JEV-ONLY çalışır — kararları YALNIZ buradan alır, LLM kullanılmaz; anahtar yoksa finans ajanları tur atmaz. Diğer ajanlar ve sohbet etkilenmez.',
       ts_key_label: 'TypeSafe API anahtarı (typesafe.ai)',
       ts_model_label: 'Model (varsayılan: jev-latest)',
       ts_enabled_label: 'TypeSafe açık (browser_agent/T3SFast + typesafe_decision kullanılabilir)',
@@ -772,7 +772,7 @@
       ts_saved_toast: 'TypeSafe anahtarı kaydedildi',
       ts_cleared_toast: 'TypeSafe anahtarı silindi',
       ts_fail_toast: 'TypeSafe kaydedilemedi',
-      ts_hint: 'İpucu: Rol→Skill eşleştirmesinde "typesafe-ai" seçilen roller (ve ana trader playbook) kararlarını typesafe_decision ile alır; anahtar yoksa diğer ajanlar chat modeliyle devam eder.',
+      ts_hint: 'İpucu: Beast Finance ajanları JEV-ONLY koşar (LLM yok) — Ayarlar → TypeSafe anahtarı zorunludur. Finance SOHBET yardımcısı ve diğer ajanlar chat modelini kullanmaya devam eder.',
     },
     en: {
       newChat: '+ New Chat',
@@ -1512,7 +1512,7 @@
       store_login_note: 'Your Beast ID is anonymous; your real Beast Code is never shared.',
       /* TypeSafe (System One / Jev) */
       ts_h2: 'TypeSafe (System One · Jev)',
-      ts_sub: 'Typed decision engine: probabilistic answers without text generation (noul/choice/score). Once a key is set, agents can use the typesafe_decision tool; when "typesafe-ai" is picked in Beast Finance role→skill matching, those roles use it.',
+      ts_sub: 'Typed decision engine: probabilistic answers without text generation (noul/choice/score). Beast Finance agents (Trader + analysis team + symbol workers) are JEV-ONLY — they take decisions solely from here, no LLM; without a key finance agents do not run. Other agents and the chat are unaffected.',
       ts_key_label: 'TypeSafe API key (typesafe.ai)',
       ts_model_label: 'Model (default: jev-latest)',
       ts_enabled_label: 'TypeSafe ON (enables browser_agent/T3SFast + typesafe_decision)',
@@ -1529,7 +1529,7 @@
       ts_saved_toast: 'TypeSafe key saved',
       ts_cleared_toast: 'TypeSafe key deleted',
       ts_fail_toast: 'Could not save TypeSafe key',
-      ts_hint: 'Tip: roles (and the main trader playbook) matched to "typesafe-ai" use typesafe_decision for their judgments; without a key other agents keep using the chat model.',
+      ts_hint: 'Tip: Beast Finance agents run JEV-ONLY (no LLM) — a TypeSafe key in Settings is required. The finance chat copilot and other agents keep using the chat model.',
     },
   };
 

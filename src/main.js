@@ -3632,12 +3632,12 @@ function reloadBackend() {
           try {
             let txt = '';
             if (ev.type === 'error') {
-              txt = '⚠️ [cron: ' + String((cjob && cjob.name) || 'görev') + ']\nHata: ' + String(ev.error || '').slice(0, 200);
+              txt = '⚠️ [cronjob ' + String((cjob && cjob.id) || '?') + ']\nHata: ' + String(ev.error || '').slice(0, 200);
             } else {
               const s = engine.openSession(ev.sessionId);
               const lastA = [...s.messages].reverse().find((m) => m.role === 'assistant' && m.content);
               txt = typeof (lastA && lastA.content) === 'string' ? lastA.content : '';
-              if (txt.trim()) txt = '⏰ [cron: ' + String((cjob && cjob.name) || 'görev') + ']\n' + txt;
+              if (txt.trim()) txt = '⏰ [cronjob ' + String((cjob && cjob.id) || '?') + ']\n' + txt;
             }
             if (!txt.trim()) return;
             for (const m of cronMirrorTargets(String(ev.sessionId))) {
@@ -8265,7 +8265,7 @@ function cronPump() {
   let sent = false;
   try {
     sent = engine.send(sid, {
-      text: `[cron: ${job.name}]\n${job.prompt}`,
+      text: `[cronjob ${job.id}]\n${job.prompt}`,
     });
   } catch {}
   if (!sent) {
@@ -8278,7 +8278,7 @@ function cronPump() {
     return;
   }
   toastNotify(
-    `Cron: ${job.name}`,
+    `cronjob ${job.id}`,
     isReminderJob(job) ? 'Hatırlatma zamanı geldi' : String(job.prompt || '').slice(0, 160),
     'cron'
   );
@@ -10146,17 +10146,12 @@ function finHoursPause(reason) {
 /* Duraklatılan tek ajanı geri aç (ekip rolü ya da sembol işçisi). */
 function finHoursSpawn(role, symbol) {
   if (!engine) return false;
-  const f = finCfg();
   try {
     const created = role ? finAgentCreate([], false, role) : finAgentCreate([symbol], false);
-    try { engine.setSessionModel(created.s.id, f.traderSel || null); } catch {}
-    const ok = engine.send(created.s.id, finTraderBrief(created.agent), { userAction: true });
-    if (!ok) {
-      finAgentStop(String(created.s.id), 'saat açılışı — oturum meşgul');
-      return false;
-    }
+    /* JEV-ONLY: LLM turu YOK — TypeSafe turu hemen kuyruğa girer */
+    finTypeSafeKick(String(created.s.id), created.agent);
     const roleDef = role ? finRoleDef(role) : null;
-    financeLog('[saat] ' + (roleDef ? roleDef.label : symbol) + ' geri başlatıldı');
+    financeLog('[saat] ' + (roleDef ? roleDef.label : symbol) + ' geri başlatıldı (JEV)');
     return true;
   } catch {
     return false;
@@ -11156,8 +11151,8 @@ function finWakeAgentDm(sid, text) {
     finTradeHoursBlockedLog('olay uyandırması');
     return false;
   }
-  /* TYPESAFE-ONLY: LLM turu BAŞLATILMAZ — olay TS turunu öne çeker; prompt/
-     pendingReports hattı (engine.send) bu modda hiç kullanılmaz */
+  /* JEV-ONLY: LLM turu BAŞLATILMAZ — olay TS turunu öne çeker; prompt/
+     pendingReports hattı (engine.send) finance ajanlarında hiç kullanılmaz */
   if (finTsAgentMode(agent)) {
     if (!agent.tsBusy) finTypeSafeKick(id, agent);
     return true;
@@ -11200,6 +11195,13 @@ function finWakeAgents(text, meta) {
     } else if (typeof engine._agentTeamPost === 'function') {
       engine._agentTeamPost('team:finance', 'finance', 'Beast Finance', body);
     }
+  } catch {}
+  /* JEV TURU OLAYI GÖRSÜN: uyanan TypeSafe turunun state'ine (ekip_yanitlari)
+     olay metni de girer — ajan "neden uyandım" bağlamını kaybetmez */
+  try {
+    financeState.tsFeed = Array.isArray(financeState.tsFeed) ? financeState.tsFeed : [];
+    financeState.tsFeed.push({ at: Date.now(), sid: 'finance', who: 'Beast Finance', text: body });
+    while (financeState.tsFeed.length > 30) financeState.tsFeed.shift();
   } catch {}
   if (!financeState.agents.size) {
     financeLog('[olay] koşan finance ajanı yok — uyarı yalnız günlük/bildirimde' + (meta && meta.kind ? ' (' + meta.kind + ')' : ''));
@@ -11654,18 +11656,9 @@ async function finWeeklyReport(manual) {
     capture: mfeSumMfe > 0 ? Math.round((mfeSumNet / mfeSumMfe) * 100) : null,
     avgMaeLoss: mfeLoss.length ? Math.round((mfeLoss.reduce((a, e) => a + Math.abs(Number(e.mae)), 0) / mfeLoss.length) * 100) / 100 : null,
   } : null;
-  let review = '';
-  if (engine) {
-    try {
-      const task =
-        'Beast Finance haftalık performans değerlendirmesi: aşağıdaki istatistik ve işlem günlüğünü ELEŞTİREL yorumla. ' +
-        'Ne iyi gitti, hangi hatalar tekrarlandı, gelecek hafta ne değişmeli? En fazla 12 satır, madde madde, Türkçe.';
-      const ctx = JSON.stringify({ stats, drawdown, journal: journal.slice(-20) }).slice(0, 12000);
-      const signal = typeof AbortSignal !== 'undefined' && AbortSignal.timeout ? AbortSignal.timeout(120000) : undefined;
-      const res = await engine._subagent(task, ctx, signal, null, '');
-      review = String(res || '').trim().slice(0, 4000);
-    } catch {}
-  }
+  /* JEV-ONLY: haftalık yorum LLM'e YAZDIRILMAZ — rapor tamamen kod
+     istatistiklerinden (finstats) üretilir. */
+  const review = '';
   const md = finstats.buildWeeklyReport({ stats, drawdown, equity, journal, account, positions, fromTs, toTs: now, review, mfe });
   const day = finstats.dayKey(now);
   const file = path.join(financeDir(), 'reports', 'weekly-' + day + '.md');
@@ -12270,6 +12263,8 @@ function finLearnSummaryPrompt(sym, e, oldNotes) {
 /* Bir sembolü özetle: snapshot'taki ESKİ dersleri modele özetlet, onları düş,
    yerine kalıcı özet yaz. Model çalışırken gelen YENİ dersler ham kalır. */
 async function finLearnCompactSymbol(symbol, force) {
+  /* JEV-ONLY: finance hafıza özetlemesi LLM İLE YAPILMAZ (kapı) */
+  return { ok: false, error: 'LLM özetleme JEV-ONLY modunda kapalı' };
   const sym = String(symbol || '').trim().toUpperCase();
   if (!sym) return { ok: false, error: 'symbol gerekli' };
   if (finLearnCompacting.has(sym)) return { ok: false, error: 'bu sembol şu an özetleniyor' };
@@ -12321,9 +12316,10 @@ async function finLearnCompactSymbol(symbol, force) {
   }
 }
 
-/* Arka plan tetikleyici: ajanı BEKLETMEDEN özetler (notlar birikince) */
+/* Arka plan tetikleyici: Beast Finance = JEV-ONLY olduğu için LLM özetleme
+   KAPALI; ham dersler tavan (60) + TTL (30 gün) ile kendiliğinden sadeleşir. */
 function finLearnCompactAuto(sym) {
-  try { finLearnCompactSymbol(sym, false).catch(() => {}); } catch {}
+  void sym;
 }
 
 function finLearnSym(symbol) {
@@ -12667,12 +12663,12 @@ function finLearnApi() {
       if (r.notes || r.trades || r.symbols) finLearnSave();
       return { ok: true, ...r };
     },
-    compact: ({ symbol } = {}) => {
-      /* OPENCODE TARZI ÖZETLEME (elle): eski dersleri modele özetlet,
-         ham yalnız son dersler kalsın */
-      const sym = norm(symbol);
-      if (!sym) return Promise.resolve({ ok: false, error: 'compact için symbol gerekli' });
-      return finLearnCompactSymbol(sym, true);
+    compact: () => {
+      /* JEV-ONLY: LLM özetleme KAPATILDI — dersler tavan + TTL ile sadeleşir */
+      return Promise.resolve({
+        ok: false,
+        error: 'LLM özetleme JEV-ONLY modunda kapalı — dersler tavan (60) + 30 gün TTL ile otomatik sadeleşir',
+      });
     },
   };
 }
@@ -13446,16 +13442,19 @@ function finDailyRoutine(mode) {
     const agent = financeState.agents.get(mainSid);
     const s = engine.cache.get(mainSid);
     if (s) finApplyTraderFields(s, agent.symbols, agent.role, true);
-    if (engine.isBusy(mainSid)) {
-      financeLog('[rutin] trader meşgul — günlük ' + mode + ' atlandı');
-      return;
-    }
-    const digest = finBuildDigest();
-    const text = mode === 'plan'
-      ? 'GÜNLÜK PLAN (açılış rutini): Bugün için net bir plan yap — izleme listesini ve piyasa koşullarını tara; sembol başına yön eğilimi, izlenecek seviyeler ve risk planı (kaç işlem, hangi setup/kurulum, günlük kayıp sınırı) yaz. Zorunlu işlem yok. Planı mt5_note ile günlüğe kaydet.\n\nİŞLEM GEÇMİŞİN:\n' + digest
-      : 'GÜNLÜK REVIEW (kapanış rutini): Bugünün işlemlerini ve performans geçmişini değerlendir — hangi kararlar işledi, hangileri hata; kâr yakalama (MFE) ve MAE verisine bak; açık pozisyonların SL/TP\'lerini kontrol et, korumasız bırakma; yarın için 2-3 somut ders çıkar ve mt5_note ile kaydet.\n\nİŞLEM GEÇMİŞİN:\n' + digest;
-    const ok = engine.send(mainSid, text, { userAction: true });
-    financeLog('[rutin] günlük ' + mode + (ok ? ' gönderildi' : ' gönderilemedi (meşgul)'));
+    /* JEV-ONLY: günlük plan/review de LLM'SİZ koşar — trader'ın TypeSafe turu
+       hemen tetiklenir (işlem geçmişi/öğrenme digest'i tur state'ine zaten
+       gömülür); AJAN DM'e rutin notu düşer. */
+    try { finTypeSafeKick(mainSid, agent); } catch {}
+    finTsPost(
+      mainSid,
+      agent,
+      mode === 'plan'
+        ? '📅 GÜNLÜK PLAN rutini tetiklendi — TypeSafe turu koşuyor (LLM yok)'
+        : '🧾 GÜNLÜK REVIEW rutini tetiklendi — TypeSafe turu koşuyor (LLM yok)',
+      'rutin'
+    );
+    financeLog('[rutin] günlük ' + mode + ' TypeSafe turu tetiklendi');
   } catch {}
 }
 
@@ -13484,6 +13483,8 @@ function finSyncScheduleJobs() {
    (_subagent) hesap/pozisyon/strateji bağlamıyla kısa işlem planı üretir.
    Plan, tur mesajına [ANA AJAN PLANI] bloğu olarak eklenir. */
 async function finConsultPlan(f, agent, sid) {
+  /* JEV-ONLY: finance ajanları için LLM danışma planı ÜRETİLMEZ (kapı) */
+  return '';
   if (!engine) return '';
   let account = null;
   let positions = [];
@@ -13581,13 +13582,14 @@ function finTeamWaitTick(sid) {
   finAgentRound(sid, { noTeamWait: true });
 }
 
-/* ---------- TYPESAFE-ONLY FİNANS MODU (LLM'SİZ) ----------
-   Rol→Skill eşleştirmesinde "typesafe-ai" seçiliyse ajan LLM HİÇ kullanmaz:
-   tur verisi (fiyat/gösterge/pozisyon/öğrenme geçmişi/ekip yanıtları) YALNIZ
-   TypeSafe System One'a gider; yanıtlar olasılık olarak döner, kararı KOD
-   uygular. Yanıtlar AJAN DM ekip grubuna yazılır — tüm ajanlar birbirinin
-   cevabını görür (son yanıtlar sonraki turların state'ine de girer) ve emirler
-   YALNIZ market buy/sell olarak açılır (bekleyen emir YOK). */
+/* ---------- JEV-ONLY FİNANS AJAN MODU (LLM'SİZ, SABİT) ----------
+   TÜM finance ajanları (Trader + analiz ekibi + sembol işçileri) LLM HİÇ
+   kullanmaz: tur verisi (fiyat/gösterge/pozisyon/öğrenme geçmişi/ekip
+   yanıtları) YALNIZ TypeSafe System One'a gider; yanıtlar olasılık olarak
+   döner, kararı KOD uygular. Yanıtlar AJAN DM ekip grubuna yazılır — tüm
+   ajanlar birbirinin cevabını görür (son yanıtlar sonraki turların state'ine
+   de girer) ve emirler YALNIZ market buy/sell olarak açılır (bekleyen emir
+   YOK). LLM yalnız finance SOHBET yardımcısında serbesttir. */
 const FIN_TS_MARGIN_P = 0.12;   /* birinci ile ikinci seçenek arası min fark */
 const FIN_TS_CONFIRM_P = 0.55;  /* noul teyit eşiği */
 const FIN_TS_EXIT_P = 0.62;     /* pozisyon kapatma eşiği */
@@ -13617,15 +13619,11 @@ const FIN_TS_ROLE_CRIT = {
 };
 
 function finTsAgentMode(agent) {
-  try {
-    const f = finCfg();
-    const key = agent && agent.main ? 'trader' : String((agent && agent.role) || '');
-    if (!key) return false;
-    const list = f.roleSkills && Array.isArray(f.roleSkills[key]) ? f.roleSkills[key] : [];
-    return list.some((s) => String(s || '').toLowerCase() === 'typesafe-ai');
-  } catch {
-    return false;
-  }
+  /* BEAST FINANCE = JEV-ONLY (sabit kural): Trader + analiz ekibi + sembol
+     işçileri LLM ASLA kullanmaz — her tur deterministik TypeSafe System One
+     hattıyla koşar (veri koda toplanır, karar Jev'den gelir, emir koda
+     uygulanır). LLM yalnız finance SOHBET yardımcısında serbesttir. */
+  return !!agent;
 }
 
 function finTsWho(agent, extra) {
@@ -13757,15 +13755,21 @@ async function finTypeSafeRound(sid, agent) {
   if (!agent || !engine || agent.tsBusy) return;
   agent.tsBusy = true;
   const sidS = String(sid);
-  const isTrader = !!agent.main;
+  /* SEMBOL İŞÇİSİ (rolü olmayan ajan) da otonom işlem açabilir — trader
+     karar hattını kullanır; rol ajanları yalnız analiz üretir. */
+  const isTrader = !!agent.main || !String(agent.role || '');
   const role = String(agent.role || '');
-  const roleLabel = isTrader ? 'TRADER (ana karar verici)' : ((finRoleDef(role) || {}).label || role || 'finans');
+  const roleLabel = agent.main
+    ? 'TRADER (ana karar verici)'
+    : isTrader
+      ? 'SEMBOL İŞÇİSİ (otonom)'
+      : ((finRoleDef(role) || {}).label || role || 'finans');
   try {
     if (!typesafeMod.cfg().apiKey) {
       const now = Date.now();
       if (!agent.tsNoKeyAt || now - agent.tsNoKeyAt > 10 * 60 * 1000) {
         agent.tsNoKeyAt = now;
-        finTsPost(sidS, agent, '⚠ TypeSafe API anahtarı yok — bu rol typesafe-ai modunda ve LLM KULLANILMIYOR; tur atlanıyor. Sahibe söyle: Ayarlar → TypeSafe sekmesinden anahtar girilmeli.', 'anahtar');
+        finTsPost(sidS, agent, '⚠ TypeSafe API anahtarı yok — finance ajanları JEV-ONLY çalışır ve LLM KULLANILMIYOR; tur atlanıyor. Sahibe söyle: Ayarlar → TypeSafe sekmesinden anahtar girilmeli.', 'anahtar');
       }
       return;
     }
@@ -13789,7 +13793,7 @@ async function finTypeSafeRound(sid, agent) {
       return;
     }
     agent.round = (Number(agent.round) || 0) + 1;
-    if (isTrader) {
+    if (agent.main) {
       financeState.traderRounds = agent.round;
       finPush('trader', { state: 'running', round: agent.round, mode: 'typesafe' });
     }
@@ -14056,7 +14060,7 @@ async function finTypeSafeRound(sid, agent) {
   } finally {
     agent.tsBusy = false;
     finTsSchedule(sidS, agent, finPaceSec());
-    if (isTrader && financeState.agents.has(sidS)) finPush('trader', { state: 'idle', round: agent.round, mode: 'typesafe' });
+    if (agent.main && financeState.agents.has(sidS)) finPush('trader', { state: 'idle', round: agent.round, mode: 'typesafe' });
   }
 }
 
@@ -14077,9 +14081,9 @@ function finAgentRound(sid, opts) {
     /* hâlâ çalışıyor — done eventinde tekrar planlanır */
     return;
   }
-  /* TYPESAFE-ONLY MODU: roleSkills'te typesafe-ai varsa LLM HİÇ kullanılmaz —
-     tur deterministik TypeSafe hattıyla koşar (girdi yalnız TypeSafe'e gider,
-     cevaplar AJAN DM'e düşer, emirler yalnız market buy/sell) */
+  /* JEV-ONLY (SABİT): finance ajanları LLM HİÇ kullanmaz — tur deterministik
+     TypeSafe hattıyla koşar (girdi yalnız TypeSafe'e gider, cevaplar AJAN
+     DM'e düşer, emirler yalnız market buy/sell) */
   if (finTsAgentMode(agent)) {
     finTypeSafeRound(String(sid), agent).catch(() => {});
     return;
@@ -14578,7 +14582,9 @@ async function financeTraderStart() {
     const th = f.tradeHours || {};
     return { ok: false, error: `trade saatleri dışı (${th.start || '09:00'}-${th.end || '22:00'} yerel) — pencere açılınca ajanlar otomatik başlar` };
   }
-  if (!engine.publicState().hasModel && !f.traderSel) return { ok: false, error: 'model yok — Ayarlar → Provider' };
+  /* JEV-ONLY: LLM modeli GEREKMEZ — anahtar kapısı TypeSafe'tir */
+  const tsGate = typesafeMod.unavailable();
+  if (tsGate) return { ok: false, error: tsGate };
   try { finSyncScheduleJobs(); } catch {} /* plan/review saatleri trader açılışında garantiye alınır */
   /* ANA trader: varsa aynen sürdür, yoksa yeni sürekli ajan aç */
   let mainSid = '';
@@ -14600,27 +14606,15 @@ async function financeTraderStart() {
     mainSid = String(created.s.id);
     mainAgent = created.agent;
   }
-  try { engine.setSessionModel(mainSid, f.traderSel || null); } catch {}
   financeState.traderOn = true;
   try { engine.clearStop(); } catch {}
-  /* TYPESAFE-ONLY: roleSkills.trader'da typesafe-ai varsa LLM'e HİÇ gidilmez */
-  if (finTsAgentMode(mainAgent)) {
-    financeState.lastRoundAt = Date.now();
-    financeLog('[trader] başlatıldı (TYPESAFE-ONLY — LLM kullanılmıyor, girdi yalnız TypeSafe)');
-    finPush('trader', { state: 'running', round: mainAgent.round, mode: 'typesafe' });
-    finTypeSafeKick(mainSid, mainAgent);
-    finTeamStart(f);
-    return { ok: true, sid: mainSid };
-  }
-  const ok = engine.send(mainSid, finTraderBrief(mainAgent), { userAction: true });
-  if (!ok) {
-    financeState.traderOn = false;
-    return { ok: false, error: 'trader oturumu meşgul — birkaç saniye sonra tekrar dene' };
-  }
+  /* JEV-ONLY (SABİT): Trader HER ZAMAN TypeSafe turuyla koşar — LLM'e HİÇ
+     gidilmez (girdi koda toplanır, karar Jev'den gelir, emir koda uygulanır). */
   financeState.lastRoundAt = Date.now();
-  financeLog('[trader] başlatıldı (model: ' + (f.traderSel || 'genel aktif model') + ')');
-  finPush('trader', { state: 'running', round: mainAgent.round });
-  /* ANALİZ EKİBİ: seçili roller için ayrı sürekli ajanlar (koşmıyorsa) */
+  financeLog('[trader] başlatıldı (JEV-ONLY — LLM kullanılmıyor, girdi yalnız TypeSafe)');
+  finPush('trader', { state: 'running', round: mainAgent.round, mode: 'typesafe' });
+  finTypeSafeKick(mainSid, mainAgent);
+  /* ANALİZ EKİBİ: seçili roller için ayrı sürekli Jev ajanları (koşmıyorsa) */
   finTeamStart(f);
   return { ok: true, sid: mainSid };
 }
@@ -14643,20 +14637,10 @@ function finTeamStart(f) {
     const roleDef = finRoleDef(roleId);
     try {
       const created = finAgentCreate([], false, roleId);
-      try { engine.setSessionModel(created.s.id, f.traderSel || null); } catch {}
-      /* TYPESAFE-ONLY: bu rolün skill eşleştirmesinde typesafe-ai varsa LLM yok */
-      if (finTsAgentMode(created.agent)) {
-        financeLog('[ekip] ' + roleDef.label + ' başladı (TYPESAFE-ONLY — LLM kullanılmıyor)');
-        finTypeSafeKick(String(created.s.id), created.agent);
-        continue;
-      }
-      const ok = engine.send(created.s.id, finTraderBrief(created.agent), { userAction: true });
-      if (!ok) {
-        finAgentStop(String(created.s.id), 'oturum meşgul — ekip ajanı başlatılamadı');
-        financeLog('[ekip] ' + roleDef.label + ' başlatılamadı: oturum meşgul');
-      } else {
-        financeLog('[ekip] ' + roleDef.label + ' başladı — analiz turu koşuyor (İşlem AÇMAZ)');
-      }
+      /* JEV-ONLY: ekibin HER rolü LLM'SİZ TypeSafe turuyla koşar (analiz
+         üretir, işlem AÇMAZ) */
+      financeLog('[ekip] ' + roleDef.label + ' başladı (JEV — LLM yok)');
+      finTypeSafeKick(String(created.s.id), created.agent);
     } catch (e) {
       financeLog('[ekip] ' + roleDef.label + ' hatası: ' + String((e && e.message) || e));
     }
@@ -14697,7 +14681,9 @@ ipcMain.handle('finance:agent:spawn', async (_e, payload) => {
     const th = f.tradeHours || {};
     return { ok: false, error: `trade saatleri dışı (${th.start || '09:00'}-${th.end || '22:00'} yerel) — pencere açılınca ajanlar otomatik başlar` };
   }
-  if (!engine.publicState().hasModel && !f.traderSel) return { ok: false, error: 'model yok — Ayarlar → Provider' };
+  /* JEV-ONLY: LLM modeli GEREKMEZ — anahtar kapısı TypeSafe'tir */
+  const tsGate = typesafeMod.unavailable();
+  if (tsGate) return { ok: false, error: tsGate };
   const symbol = String((payload && payload.symbol) || '').trim().toUpperCase();
   if (!symbol) return { ok: false, error: 'sembol gerekli' };
   for (const [, a] of financeState.agents) {
@@ -14706,13 +14692,9 @@ ipcMain.handle('finance:agent:spawn', async (_e, payload) => {
     }
   }
   const created = finAgentCreate([symbol], false);
-  try { engine.setSessionModel(created.s.id, f.traderSel || null); } catch {}
-  const ok = engine.send(created.s.id, finTraderBrief(created.agent), { userAction: true });
-  if (!ok) {
-    finAgentStop(String(created.s.id), 'oturum meşgul — ajan başlatılamadı');
-    return { ok: false, error: 'ajan oturumu meşgul — birkaç saniye sonra tekrar dene' };
-  }
-  financeLog('[ajan] ' + symbol + ' işçisi başlatıldı');
+  /* JEV-ONLY: sembol işçisi LLM'SİZ TypeSafe turuyla otonom çalışır */
+  finTypeSafeKick(String(created.s.id), created.agent);
+  financeLog('[ajan] ' + symbol + ' işçisi başlatıldı (JEV — LLM yok)');
   return { ok: true, sid: created.s.id, title: created.s.bgTitle };
 });
 

@@ -1683,8 +1683,8 @@ async function renderWebSearchPane() {
 }
 
 /* TypeSafe sekmesi (System One / Jev): API anahtarı + model + bağlantı testi.
-   Anahtar kayıtlıysa ajanlar typesafe_decision aracıyla tipli kararlar alır;
-   Beast Finance rol→skill eşleştirmesinde "typesafe-ai" seçilirse kullanılır. */
+   Beast Finance ajanları JEV-ONLY çalışır (anahtar zorunlu); diğer ajanlar
+   anahtar kayıtlıysa typesafe_decision aracıyla tipli kararlar alır. */
 async function renderTypesafePane() {
   const pane = $('#tab-typesafe');
   if (!pane) return;
@@ -7033,7 +7033,7 @@ async function renderCronModal(force) {
     row.innerHTML =
       `<span class="mr-dot"></span>` +
       `<div class="mr-main">` +
-      `<div class="mr-name">${escapeHtml(j.name || j.id)}</div>` +
+      `<div class="mr-name">${escapeHtml(j.name || 'görev')} <span style="opacity:.55">#${escapeHtml(j.id)}</span></div>` +
       `<div class="mr-meta"><b>${escapeHtml(j.schedule)}</b> · ${escapeHtml(String(j.prompt || '').slice(0, 70))}${live}</div>` +
       `</div>`;
     const btns = document.createElement('div');
@@ -7407,7 +7407,8 @@ function renderCronList(jobs) {
     infoDiv.className = 'cj-info';
     const name = document.createElement('div');
     name.className = 'cj-name';
-    name.textContent = j.name;
+    /* mesajlarda isim yerine JOB ID görünür — eşleştirme için listede de id */
+    name.textContent = j.name + ' · #' + j.id;
     const meta = document.createElement('div');
     meta.className = 'cj-meta';
     const code = document.createElement('code');
@@ -7495,7 +7496,7 @@ async function renderAgendaPane() {
     if (!j.enabled) continue;
     const t = j.nextRunAt ? new Date(j.nextRunAt).getTime() : 0;
     if (!t) continue;
-    items.push({ type: isReminderLike(j) ? 'rem' : 'cron', name: j.name || j.id, at: t, meta: j.schedule, id: j.id });
+    items.push({ type: isReminderLike(j) ? 'rem' : 'cron', name: (j.name || 'görev') + ' #' + j.id, at: t, meta: j.schedule, id: j.id });
   }
   for (const w of ws) {
     if (!w.enabled) continue;
@@ -11026,10 +11027,10 @@ function finSymPickerClose() {
 }
 
 /* ---------- ROL → SKILL eşleştirme modalı ----------
-   Roller sunucudan (snapshot.roles), skill listesi KURULU katalogdan gelir —
-   yeni skill eklendiğinde modalda otomatik görünür. Rol başına EN FAZLA 2
-   skill seçilir; seçim finance ayarına (roleSkills) yazılır; rol ajanı her
-   turda o skill'leri okumakla yükümlüdür (ör. price-action + typesafe-ai). */
+   Roller sunucudan (snapshot.roles), skill listesi KURULU katalogdan gelir.
+   Rol başına EN FAZLA 2 skill seçilir ve finance ayarına (roleSkills) yazılır.
+   NOT: Finance AJANLARI artık JEV-ONLY (LLM yok) — bu seçim yalnız finance
+   SOHBET yardımcısının (LLM) playbook'unu etkiler. */
 let finSkillNames = [];
 
 async function finSkillsOpen() {
@@ -11285,8 +11286,10 @@ function finLearnSymEl(row) {
   const noteCount = document.createElement('span');
   noteCount.className = 'fin-learn-sym-notes';
   noteCount.textContent = (Number(row.notes) || 0) + ' ders' + (row.hasSummary ? ' · özet' : '');
-  /* ÖZETLE (opencode tarzı compaction): eski dersler modele özetlettirilir */
+  /* ÖZETLE: Beast Finance JEV-ONLY olduğu için LLM özetleme kapalı —
+     düğme gizli (dersler tavan + TTL ile kendiliğinden sadeleşir) */
   const sum = document.createElement('button');
+  sum.hidden = true;
   sum.type = 'button';
   sum.className = 'fin-learn-sum-btn';
   sum.title = 'Eski dersleri modele özetlet — hafıza sadeleşir (24+ ders birikince otomatik de çalışır)';

@@ -9906,7 +9906,8 @@ const financeState = {
   watchTickAt: 0,
   /* POZİSYON YÖNETİCİSİ (JEV): açık pozisyon varken 5 sn'lik watchdog turundan
      tetiklenen ayrı Jev ajanı — kapat/kısmi/SL kararlarını kendi talimatıyla verir */
-  posManager: { busy: false, rounds: 0, lastAt: 0, lastErr: '', lastPosCount: 0, tsPartials: new Set() },
+  posManager: { busy: false, rounds: 0, lastAt: 0, lastErr: '', lastPosCount: 0, timer: null, tsPartials: new Set() },
+  posSnapshot: null, /* son watchdog turunun pozisyon/hesap anlık görüntüsü (yönetici yeniden kullanır) */
   hoursTimer: null, /* trade saatleri otomatik duraklatma denetimi (10 sn) */
   hoursPaused: null, /* pencere kapanınca durdurulan ajanların planı — açılınca geri gelir */
   alerts: [], /* fiyat alarmları (kalıcı: finance/alerts.json) */
@@ -10045,6 +10046,9 @@ function finCfg() {
      ajan — varsayılan AÇIK; kendi talimatı (posManagerNote) yalnız onu bağlar. */
   if (typeof f.posManagerEnabled !== 'boolean') f.posManagerEnabled = true;
   if (typeof f.posManagerNote !== 'string') f.posManagerNote = '';
+  /* Yönetici kontrol sıklığı (sn): 1-300; varsayılan 5 */
+  if (!Number.isFinite(Number(f.posManagerSec))) f.posManagerSec = 5;
+  f.posManagerSec = Math.max(1, Math.min(300, Math.round(Number(f.posManagerSec) || 5)));
   /* GÜNLÜK RUTİN: plan/review saatleri (HH:MM; boş = kapalı) — hafta içi cron */
   if (typeof f.planTime !== 'string') f.planTime = '';
   if (typeof f.reviewTime !== 'string') f.reviewTime = '';
@@ -11664,10 +11668,13 @@ async function finWatchTick() {
         try { await finRecordClose(ticket, st); } catch {}
       }
     }
-    /* POZİSYON YÖNETİCİSİ (JEV): açık pozisyon varken 5 sn'lik tur aynı anda
-       yönetici karar turunu tetikler (ayrı MT5 sorgusu yok; meşgulse atlar) */
-    if (positionsOk && positions.length) {
-      try { finPosManagerMaybe(positions, account); } catch {}
+    /* POZİSYON YÖNETİCİSİ (JEV): pozisyon anlık görüntüsü saklanır (yönetici
+       kendi zamanlayıcısında yeniden kullanır) + tur burada da tetiklenir */
+    if (positionsOk) {
+      financeState.posSnapshot = { at: Date.now(), positions, account };
+      if (positions.length) {
+        try { finPosManagerMaybe(positions, account); } catch {}
+      }
     }
     try { await finCheckAlerts(); } catch {}
     if (!financeState.lastStatsAt || Date.now() - financeState.lastStatsAt > 120000) {
@@ -11683,9 +11690,12 @@ async function finWatchTick() {
 }
 
 function finWatchStart() {
-  if (financeState.watchTimer) return;
-  financeState.watchTimer = setInterval(() => { finWatchTick().catch(() => {}); }, 5000);
-  finWatchTick().catch(() => {});
+  if (!financeState.watchTimer) {
+    financeState.watchTimer = setInterval(() => { finWatchTick().catch(() => {}); }, 5000);
+    finWatchTick().catch(() => {});
+  }
+  /* Pozisyon yöneticisinin KENDİ zamanlayıcısı (ayarlı aralık; 1-300 sn) */
+  try { finPosManagerStart(); } catch {}
 }
 
 function finWatchStop() {
@@ -11693,6 +11703,7 @@ function finWatchStop() {
     clearInterval(financeState.watchTimer);
     financeState.watchTimer = null;
   }
+  try { finPosManagerStop(); } catch {}
 }
 
 function finWatchLoad() {
@@ -14222,6 +14233,66 @@ async function finTsToolRequest(sidS, agent, ans, lines) {
 const FIN_POSMGR_ID = 'posmanager';
 const FIN_POSMGR_AGENT = { main: false, role: '', __posmgr: true };
 
+/* Yönetici kontrol sıklığı (sn) — ayarlardan; 1-300 */
+function finPosMgrSec() {
+  try {
+    return Math.max(1, Math.min(300, Math.round(Number(finCfg().posManagerSec) || 5)));
+  } catch {
+    return 5;
+  }
+}
+
+/* KENDİ ZAMANLAYICISI: 1 sn'lik yoklama, ayarlı aralık dolunca turu başlatır —
+   böylece 5 sn'den hızlı (ör. 2 sn) ve yavaş (ör. 60 sn) aralıklar da çalışır.
+   Taze watchdog anlık görüntüsü varsa onu kullanır (ekstra MT5 sorgusu yok). */
+async function finPosManagerTick() {
+  const pm = financeState.posManager;
+  if (!pm || pm.busy) return;
+  let f = {};
+  try { f = finCfg(); } catch {}
+  if (f.posManagerEnabled === false) return;
+  const sec = finPosMgrSec();
+  if (pm.lastAt && Date.now() - pm.lastAt < sec * 1000) return;
+  if (!mt5bridge.running) return;
+  let positions = null;
+  let account = null;
+  const snap = financeState.posSnapshot;
+  if (snap && Date.now() - Number(snap.at || 0) < 5000) {
+    positions = snap.positions;
+    account = snap.account;
+  } else {
+    try {
+      const [posR, accR] = await Promise.all([
+        mt5bridge.call('positions', {}, 8000).catch(() => null),
+        mt5bridge.call('account', {}, 8000).catch(() => null),
+      ]);
+      positions = (posR && posR.ok && posR.data && posR.data.positions) || [];
+      account = (accR && accR.ok && accR.data && accR.data.account) || null;
+      financeState.posSnapshot = { at: Date.now(), positions, account };
+    } catch {
+      return;
+    }
+  }
+  if (!Array.isArray(positions) || !positions.length) {
+    pm.lastPosCount = 0;
+    return;
+  }
+  finPosManagerMaybe(positions, account);
+}
+
+function finPosManagerStart() {
+  const pm = financeState.posManager;
+  if (!pm || pm.timer) return;
+  pm.timer = setInterval(() => { finPosManagerTick().catch(() => {}); }, 1000);
+}
+
+function finPosManagerStop() {
+  const pm = financeState.posManager;
+  if (!pm || !pm.timer) return;
+  clearInterval(pm.timer);
+  pm.timer = null;
+}
+
 /* Watchdog turundan çağrılır: uygunSA yönetici turunu arka planda başlatır
    (MT5 pozisyon verisi watchdog turundan gelir — ikinci sorgu yok). */
 function finPosManagerMaybe(positions, account) {
@@ -14230,6 +14301,8 @@ function finPosManagerMaybe(positions, account) {
   let f = {};
   try { f = finCfg(); } catch {}
   if (f.posManagerEnabled === false) return;
+  const sec = finPosMgrSec();
+  if (pm.lastAt && Date.now() - pm.lastAt < sec * 1000) return; /* ayarlı aralık dolmadı */
   const list = Array.isArray(positions) ? positions.filter(Boolean) : [];
   pm.lastPosCount = list.length;
   if (!list.length) return;
@@ -14397,7 +14470,7 @@ async function finPosManagerRound(positions, account) {
     finTsPost(
       FIN_POSMGR_ID,
       FIN_POSMGR_AGENT,
-      `🛡️ Pozisyon yöneticisi turu #${pm.rounds} (LLM yok — 5 sn):\n` +
+      `🛡️ Pozisyon yöneticisi turu #${pm.rounds} (LLM yok — ${finPosMgrSec()} sn):\n` +
         (instrTxt ? 'TALİMAT AYARLARI (kod uygular): ' + instrTxt + '\n' : '') +
         lines.join('\n'),
       'yönetim'
@@ -14709,7 +14782,7 @@ async function finTypeSafeRound(sid, agent) {
         if (pos) {
           /* POZİSYON YÖNETİCİSİ açık: kapat/kısmi/SL kararları onun turunda */
           if (posManagerOn) {
-            lines.push(`- ${sym}: pozisyon açık #${pos.ticket} — yönetim Pozisyon Yöneticisi'nde (5 sn Jev turu)`);
+            lines.push(`- ${sym}: pozisyon açık #${pos.ticket} — yönetim Pozisyon Yöneticisi'nde (${finPosMgrSec()} sn Jev turu)`);
             continue;
           }
           const ex = finTsNoul(ans, 'kapat_' + i);
@@ -14882,6 +14955,13 @@ async function finTypeSafeRound(sid, agent) {
       }
       /* JEV ARAÇ İSTEĞİ (tur düzeyi): eksik araç varsa TOOL botuna asenkron yazdır */
       try { await finTsToolRequest(sidS, agent, ans, lines); } catch {}
+      /* GÖRÜNÜRLÜK: açık pozisyon varken de trade ajanı tur atar ve YENİ
+         girişleri değerlendirir (yönetim ayrı ajanda olsa bile) */
+      if (posManagerOn && posList.length) {
+        lines.unshift(
+          `ℹ️ ${posList.length} açık pozisyon Pozisyon Yöneticisi'nde (${finPosMgrSec()} sn) — bu trade turu yeni girişleri değerlendirdi.`
+        );
+      }
       const insTxt = finInstrSummary(ins);
       finTsPost(
         sidS,
@@ -15206,6 +15286,7 @@ ipcMain.handle('finance:snapshot', async () => {
       lastErr: String(financeState.posManager.lastErr || ''),
       positions: Number(financeState.posManager.lastPosCount) || 0,
       note: String(f.posManagerNote || ''),
+      sec: Number(f.posManagerSec) || 5,
     },
   };
 });
@@ -15439,6 +15520,7 @@ ipcMain.handle('finance:settings', async (_e, patch) => {
   /* POZİSYON YÖNETİCİSİ: kendi talimatı + aç/kapa */
   if (p.posManagerNote !== undefined) f.posManagerNote = String(p.posManagerNote || '').slice(0, 1500);
   if (p.posManagerEnabled !== undefined) f.posManagerEnabled = p.posManagerEnabled !== false;
+  if (p.posManagerSec !== undefined) f.posManagerSec = Math.max(1, Math.min(300, Math.round(Number(p.posManagerSec) || 5)));
   if (p.planTime !== undefined) f.planTime = /^([01]?\d|2[0-3]):([0-5]\d)$/.test(String(p.planTime || '').trim()) ? String(p.planTime).trim() : '';
   if (p.reviewTime !== undefined) f.reviewTime = /^([01]?\d|2[0-3]):([0-5]\d)$/.test(String(p.reviewTime || '').trim()) ? String(p.reviewTime).trim() : '';
   /* TRADE SAATLERİ: {on, start, end} — yerel saat; aralık dışında ajan turları

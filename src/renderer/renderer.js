@@ -253,6 +253,7 @@ const els = {
   finPosDot: $('#finPosDot'),
   finPosInfo: $('#finPosInfo'),
   finPosOn: $('#finPosOn'),
+  finPosSec: $('#finPosSec'),
   finPosNote: $('#finPosNote'),
   finPosStatus: $('#finPosStatus'),
   finPosList: $('#finPosList'),
@@ -9947,6 +9948,7 @@ function finTraderInputsSet(cfg) {
   if (els.finStrategy && ae !== els.finStrategy && !finStrategyDirty) els.finStrategy.value = cfg.strategy || '';
   if (els.finPosNote && ae !== els.finPosNote && !finPosNoteDirty) els.finPosNote.value = cfg.posManagerNote || '';
   if (els.finPosOn && ae !== els.finPosOn) els.finPosOn.checked = cfg.posManagerEnabled !== false;
+  if (els.finPosSec && ae !== els.finPosSec) els.finPosSec.value = Number(cfg.posManagerSec) || 5;
   if (els.finMaxTradesDay && ae !== els.finMaxTradesDay) els.finMaxTradesDay.value = Number(cfg.maxTradesPerDay) || 0;
   if (els.finLossStreak && ae !== els.finLossStreak) els.finLossStreak.value = Number(cfg.lossStreakLimit) || 0;
   if (els.finLossStreakPause && ae !== els.finLossStreakPause) els.finLossStreakPause.value = Number(cfg.lossStreakPauseMin) || 0;
@@ -10113,13 +10115,14 @@ function finRenderPosManager(pm, cfg) {
   if (!pm) return;
   const enabled = cfg ? cfg.posManagerEnabled !== false : pm.enabled !== false;
   const pos = Number(pm.positions) || 0;
+  const sec = Number(pm.sec || (cfg && cfg.posManagerSec)) || 5;
   if (els.finPosDot) {
     els.finPosDot.classList.remove('on', 'off', 'busy');
     els.finPosDot.classList.add(!enabled ? 'off' : pm.busy ? 'busy' : pos ? 'on' : 'off');
     els.finPosDot.title = !enabled
       ? 'Pozisyon yöneticisi kapalı'
       : pos
-        ? 'İzliyor — ' + pos + ' açık pozisyon (5 sn Jev turu)'
+        ? 'İzliyor — ' + pos + ' açık pozisyon (' + sec + ' sn Jev turu)'
         : 'Açık pozisyon yok — beklemede';
   }
   if (els.finPosInfo) els.finPosInfo.textContent = pm.rounds ? '· tur ' + pm.rounds : '';
@@ -10127,8 +10130,8 @@ function finRenderPosManager(pm, cfg) {
     let t;
     if (!enabled) t = 'Kapalı — kutucuktan aç';
     else if (pm.busy) t = 'Tur çalışıyor…';
-    else if (!pos) t = 'Beklemede — açık pozisyon yok';
-    else t = 'İzliyor · ' + pos + ' pozisyon';
+    else if (!pos) t = 'Beklemede — açık pozisyon yok (' + sec + ' sn yoklama)';
+    else t = 'İzliyor · ' + pos + ' pozisyon · ' + sec + ' sn';
     if (pm.lastAt) {
       const d = new Date(pm.lastAt);
       const p = (x) => String(x).padStart(2, '0');
@@ -10797,6 +10800,7 @@ finAutoNum(els.finMaxTradesDay, 'maxTradesPerDay', 0, 50, 1);
 finAutoNum(els.finLossStreak, 'lossStreakLimit', 0, 10, 1);
 finAutoNum(els.finLossStreakPause, 'lossStreakPauseMin', 0, 1440, 5);
 finAutoNum(els.finReentry, 'reentryCooldownMin', 0, 1440, 5);
+finAutoNum(els.finPosSec, 'posManagerSec', 1, 300, 1);
 finAutoNum(els.finMaxPerCurrency, 'maxPerCurrency', 0, 20, 1);
 const finTimeSave = (el, key) => {
   if (!el) return;
@@ -10951,7 +10955,7 @@ function finHelpHtml(which) {
     ? `1- 1R'de %50 kısmi kapat\n2- kâr 2R'ye gelince kalanı kapat\n3- zarar -0.5R'yi geçerse kes`
     : `1- risk yüzde 2\n2- martingale kullan (x1.2)\n3- her mumda işlem açmak zorundasın\n4- aynı anda en fazla 10 işlem\n5- başlangıç bakiye 10.000\n6- günlük zarar %3`;
   const head = posmgr
-    ? 'Pozisyon Yöneticisi (5 sn turu) açık pozisyonları yönetir: kapat / kısmi kapat / SL taşı.'
+    ? 'Pozisyon Yöneticisi (ayarlı sıklık — varsayılan 5 sn) açık pozisyonları yönetir: kapat / kısmi kapat / SL taşı. Trade Ajanı pozisyon açıkken de tur atmaya devam eder ve yeni girişleri değerlendirir.'
     : 'Trade Ajanı girişleri yönetir: yön, emir tipi, risk, lot, martingale ve günlük limitler.';
   const rows = items
     .map((it) => '<div class="fin-help-item"><div class="fin-help-code">' + it[0] + '</div><div class="fin-help-desc">' + it[1] + '</div></div>')

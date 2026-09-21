@@ -222,9 +222,13 @@
           <div class="fin-card" id="finPosCard" data-fin-card="posmgr">
             <div class="fin-card-title">POZİSYON YÖNETİCİSİ <span id="finPosDot" class="fin-dot off" title="Pozisyon yöneticisi durumu"></span><span id="finPosInfo" class="fin-hint"></span></div>
             <div class="fin-field fin-check">
-              <label title="Açık pozisyon varken 5 saniyede bir JEV turu: kapat / kısmi kapat / SL taşı kararları. Trade ajanından bağımsız ayrı bir ajan — kendi talimatıyla çalışır; LLM kullanmaz.">
-                <input id="finPosOn" type="checkbox" /> Aktif — açık pozisyonları 5 sn'de bir Jev ile yönet
+              <label title="Açık pozisyon varken ayarlı sıklıkta JEV turu: kapat / kısmi kapat / SL taşı kararları. Trade ajanından bağımsız ayrı bir ajan — kendi talimatıyla çalışır; LLM kullanmaz.">
+                <input id="finPosOn" type="checkbox" /> Aktif — açık pozisyonları Jev ile yönet
               </label>
+            </div>
+            <div class="fin-field">
+              <span>Kontrol (sn)</span>
+              <input id="finPosSec" type="number" min="1" max="300" step="1" title="Kaç saniyede bir kontrol edilsin — 1-300 (varsayılan 5). Trade ajanından bağımsız kendi zamanlayıcısı vardır." />
             </div>
             <div class="fin-field">
               <span>Yönetici talimatı <i class="fin-hint">— yalnız bu ajanı bağlar</i><button id="finPosHelp" class="fin-help-btn" type="button" title="Neler yazabilirim? Desteklenen talimatlar ve örnekler">?</button></span>

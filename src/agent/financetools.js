@@ -131,7 +131,16 @@ function lotRange(cfg, symbol) {
 async function preTradeCheck(cfg, side, symbol, info, price, volume, sl, tp, positions) {
   const closeErr = finrisk.stopsTooClose(info, price, sl, tp);
   if (closeErr) return closeErr;
-  const expErr = finrisk.exposureCheck(positions || [], side, symbol, cfg.maxPerSymbol, cfg.maxSameSide);
+  /* SEMBOL/YÖN TAVANI: main'in efektif değeri (talimat "sembol başına N" ya da
+     "aynı anda en fazla N işlem" notu) ayarı ve toplam tavanı KELEPÇELER */
+  let maxSym = Number(cfg.maxPerSymbol) || 0;
+  let maxSide = Number(cfg.maxSameSide) || 0;
+  try {
+    const lim = limitsApi.get();
+    if (Number(lim && lim.maxPerSymbol) > 0) maxSym = Number(lim.maxPerSymbol);
+    if (Number(lim && lim.maxSameSide) > 0) maxSide = Number(lim.maxSameSide);
+  } catch {}
+  const expErr = finrisk.exposureCheck(positions || [], side, symbol, maxSym, maxSide);
   if (expErr) return expErr;
   /* KODLA DİSİPLİN: günlük limit / kayıp serisi molası / re-entry / kur maruziyeti */
   let discErr = null;

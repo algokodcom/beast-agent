@@ -219,7 +219,22 @@ function disciplineError(entries, now, cfg, side, symbol, positions) {
   const dayStart = (() => { const d = new Date(t); d.setHours(0, 0, 0, 0); return d.getTime(); })();
   const maxDay = num(f.maxTradesPerDay, 0);
   if (maxDay > 0) {
-    const opens = list.filter((e) => e.kind === 'open' && Number(e.at) >= dayStart).length;
+    /* TEK İŞLEM = AÇILIŞ + KAPANIŞ: gün içindeki açılışlar TICKET bazında
+       sayılır; aynı pozisyonun kapanış kaydı AYRICA sayılmaz (çift sayım yok,
+       watchdog yeniden açılış yazsa bile ticket tekrarı düşülür). Ticket'sız
+       eski kayıtlar tek tek sayılır (geriye dönük uyum). */
+    const seen = new Set();
+    let opens = 0;
+    for (const e of list) {
+      if (Number(e.at) < dayStart) continue;
+      if (e.kind !== 'open') continue;
+      const tk = e.ticket != null ? String(e.ticket) : '';
+      if (tk && tk !== '0') {
+        if (seen.has(tk)) continue;
+        seen.add(tk);
+      }
+      opens += 1;
+    }
     if (opens >= maxDay) {
       return `günlük işlem limiti dolu (${opens}/${maxDay}) — bugün yeni işlem açma`;
     }

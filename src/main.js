@@ -10024,6 +10024,7 @@ function finCfg() {
      ezmez: not yalnız talimat metninde durdukça geçerlidir (0 = not yok). */
   f.maxPositionsNote = 0;
   f.maxTradesPerDayNote = 0;
+  f.maxPerSymbolNote = 0;
   try {
     const txt = (String(f.strategy || '') + '\n' + String(f.posManagerNote || '')).toLowerCase();
     const re = /(en\s*fazla|en\s*[çc]ok|max(?:imum)?|maks(?:imum)?)\s*(\d{1,2})\s*(?:i[şs]lem|islem|trade|emir|pozisyon|poz)/g;
@@ -10038,6 +10039,13 @@ function finCfg() {
       const daily = /(?:g[üu]nde|g[üu]nl[üu]k|g[üu]n\s*i[çc]inde)[^.;,\n]{0,14}$/.test(before);
       if (daily) f.maxTradesPerDayNote = n;
       else if (!f.maxPositionsNote) f.maxPositionsNote = n;  /* eşzamanlı tavan */
+    }
+    /* SEMBOL BAŞINA TAVAN: "sembol başına 5 işlem", "aynı sembolde en fazla 3
+       pozisyon" → aynı sembolde çoklu işlem tavanı (toplam tavanı ezmez) */
+    const msym = txt.match(/(?:sembol\s*ba[şs][ıi]na|ayn[ıi]\s*sembolde|her\s*sembolde)[^0-9]{0,16}(\d{1,2})/);
+    if (msym) {
+      const n = Number(msym[1]);
+      if (n >= 1 && n <= 20) f.maxPerSymbolNote = n;
     }
   } catch {}
   /* SHADOW MOD: emir gönderilmez — kararlar gerekçesiyle günlüğe yazılır */
@@ -10427,6 +10435,31 @@ function finPosCap(f) {
   const note = Number(f && f.maxPositionsNote) > 0 ? Number(f.maxPositionsNote) : 0;
   const base = Number(f && f.maxPositions) || 3;
   return Math.max(1, Math.min(20, note > 0 ? note : base));
+}
+
+/* SEMBOL BAŞINA POZİSYON TAVANI (aynı sembolde çoklu işlem):
+   1) talimatta "sembol başına N" varsa o,
+   2) talimatta toplam tavan varsa ("aynı anda en fazla N işlem") aynı sembolde
+      de o tavana kadar izin verilir — sahip 10 istiyorsa GOLD'da 10'a kadar,
+   3) zorunlu giriş modunda toplam tavan,
+   4) yoksa ayarlardaki maxPerSymbol (varsayılan 2). Toplam tavanı asla aşmaz. */
+function finPerSymbolCap(f) {
+  const ff = f || {};
+  const cap = finPosCap(ff);
+  const note = Number(ff.maxPerSymbolNote) > 0 ? Number(ff.maxPerSymbolNote) : 0;
+  if (note > 0) return Math.max(1, Math.min(cap, note));
+  if (Number(ff.maxPositionsNote) > 0) return cap;
+  if (finTsMandatoryEntry()) return cap;
+  const base = Number(ff.maxPerSymbol) > 0 ? Number(ff.maxPerSymbol) : 1;
+  return Math.max(1, Math.min(cap, base));
+}
+
+/* AYNI YÖN TAVANI: sembol başına tavandan küçük olamaz (tek sembollü stratejide
+   ardışık martingale kademeleri aynı yöndedir); ayar değeri taban kalır. */
+function finSameSideCap(f) {
+  const ff = f || {};
+  const base = Number(ff.maxSameSide) > 0 ? Number(ff.maxSameSide) : 3;
+  return Math.max(base, finPerSymbolCap(ff));
 }
 
 /* ---------- MAE/MFE: pozisyonun gördüğü en iyi/en kötü seviye ---------- */
@@ -11330,7 +11363,7 @@ async function finRecordClose(ticket, st) {
   /* TYPESAFE KARAR GÜNLÜĞÜ: kapanış kararla eşleştirilir (kalibrasyon verisi)
      ve TypeSafe'e hata/desen sınıflandırması sorulup otomatik ders yazılır */
   try {
-    const dec = finTsDecClose({ symbol, side: (st && st.side) || '', net: rounded, mfe, mae, reason: kind || '' });
+    const dec = finTsDecClose({ symbol, side: (st && st.side) || '', net: rounded, mfe, mae, reason: kind || '', ticket });
     if (dec) finTsAutoLesson(dec).catch(() => {});
   } catch {}
   const pl = rounded == null ? '' : ` · K/Z ${rounded >= 0 ? '+' : ''}${rounded.toFixed(2)}`;
@@ -11954,6 +11987,10 @@ function finLimitsSnapshot() {
     minLot: Number(f.minLot) || 0.01,
     maxLot: Number(f.maxLot) || 0.1,
     maxPositions: Number(f.maxPositions) || 3,
+    /* EFEKTİF SEMBOL/YÖN TAVANI: talimat notu + toplam tavan kelepçesi
+       (aynı sembolde çoklu işlem buradan geçer) */
+    maxPerSymbol: finPerSymbolCap(f),
+    maxSameSide: finSameSideCap(f),
     riskPerTradePct: Number(f.riskPerTradePct) || 0,
     /* SEMBOL BAZLI LOT LİMİTLERİ (trader kararı) — genel aralığı daraltır */
     symbols: { ...(f.symbolLimits && typeof f.symbolLimits === 'object' ? f.symbolLimits : {}) },
@@ -12500,6 +12537,34 @@ function finLearnRecordClose({ symbol, side, net, mfe, mae, reason, timeframe })
   } catch {}
 }
 
+/* MARTİNGALE KAYIP SERİSİ: sembol + periyot bazında SON KAPANAN işlemlerden
+   ardışık zarar sayısı. Her işlem (açılış+kapanış) öğrenmede TEK kayıttır →
+   aç+kapa ayrı sayılmaz. Zarar → seri +1 (martingale kademesi büyür), kâr/başabaş
+   → seri 0 (martingale kapanır, taban lota dönülür). */
+function finLossStreak(symbol, tf) {
+  try {
+    const sym = String(symbol || '').trim().toUpperCase();
+    if (!sym) return 0;
+    const e = finLearnLoad().symbols[sym];
+    const trades = Array.isArray(e && e.trades) ? e.trades : [];
+    const want = finLearnNormTf(tf) || '';
+    let n = 0;
+    for (let i = trades.length - 1; i >= 0; i--) {
+      const t = trades[i] || {};
+      const ttf = finLearnNormTf(t.tf) || '';
+      /* başka periyodun işlemleri bu seriye karışmaz (M15 kararı M1 kayıplarını saymaz) */
+      if (want && ttf && ttf !== want) continue;
+      const v = Number(t.net);
+      if (!isFinite(v)) continue;
+      if (v < 0) n += 1;
+      else break;
+    }
+    return n;
+  } catch {
+    return 0;
+  }
+}
+
 /* Tur girişine gömülen öğrenme özeti: sembol + PERİYOT istatistiği, son
    hatalar ve dersler. Ajanın "her şeye öğrendiğiyle karar vermesi" için
    karar anında önüne konur; en iyi/en kötü periyot ve tekrar eden hata
@@ -12807,6 +12872,8 @@ function finTsDecRecord(rec) {
       sid: String((rec && rec.sid) || ''),
       role: String((rec && rec.role) || ''),
       symbol: String((rec && rec.symbol) || '').toUpperCase(),
+      /* pozisyon ticket'ı (varsa): kapanışta TAM eşleşme için */
+      ticket: Number(rec && rec.ticket) || 0,
       tf: finLearnNormTf(rec && rec.tf),
       action: String((rec && rec.action) || ''),
       p: Number(rec && rec.p) || 0,
@@ -12830,20 +12897,25 @@ function finTsDecRecord(rec) {
 }
 
 /* Kapanışta karar kaydını sonuçla eşleştir (en yeni eşleşmeyen kayıt) */
-function finTsDecClose({ symbol, side, net, mfe, mae, reason }) {
+function finTsDecClose({ symbol, side, net, mfe, mae, reason, ticket }) {
   try {
     const sym = String(symbol || '').toUpperCase();
     const act = String(side || '').toLowerCase();
     if (!sym || !act || net == null) return null;
     const d = finTsDecLoad();
     const now = Date.now();
+    const fresh = (x) => !x.closedAt && now - Number(x.at) <= 24 * 60 * 60 * 1000;
     let hit = null;
-    for (let i = d.decisions.length - 1; i >= 0; i--) {
-      const x = d.decisions[i];
-      if (x.closedAt || x.symbol !== sym || x.action !== act) continue;
-      if (now - Number(x.at) > 24 * 60 * 60 * 1000) continue;
-      hit = x;
-      break;
+    /* 1) TICKET TAM EŞLEŞMESİ (çoklu pozisyonda kalibrasyon karışmaz) */
+    const tk = Number(ticket) || 0;
+    if (tk > 0) {
+      hit = d.decisions.find((x) => fresh(x) && Number(x.ticket) === tk) || null;
+    }
+    /* 2) TICKET YOKSA: aynı sembol+yönün EN ESKİ eşleşmemiş kararı (FIFO) */
+    if (!hit) {
+      for (const x of d.decisions) {
+        if (fresh(x) && x.symbol === sym && x.action === act) { hit = x; break; }
+      }
     }
     if (!hit) return null;
     hit.closedAt = now;
@@ -13892,6 +13964,7 @@ function finInstrSummary(ins) {
     try {
       const f = finCfg();
       if (Number(f.maxPositionsNote) > 0) p.push(`maks ${f.maxPositionsNote} pozisyon`);
+      if (Number(f.maxPerSymbolNote) > 0) p.push(`sembol başına maks ${f.maxPerSymbolNote}`);
       if (Number(f.maxTradesPerDayNote) > 0) p.push(`günde maks ${f.maxTradesPerDayNote} işlem`);
     } catch {}
     return p.join(' · ');
@@ -14781,6 +14854,7 @@ async function finTypeSafeRound(sid, agent) {
       }
       const lines = [];
       let opened = 0;
+      const openedBySym = new Map(); /* bu turda açılanlar — sembol tavanı sayar */
       for (let i = 0; i < symbols.length; i++) {
         const sym = symbols[i];
         if (!financeState.agents.has(sidS)) return;
@@ -14795,24 +14869,26 @@ async function finTypeSafeRound(sid, agent) {
         const cal = finTsCalibration(sym, market[sym].tf);
         const thAction = cal.action;
         if (pos) {
-          /* POZİSYON YÖNETİCİSİ açık: kapat/kısmi/SL kararları onun turunda */
+          /* POZİSYON YÖNETİCİSİ açık: kapat/kısmi/SL kararları onun turunda.
+             GİRİŞ DEĞERLENDİRMESİ DURMAZ: aynı sembolde çoklu işlem açılabilir
+             (toplam slot + sembol başına tavan + eşikler korur). */
           if (posManagerOn) {
             lines.push(`- ${sym}: pozisyon açık #${pos.ticket} — yönetim Pozisyon Yöneticisi'nde (${finPosMgrSec()} sn Jev turu)`);
+          } else {
+            const ex = finTsNoul(ans, 'kapat_' + i);
+            if (ex != null && ex >= FIN_TS_EXIT_P) {
+              const r = await financetools.handlers.mt5_close(
+                { ticket: Number(pos.ticket), reason: `TypeSafe: kapat p=${ex.toFixed(2)}` },
+                { sessionId: sidS }
+              );
+              lines.push(`- ${sym}: KAPAT (p=${ex.toFixed(2)}) ${r && r.ok ? '✓ pozisyon kapatıldı' : '✗ ' + ((r && r.error) || 'hata')}`);
+            } else {
+              lines.push(`- ${sym}: pozisyon açık (kapat=${ex == null ? 'yanıt yok' : ex.toFixed(2)} < ${FIN_TS_EXIT_P}) — tez sürüyor`);
+              /* JEV POZİSYON YÖNETİMİ: kısmi kapatma + SL/koruma kararları */
+              try { await finTsManageOpen(sidS, agent, sym, pos, market[sym], ans, i, lines); } catch {}
+            }
             continue;
           }
-          const ex = finTsNoul(ans, 'kapat_' + i);
-          if (ex != null && ex >= FIN_TS_EXIT_P) {
-            const r = await financetools.handlers.mt5_close(
-              { ticket: Number(pos.ticket), reason: `TypeSafe: kapat p=${ex.toFixed(2)}` },
-              { sessionId: sidS }
-            );
-            lines.push(`- ${sym}: KAPAT (p=${ex.toFixed(2)}) ${r && r.ok ? '✓ pozisyon kapatıldı' : '✗ ' + ((r && r.error) || 'hata')}`);
-          } else {
-            lines.push(`- ${sym}: pozisyon açık (kapat=${ex == null ? 'yanıt yok' : ex.toFixed(2)} < ${FIN_TS_EXIT_P}) — tez sürüyor`);
-            /* JEV POZİSYON YÖNETİMİ: kısmi kapatma + SL/koruma kararları */
-            try { await finTsManageOpen(sidS, agent, sym, pos, market[sym], ans, i, lines); } catch {}
-          }
-          continue;
         }
         if (!c || (c.choice !== 'buy' && c.choice !== 'sell')) {
           lines.push(`- ${sym}: ${finTsFmtChoice(c)} → BEKLE`);
@@ -14841,6 +14917,13 @@ async function finTypeSafeRound(sid, agent) {
         const slotsLeft = posCap - pendCount - posList.length - opened;
         if (slotsLeft <= 0) {
           lines.push(`- ${sym}: sinyal güçlü (${c.choice} p=${c.p.toFixed(2)}) ama pozisyon+bekleyen emir sınırı dolu (${posList.length + pendCount}/${posCap}) — bu tur açılmadı`);
+          continue;
+        }
+        /* SEMBOL BAŞINA TAVAN: aynı sembolde çoklu işlem (bu turda açılanlar dahil) */
+        const symCap = finPerSymbolCap(f);
+        const symCount = posList.filter((p) => String((p && p.symbol) || '').toUpperCase() === sym).length + (openedBySym.get(sym) || 0);
+        if (symCount >= symCap) {
+          lines.push(`- ${sym}: sembol başına pozisyon tavanı dolu (${symCount}/${symCap}) — bu tur açılmadı`);
           continue;
         }
         /* GİRİŞ TİPİ + RİSK PROFİLİ (JEV kararı) — seviyeleri KOD hesaplar */
@@ -14893,15 +14976,14 @@ async function finTypeSafeRound(sid, agent) {
         let martNote = '';
         if (ins.entry.lotMult != null) sizeMult *= ins.entry.lotMult;
         if (ins.entry.martingale != null) {
-          let streak = 0;
-          try {
-            const le = finLearnLoad().symbols[sym];
-            streak = Number(le && le.stats && le.stats.streak) || 0;
-          } catch {}
-          const pow = Math.min(3, Math.max(0, Math.round(streak)));
+          /* KAYIP SERİSİ SAYACI: kapanan her işlem TEK sayılır (aç+kapa=1).
+             1. işlem stop → seri 1 (×1.2), 2. stop → seri 2 (×1.44)…
+             kâra geçince seri 0 → martingale kapanır, taban lota dönülür. */
+          const streak = finLossStreak(sym, market[sym].tf);
+          const pow = Math.min(3, Math.max(0, streak));
           if (pow > 0) {
             sizeMult *= Math.pow(ins.entry.martingale, pow);
-            martNote = ` · martingale ×${ins.entry.martingale}^${pow}`;
+            martNote = ` · martingale ×${ins.entry.martingale}^${pow} (${pow}. ardışık kayıp sonrası)`;
           }
         }
         if (sizeMult !== 1) riskPct = Math.max(0.1, Math.min(10, Math.round(riskPct * sizeMult * 100) / 100));
@@ -14932,14 +15014,21 @@ async function finTypeSafeRound(sid, agent) {
         );
         if (r && r.ok && !r.shadow) {
           opened += 1;
+          openedBySym.set(sym, (openedBySym.get(sym) || 0) + 1);
           /* KARAR KAYDI: özellikler + karar diske yazılır; kapanışta sonuçla
              eşleşir → kalibrasyon/eşik/risk öğrenmesi bu veriyle çalışır */
           try {
             const ind = market[sym].ind || {};
+            /* TICKET: kapanışta karar-sonuç eşleşmesi TICKET ile yapılır —
+               aynı sembolde çoklu işlemde kalibrasyon karışmaz */
+            const decTicket = Number(
+              r && r.result && (r.result.order || r.result.position || r.result.deal || 0)
+            ) || 0;
             finTsDecRecord({
               sid: sidS,
               role: 'trader',
               symbol: sym,
+              ticket: decTicket,
               tf: market[sym].tf,
               action: c.choice,
               p: c.p,

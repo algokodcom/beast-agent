@@ -393,6 +393,24 @@ test('disiplin: günlük işlem limiti dolar ve yeni gün sıfırlanır', () => 
   assert.strictEqual(risk.disciplineError(entries, now, {}, 'buy', 'GOLD', []), null, 'limit 0 = kapalı');
 });
 
+test('disiplin: aç+kapa TEK işlem sayılır (kapanış ve ticket tekrarı sayılmaz)', () => {
+  const now = new Date('2026-09-11T14:00:00').getTime();
+  const day = (h) => new Date('2026-09-11T' + h + ':00:00').getTime();
+  const entries = [
+    { kind: 'open', at: day('09'), symbol: 'GOLD', ticket: 111 },
+    { kind: 'close', at: day('10'), symbol: 'GOLD', ticket: 111, net: -5 },
+    { kind: 'open', at: day('10'), symbol: 'GOLD', ticket: 111 }, /* watchdog yeniden yazdı */
+    { kind: 'trade', at: day('10'), symbol: 'GOLD' }, /* açılış bildirimi (ticketsız) */
+    { kind: 'open', at: day('11'), symbol: 'GOLD', ticket: 222 },
+  ];
+  /* ticket 111 tek işlem: open+close+tekrar → 1; 'trade' kaydı sayılmaz */
+  assert.strictEqual(risk.disciplineError(entries.slice(0, 4), now, { maxTradesPerDay: 2 }, 'buy', 'GOLD', []), null);
+  assert.ok(risk.disciplineError(entries.slice(0, 4), now, { maxTradesPerDay: 1 }, 'buy', 'GOLD', []), '1 işlem + limit 1 → dolu');
+  /* ikinci ticket açılışı 2. işlem olur: limit 2 dolu, limit 3 serbest */
+  assert.ok(risk.disciplineError(entries, now, { maxTradesPerDay: 2 }, 'buy', 'GOLD', []), '2 işlem + limit 2 → dolu');
+  assert.strictEqual(risk.disciplineError(entries, now, { maxTradesPerDay: 3 }, 'buy', 'GOLD', []), null);
+});
+
 test('disiplin: ardışık kayıp serisi molası verir, süre dolunca açılır', () => {
   const now = new Date('2026-09-11T12:00:00').getTime();
   const at = (minAgo) => now - minAgo * 60000;

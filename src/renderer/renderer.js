@@ -10939,21 +10939,23 @@ function finHelpHtml(which) {
         ['<code>lot x1.5</code><code>poz başı lot 1.5</code><code>lotu 2 kat yap</code>',
           '<b>Kod otomatik uygular.</b> Tüm giriş riskine/lotuna çarpan.'],
         ['<code>martingale</code><code>martingale 1.2</code><code>martingale x1.20</code><code>1.2 kat martingale</code>',
-          '<b>Kod otomatik uygular.</b> Kayıp serisinde lot katlanır — faktör serbest (ör. 1.2). Varsayılan ×2; 1.01–5 arası geçerli, seri en çok ×3, toplam risk tavanı %10 ve max lot kilidi geçerli.'],
+          '<b>Kod otomatik uygular.</b> Kayıp serisi KAPANAN işlemlerden sayılır (aç+kapa = 1 işlem): 1. işlem stop → 2. işlem ×1.2, o da stop → ×1.44… Kâra geçen ilk işlemde seri sıfırlanır ve taban lota dönülür. Faktör serbest (ör. 1.2); varsayılan ×2, 1.01–5 arası geçerli, seri en çok ×3, toplam risk tavanı %10 ve max lot kilidi geçerli.'],
         ['<code>her mumda işlem açmak zorundasın</code><code>her barda işlem</code><code>her zaman işlem</code>',
           '<b>ZORUNLU GİRİŞ modu.</b> "bekle" seçeneği kaldırılır, eşik/teyit kapıları atlanır, emir market olur. "zorunlu değil" yazarsan mod açılmaz.'],
-        ['<code>M1</code><code>1m</code><code>5 dk</code><code>4 saat</code>',
-          'İşlem zaman dilimi. M1/M5 yazarsan tur ritmi hızlanır (M1 en hızlı 60 sn).'],
+        ['<code>M1</code><code>1m</code><code>M15</code><code>5 dk</code><code>4 saat</code>',
+          'İşlem zaman dilimi. Yazdığın TF (ör. <b>M15</b>) tüm girişlerde birincil kuraldır: analiz, bildirim ve pozisyon yorumu o periyodu kullanır — talimatta M1 yazmadıkça M1\'de işlem açılmaz. M1/M5 yazarsan tur ritmi hızlanır (M1 en hızlı 60 sn).'],
         ['<code>başlangıç bakiye 10.000</code><code>gün başı: 10000</code><code>starting balance 10000</code>',
           'Gün başı bakiyesi — her turda günlük K/Z otomatik hesaplanır ve Jev\'e durum olarak verilir.'],
         ['<code>günlük zarar %3</code><code>max günlük kayıp 3</code>',
           '<b>Kod otomatik uygular.</b> Limit aşılırsa yeni işlem açılmaz; günlük kayıp otomasyonunun limiti bu olur.'],
         ['<code>aynı anda en fazla 10 işlem</code><code>en fazla 10 pozisyon</code><code>günde en fazla 10 işlem</code>',
           '<b>Kod otomatik uygular.</b> Eşzamanlı tavan (pozisyon + bekleyen emir) ya da günlük işlem tavanı. Talimatta yazdığın sürece Ayarlar\'daki değeri ezer; metinden kaldırınca ayar geçerli olur.'],
+        ['<code>sembol başına 5 işlem</code><code>aynı sembolde en fazla 3 pozisyon</code>',
+          '<b>Kod otomatik uygular.</b> Aynı sembolde çoklu işlem tavanı (toplam tavanı aşamaz). Toplam tavan yazarsan ("aynı anda en fazla 10 işlem") aynı sembolde de o tavana kadar işlem açılabilir; yazmazsan Ayarlar → maks/pay değeri geçerlidir.'],
       ];
   const example = posmgr
     ? `1- 1R'de %50 kısmi kapat\n2- kâr 2R'ye gelince kalanı kapat\n3- zarar -0.5R'yi geçerse kes`
-    : `1- risk yüzde 2\n2- martingale kullan (x1.2)\n3- her mumda işlem açmak zorundasın\n4- aynı anda en fazla 10 işlem\n5- başlangıç bakiye 10.000\n6- günlük zarar %3`;
+    : `1- M15'te işlem aç\n2- risk yüzde 2\n3- martingale kullan (x1.2)\n4- her mumda işlem açmak zorundasın\n5- aynı anda en fazla 10 işlem\n6- başlangıç bakiye 10.000\n7- günlük zarar %3`;
   const head = posmgr
     ? 'Pozisyon Yöneticisi (ayarlı sıklık — varsayılan 5 sn) açık pozisyonları yönetir: kapat / kısmi kapat / SL taşı. Trade Ajanı pozisyon açıkken de tur atmaya devam eder ve yeni girişleri değerlendirir.'
     : 'Trade Ajanı girişleri yönetir: yön, emir tipi, risk, lot, martingale ve günlük limitler.';

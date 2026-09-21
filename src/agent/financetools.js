@@ -802,7 +802,8 @@ const handlers = {
     }
     const pos = await bcall('positions', {}, 8000);
     const list = (pos && pos.positions) || [];
-    const maxPos = Number(cfg.maxPositions) || 3;
+    /* EFEKTİF TAVAN: talimattaki "en fazla N işlem/pozisyon" ayarı ezer */
+    const maxPos = Number(cfg.maxPositionsNote) > 0 ? Number(cfg.maxPositionsNote) : Number(cfg.maxPositions) || 3;
     if (list.length >= maxPos) {
       return { ok: false, error: `max eşzamanlı pozisyon dolu (${list.length}/${maxPos}) — önce bir pozisyon kapat` };
     }

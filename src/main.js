@@ -10018,6 +10018,27 @@ function finCfg() {
     try { saveSettings(); } catch {}
   }
   if (!Number.isFinite(Number(f.maxPerCurrency))) f.maxPerCurrency = 3;
+  /* TALİMATTAN ÜST SINIR: "aynı anda en fazla 10 işlem/pozisyon" → eşzamanlı
+     tavan; "günde en fazla 10 işlem" → günlük işlem tavanı. Ayarı KALICI
+     ezmez: not yalnız talimat metninde durdukça geçerlidir (0 = not yok). */
+  f.maxPositionsNote = 0;
+  f.maxTradesPerDayNote = 0;
+  try {
+    const txt = (String(f.strategy || '') + '\n' + String(f.posManagerNote || '')).toLowerCase();
+    const re = /(en\s*fazla|en\s*[çc]ok|max(?:imum)?|maks(?:imum)?)\s*(\d{1,2})\s*(?:i[şs]lem|islem|trade|emir|pozisyon|poz)/g;
+    let mm;
+    while ((mm = re.exec(txt))) {
+      const n = Number(mm[2]);
+      if (!(n >= 1 && n <= 20)) continue;
+      /* GÜNLÜK ayrımı: "günde/günlük/gün içinde ... en fazla N işlem" — cümle
+         sınırı (nokta/virgül) aşılmaz; "günlük zarar %3, maks 4 pozisyon"
+         ifadesindeki "günlük" günlük tavana YAZILMAZ, eşzamanlı sayılır. */
+      const before = txt.slice(0, mm.index);
+      const daily = /(?:g[üu]nde|g[üu]nl[üu]k|g[üu]n\s*i[çc]inde)[^.;,\n]{0,14}$/.test(before);
+      if (daily) f.maxTradesPerDayNote = n;
+      else if (!f.maxPositionsNote) f.maxPositionsNote = n;  /* eşzamanlı tavan */
+    }
+  } catch {}
   /* SHADOW MOD: emir gönderilmez — kararlar gerekçesiyle günlüğe yazılır */
   if (typeof f.shadowMode !== 'boolean') f.shadowMode = false;
   /* POZİSYON YÖNETİCİSİ: açık pozisyonları 5 sn'de bir Jev ile yöneten ayrı
@@ -10379,10 +10400,29 @@ function finTeamDigest() {
 /* KODLA DİSİPLİN kancası: financetools işlem öncesi bunu çağırır. */
 function finDisciplineError(side, symbol, positions) {
   try {
-    return finrisk.disciplineError(finJournalTail(400), Date.now(), finCfg(), side, symbol, positions);
+    const cfg = finCfg();
+    /* TALİMAT: "günde en fazla N işlem" → günlük işlem tavanını ezer */
+    if (Number(cfg.maxTradesPerDayNote) > 0) {
+      return finrisk.disciplineError(
+        finJournalTail(400),
+        Date.now(),
+        { ...cfg, maxTradesPerDay: Number(cfg.maxTradesPerDayNote) },
+        side,
+        symbol,
+        positions
+      );
+    }
+    return finrisk.disciplineError(finJournalTail(400), Date.now(), cfg, side, symbol, positions);
   } catch {
     return null;
   }
+}
+
+/* EFEKTİF POZİSYON TAVANI: talimattaki "en fazla N işlem/pozisyon" ayarı ezer */
+function finPosCap(f) {
+  const note = Number(f && f.maxPositionsNote) > 0 ? Number(f.maxPositionsNote) : 0;
+  const base = Number(f && f.maxPositions) || 3;
+  return Math.max(1, Math.min(20, note > 0 ? note : base));
 }
 
 /* ---------- MAE/MFE: pozisyonun gördüğü en iyi/en kötü seviye ---------- */
@@ -13767,10 +13807,13 @@ function finParseInstructions(text) {
   if (m) out.lotMult = finInstrNum(m[1] || m[2] || m[3]);
   if (out.lotMult != null) out.lotMult = Math.max(1, Math.min(5, out.lotMult));
   if (/martingale|mart[ıi]ngale/.test(low)) {
-    /* faktör yalnız bitişik yazımdan okunur: "martingale 1.5", "martingale x2",
-       "martingale çarpanı 1.5" — "martingale kullan, 1R..." gibi metinden sayı kapmaz */
-    m = low.match(/mart[ıi]ngale\s*(?:x|×|çarpan[ıi]?|carpan[ıi]?)?\s*(\d+(?:[.,]\d+)?)/);
-    out.martingale = m ? Math.max(1.1, Math.min(5, finInstrNum(m[1]) || 2)) : 2;
+    /* Faktör serbest: "martingale 1.2", "martingale x1.20", "martingale 1,2",
+       "martingale çarpanı 1.2", "1.2x martingale", "1.2 kat martingale".
+       Yalnız bilinen bağlaçlardan sonra sayı okunur — "martingale kullan, 1R..."
+       gibi metinden yanlış sayı kapmaz. Varsayılan ×2 (1.01–5 arası geçerli). */
+    m = low.match(/(?:mart[ıi]ngale\s*(?:x|×|çarpan[ıi]?|carpan[ıi]?|oran[ıi]?|fakt[öo]r[üu]?|kat[ıi]?)?\s*(\d+(?:[.,]\d+)?))|(?:(\d+(?:[.,]\d+)?)\s*(?:x|×|kat[ıi]?)?\s*mart[ıi]ngale)/);
+    const mf = m ? finInstrNum(m[1] || m[2]) : null;
+    out.martingale = Math.max(1.01, Math.min(5, mf != null && mf > 1 ? mf : 2));
   }
   /* kısmi kapatma: "1R'de %50" → atR=1, pct=50; "%50 1R" → aynı; "kısmi %50" → atR=1 */
   m = low.match(/(\d+(?:[.,]\d+)?)\s*r[^%\d]{0,28}%\s*(\d+(?:[.,]\d+)?)/);
@@ -13820,6 +13863,11 @@ function finInstrSummary(ins) {
     if (ins.entry.startBalance != null) p.push(`gün başı ${ins.entry.startBalance}`);
     if (ins.entry.dailyLossPct != null) p.push(`günlük zarar limiti %${ins.entry.dailyLossPct}`);
     if (ins.manage.partial) p.push(`kısmi %${ins.manage.partial.pct} @${ins.manage.partial.atR}R`);
+    try {
+      const f = finCfg();
+      if (Number(f.maxPositionsNote) > 0) p.push(`maks ${f.maxPositionsNote} pozisyon`);
+      if (Number(f.maxTradesPerDayNote) > 0) p.push(`günde maks ${f.maxTradesPerDayNote} işlem`);
+    } catch {}
     return p.join(' · ');
   } catch {
     return '';
@@ -14701,9 +14749,10 @@ async function finTypeSafeRound(sid, agent) {
         }
         /* ÇOKLU GİRİŞ: aynı turda birden çok sembol açılabilir — yalnız toplam
            slot (pozisyon + bekleyen emir + bu turda açılanlar) tavanı korur */
-        const slotsLeft = (Number(f.maxPositions) || 3) - pendCount - posList.length - opened;
+        const posCap = finPosCap(f);
+        const slotsLeft = posCap - pendCount - posList.length - opened;
         if (slotsLeft <= 0) {
-          lines.push(`- ${sym}: sinyal güçlü (${c.choice} p=${c.p.toFixed(2)}) ama pozisyon+bekleyen emir sınırı dolu (${posList.length + pendCount}/${Number(f.maxPositions) || 3}) — bu tur açılmadı`);
+          lines.push(`- ${sym}: sinyal güçlü (${c.choice} p=${c.p.toFixed(2)}) ama pozisyon+bekleyen emir sınırı dolu (${posList.length + pendCount}/${posCap}) — bu tur açılmadı`);
           continue;
         }
         /* GİRİŞ TİPİ + RİSK PROFİLİ (JEV kararı) — seviyeleri KOD hesaplar */

@@ -10934,8 +10934,8 @@ function finHelpHtml(which) {
           '<b>Kod otomatik uygular.</b> Girişler %2 risk ile açılır (kalibrasyon çarpanı devre dışı, 0.1-10 arası).'],
         ['<code>lot x1.5</code><code>poz başı lot 1.5</code><code>lotu 2 kat yap</code>',
           '<b>Kod otomatik uygular.</b> Tüm giriş riskine/lotuna çarpan.'],
-        ['<code>martingale</code><code>martingale 1.5</code><code>martingale x2</code>',
-          '<b>Kod otomatik uygular.</b> Kayıp serisinde lot katlanır (varsayılan ×2; seri en çok ×3, toplam risk tavanı %10 ve max lot kilidi geçerli).'],
+        ['<code>martingale</code><code>martingale 1.2</code><code>martingale x1.20</code><code>1.2 kat martingale</code>',
+          '<b>Kod otomatik uygular.</b> Kayıp serisinde lot katlanır — faktör serbest (ör. 1.2). Varsayılan ×2; 1.01–5 arası geçerli, seri en çok ×3, toplam risk tavanı %10 ve max lot kilidi geçerli.'],
         ['<code>her mumda işlem açmak zorundasın</code><code>her barda işlem</code><code>her zaman işlem</code>',
           '<b>ZORUNLU GİRİŞ modu.</b> "bekle" seçeneği kaldırılır, eşik/teyit kapıları atlanır, emir market olur. "zorunlu değil" yazarsan mod açılmaz.'],
         ['<code>M1</code><code>1m</code><code>5 dk</code><code>4 saat</code>',
@@ -10944,10 +10944,12 @@ function finHelpHtml(which) {
           'Gün başı bakiyesi — her turda günlük K/Z otomatik hesaplanır ve Jev\'e durum olarak verilir.'],
         ['<code>günlük zarar %3</code><code>max günlük kayıp 3</code>',
           '<b>Kod otomatik uygular.</b> Limit aşılırsa yeni işlem açılmaz; günlük kayıp otomasyonunun limiti bu olur.'],
+        ['<code>aynı anda en fazla 10 işlem</code><code>en fazla 10 pozisyon</code><code>günde en fazla 10 işlem</code>',
+          '<b>Kod otomatik uygular.</b> Eşzamanlı tavan (pozisyon + bekleyen emir) ya da günlük işlem tavanı. Talimatta yazdığın sürece Ayarlar\'daki değeri ezer; metinden kaldırınca ayar geçerli olur.'],
       ];
   const example = posmgr
     ? `1- 1R'de %50 kısmi kapat\n2- kâr 2R'ye gelince kalanı kapat\n3- zarar -0.5R'yi geçerse kes`
-    : `1- risk yüzde 2\n2- martingale kullan (x2)\n3- her mumda işlem açmak zorundasın\n4- başlangıç bakiye 10.000\n5- günlük zarar %3`;
+    : `1- risk yüzde 2\n2- martingale kullan (x1.2)\n3- her mumda işlem açmak zorundasın\n4- aynı anda en fazla 10 işlem\n5- başlangıç bakiye 10.000\n6- günlük zarar %3`;
   const head = posmgr
     ? 'Pozisyon Yöneticisi (5 sn turu) açık pozisyonları yönetir: kapat / kısmi kapat / SL taşı.'
     : 'Trade Ajanı girişleri yönetir: yön, emir tipi, risk, lot, martingale ve günlük limitler.';

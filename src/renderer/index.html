@@ -193,8 +193,8 @@
               <div id="finRoles" class="fin-roles" title="Trader&#39;ın yanında koşacak uzman ajanları seç — Risk / Teknik / Haber / Görsel; seçilen her rol AYRI sürekli ajan olarak koşar (işlem açmaz)"></div>
             </div>
             <div class="fin-field">
-              <span>Ajan talimatı <i class="fin-hint">— 1-2 cümle; trader + tüm paralel ajanlara iletilir</i></span>
-              <textarea id="finStrategy" rows="2" maxlength="2000" placeholder="örn. Her türde scalp yap — M1/M5 hızlı gir-çık, günlük kâr hedefine ulaşınca dur" title="Buraya yazdığın talimat trade ajanına ve koşan tüm paralel ajanlara (ekip + sembol işçileri) sistem promptunda öncelikli strateji notu olarak gider; kaydetmek için alandan çık"></textarea>
+              <span>Ajan talimatı <i class="fin-hint">— 1-2 cümle; trader + tüm paralel ajanlara iletilir</i><button id="finStrategyHelp" class="fin-help-btn" type="button" title="Neler yazabilirim? Desteklenen talimatlar ve örnekler">?</button></span>
+              <textarea id="finStrategy" rows="2" maxlength="2000" placeholder="örn. 1- risk yüzde 2  2- martingale kullan  3- her mumda işlem açmak zorundasın" title="Buraya yazdığın talimat trade ajanına ve koşan tüm paralel ajanlara (ekip + sembol işçileri) sistem promptunda öncelikli strateji notu olarak gider; kaydetmek için alandan çık"></textarea>
             </div>
             <div id="finAdvWrap" hidden>
             <div class="fin-field">
@@ -227,8 +227,8 @@
               </label>
             </div>
             <div class="fin-field">
-              <span>Yönetici talimatı <i class="fin-hint">— yalnız bu ajanı bağlar</i></span>
-              <textarea id="finPosNote" rows="2" maxlength="1500" placeholder="örn. Kâr 1R'ye gelince %50 kısmi al ve SL'yi breakeven'a çek; 2R'de kalanı kapat; zarar -0.5R'yi geçerse kes" title="Bu talimat YALNIZ Pozisyon Yöneticisi Jev ajanına gider (5 sn turu, kapat/kısmi/SL kararları); kaydetmek için alandan çık"></textarea>
+              <span>Yönetici talimatı <i class="fin-hint">— yalnız bu ajanı bağlar</i><button id="finPosHelp" class="fin-help-btn" type="button" title="Neler yazabilirim? Desteklenen talimatlar ve örnekler">?</button></span>
+              <textarea id="finPosNote" rows="2" maxlength="1500" placeholder="örn. 1- 1R'de %50 kısmi kapat  2- kâr 2R'ye gelince kalanı kapat  3- zarar -0.5R'yi geçerse kes" title="Bu talimat YALNIZ Pozisyon Yöneticisi Jev ajanına gider (5 sn turu, kapat/kısmi/SL kararları); kaydetmek için alandan çık"></textarea>
             </div>
             <div id="finPosStatus">Beklemede — açık pozisyon yok</div>
           </div>
@@ -886,6 +886,16 @@
         <div id="finLearnList" class="mini-list"></div>
         <div class="fin-sym-hint">Trade ajanının çekirdekteki sembol bazlı hafızası: her işlem kapanışı otomatik istatistiğe işlenir; ajan yalnız gerçekten öğretici, kısa bir içgörü olunca ders yazar (her kapanışa ders YAZMAZ — günlük en fazla 3, tek kısa cümle). Sembol satırına tıkla → kalıcı özeti, dersleri ve son işlemleri gör; ÖZET ile eski dersleri modele sıkıştırt (24+ ders birikince otomatik), tek dersi çöp ikonuyla sil, sembol kaydını tümden bırak. Hafıza sürekli sadeleşir: 30 günden eski dersler, 90 günden eski işlem kayıtları ve 120 gün hareketsiz semboller otomatik unutulur.</div>
       </div>
+    </div>
+  </div>
+
+  <div id="finHelpOverlay" class="mini-overlay" hidden>
+    <div class="mini-dialog fin-help-dialog">
+      <div class="mini-head">
+        <span class="mini-title" id="finHelpTitle">TALİMAT KILAVUZU</span>
+        <button class="mini-close" id="finHelpClose" title="Kapat">&#x00D7;</button>
+      </div>
+      <div class="mini-body" id="finHelpBody"></div>
     </div>
   </div>
 

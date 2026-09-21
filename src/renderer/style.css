@@ -5644,6 +5644,65 @@ body.finance-mode #composerWrap { margin-right: var(--finW, 400px); }
 #finPosStatus.on.busy { color: var(--accent); }
 #finPosStatus.on.busy::before { color: #f59e0b; }
 
+/* TALİMAT KILAVUZU (? butonu + modal) */
+.fin-help-btn {
+  width: 16px;
+  height: 16px;
+  margin-left: 6px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: var(--panel2);
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  padding: 0;
+  cursor: pointer;
+  vertical-align: 1px;
+}
+.fin-help-btn:hover { color: var(--text); border-color: var(--accent); }
+.fin-help-dialog { max-width: 620px; }
+#finHelpBody { max-height: 62vh; overflow: auto; }
+.fin-help-head { font-size: 11px; color: var(--muted); margin: 2px 0 10px; }
+.fin-help-sec {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin: 12px 0 6px;
+}
+.fin-help-item {
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 6px 8px;
+  margin-bottom: 6px;
+  background: var(--panel2);
+}
+.fin-help-code { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 4px; }
+.fin-help-code code {
+  font-size: 10.5px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgba(127, 127, 127, 0.14);
+  border: 1px solid var(--border);
+}
+.fin-help-desc { font-size: 11px; color: var(--muted); line-height: 1.5; }
+.fin-help-desc b { color: var(--text); }
+.fin-help-text { font-size: 11px; color: var(--muted); line-height: 1.55; }
+.fin-help-text b { color: var(--text); }
+.fin-help-ex {
+  margin: 8px 0 2px;
+  padding: 8px 10px;
+  border-radius: 7px;
+  border: 1px dashed var(--border);
+  background: var(--panel2);
+  font-size: 11px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  color: var(--text);
+}
+
 #finPosList, #finOrdList, #finSymList { display: flex; flex-direction: column; gap: 5px; }
 .fin-empty { font-size: 11px; color: var(--muted); padding: 2px 0 4px; }
 

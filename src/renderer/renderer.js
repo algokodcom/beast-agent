@@ -228,6 +228,12 @@ const els = {
   finMaxLot: $('#finMaxLot'),
   finSymLimits: $('#finSymLimits'),
   finStrategy: $('#finStrategy'),
+  finStrategyHelp: $('#finStrategyHelp'),
+  finPosHelp: $('#finPosHelp'),
+  finHelpOverlay: $('#finHelpOverlay'),
+  finHelpTitle: $('#finHelpTitle'),
+  finHelpBody: $('#finHelpBody'),
+  finHelpClose: $('#finHelpClose'),
   finMaxTradesDay: $('#finMaxTradesDay'),
   finLossStreak: $('#finLossStreak'),
   finLossStreakPause: $('#finLossStreakPause'),
@@ -10886,6 +10892,90 @@ if (els.finStrategy) {
     toast(v.trim() ? 'Ajan talimatı kaydedildi — tüm ajanlar sonraki turda uygular' : 'Ajan talimatı temizlendi');
   });
 }
+/* TALİMAT KILAVUZU (?): her iki talimat alanı için desteklenen kalıplar.
+   "kod" etiketli kalıplar AYRICALIKLI olarak kod tarafından otomatik uygulanır;
+   serbest cümleler Jev'in tur state'ine girer ve Jev ona göre karar verir. */
+/* BUTONLAR: ? → kılavuz; dışına tıkla / × → kapat */
+if (els.finStrategyHelp) {
+  els.finStrategyHelp.addEventListener('click', (e) => {
+    e.preventDefault();
+    finHelpOpen('trade');
+  });
+}
+if (els.finPosHelp) {
+  els.finPosHelp.addEventListener('click', (e) => {
+    e.preventDefault();
+    finHelpOpen('posmgr');
+  });
+}
+if (els.finHelpClose) els.finHelpClose.addEventListener('click', finHelpClose);
+if (els.finHelpOverlay) {
+  els.finHelpOverlay.addEventListener('click', (e) => {
+    if (e.target === els.finHelpOverlay) finHelpClose();
+  });
+}
+function finHelpHtml(which) {
+  const posmgr = which === 'posmgr';
+  const items = posmgr
+    ? [
+        ['<code>1R\'de %50 kısmi kapat</code><code>%50 1R</code><code>kısmi close %50</code>',
+          '<b>Kod otomatik uygular.</b> Kâr belirtilen R\'ye gelince pozisyonun %50\'si kapatılır (tek sefer). "kısmi %50" tek başına yazılırsa 1R kabul edilir.'],
+        ['<code>1.5R\'de %25 kısmi</code><code>3R\'de %75 kapat</code>',
+          '<b>Kod otomatik uygular.</b> R ve yüzdeyi sen seç; yüzde 5-90 arası olmalı.'],
+        ['<code>kâr 2R olunca kalanı kapat</code><code>kârı koru</code>',
+          '<b>Jev uygular.</b> Serbest ifade; her 5 sn turunda Jev okur ve kapatma/trailing kararını verir.'],
+        ['<code>SL\'yi takip et</code><code>breakeven\'a çek</code><code>zararı -0.5R\'de kes</code>',
+          '<b>Jev uygular.</b> SL/koruma aksiyonu olarak değerlendirilir; kod seviyeyi ATR/R ile hesaplar, SL asla geriye gitmez.'],
+        ['<code>başlangıç bakiye 10.000</code><code>gün başı: 10000</code>',
+          'Gün başı bakiyesi — günlük K/Z % otomatik hesaplanır (raporda "Gün başı → %-2.3 ZARAR").'],
+      ]
+    : [
+        ['<code>risk %2</code><code>%2 risk</code><code>risk yüzde 2</code>',
+          '<b>Kod otomatik uygular.</b> Girişler %2 risk ile açılır (kalibrasyon çarpanı devre dışı, 0.1-10 arası).'],
+        ['<code>lot x1.5</code><code>poz başı lot 1.5</code><code>lotu 2 kat yap</code>',
+          '<b>Kod otomatik uygular.</b> Tüm giriş riskine/lotuna çarpan.'],
+        ['<code>martingale</code><code>martingale 1.5</code><code>martingale x2</code>',
+          '<b>Kod otomatik uygular.</b> Kayıp serisinde lot katlanır (varsayılan ×2; seri en çok ×3, toplam risk tavanı %10 ve max lot kilidi geçerli).'],
+        ['<code>her mumda işlem açmak zorundasın</code><code>her barda işlem</code><code>her zaman işlem</code>',
+          '<b>ZORUNLU GİRİŞ modu.</b> "bekle" seçeneği kaldırılır, eşik/teyit kapıları atlanır, emir market olur. "zorunlu değil" yazarsan mod açılmaz.'],
+        ['<code>M1</code><code>1m</code><code>5 dk</code><code>4 saat</code>',
+          'İşlem zaman dilimi. M1/M5 yazarsan tur ritmi hızlanır (M1 en hızlı 60 sn).'],
+        ['<code>başlangıç bakiye 10.000</code><code>gün başı: 10000</code><code>starting balance 10000</code>',
+          'Gün başı bakiyesi — her turda günlük K/Z otomatik hesaplanır ve Jev\'e durum olarak verilir.'],
+        ['<code>günlük zarar %3</code><code>max günlük kayıp 3</code>',
+          '<b>Kod otomatik uygular.</b> Limit aşılırsa yeni işlem açılmaz; günlük kayıp otomasyonunun limiti bu olur.'],
+      ];
+  const example = posmgr
+    ? `1- 1R'de %50 kısmi kapat\n2- kâr 2R'ye gelince kalanı kapat\n3- zarar -0.5R'yi geçerse kes`
+    : `1- risk yüzde 2\n2- martingale kullan (x2)\n3- her mumda işlem açmak zorundasın\n4- başlangıç bakiye 10.000\n5- günlük zarar %3`;
+  const head = posmgr
+    ? 'Pozisyon Yöneticisi (5 sn turu) açık pozisyonları yönetir: kapat / kısmi kapat / SL taşı.'
+    : 'Trade Ajanı girişleri yönetir: yön, emir tipi, risk, lot, martingale ve günlük limitler.';
+  const rows = items
+    .map((it) => '<div class="fin-help-item"><div class="fin-help-code">' + it[0] + '</div><div class="fin-help-desc">' + it[1] + '</div></div>')
+    .join('');
+  return (
+    '<div class="fin-help-head">' + head + '</div>' +
+    '<div class="fin-help-sec">Neler yazabilirsin?</div>' +
+    rows +
+    '<div class="fin-help-sec">Nasıl yazılır?</div>' +
+    '<div class="fin-help-text">İstediğin gibi düz cümle yazabilirsin; birden çok kuralı <b>1- 2- 3-</b> diye numaralayarak alt alta yazman en kolayı. Kod, yukarıdaki sayısal kalıpları otomatik uygular; kalan serbest ifadeleri Jev her turda okur ve kararına katar. Talimat değişiklikleri <b>sonraki turda</b> geçerli olur.</div>' +
+    '<pre class="fin-help-ex">' + example + '</pre>'
+  );
+}
+
+function finHelpOpen(which) {
+  if (!els.finHelpOverlay) return;
+  const posmgr = which === 'posmgr';
+  if (els.finHelpTitle) els.finHelpTitle.textContent = posmgr ? 'POZİSYON YÖNETİCİSİ — TALİMAT KILAVUZU' : 'TRADE AJANI — TALİMAT KILAVUZU';
+  if (els.finHelpBody) els.finHelpBody.innerHTML = finHelpHtml(which);
+  els.finHelpOverlay.hidden = false;
+}
+
+function finHelpClose() {
+  if (els.finHelpOverlay) els.finHelpOverlay.hidden = true;
+}
+
 /* POZİSYON YÖNETİCİSİ: 5 sn Jev turu — kendi talimatı + aç/kapa */
 if (els.finPosNote) {
   els.finPosNote.addEventListener('input', () => {

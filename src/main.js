@@ -10005,7 +10005,15 @@ function finCfg() {
   if (!Number.isFinite(Number(f.maxTradesPerDay))) f.maxTradesPerDay = 10;
   if (!Number.isFinite(Number(f.lossStreakLimit))) f.lossStreakLimit = 2;
   if (!Number.isFinite(Number(f.lossStreakPauseMin))) f.lossStreakPauseMin = 30;
-  if (!Number.isFinite(Number(f.reentryCooldownMin))) f.reentryCooldownMin = 15;
+  /* RE-ENTRY BEKLEME: kural VARSAYILAN KAPALI (0) — isteyen Gelişmiş
+     ayarlardan açar. Eski sürümün zorla koyduğu 15 dk değeri BİR KEZ
+     sıfırlanır; kullanıcı bilerek başka değer girdiyse dokunulmaz. */
+  if (!Number.isFinite(Number(f.reentryCooldownMin))) f.reentryCooldownMin = 0;
+  if (f.reentryDefaultCleared !== true) {
+    f.reentryDefaultCleared = true;
+    if (Number(f.reentryCooldownMin) === 15) f.reentryCooldownMin = 0;
+    try { saveSettings(); } catch {}
+  }
   if (!Number.isFinite(Number(f.maxPerCurrency))) f.maxPerCurrency = 3;
   /* SHADOW MOD: emir gönderilmez — kararlar gerekçesiyle günlüğe yazılır */
   if (typeof f.shadowMode !== 'boolean') f.shadowMode = false;

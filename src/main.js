@@ -10926,28 +10926,75 @@ async function finStopAllFinanceAgents(reason) {
   return sids.length;
 }
 
-/* Tüm açık pozisyonları kapatır (günlük limit 'flatten' aksiyonu). */
-async function finFlattenAll() {
+/* Tüm açık pozisyonları kapatır (TOPLU KAPATMA).
+   reason: 'risk' (günlük limit flatten) | 'manuel' (panel butonu) |
+   'kural' (talimat kâr hedefi — "karda tümünü kapat" gibi).
+   opts.withPending: bekleyen emirler de iptal edilir (yeni pozisyon açılmasın). */
+async function finFlattenAll(reason, opts) {
   if (financeState.flattening) return 0;
   if (!mt5bridge.running) return 0;
+  const why = ['risk', 'manuel', 'kural'].includes(String(reason)) ? String(reason) : 'risk';
   financeState.flattening = true;
   let closed = 0;
   try {
+    /* ÖNCE bekleyen emirler (ops.): kapanırken yeni pozisyon aktifleşmesin */
+    if (opts && opts.withPending) {
+      try {
+        const o = await mt5bridge.call('orders', {}, 10000);
+        const orders = (o && o.ok && o.data && o.data.orders) || [];
+        for (const ord of orders) {
+          await mt5bridge.call('cancel', { ticket: ord.ticket }, 10000).catch(() => null);
+        }
+        if (orders.length) financeLog('[toplu] ' + orders.length + ' bekleyen emir iptal edildi');
+      } catch {}
+    }
     const r = await mt5bridge.call('positions', {}, 10000);
     const list = (r && r.ok && r.data && r.data.positions) || [];
     for (const p of list) {
       const cr = await mt5bridge.call('close', { ticket: p.ticket, volume: 0 }, 15000).catch(() => null);
       if (cr && cr.ok) closed++;
     }
-    const line = `🚨 Günlük limit: ${closed}/${list.length} pozisyon kapatıldı`;
-    financeLog('[risk] ' + line);
-    financeNotify(line, 'risk');
-    finJournal({ kind: 'risk-flatten', closed, total: list.length });
+    const line = why === 'manuel'
+      ? `🧯 Toplu kapatma (panel): ${closed}/${list.length} pozisyon kapatıldı`
+      : why === 'kural'
+        ? `🎯 Toplu kapatma (kâr hedefi): ${closed}/${list.length} pozisyon kapatıldı`
+        : `🚨 Günlük limit: ${closed}/${list.length} pozisyon kapatıldı`;
+    financeLog('[' + why + '] ' + line);
+    financeNotify(line, why === 'risk' ? 'risk' : 'close');
+    finJournal({ kind: why === 'risk' ? 'risk-flatten' : 'close-all', why, closed, total: list.length });
     finStatsRefresh(true).catch(() => {});
   } finally {
     financeState.flattening = false;
   }
   return closed;
+}
+
+/* TOPLU KAPATMA KURALI (talimat): "karda tümünü kapat" / "toplam kâr %2 olunca
+   hepsini kapat" / "50 dolar kârda tümünü kapat" → sepet (tüm pozisyonların
+   toplam yüzen K/Z'si) hedefe ulaşınca HEPSİ kapatılır. Kural yoksa no-op. */
+async function finBasketCloseCheck(positions, account) {
+  const rule = finParsedInstr().manage.closeAllProfit;
+  if (!rule) return;
+  if (financeState.flattening) return;
+  const list = Array.isArray(positions) ? positions.filter(Boolean) : [];
+  if (!list.length) return;
+  const total = Math.round(list.reduce((a, p) => a + (Number(p.profit) || 0), 0) * 100) / 100;
+  const bal = Number(account && account.balance) || 0;
+  let hit = false;
+  if (rule.money != null) hit = total >= Number(rule.money);
+  else if (rule.pct != null && bal > 0) hit = total >= (bal * Number(rule.pct)) / 100;
+  else hit = total > 0; /* "karda tümünü kapat" → herhangi bir net kâr */
+  if (!hit) return;
+  const closed = await finFlattenAll('kural', { withPending: true });
+  if (closed > 0) {
+    financeNotify(`🎯 Toplu kapatma kuralı: sepet +${total} → ${closed} pozisyon kapatıldı`, 'close');
+    finWakeAgents(
+      `[FİNANS OLAYI — TOPLU KAPATMA] Talimat kâr hedefi tetiklendi: tüm pozisyonların toplamı +${total} (hedef ` +
+        (rule.money != null ? rule.money : rule.pct != null ? '%' + rule.pct : 'kâr') +
+        ') → tüm pozisyonlar kapatıldı. Hesabı ve yeni planı değerlendir.',
+      { kind: 'close-all', total }
+    );
+  }
 }
 
 /* ---- performans istatistikleri (kalıcı) ---- */
@@ -11719,6 +11766,10 @@ async function finWatchTick() {
       financeState.posSnapshot = { at: Date.now(), positions, account };
       if (positions.length) {
         try { finPosManagerMaybe(positions, account); } catch {}
+      }
+      /* TOPLU KAPATMA KURALI: talimat kâr hedefi (sepet) dolduysa hepsini kapat */
+      if (positions.length) {
+        try { await finBasketCloseCheck(positions, account); } catch {}
       }
     }
     try { await finCheckAlerts(); } catch {}
@@ -13967,6 +14018,31 @@ function finParseInstructions(text) {
   ) {
     out.noLossClose = true;
   }
+  /* TOPLU KAPATMA (kâr hedefi): "karda tümünü kapat", "toplam kâr %2 olunca
+     hepsini kapat", "50 dolar kârda tümünü kapat" → sepet (tüm pozisyonların
+     toplam yüzen K/Z'si) hedefe ulaşınca HEPSİ kapatılır (kod uygular).
+     Zarar hedefli panik kapatma bilinçli olarak KAPSAM DIŞI. */
+  {
+    const allClose =
+      /(?:t[üu]m[üu]n[üu](?:\s*pozisyonlar[ıi]?)?|hepsini|t[üu]m\s*pozisyonlar[ıi]?|toplu(?:\s*kapatma)?)[^.\n]{0,30}?kapat/.test(low);
+    if (allClose && /k[âa]r/.test(low)) {
+      let pct = null;
+      let money = null;
+      let mm = low.match(/k[âa]r[^0-9%]{0,16}%\s*(\d+(?:[.,]\d+)?)/) ||
+               low.match(/toplam[^0-9%]{0,16}%\s*(\d+(?:[.,]\d+)?)[^.\n]{0,16}?k[âa]r/);
+      if (mm) pct = finInstrNum(mm[1]);
+      if (pct == null) {
+        mm = low.match(/(\d+(?:[.,]\d+)?)\s*(?:dolar|usd|\$)[^.\n]{0,16}?k[âa]r/) ||
+             low.match(/k[âa]r[^0-9]{0,16}\$?\s*(\d+(?:[.,]\d+)?)/);
+        if (mm) money = finInstrNum(mm[1]);
+      }
+      out.closeAllProfit = {
+        pct: pct != null && pct > 0 ? Math.min(50, pct) : null,
+        money: pct == null && money != null && money > 0 ? money : null,
+        any: pct == null && money == null,
+      };
+    }
+  }
   return out;
 }
 
@@ -13987,6 +14063,8 @@ function finParsedInstr() {
       partial: mgr.partial || trade.partial,
       /* YÖNETİM KURALI: zararda kapatma yasağı iki nottan birinde varsa geçerli */
       noLossClose: !!(mgr.noLossClose || trade.noLossClose),
+      /* TOPLU KAPATMA kâr hedefi (iki nottan biri) */
+      closeAllProfit: mgr.closeAllProfit || trade.closeAllProfit || null,
     },
   };
 }
@@ -14002,6 +14080,10 @@ function finInstrSummary(ins) {
     if (ins.entry.dailyLossPct != null) p.push(`günlük zarar limiti %${ins.entry.dailyLossPct}`);
     if (ins.manage.partial) p.push(`kısmi %${ins.manage.partial.pct} @${ins.manage.partial.atR}R (yalnız kârda)`);
     if (ins.manage.noLossClose) p.push('zararda kapatma YOK');
+    if (ins.manage.closeAllProfit) {
+      const r = ins.manage.closeAllProfit;
+      p.push(r.money != null ? `toplu kapatma +${r.money}` : r.pct != null ? `toplu kapatma +%${r.pct}` : 'kârda toplu kapatma');
+    }
     try {
       const f = finCfg();
       if (Number(f.maxPositionsNote) > 0) p.push(`maks ${f.maxPositionsNote} pozisyon`);
@@ -14510,6 +14592,12 @@ async function finPosManagerRound(positions, account) {
       kapatma_kurali: ins.manage.noLossClose
         ? 'ZARARDA KAPATMA YOK (kod uygular): zarardaki pozisyonun kapatma kararı reddedilir — SL/TP kapatması serbest; kısmi kapatma YALNIZ kârda'
         : 'zararda kapatma serbest',
+      /* SEPET: tüm pozisyonların toplam yüzen K/Z'si — toplu kapatma kuralı
+         ve "tümünü kapat" kararı bu veriyle verilir */
+      sepet_kz: Math.round(positions.reduce((a, p) => a + (Number(p.profit) || 0), 0) * 100) / 100,
+      toplu_kapatma: ins.manage.closeAllProfit
+        ? 'KURAL: sepet kâr hedefine ulaşınca TÜMÜ kapatılır (kod uygular; panelde "Tümünü Kapat" da var)'
+        : '',
       talimat_ayarlari: instrTxt || '(sayısal kural yok)',
       gun_durumu: (() => {
         try {
@@ -15906,6 +15994,14 @@ ipcMain.handle('finance:close', async (_e, payload) => {
     finPush('trade', { line: 'POZİSYON KAPANDI (panel): ticket ' + ticket });
   }
   return r;
+});
+
+/* TOPLU KAPATMA (panel butonu): tüm açık pozisyonlar + bekleyen emirler kapanır */
+ipcMain.handle('finance:closeAll', async () => {
+  if (!mt5bridge.running) return { ok: false, error: 'MT5 köprüsü bağlı değil' };
+  const closed = await finFlattenAll('manuel', { withPending: true });
+  finPush('trade', { line: 'TOPLU KAPATMA (panel): ' + closed + ' pozisyon kapatıldı' });
+  return { ok: true, closed };
 });
 
 /* Bekleyen emri panelden iptal et (ajanın mt5_cancel aracıyla aynı köprü) */

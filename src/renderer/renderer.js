@@ -258,6 +258,7 @@ const els = {
   finPosStatus: $('#finPosStatus'),
   finPosList: $('#finPosList'),
   finPosCount: $('#finPosCount'),
+  finCloseAll: $('#finCloseAll'),
   finOrdList: $('#finOrdList'),
   finOrdCount: $('#finOrdCount'),
   finSymList: $('#finSymList'),
@@ -9780,6 +9781,8 @@ function finRenderPositions(list) {
   if (!els.finPosList) return;
   els.finPosList.textContent = '';
   if (els.finPosCount) els.finPosCount.textContent = list && list.length ? '(' + list.length + ')' : '';
+  /* toplu kapatma butonu: pozisyon yoksa pasif */
+  if (els.finCloseAll) els.finCloseAll.disabled = !(list && list.length);
   if (!list || !list.length) {
     const d = document.createElement('div');
     d.className = 'fin-empty';
@@ -10956,6 +10959,8 @@ function finHelpHtml(which) {
           '<b>Kod otomatik uygular.</b> Zarardaki pozisyonun kapatma kararı REDDEDİLİR — SL/TP çalışmaya devam eder (stop = martingale serisinin parçası). Kârdaki/başabaştaki pozisyon normal kapatılır.'],
         ['<code>0.5R karda yarısını kapat</code><code>partial close ile yarısını kapat</code>',
           '<b>Kod otomatik uygular.</b> Kâr +0.5R\'ye ulaşınca pozisyonun %50\'si kapatılır — <b>yalnız kârdayken</b> uygulanır (zararda kısmi stop yapılmaz).'],
+        ['<code>karda tümünü kapat</code><code>toplam kâr %2 olunca hepsini kapat</code><code>50 dolar kârda tümünü kapat</code>',
+          '<b>Kod otomatik uygular (TOPLU KAPATMA).</b> Tüm pozisyonların toplamı hedefe ulaşınca (herhangi bir kâr / +%X / +X dolar) HEPSİ + bekleyen emirler kapatılır. Panelde POZİSYONLAR başlığındaki <b>Tümünü Kapat</b> butonuyla elle de yapılabilir.'],
       ];
   const example = posmgr
     ? `1- 1R'de %50 kısmi kapat\n2- kâr 2R'ye gelince kalanı kapat\n3- zarar -0.5R'yi geçerse kes`
@@ -11707,6 +11712,22 @@ if (els.finLearnClear) {
 }
 
 if (els.finSymAdd) els.finSymAdd.addEventListener('click', finSymPickerOpen);
+/* TOPLU KAPATMA: tüm pozisyonlar + bekleyen emirler tek onayla kapanır */
+if (els.finCloseAll) {
+  els.finCloseAll.addEventListener('click', async () => {
+    const ok = await uiConfirm(
+      'TÜM açık pozisyonlar ve bekleyen emirler kapatılsın mı?\n(TOPLU KAPATMA — geri alınamaz)',
+      'Tümünü Kapat',
+      'Vazgeç'
+    );
+    if (!ok) return;
+    els.finCloseAll.disabled = true;
+    const r = await beast.financeCloseAll().catch((e) => ({ ok: false, error: String((e && e.message) || e) }));
+    if (r && r.ok) toast('Toplu kapatma: ' + (Number(r.closed) || 0) + ' pozisyon kapatıldı');
+    else toast('Toplu kapatma başarısız: ' + ((r && r.error) || '?'));
+    finSnapshot();
+  });
+}
 if (els.finWatchClear) {
   els.finWatchClear.addEventListener('click', async () => {
     if (!finWatch.length) {

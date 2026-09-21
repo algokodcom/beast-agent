@@ -130,6 +130,7 @@ contextBridge.exposeInMainWorld('beast', {
   financeAgentSpawn: (symbol) => ipcRenderer.invoke('finance:agent:spawn', { symbol }),
   financeConnect: () => ipcRenderer.invoke('finance:connect'),
   financeClose: (ticket, volume) => ipcRenderer.invoke('finance:close', { ticket, volume }),
+  financeCloseAll: () => ipcRenderer.invoke('finance:closeAll'),
   financeCancel: (ticket) => ipcRenderer.invoke('finance:cancel', { ticket }),
   financeInstall: () => ipcRenderer.invoke('finance:install'),
   financeMt5Setup: () => ipcRenderer.invoke('finance:mt5:setup'),

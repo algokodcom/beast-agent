@@ -9904,6 +9904,9 @@ const financeState = {
   watchTimer: null,
   watchBusy: false,
   watchTickAt: 0,
+  /* POZİSYON YÖNETİCİSİ (JEV): açık pozisyon varken 5 sn'lik watchdog turundan
+     tetiklenen ayrı Jev ajanı — kapat/kısmi/SL kararlarını kendi talimatıyla verir */
+  posManager: { busy: false, rounds: 0, lastAt: 0, lastErr: '', lastPosCount: 0, tsPartials: new Set() },
   hoursTimer: null, /* trade saatleri otomatik duraklatma denetimi (10 sn) */
   hoursPaused: null, /* pencere kapanınca durdurulan ajanların planı — açılınca geri gelir */
   alerts: [], /* fiyat alarmları (kalıcı: finance/alerts.json) */
@@ -10017,6 +10020,10 @@ function finCfg() {
   if (!Number.isFinite(Number(f.maxPerCurrency))) f.maxPerCurrency = 3;
   /* SHADOW MOD: emir gönderilmez — kararlar gerekçesiyle günlüğe yazılır */
   if (typeof f.shadowMode !== 'boolean') f.shadowMode = false;
+  /* POZİSYON YÖNETİCİSİ: açık pozisyonları 5 sn'de bir Jev ile yöneten ayrı
+     ajan — varsayılan AÇIK; kendi talimatı (posManagerNote) yalnız onu bağlar. */
+  if (typeof f.posManagerEnabled !== 'boolean') f.posManagerEnabled = true;
+  if (typeof f.posManagerNote !== 'string') f.posManagerNote = '';
   /* GÜNLÜK RUTİN: plan/review saatleri (HH:MM; boş = kapalı) — hafta içi cron */
   if (typeof f.planTime !== 'string') f.planTime = '';
   if (typeof f.reviewTime !== 'string') f.reviewTime = '';
@@ -10410,6 +10417,9 @@ function finExcFlush(force) {
 
 function finAgentInfo(sid) {
   try {
+    if (String(sid || '') === FIN_POSMGR_ID) {
+      return { main: false, role: 'posmanager', label: 'Pozisyon Yöneticisi' };
+    }
     const a = financeState.agents.get(String(sid || ''));
     if (a) {
       const role = String(a.role || '');
@@ -11594,6 +11604,11 @@ async function finWatchTick() {
         finWatchSave();
         try { await finRecordClose(ticket, st); } catch {}
       }
+    }
+    /* POZİSYON YÖNETİCİSİ (JEV): açık pozisyon varken 5 sn'lik tur aynı anda
+       yönetici karar turunu tetikler (ayrı MT5 sorgusu yok; meşgulse atlar) */
+    if (positionsOk && positions.length) {
+      try { finPosManagerMaybe(positions, account); } catch {}
     }
     try { await finCheckAlerts(); } catch {}
     if (!financeState.lastStatsAt || Date.now() - financeState.lastStatsAt > 120000) {
@@ -13639,6 +13654,7 @@ function finTsAgentMode(agent) {
 }
 
 function finTsWho(agent, extra) {
+  if (agent && agent.__posmgr) return 'TypeSafe · POZİSYON YÖNETİCİSİ' + (extra ? ' · ' + extra : '');
   const role = agent && agent.main ? 'TRADER' : ((finRoleDef(agent && agent.role) || {}).label || 'FİNANS').toUpperCase();
   return 'TypeSafe · ' + role + (extra ? ' · ' + extra : '');
 }
@@ -14022,6 +14038,161 @@ async function finTsToolRequest(sidS, agent, ans, lines) {
   }
 }
 
+/* ================= POZİSYON YÖNETİCİSİ (JEV · 5 sn) =================
+   Açık pozisyon varken watchdog turu (5 sn) bu turu tetikler: pozisyon başına
+   kapatma / kısmi kapatma / SL-koruma kararlarını JEV verir; kodu
+   finTsManageOpen uygular. Kendi talimatı (posManagerNote) birincil kuraldır —
+   trade ajanının talimatından bağımsızdır. LLM kullanılmaz. */
+const FIN_POSMGR_ID = 'posmanager';
+const FIN_POSMGR_AGENT = { main: false, role: '', __posmgr: true };
+
+/* Watchdog turundan çağrılır: uygunSA yönetici turunu arka planda başlatır
+   (MT5 pozisyon verisi watchdog turundan gelir — ikinci sorgu yok). */
+function finPosManagerMaybe(positions, account) {
+  const pm = financeState.posManager;
+  if (!pm || pm.busy) return;
+  let f = {};
+  try { f = finCfg(); } catch {}
+  if (f.posManagerEnabled === false) return;
+  const list = Array.isArray(positions) ? positions.filter(Boolean) : [];
+  pm.lastPosCount = list.length;
+  if (!list.length) return;
+  if (!mt5bridge.running) return;
+  if (!typesafeMod.cfg().apiKey) {
+    const now = Date.now();
+    if (!pm.noKeyAt || now - pm.noKeyAt > 10 * 60 * 1000) {
+      pm.noKeyAt = now;
+      finTsPost(FIN_POSMGR_ID, FIN_POSMGR_AGENT, '⚠ TypeSafe anahtarı yok — pozisyon yöneticisi çalışamıyor (Ayarlar → TypeSafe).', 'anahtar');
+    }
+    return;
+  }
+  finPosManagerRound(list, account).catch((e) => {
+    pm.busy = false;
+    pm.lastErr = String((e && e.message) || e).slice(0, 200);
+  });
+}
+
+async function finPosManagerRound(positions, account) {
+  const pm = financeState.posManager;
+  if (!pm || pm.busy) return;
+  pm.busy = true;
+  pm.rounds = (Number(pm.rounds) || 0) + 1;
+  pm.lastAt = Date.now();
+  const f = finCfg();
+  const lines = [];
+  try {
+    /* pozisyon sembolleri: piyasa + gösterge (tur başına tek Jev çağrısı) */
+    const syms = [...new Set(positions.map((p) => String(p.symbol || '').toUpperCase()).filter(Boolean))].slice(0, 8);
+    const market = {};
+    const posTf = positions.map((p) => finLearnParseTf(p && p.comment)).find((t) => t) || '';
+    for (const sym of syms) {
+      const tf = finLearnNormTf(posTf) || finTsStrategyTf() || 'M15';
+      const [mktR, indR] = await Promise.all([
+        financetools.handlers.mt5_market({ symbols: [sym] }),
+        financetools.handlers.mt5_indicators({ symbol: sym, timeframe: tf, count: 300, indicators: ['ATR(14)', 'EMA(50)', 'EMA(200)', 'RSI(14)'] }),
+      ]);
+      market[sym] = { row: (mktR && mktR.symbols && mktR.symbols[0]) || null, tf, ind: finTsIndLine(indR) };
+    }
+    const state = {
+      rol: 'POZİSYON YÖNETİCİSİ',
+      yerel_saat: new Date().getHours(),
+      hesap: {
+        balance: Number(account && account.balance) || 0,
+        equity: Number(account && account.equity) || 0,
+        margin_free: Number(account && account.margin_free) || 0,
+        acik_pozisyon: positions.length,
+      },
+      pozisyonlar: positions.map((p) => finTsPosState(p)),
+      piyasa: {},
+      alarmlar: (financeState.alerts || []).slice(0, 8).map((a) => ({ sembol: a.symbol, yon: a.direction, fiyat: a.price, mod: a.once ? 'tek' : 'tekrarlı' })),
+      sahip_talimati: String(f.posManagerNote || '').slice(0, 1500) || '(yok — genel disiplin: kârı koru, zararı sınırla, SL/TP aktif yönet)',
+      ekip_yanitlari: finTsFeedText(6),
+    };
+    for (const sym of syms) {
+      const d = market[sym];
+      const row = d.row || {};
+      state.piyasa[sym] = {
+        zaman_dilimi: d.tf,
+        bid: Number(row.bid) || null,
+        ask: Number(row.ask) || null,
+        spread: Number(row.spread) || null,
+        gosterge: d.ind,
+      };
+    }
+    const questions = {};
+    positions.forEach((pp, i) => {
+      const sym = String(pp.symbol || '').toUpperCase();
+      const ps = finTsPosState(pp);
+      const kzTxt = ps.kz_r == null ? 'R bilinmiyor' : `kâr ${ps.kz_r}R`;
+      const bestTxt = ps.en_iyi_r == null ? '' : ` · en iyi ${ps.en_iyi_r}R`;
+      const slTxt = Number(pp.sl) > 0 ? `SL ${pp.sl}` : 'SL YOK';
+      questions['kapat_' + i] = {
+        type: 'noul',
+        instructions: `${sym} açık pozisyon #${pp.ticket} (${ps.yon}, kâr ${Number(pp.profit) || 0}, ${kzTxt}${bestTxt}, ${slTxt}) ŞİMDİ kapatılmalı mı? Sahip talimatını, kârı korumayı ve momentum dönüşünü değerlendir.`,
+        criteria: { true: 'Kapat — risk/kâr koruma', false: 'Açık kalsın — tez sürüyor' },
+      };
+      questions['kismi_' + i] = {
+        type: 'choice',
+        instructions: `${sym} #${pp.ticket} (${kzTxt}${bestTxt}${ps.be ? ' · SL takipte' : ''}) için ŞİMDİ kısmi kapatma uygun mu?${ps.kismi_alindi ? ' Bu pozisyonda kısmi kapatma ZATEN yapıldı — yok seç.' : ' Sahip talimatını ve kâr realize etmeyi değerlendir.'}`,
+        criteria: {
+          yok: 'Kısmi kapatma yok — pozisyon tam kalsın',
+          yuzde25: 'Pozisyonun %25’i kapatılsın',
+          yuzde50: 'Pozisyonun %50’si kapatılsın',
+          yuzde75: 'Pozisyonun %75’i kapatılsın',
+        },
+      };
+      questions['sl_' + i] = {
+        type: 'choice',
+        instructions: `${sym} #${pp.ticket} için SL/koruma aksiyonu: ${ps.yon}, giriş ${Number(pp.price_open) || '?'}, şimdi ${ps.fiyat || '?'}, ${slTxt}, ${kzTxt}. Kâr yoksa ve SL varsa 'birak'; SL yoksa 'koru' ile koruma koy.`,
+        criteria: {
+          birak: 'Dokunma — SL yerinde kalsın',
+          be: 'Breakeven — SL girişe çekilsin (kârı kilitle)',
+          trail: 'Trailing — SL fiyatın gerisine taşınsın (kârı takip et)',
+          sikilastir: 'Sıkılaştır — SL fiyata yaklaştırılsın (kârı daha çok koru)',
+          koru: 'Koruma koy — SL’siz pozisyona ATR tabanlı stop eklensin',
+        },
+      };
+    });
+    const ans = await finTsAsk(state, questions);
+    for (let i = 0; i < positions.length; i++) {
+      const pp = positions[i];
+      const sym = String(pp.symbol || '').toUpperCase();
+      const ex = finTsNoul(ans, 'kapat_' + i);
+      if (ex != null && ex >= FIN_TS_EXIT_P) {
+        let r = null;
+        try {
+          r = await financetools.handlers.mt5_close(
+            { ticket: Number(pp.ticket), reason: `TypeSafe yönetici: kapat p=${ex.toFixed(2)}` },
+            { sessionId: FIN_POSMGR_ID }
+          );
+        } catch (e) {
+          r = { ok: false, error: String((e && e.message) || e) };
+        }
+        lines.push(`- ${sym} #${pp.ticket}: KAPAT (p=${ex.toFixed(2)}) ${r && r.ok ? '✓ kapatıldı' : '✗ ' + ((r && r.error) || 'hata')}`);
+        continue;
+      }
+      const psNow = finTsPosState(pp);
+      lines.push(`- ${sym} #${pp.ticket}: açık (kapat=${ex == null ? 'yanıt yok' : ex.toFixed(2)} < ${FIN_TS_EXIT_P}) · ${psNow.kz_r == null ? 'kâr ?' : 'kâr ' + psNow.kz_r + 'R'}`);
+      try { await finTsManageOpen(FIN_POSMGR_ID, pm, sym, pp, market[sym], ans, i, lines); } catch {}
+    }
+    finTsPost(
+      FIN_POSMGR_ID,
+      FIN_POSMGR_AGENT,
+      `🛡️ Pozisyon yöneticisi turu #${pm.rounds} (LLM yok — 5 sn):\n` + lines.join('\n'),
+      'yönetim'
+    );
+  } catch (e) {
+    pm.lastErr = String((e && e.message) || e).slice(0, 200);
+    const now = Date.now();
+    if (!pm.errAt || now - pm.errAt > 2 * 60 * 1000) {
+      pm.errAt = now;
+      finTsPost(FIN_POSMGR_ID, FIN_POSMGR_AGENT, '⚠ Yönetici turu hatası: ' + pm.lastErr, 'hata');
+    }
+  } finally {
+    pm.busy = false;
+  }
+}
+
 function finTsSchedule(sid, agent, sec) {
   if (!agent || !financeState.agents.has(String(sid))) return;
   clearTimeout(agent.timer);
@@ -14156,6 +14327,8 @@ async function finTypeSafeRound(sid, agent) {
       }
       const questions = {};
       const talimatZorunlu = finTsMandatoryEntry();
+      /* Yönetici açıkken açık pozisyon kararları ONA aittir (çift yönetim yok) */
+      const posManagerOn = f.posManagerEnabled !== false;
       symbols.forEach((sym, i) => {
         questions['yon_' + i] = {
           type: 'choice',
@@ -14211,7 +14384,7 @@ async function finTypeSafeRound(sid, agent) {
             asagi_atr: 'Fiyat -0.5×ATR altında alarm',
           },
         };
-        if (posBySym[sym]) {
+        if (posBySym[sym] && !posManagerOn) {
           const pp = posBySym[sym];
           const ps = finTsPosState(pp);
           const kzTxt = ps.kz_r == null ? 'R bilinmiyor' : `kâr ${ps.kz_r}R`;
@@ -14283,6 +14456,11 @@ async function finTypeSafeRound(sid, agent) {
         const cal = finTsCalibration(sym, market[sym].tf);
         const thAction = cal.action;
         if (pos) {
+          /* POZİSYON YÖNETİCİSİ açık: kapat/kısmi/SL kararları onun turunda */
+          if (posManagerOn) {
+            lines.push(`- ${sym}: pozisyon açık #${pos.ticket} — yönetim Pozisyon Yöneticisi'nde (5 sn Jev turu)`);
+            continue;
+          }
           const ex = finTsNoul(ans, 'kapat_' + i);
           if (ex != null && ex >= FIN_TS_EXIT_P) {
             const r = await financetools.handlers.mt5_close(
@@ -14735,6 +14913,16 @@ ipcMain.handle('finance:snapshot', async () => {
     equity: (financeState.equity || []).slice(-180),
     alerts: (financeState.alerts || []).slice(0, 50),
     watch: { on: !!financeState.watchTimer, managed: financeState.watch.size, lastAt: financeState.watchTickAt || 0 },
+    /* POZİSYON YÖNETİCİSİ durumu (panel kartı) */
+    posManager: {
+      enabled: f.posManagerEnabled !== false,
+      busy: !!financeState.posManager.busy,
+      rounds: Number(financeState.posManager.rounds) || 0,
+      lastAt: Number(financeState.posManager.lastAt) || 0,
+      lastErr: String(financeState.posManager.lastErr || ''),
+      positions: Number(financeState.posManager.lastPosCount) || 0,
+      note: String(f.posManagerNote || ''),
+    },
   };
 });
 
@@ -14964,6 +15152,9 @@ ipcMain.handle('finance:settings', async (_e, patch) => {
   if (p.reentryCooldownMin !== undefined) f.reentryCooldownMin = Math.max(0, Math.min(1440, Math.round(Number(p.reentryCooldownMin) || 0)));
   if (p.maxPerCurrency !== undefined) f.maxPerCurrency = Math.max(0, Math.min(20, Math.round(Number(p.maxPerCurrency) || 0)));
   if (p.shadowMode !== undefined) f.shadowMode = !!p.shadowMode;
+  /* POZİSYON YÖNETİCİSİ: kendi talimatı + aç/kapa */
+  if (p.posManagerNote !== undefined) f.posManagerNote = String(p.posManagerNote || '').slice(0, 1500);
+  if (p.posManagerEnabled !== undefined) f.posManagerEnabled = p.posManagerEnabled !== false;
   if (p.planTime !== undefined) f.planTime = /^([01]?\d|2[0-3]):([0-5]\d)$/.test(String(p.planTime || '').trim()) ? String(p.planTime).trim() : '';
   if (p.reviewTime !== undefined) f.reviewTime = /^([01]?\d|2[0-3]):([0-5]\d)$/.test(String(p.reviewTime || '').trim()) ? String(p.reviewTime).trim() : '';
   /* TRADE SAATLERİ: {on, start, end} — yerel saat; aralık dışında ajan turları

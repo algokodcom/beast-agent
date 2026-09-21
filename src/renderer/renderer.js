@@ -244,6 +244,11 @@ const els = {
   finTraderBtn: $('#finTraderBtn'),
   finTraderDot: $('#finTraderDot'),
   finTraderStatus: $('#finTraderStatus'),
+  finPosDot: $('#finPosDot'),
+  finPosInfo: $('#finPosInfo'),
+  finPosOn: $('#finPosOn'),
+  finPosNote: $('#finPosNote'),
+  finPosStatus: $('#finPosStatus'),
   finPosList: $('#finPosList'),
   finPosCount: $('#finPosCount'),
   finOrdList: $('#finOrdList'),
@@ -9718,6 +9723,7 @@ let finModelsFilled = false;
 let finLastPrices = new Map(); /* sembol → son bid (renk için) */
 let finCfgCache = null; /* son snapshot cfg — rol→skill modalı bundan okur */
 let finStrategyDirty = false; /* textarea'da kaydedilmeyi bekleyen ajan talimatı var */
+let finPosNoteDirty = false; /* kaydedilmeyi bekleyen pozisyon yöneticisi talimatı */
 const FIN_COLOR_UP = 'fs-up';
 const FIN_COLOR_DOWN = 'fs-down';
 
@@ -9933,6 +9939,8 @@ function finTraderInputsSet(cfg) {
   if (els.finMaxLot && ae !== els.finMaxLot) els.finMaxLot.value = cfg.maxLot || 0.1;
   finSymLimitsRender(cfg.symbolLimits);
   if (els.finStrategy && ae !== els.finStrategy && !finStrategyDirty) els.finStrategy.value = cfg.strategy || '';
+  if (els.finPosNote && ae !== els.finPosNote && !finPosNoteDirty) els.finPosNote.value = cfg.posManagerNote || '';
+  if (els.finPosOn && ae !== els.finPosOn) els.finPosOn.checked = cfg.posManagerEnabled !== false;
   if (els.finMaxTradesDay && ae !== els.finMaxTradesDay) els.finMaxTradesDay.value = Number(cfg.maxTradesPerDay) || 0;
   if (els.finLossStreak && ae !== els.finLossStreak) els.finLossStreak.value = Number(cfg.lossStreakLimit) || 0;
   if (els.finLossStreakPause && ae !== els.finLossStreakPause) els.finLossStreakPause.value = Number(cfg.lossStreakPauseMin) || 0;
@@ -10091,6 +10099,39 @@ function finRenderTrader(trader, cfg) {
     els.finTraderStatus.textContent = on
       ? (trader.busy ? 'Tur çalışıyor…' : 'Beklemede — sıradaki tur ' + (cfg && cfg.intervalSec ? cfg.intervalSec + ' sn' : '')) + ' · tur #' + (trader.rounds || 0) + ' · OTONOM' + teamTxt + t
       : 'Kapalı · OTONOM' + teamTxt;
+  }
+}
+
+/* POZİSYON YÖNETİCİSİ kartı: açık pozisyon varken 5 sn Jev turu durumu */
+function finRenderPosManager(pm, cfg) {
+  if (!pm) return;
+  const enabled = cfg ? cfg.posManagerEnabled !== false : pm.enabled !== false;
+  const pos = Number(pm.positions) || 0;
+  if (els.finPosDot) {
+    els.finPosDot.classList.remove('on', 'off', 'busy');
+    els.finPosDot.classList.add(!enabled ? 'off' : pm.busy ? 'busy' : pos ? 'on' : 'off');
+    els.finPosDot.title = !enabled
+      ? 'Pozisyon yöneticisi kapalı'
+      : pos
+        ? 'İzliyor — ' + pos + ' açık pozisyon (5 sn Jev turu)'
+        : 'Açık pozisyon yok — beklemede';
+  }
+  if (els.finPosInfo) els.finPosInfo.textContent = pm.rounds ? '· tur ' + pm.rounds : '';
+  if (els.finPosStatus) {
+    let t;
+    if (!enabled) t = 'Kapalı — kutucuktan aç';
+    else if (pm.busy) t = 'Tur çalışıyor…';
+    else if (!pos) t = 'Beklemede — açık pozisyon yok';
+    else t = 'İzliyor · ' + pos + ' pozisyon';
+    if (pm.lastAt) {
+      const d = new Date(pm.lastAt);
+      const p = (x) => String(x).padStart(2, '0');
+      t += ' · son tur ' + p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+    }
+    if (pm.lastErr) t += ' · hata: ' + String(pm.lastErr).slice(0, 60);
+    els.finPosStatus.textContent = t;
+    els.finPosStatus.classList.toggle('on', enabled && !!pos);
+    els.finPosStatus.classList.toggle('busy', !!pm.busy);
   }
 }
 
@@ -10254,6 +10295,7 @@ async function finSnapshot() {
   finTraderInputsSet(r.cfg);
   finRenderRoles(r.cfg);
   finRenderTrader(r.trader, r.cfg);
+  finRenderPosManager(r.posManager, r.cfg);
   finRenderAutomation(r.cfg, r.watch);
   /* GİZLİ RİSK OTOMASYONU AKTİF OLAMAZ: sunucu hâlâ açık diyorsa kapat */
   if (!finView.risk && r.cfg && r.cfg.watchdog !== false) finSaveCfg({ watchdog: false });
@@ -10392,14 +10434,20 @@ let finWatchDirty = false; /* picker/input değişikliği kaydedilmeyi bekliyor 
 function finSaveCfg(patch) {
   if (patch && patch.symbols !== undefined) finWatchDirty = true;
   if (patch && patch.strategy !== undefined) finStrategyDirty = true;
+  if (patch && patch.posManagerNote !== undefined) finPosNoteDirty = true;
   clearTimeout(finCfgTimer);
   const wasStrategy = !!(patch && patch.strategy !== undefined);
+  const wasPosNote = !!(patch && patch.posManagerNote !== undefined);
   finCfgTimer = setTimeout(() => {
     beast.financeSettings(patch)
       .then(() => {
         if (wasStrategy) {
           finStrategyDirty = false;
           if (finCfgCache) finCfgCache.strategy = patch.strategy;
+        }
+        if (wasPosNote) {
+          finPosNoteDirty = false;
+          if (finCfgCache) finCfgCache.posManagerNote = patch.posManagerNote;
         }
         finWatchDirty = false;
       })
@@ -10836,6 +10884,29 @@ if (els.finStrategy) {
     if (finCfgCache && String(finCfgCache.strategy || '') === v) return;
     finSaveCfg({ strategy: v });
     toast(v.trim() ? 'Ajan talimatı kaydedildi — tüm ajanlar sonraki turda uygular' : 'Ajan talimatı temizlendi');
+  });
+}
+/* POZİSYON YÖNETİCİSİ: 5 sn Jev turu — kendi talimatı + aç/kapa */
+if (els.finPosNote) {
+  els.finPosNote.addEventListener('input', () => {
+    finSaveCfg({ posManagerNote: els.finPosNote.value });
+  });
+  els.finPosNote.addEventListener('change', () => {
+    const v = els.finPosNote.value;
+    if (finCfgCache && String(finCfgCache.posManagerNote || '') === v) return;
+    finSaveCfg({ posManagerNote: v });
+    toast(v.trim() ? 'Yönetici talimatı kaydedildi — sonraki yönetici turunda uygular' : 'Yönetici talimatı temizlendi');
+  });
+}
+if (els.finPosOn) {
+  els.finPosOn.addEventListener('change', () => {
+    finSaveCfg({ posManagerEnabled: els.finPosOn.checked });
+    toast(
+      els.finPosOn.checked
+        ? 'Pozisyon yöneticisi AÇIK — açık pozisyonlar 5 sn Jev turuyla yönetilecek'
+        : 'Pozisyon yöneticisi kapalı — pozisyon yönetimi trade ajanına döndü'
+    );
+    finSnapshot();
   });
 }
 /* TRADE AJANI: modelleri yeniden çek — üstteki ⟳ ile aynı mantık

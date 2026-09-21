@@ -5625,6 +5625,25 @@ body.finance-mode #composerWrap { margin-right: var(--finW, 400px); }
 #finTraderStatus.on.busy { color: var(--accent); }
 #finTraderStatus.on.busy::before { color: #f59e0b; }
 
+/* POZİSYON YÖNETİCİSİ kartı — trader durum satırıyla aynı görünüm */
+#finPosStatus {
+  margin-top: 8px;
+  font-size: 10.5px;
+  color: var(--muted);
+  background: var(--panel2);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 5px 8px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#finPosStatus::before { content: '● '; font-size: 9px; color: var(--muted); }
+#finPosStatus.on { color: var(--text); border-color: var(--accent); }
+#finPosStatus.on::before { color: #22c55e; }
+#finPosStatus.on.busy { color: var(--accent); }
+#finPosStatus.on.busy::before { color: #f59e0b; }
+
 #finPosList, #finOrdList, #finSymList { display: flex; flex-direction: column; gap: 5px; }
 .fin-empty { font-size: 11px; color: var(--muted); padding: 2px 0 4px; }
 

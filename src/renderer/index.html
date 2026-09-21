@@ -219,6 +219,19 @@
             </div>
             <div id="finTraderStatus">Kapalı</div>
           </div>
+          <div class="fin-card" id="finPosCard" data-fin-card="posmgr">
+            <div class="fin-card-title">POZİSYON YÖNETİCİSİ <span id="finPosDot" class="fin-dot off" title="Pozisyon yöneticisi durumu"></span><span id="finPosInfo" class="fin-hint"></span></div>
+            <div class="fin-field fin-check">
+              <label title="Açık pozisyon varken 5 saniyede bir JEV turu: kapat / kısmi kapat / SL taşı kararları. Trade ajanından bağımsız ayrı bir ajan — kendi talimatıyla çalışır; LLM kullanmaz.">
+                <input id="finPosOn" type="checkbox" /> Aktif — açık pozisyonları 5 sn'de bir Jev ile yönet
+              </label>
+            </div>
+            <div class="fin-field">
+              <span>Yönetici talimatı <i class="fin-hint">— yalnız bu ajanı bağlar</i></span>
+              <textarea id="finPosNote" rows="2" maxlength="1500" placeholder="örn. Kâr 1R'ye gelince %50 kısmi al ve SL'yi breakeven'a çek; 2R'de kalanı kapat; zarar -0.5R'yi geçerse kes" title="Bu talimat YALNIZ Pozisyon Yöneticisi Jev ajanına gider (5 sn turu, kapat/kısmi/SL kararları); kaydetmek için alandan çık"></textarea>
+            </div>
+            <div id="finPosStatus">Beklemede — açık pozisyon yok</div>
+          </div>
           <div class="fin-card" id="finRiskCard" data-fin-card="risk" hidden>
             <div class="fin-card-title">RİSK OTOMASYONU <span id="finWatchDot" class="fin-dot off" title="Koruma döngüsü"></span><span id="finWatchInfo" class="fin-hint"></span></div>
             <div class="fin-field fin-check">

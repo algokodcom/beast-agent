@@ -13665,9 +13665,53 @@ function finTsFeedText(limit) {
   return feed.map((x) => `- ${x.who}: ${String(x.text || '').replace(/\s+/g, ' ').slice(0, 220)}`).join('\n');
 }
 
-/* ZAMAN DİLİMİ BOT KARARI: önce öğrenmede en iyi net getiren periyot (>=3
-   işlem), sonra ajanın seçimi, sonra rol varsayılanı */
+/* SAHİP TALİMATI: Trade Ajanı kartına yazılan strateji notu (Jev state'ine girer) */
+function finTsStrategyText() {
+  try {
+    return String(finCfg().strategy || '').slice(0, 1000);
+  } catch {
+    return '';
+  }
+}
+
+/* Talimattan ZAMAN DİLİMİ çıkar: "M15", "1m", "1 dk", "4 saat" → M15/M1/H4 */
+function finTsStrategyTf() {
+  const s = String(finTsStrategyText() || '');
+  const m = s.match(/\b(M1|M5|M15|M30|H1|H4|D1|W1|MN1)\b/i);
+  if (m) return m[1].toUpperCase();
+  const dk = s.match(/\b(\d{1,2})\s*(?:m|dk|dakika)\b/i);
+  if (dk) return finLearnNormTf('M' + Number(dk[1]));
+  const st = s.match(/\b(\d{1,2})\s*(?:h|saat)\b/i);
+  if (st) return finLearnNormTf('H' + Number(st[1]));
+  return '';
+}
+
+/* Talimat "zorunlu giriş" istiyor mu? ("her mumda işlem açmak zorundasın" gibi)
+   Olumsuz yazım ("zorunlu değil") modu AÇMAZ. */
+function finTsMandatoryEntry() {
+  const s = String(finTsStrategyText() || '').toLowerCase();
+  if (!s) return false;
+  if (/zorunlu değil|mecbur değil|zorunda değil/.test(s)) return false;
+  return /her mum|her barda?|her mumda|işlem açmak zorunda|her zaman işlem|sürekli işlem|durmadan işlem|zorunlu (?:olarak )?(?:işlem|giriş|al|sat)|mecbur/.test(s);
+}
+
+/* Ritim: talimatta M1 → işlem ajanı turları en hızlı 60 sn, M5 → 300 sn
+   (rol ajanları analiz ritmini korur; yalnız trader + sembol işçileri hızlanır) */
+function finTsStrategyPaceSec(agent) {
+  const base = finPaceSec();
+  if (!agent || agent.role) return base;
+  const tf = finTsStrategyTf();
+  if (tf === 'M1') return Math.max(30, Math.min(base, 60));
+  if (tf === 'M5') return Math.max(60, Math.min(base, 300));
+  return base;
+}
+
+/* ZAMAN DİLİMİ: önce SAHİBİN TALİMATI (işlem ajanları için), sonra öğrenmede
+   en iyi net getiren periyot (>=3 işlem), sonra ajanın seçimi, sonra rol
+   varsayılanı (rol ajanları kendi analiz periyodunu korur) */
 function finTsPickTf(agent, symbol) {
+  const owned = !(agent && agent.role) ? finTsStrategyTf() : '';
+  if (owned) return owned;
   try {
     const sym = String(symbol || '').toUpperCase();
     const e = finLearnLoad().symbols[sym];
@@ -14078,6 +14122,10 @@ async function finTypeSafeRound(sid, agent) {
       /* KALİBRASYON: öğrenilmiş eşik + risk çarpanı + kazandıran kurallar */
       kalibrasyon: symbols.map((s) => finTsCalState(s, market[s] && market[s].tf)).filter(Boolean).join('\n') || '(kalibrasyon verisi henüz yok)',
       ekip_yanitlari: finTsFeedText(6),
+      /* SAHİBİN TALİMATI (Trade Ajanı kartı): Jev bunu BİRİNCİL kural kabul eder;
+         talimat "zorunlu giriş" içeriyorsa kod eşikleri devre dışı bırakır. */
+      sahip_talimati: finTsStrategyText() || '(yok — temel teknik okuma)',
+      talimat_modu: finTsMandatoryEntry() ? 'ZORUNLU GİRİŞ — bu turda işlem açmak zorunlu (bekle yok); yönü sen seç' : '',
     };
     for (const sym of symbols) {
       const d = market[sym];
@@ -14099,31 +14147,42 @@ async function finTypeSafeRound(sid, agent) {
         if (symbols.includes(s)) posBySym[s] = p;
       }
       const questions = {};
+      const talimatZorunlu = finTsMandatoryEntry();
       symbols.forEach((sym, i) => {
         questions['yon_' + i] = {
           type: 'choice',
-          instructions: `${sym} ${market[sym].tf} grafiğinde verilen fiyat, gösterge, pozisyon, öğrenme geçmişi ve ekip yanıtlarına göre kısa vadeli doğru aksiyon nedir? Emin değilsen bekle.`,
-          criteria: {
-            buy: 'LONG aç — yükseliş teyidi var (yapı/momentum/EMA eğimi destekliyor)',
-            sell: 'SHORT aç — düşüş teyidi var',
-            bekle: 'İşlem açma — teyit yok, belirsiz ya da riskli',
-          },
+          instructions: talimatZorunlu
+            ? `${sym} ${market[sym].tf}: SAHİBİN TALİMATI GEREĞİ bu turda işlem açmak ZORUNDASIN — 'bekle' YOK. Yönü sen seç: gösterge/momentum/yapıya göre en olası yön (buy/sell). Sahip talimatı state'tedir, birincil kuraldır.`
+            : `${sym} ${market[sym].tf} grafiğinde verilen fiyat, gösterge, pozisyon, öğrenme geçmişi, ekip yanıtları ve SAHİP TALİMATINA göre kısa vadeli doğru aksiyon nedir? Emin değilsen bekle.`,
+          criteria: talimatZorunlu
+            ? {
+                buy: 'LONG aç — bu turda giriş zorunlu, yükseliş tarafı daha olası',
+                sell: 'SHORT aç — bu turda giriş zorunlu, düşüş tarafı daha olası',
+              }
+            : {
+                buy: 'LONG aç — yükseliş teyidi var (yapı/momentum/EMA eğimi destekliyor)',
+                sell: 'SHORT aç — düşüş teyidi var',
+                bekle: 'İşlem açma — teyit yok, belirsiz ya da riskli',
+              },
         };
         questions['teyit_' + i] = {
           type: 'noul',
           instructions: `${sym} fiyat yapısı ve momentum, 'yon_' + ${i} kararını gerçekten destekliyor mu?`,
           criteria: { true: 'Net destekliyor', false: 'Zayıf/çelişkili' },
         };
-        /* GİRİŞ TİPİ + RİSK PROFİLİ: seviyeleri KOD hesaplar (ATR/EMA), kararı Jev verir */
-        questions['emir_' + i] = {
-          type: 'choice',
-          instructions: `${sym} sinyali onaylanırsa giriş tipi ne olsun? Anında mı gir (market), geri çekilme mi bekle (limit), kırılım teyidi mi bekle (stop)? Giriş seviyesini kod ATR/EMA'dan hesaplar.`,
-          criteria: {
-            market: 'Anında piyasadan gir — kaçırma riski yok, fiyat şimdiki',
-            limit: 'Geri çekilmede limit emir — daha iyi fiyat bekle (ATR/EMA seviyesi)',
-            stop: 'Kırılımda stop emir — momentum teyidi bekle (ATR seviyesi)',
-          },
-        };
+        /* GİRİŞ TİPİ + RİSK PROFİLİ: seviyeleri KOD hesaplar (ATR/EMA), kararı Jev verir.
+           "Zorunlu giriş" modunda bekleyen emir sorulmaz — giriş garanti olsun diye market. */
+        if (!talimatZorunlu) {
+          questions['emir_' + i] = {
+            type: 'choice',
+            instructions: `${sym} sinyali onaylanırsa giriş tipi ne olsun? Anında mı gir (market), geri çekilme mi bekle (limit), kırılım teyidi mi bekle (stop)? Giriş seviyesini kod ATR/EMA'dan hesaplar.`,
+            criteria: {
+              market: 'Anında piyasadan gir — kaçırma riski yok, fiyat şimdiki',
+              limit: 'Geri çekilmede limit emir — daha iyi fiyat bekle (ATR/EMA seviyesi)',
+              stop: 'Kırılımda stop emir — momentum teyidi bekle (ATR seviyesi)',
+            },
+          };
+        }
         questions['risk_' + i] = {
           type: 'choice',
           instructions: `${sym} için SL/TP profili? Seviyeleri kod ATR'den hesaplar; volatilite ve öğrenme geçmişini dikkate al.`,
@@ -14207,6 +14266,7 @@ async function finTypeSafeRound(sid, agent) {
         if (!financeState.agents.has(sidS)) return;
         const c = finTsChoice(ans, 'yon_' + i);
         const conf = finTsNoul(ans, 'teyit_' + i);
+        const confVal = conf == null ? 0 : conf;
         const pos = posBySym[sym];
         /* JEV FİYAT ALARMI: seçilen seviyeye tek seferlik alarm (kurulumu kod yapar) */
         try { await finTsSetAlarm(sidS, agent, sym, market[sym], ans, i, lines); } catch {}
@@ -14233,13 +14293,17 @@ async function finTypeSafeRound(sid, agent) {
           lines.push(`- ${sym}: ${finTsFmtChoice(c)} → BEKLE`);
           continue;
         }
-        if (!(c.p >= thAction) || c.p - c.second < FIN_TS_MARGIN_P) {
-          lines.push(`- ${sym}: ${finTsFmtChoice(c)} → öğrenilmiş eşik p≥${thAction.toFixed(2)}/fark altı, BEKLE`);
-          continue;
-        }
-        if (conf == null || conf < FIN_TS_CONFIRM_P) {
-          lines.push(`- ${sym}: ${finTsFmtChoice(c)} · teyit=${conf == null ? 'yok' : conf.toFixed(2)} < ${FIN_TS_CONFIRM_P} → BEKLE`);
-          continue;
+        /* SAHİP TALİMATI "zorunlu giriş" diyorsa eşik/teyit kapıları UYGULANMAZ
+           (talimat birincil kural) — yön Jev'in seçimidir. */
+        if (!talimatZorunlu) {
+          if (!(c.p >= thAction) || c.p - c.second < FIN_TS_MARGIN_P) {
+            lines.push(`- ${sym}: ${finTsFmtChoice(c)} → öğrenilmiş eşik p≥${thAction.toFixed(2)}/fark altı, BEKLE`);
+            continue;
+          }
+          if (conf == null || conf < FIN_TS_CONFIRM_P) {
+            lines.push(`- ${sym}: ${finTsFmtChoice(c)} · teyit=${conf == null ? 'yok' : conf.toFixed(2)} < ${FIN_TS_CONFIRM_P} → BEKLE`);
+            continue;
+          }
         }
         if (opened >= 1 || posList.length + pendCount >= (Number(f.maxPositions) || 3)) {
           lines.push(`- ${sym}: sinyal güçlü (${c.choice} p=${c.p.toFixed(2)}) ama pozisyon+bekleyen emir sınırı dolu — bu tur açılmadı`);
@@ -14262,9 +14326,10 @@ async function finTypeSafeRound(sid, agent) {
         const prof = { siki: [1.0, 2.0], dengeli: [1.5, 2.5], genis: [2.0, 3.5] }[profKey];
         const slDist = Math.max(atr > 0 ? atr * prof[0] : entryRef * 0.003, entryRef * 0.0004);
         const tpDist = Math.max(atr > 0 ? atr * prof[1] : entryRef * 0.006, slDist * 1.2);
-        /* EMİR TİPİ: market / limit / stop — Jev seçer, giriş seviyesini kod kurar */
-        const emirC = finTsChoice(ans, 'emir_' + i);
-        const emirKind = emirC && emirC.p >= FIN_TS_CONFIRM_P && emirC.p - emirC.second >= FIN_TS_MARGIN_P ? String(emirC.choice) : 'market';
+        /* EMİR TİPİ: market / limit / stop — Jev seçer, giriş seviyesini kod kurar.
+           Zorunlu giriş modunda MARKET sabittir (bekleyen emir açık pozisyon değildir). */
+        const emirC = talimatZorunlu ? null : finTsChoice(ans, 'emir_' + i);
+        const emirKind = talimatZorunlu ? 'market' : (emirC && emirC.p >= FIN_TS_CONFIRM_P && emirC.p - emirC.second >= FIN_TS_MARGIN_P ? String(emirC.choice) : 'market');
         let orderType = 'market';
         let entry = entryRef;
         if (emirKind === 'limit') {
@@ -14303,9 +14368,10 @@ async function finTypeSafeRound(sid, agent) {
             timeframe: market[sym].tf,
             comment: 'TS',
             reason:
-              `TypeSafe: yön ${c.choice} p=${c.p.toFixed(2)} fark=${(c.p - c.second).toFixed(2)} teyit=${conf.toFixed(2)}` +
+              `TypeSafe: yön ${c.choice} p=${c.p.toFixed(2)} fark=${(c.p - c.second).toFixed(2)} teyit=${confVal.toFixed(2)}` +
               (orderType !== 'market' ? ` · ${orderType} @${entry}` : '') +
-              ` · ${profKey} profil`,
+              ` · ${profKey} profil` +
+              (talimatZorunlu ? ' · SAHİP TALİMATI (zorunlu giriş)' : ''),
           },
           { sessionId: sidS }
         );
@@ -14323,7 +14389,7 @@ async function finTypeSafeRound(sid, agent) {
               action: c.choice,
               p: c.p,
               pSecond: c.second,
-              confirm: conf,
+              confirm: confVal,
               hour: new Date().getHours(),
               emaAlign: ind.ema50 != null && ind.ema200 != null ? (ind.ema50 > ind.ema200) === (c.choice === 'buy') : null,
               rsi: ind.rsi14,
@@ -14336,7 +14402,8 @@ async function finTypeSafeRound(sid, agent) {
             (orderType === 'market'
               ? `- ${sym}: ⚡ MARKET ${c.choice.toUpperCase()} açıldı (lot ${r.opened && r.opened.volume}, SL ${sl}, TP ${tp}, risk %${riskPct}${cal.riskMult !== 1 ? ` ×${cal.riskMult}` : ''})`
               : `- ${sym}: ⏳ ${emirLabel} emri kondu @${entry} (${profKey} profil, SL ${sl}, TP ${tp}, risk %${riskPct})`) +
-              ` · p=${c.p.toFixed(2)} teyit=${conf.toFixed(2)} · tf=${market[sym].tf}` +
+              ` · p=${c.p.toFixed(2)} teyit=${confVal.toFixed(2)} · tf=${market[sym].tf}` +
+              (talimatZorunlu ? ' · TALİMAT: zorunlu giriş' : '') +
               (thAction !== FIN_TS_DEFAULT_TH.action ? ` · öğrenilmiş eşik p≥${thAction.toFixed(2)}` : '')
           );
         } else if (r && r.ok && r.shadow) {
@@ -14426,7 +14493,8 @@ async function finTypeSafeRound(sid, agent) {
     try { financeLog('[typesafe] tur hatası (' + sidS + '): ' + String((e && e.message) || e)); } catch {}
   } finally {
     agent.tsBusy = false;
-    finTsSchedule(sidS, agent, finPaceSec());
+    /* RİTİM: sahip talimatı M1/M5 diyorsa ana trader turları ona göre hızlanır */
+    finTsSchedule(sidS, agent, finTsStrategyPaceSec(agent));
     if (agent.main && financeState.agents.has(sidS)) finPush('trader', { state: 'idle', round: agent.round, mode: 'typesafe' });
   }
 }

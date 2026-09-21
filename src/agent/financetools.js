@@ -920,13 +920,32 @@ const handlers = {
     const info = await symInfoRow(symbol);
     if (!info) return { ok: false, error: 'sembol bulunamadı: ' + symbol + ' (MT5 Market Watch?)' };
     const range = lotRange(cfg, symbol);
-    const norm = finrisk.normalizeVolume(info, args.volume, range.maxLot, range.minLot);
-    if (norm.error) return { ok: false, error: norm.error };
-    const vol = norm.volume;
     const ptype = t.type;
     const pside = t.side;
-    if (!(Number(args.price) > 0)) {
+    const entryPrice = Number(args.price) || 0;
+    if (!(entryPrice > 0)) {
       return { ok: false, error: 'price gerekli — limit/stop bekleyen emirleri için tetik fiyatı ver (market tipleri anlıktır, price istemez)' };
+    }
+    /* LOT: riskPct verilirse BEKLEYEN EMİR fiyatı + SL mesafesinden hesaplanır
+       (piyasa emriyle aynı risk hattı); volume verilmişse normalize edilir. */
+    const explicitRisk = Number(args.riskPct) > 0 ? Number(args.riskPct) : 0;
+    let vol = 0;
+    let riskInfo = null;
+    if (explicitRisk > 0 || (!(Number(args.volume) > 0) && Number(cfg.riskPerTradePct) > 0)) {
+      const slRef = Number(args.sl) || 0;
+      if (!(slRef > 0)) return { ok: false, error: '%risk ile lot için sl zorunlu — sl ver ya da volume kullan' };
+      const riskPct = explicitRisk > 0 ? explicitRisk : Number(cfg.riskPerTradePct);
+      const acct = await bcall('account', {}, 8000);
+      const balance = Number(acct && acct.account && acct.account.balance) || 0;
+      const riskAmount = (balance * riskPct) / 100;
+      const rr = finrisk.calcRiskLot(info, entryPrice, slRef, riskAmount, range.maxLot, range.minLot);
+      if (rr.error) return { ok: false, error: rr.error };
+      vol = rr.volume;
+      riskInfo = { riskPct, riskAmount: Math.round(riskAmount * 100) / 100, lossPerLot: rr.lossPerLot, raised: !!rr.raised };
+    } else {
+      const norm = finrisk.normalizeVolume(info, args.volume, range.maxLot, range.minLot);
+      if (norm.error) return { ok: false, error: norm.error };
+      vol = norm.volume;
     }
     /* KODLA DİSİPLİN: bekleyen emir de işlem sayılır */
     let discErr = null;
@@ -934,20 +953,20 @@ const handlers = {
     if (discErr) return { ok: false, error: discErr };
     /* SHADOW MOD: bekleyen emir de GÖNDERİLMEZ — tez günlüğe düşer */
     if (cfg.shadowMode) {
-      noteTrade('shadow', { symbol, type: ptype, side: pside, volume: vol, price: Number(args.price) || 0, sl: Number(args.sl) || 0, tp: Number(args.tp) || 0, timeframe, reason: String(args.reason || '').slice(0, 500) }, ctx);
-      return { ok: true, shadow: true, note: 'SHADOW MOD: bekleyen emir GÖNDERİLMEDİ, karar günlüğe yazıldı.' };
+      noteTrade('shadow', { symbol, type: ptype, side: pside, volume: vol, price: entryPrice, sl: Number(args.sl) || 0, tp: Number(args.tp) || 0, timeframe, reason: String(args.reason || '').slice(0, 500), risk: riskInfo }, ctx);
+      return { ok: true, shadow: true, planned: { symbol, type: ptype, volume: vol, price: entryPrice, sl: Number(args.sl) || 0, tp: Number(args.tp) || 0 }, risk: riskInfo, note: 'SHADOW MOD: bekleyen emir GÖNDERİLMEDİ, karar günlüğe yazıldı.' };
     }
     const data = await bcall('pending', {
       symbol,
       type: ptype,
       volume: vol,
-      price: Number(args.price) || 0,
+      price: entryPrice,
       sl: Number(args.sl) || 0,
       tp: Number(args.tp) || 0,
       comment: orderComment,
     }, 20000);
-    noteTrade('pending', { symbol, type: ptype, volume: vol, timeframe, reason: String(args.reason || '').slice(0, 500) }, ctx);
-    return { ok: true, result: data && data.result, timeframe: timeframe || null };
+    noteTrade('pending', { symbol, type: ptype, volume: vol, price: entryPrice, sl: Number(args.sl) || 0, tp: Number(args.tp) || 0, timeframe, reason: String(args.reason || '').slice(0, 500), risk: riskInfo }, ctx);
+    return { ok: true, ordered: { symbol, type: ptype, volume: vol, price: entryPrice, sl: Number(args.sl) || 0, tp: Number(args.tp) || 0 }, risk: riskInfo, result: data && data.result, timeframe: timeframe || null };
   },
   async mt5_cancel(args, ctx) {
     if (!mt5.running) return notConnected();

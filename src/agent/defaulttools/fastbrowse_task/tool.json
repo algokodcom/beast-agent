@@ -1,0 +1,50 @@
+{
+  "name": "fastbrowse_task",
+  "description": "HIZLI TARAYICI AJANI (fastbrowse · Jev seçer, LLM okur, kod doğrular): doğal dilde TEK hedef ver; sayfayı element listesine indeksler, her adımı Jev (TypeSafe) seçer ve cevabı sayfadan BİREBİR ALINTILARLA döndürür. Çok adımlı işler (arama + form + filtre + tarih seçimi + sonuç okuma) için browser_click/browser_type zinciri yerine bunu tercih et. Varsayılan mode:'cdp' Beast'in DAHİLİ Chromium'una bağlanır (kendi sekmesini açar/kapatır, senin sekmelerine dokunmaz); mode:'chrome' kendi Chrome'unu açar. Geri alınamaz aksiyonlar (gönder/öde/sil) authorize:true verilmeden DURUR ve status:'needs_confirmation' döner. status:'complete' DEĞİLSE başarıyı iddia etme: dönen answer + evidence alıntılarını kullanıcıya aktar; needs_login/needs_input/blocked durumlarında kullanıcıdan bilgi iste. Aynı iş için elle browser_click/browser_type zinciri kurma — tek çağrıda hedefi ver.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "task": {
+        "type": "string",
+        "description": "Doğal dil hedef: \"Hacker News'teki en üst haberin başlığını bul\" gibi. Tek net hedef ver; gereksiz 've' ile işleri birleştirme."
+      },
+      "start": {
+        "type": "string",
+        "description": "Başlangıç URL'i (ör. https://news.ycombinator.com/). Boşsa ilk adres görevden çıkarılır."
+      },
+      "mode": {
+        "type": "string",
+        "enum": ["cdp", "chrome"],
+        "description": "cdp: Beast dahili Chromium (varsayılan, giriş yapılmış oturumu kullanır); chrome: kendi Chrome'unu başlatır (Beast kapalıyken/yedek)."
+      },
+      "provider": {
+        "type": "string",
+        "description": "LLM sağlayıcı adı/kimliği (Ayarlar → Provider'daki özel sağlayıcı; boşsa aktif modelin sağlayıcısı)."
+      },
+      "model": {
+        "type": "string",
+        "description": "LLM modeli (boşsa sağlayıcının/aktif modelin varsayılanı)."
+      },
+      "authorize": {
+        "type": "boolean",
+        "description": "true: geri alınamaz aksiyonlara (gönder/öde/sil/onayla) izin ver. Varsayılan false — güvenli."
+      },
+      "headed": {
+        "type": "boolean",
+        "description": "chrome modunda pencereyi göster (varsayılan false = headless)."
+      },
+      "max_steps": {
+        "type": "number",
+        "description": "Adım tavanı (varsayılan 40, en çok 80)."
+      },
+      "max_seconds": {
+        "type": "number",
+        "description": "Süre tavanı saniye (varsayılan 180, en çok 600)."
+      }
+    },
+    "required": ["task"]
+  },
+  "timeoutMs": 360000,
+  "defaultsVersion": 1,
+  "updatedAt": "2026-09-21T10:00:00.000Z"
+}

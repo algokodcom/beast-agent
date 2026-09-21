@@ -12724,6 +12724,7 @@ function finTsDecRecord(rec) {
       rsi: Number.isFinite(Number(rec && rec.rsi)) ? Number(rec.rsi) : null,
       atrPct: Number.isFinite(Number(rec && rec.atrPct)) ? Number(rec.atrPct) : null,
       riskPct: Number(rec && rec.riskPct) || 0,
+      orderType: String((rec && rec.orderType) || 'market'),
       closedAt: 0, net: null, mfe: null, mae: null, reason: '',
     };
     d.decisions.push(item);
@@ -13589,8 +13590,10 @@ function finTeamWaitTick(sid) {
    yanıtları) YALNIZ TypeSafe System One'a gider; yanıtlar olasılık olarak
    döner, kararı KOD uygular. Yanıtlar AJAN DM ekip grubuna yazılır — tüm
    ajanlar birbirinin cevabını görür (son yanıtlar sonraki turların state'ine
-   de girer) ve emirler YALNIZ market buy/sell olarak açılır (bekleyen emir
-   YOK). LLM yalnız finance SOHBET yardımcısında serbesttir. */
+   de girer). Emir tipini de Jev seçer: market / buy-sell limit / buy-sell
+   stop; giriş seviyesi, SL/TP (sıkı-dengeli-geniş ATR profili), kısmi
+   kapatma, SL taşıma, fiyat alarmı ve araç isteği Jev kararıyla KOD tarafından
+   uygulanır. LLM yalnız finance SOHBET yardımcısında serbesttir. */
 const FIN_TS_MARGIN_P = 0.12;   /* birinci ile ikinci seçenek arası min fark */
 const FIN_TS_CONFIRM_P = 0.55;  /* noul teyit eşiği */
 const FIN_TS_EXIT_P = 0.62;     /* pozisyon kapatma eşiği */
@@ -13862,6 +13865,111 @@ async function finTsManageOpen(sidS, agent, sym, pos, mkt, ans, qi, lines) {
   }
 }
 
+/* JEV FİYAT ALARMI: Jev'in seçtiği seviyeye TEK SEFERLİK alarm kurar (kod).
+   Aynı sembol/yönde yakın bir alarm zaten varsa tekrar kurmaz (alarm seli yok).
+   Alarm tetiklenince finWakeAgents ilgili ajanı tur beklemeden uyandırır. */
+async function finTsSetAlarm(sidS, agent, sym, mkt, ans, i, lines) {
+  const c = finTsChoice(ans, 'alarm_' + i);
+  if (!c || String(c.choice) === 'yok') return;
+  if (!(c.p >= FIN_TS_CONFIRM_P && c.p - c.second >= FIN_TS_MARGIN_P)) return;
+  const row = (mkt && mkt.row) || {};
+  const ind = (mkt && mkt.ind) || {};
+  const ref = Number(row.bid) || Number(row.ask) || 0;
+  if (!(ref > 0)) return;
+  const atr = Number(ind.atr14) || 0;
+  const digits = Math.max(0, Math.min(8, Number(row.digits) || 2));
+  const rnd = (v) => Number(Number(v).toFixed(digits));
+  const range = ind.range20 || {};
+  const fallback = atr > 0 ? atr : ref * 0.003;
+  const choice = String(c.choice);
+  let direction = 'above';
+  let price = 0;
+  if (choice === 'ust_kirilim') { direction = 'above'; price = Number(range.high) || (ref + fallback); }
+  else if (choice === 'alt_kirilim') { direction = 'below'; price = Number(range.low) || (ref - fallback); }
+  else if (choice === 'yukari_atr') { direction = 'above'; price = ref + atr * 0.5; }
+  else if (choice === 'asagi_atr') { direction = 'below'; price = ref - atr * 0.5; }
+  else return;
+  /* seviye yanlış tarafta kalırsa (yeni tepe/dip) alarm anında tetiklenmesin */
+  const minAway = Math.max(atr * 0.2, ref * 0.0004);
+  if (direction === 'above' && price <= ref + minAway) price = ref + minAway;
+  if (direction === 'below' && price >= ref - minAway) price = ref - minAway;
+  price = rnd(price);
+  const tol = Math.max(atr * 0.15, price * 0.0005);
+  try {
+    const existing = (financeState.alerts || []).some((a) =>
+      a && String(a.symbol || '').toUpperCase() === sym &&
+      String(a.direction || '') === direction &&
+      Math.abs(Number(a.price) - price) <= tol
+    );
+    if (existing) {
+      lines.push(`- ${sym}: 🔔 alarm zaten var (${direction === 'above' ? '≥' : '≤'} ${price})`);
+      return;
+    }
+  } catch {}
+  let r = null;
+  try {
+    r = await financetools.handlers.mt5_alerts(
+      { action: 'set', symbol: sym, price, direction, mode: 'once', note: `TypeSafe seviye alarmı (p=${c.p.toFixed(2)})` },
+      { sessionId: sidS }
+    );
+  } catch (e) {
+    r = { ok: false, error: String((e && e.message) || e) };
+  }
+  if (r && r.ok) lines.push(`- ${sym}: 🔔 ALARM kuruldu ${direction === 'above' ? '≥' : '≤'} ${price} (tek seferlik)`);
+  else lines.push(`- ${sym}: alarm kurulamadı — ${(r && r.error) || 'hata'}`);
+}
+
+/* JEV ARAÇ İSTEĞİ: Jev'in seçtiği ihtiyaç kategorisini KOD somut isteğe çevirir
+   ve TOOL botuna ASENKRON yazar (engine._toolRequest). Ajan BEKLEMEZ; araç
+   hazır olunca rapor AJAN DM/sohbete düşer. Ajan başına saatte 1 istek. */
+async function finTsToolRequest(sidS, agent, ans, lines) {
+  const c = finTsChoice(ans, 'arac');
+  if (!c || String(c.choice) === 'yok') return;
+  if (!(c.p >= FIN_TS_CONFIRM_P && c.p - c.second >= FIN_TS_MARGIN_P)) return;
+  const now = Date.now();
+  if (agent.tsToolReqAt && now - agent.tsToolReqAt < 60 * 60 * 1000) {
+    lines.push(`- araç isteği (${c.choice}) atlandı — son istek 1 saatten yeni`);
+    return;
+  }
+  const syms = Array.isArray(agent.symbols) && agent.symbols.length ? agent.symbols.join(', ') : '(izleme listesi)';
+  const specs = {
+    haber: {
+      name: 'fin_haber_makro',
+      task:
+        'fin_haber_makro adında bir tool yaz: verilen sembol listesi için son haber başlıklarını ve bugünün yüksek etkili ekonomik takvim olaylarını toplayıp ' +
+        'JSON döndürsün: { ok, symbol, news:[{title, source, at, url}], calendar:[{time, currency, event, impact}] }. Girdi: {symbols:[...], hours:24}.',
+      context: `Kullanım: Beast Finance Jev ajanları makro/haber bağlamını karar state'ine koyacak. Örnek semboller: ${syms}. Haber için mevcut runner: src/agent/scripts/news.py (python) ve web_search/websearch.py köprüsü; takvim için investing/forexfactory benzeri ücretsiz kaynak. Çıktı sözleşmesi yukarıdaki JSON olmalı.`,
+    },
+    korelasyon: {
+      name: 'fin_korelasyon',
+      task:
+        'fin_korelasyon adında bir tool yaz: verilen semboller için son N mum kapanışından korelasyon matrisi + yönlü maruziyet özeti döndürsün: ' +
+        '{ ok, tf, matrix:{A:{B:r}}, exposure:{USD:net,...} }. Girdi: {symbols:[...], timeframe:"H1", count:300}.',
+      context: `Kullanım: aynı yönde birikmiş pozisyon riskini Jev kararlarında görmek için. MT5 köprüsü mt5_rates ile mum verisi çekilebilir (financetools.js desenine bak); saf matematik Node tarafında yapılabilir (getiri serisi → Pearson). Semboller: ${syms}.`,
+    },
+    rapor: {
+      name: 'fin_sembol_rapor',
+      task:
+        'fin_sembol_rapor adında bir tool yaz: bir sembolün son 30/90 gün kapanan işlemlerini öğrenme deposundan (finance/ogrenme.json) okuyup ' +
+        '{ ok, symbol, tf, trades, wins, net, avgR, bestTf, worstTf, topMistakes:[...] } özeti döndürsün. Girdi: {symbol, days:30}.',
+      context: `Kullanım: Jev tur state'ine kompakt performans özeti koymak. Veri kaynağı: %APPDATA%\\beast\\finance\\ogrenme.json (finLearnApi stats/list ile aynı şema). Semboller: ${syms}.`,
+    },
+  };
+  const spec = specs[String(c.choice)];
+  if (!spec) return;
+  agent.tsToolReqAt = now;
+  try {
+    const r = await engine._toolRequest({ task: spec.task, context: spec.context }, sidS);
+    lines.push(
+      r && r.ok
+        ? `- 🧰 Araç isteği TOOL botuna gönderildi: ${spec.name} (asenkron — hazır olunca rapor düşer)`
+        : `- araç isteği başarısız — ${(r && r.error) || 'hata'}`
+    );
+  } catch (e) {
+    lines.push('- araç isteği hatası: ' + String((e && e.message) || e));
+  }
+}
+
 function finTsSchedule(sid, agent, sec) {
   if (!agent || !financeState.agents.has(String(sid))) return;
   clearTimeout(agent.timer);
@@ -13925,12 +14033,15 @@ async function finTypeSafeRound(sid, agent) {
     }
     /* VERİ: hesap + pozisyonlar + sembol fiyat/gösterge — hepsi KOD ile toplanır,
        yalnız TypeSafe'e gönderilir; hiçbir LLM çağrısı yapılmaz */
-    const [accR, posR] = await Promise.all([
+    const [accR, posR, ordR] = await Promise.all([
       financetools.handlers.mt5_account({}),
       financetools.handlers.mt5_positions({}),
+      financetools.handlers.mt5_orders({}).catch(() => null),
     ]);
     const account = (accR && accR.account) || {};
     const posList = (posR && posR.positions) || [];
+    /* BEKLEYEN EMİRLER: pozisyon slotunu paylaşır (aşırı birikmeyi önler) */
+    const pendCount = (ordR && Array.isArray(ordR.orders) ? ordR.orders.length : 0);
     const market = {};
     for (const sym of symbols) {
       const tf = finTsPickTf(agent, sym);
@@ -13954,6 +14065,11 @@ async function finTypeSafeRound(sid, agent) {
         acik_pozisyon: posList.length,
       },
       limitler: { max_pozisyon: Number(f.maxPositions) || 3, min_lot: Number(f.minLot) || 0.01, max_lot: Number(f.maxLot) || 0.1 },
+      bekleyen_emir: pendCount,
+      /* MEVCUT ALARMLAR: Jev aynı seviyeye tekrar alarm kurmasın (kod yine kapılar) */
+      alarmlar: (financeState.alerts || []).slice(0, 8).map((a) => ({
+        sembol: a.symbol, yon: a.direction, fiyat: a.price, mod: a.once ? 'tek' : 'tekrarlı',
+      })),
       /* AÇIK POZİSYONLAR: R/kâr R'si/en iyi R + koruma bayrakları — Jev'in
          kapatma/kısmi/SL kararları bu bağlamla verilir (finTsPosState) */
       pozisyonlar: posList.map((p) => finTsPosState(p)),
@@ -13998,6 +14114,36 @@ async function finTypeSafeRound(sid, agent) {
           instructions: `${sym} fiyat yapısı ve momentum, 'yon_' + ${i} kararını gerçekten destekliyor mu?`,
           criteria: { true: 'Net destekliyor', false: 'Zayıf/çelişkili' },
         };
+        /* GİRİŞ TİPİ + RİSK PROFİLİ: seviyeleri KOD hesaplar (ATR/EMA), kararı Jev verir */
+        questions['emir_' + i] = {
+          type: 'choice',
+          instructions: `${sym} sinyali onaylanırsa giriş tipi ne olsun? Anında mı gir (market), geri çekilme mi bekle (limit), kırılım teyidi mi bekle (stop)? Giriş seviyesini kod ATR/EMA'dan hesaplar.`,
+          criteria: {
+            market: 'Anında piyasadan gir — kaçırma riski yok, fiyat şimdiki',
+            limit: 'Geri çekilmede limit emir — daha iyi fiyat bekle (ATR/EMA seviyesi)',
+            stop: 'Kırılımda stop emir — momentum teyidi bekle (ATR seviyesi)',
+          },
+        };
+        questions['risk_' + i] = {
+          type: 'choice',
+          instructions: `${sym} için SL/TP profili? Seviyeleri kod ATR'den hesaplar; volatilite ve öğrenme geçmişini dikkate al.`,
+          criteria: {
+            siki: 'Sıkı: SL 1.0×ATR · TP 2.0×ATR — hızlı çık, yüksek isabet',
+            dengeli: 'Dengeli: SL 1.5×ATR · TP 2.5×ATR',
+            genis: 'Geniş: SL 2.0×ATR · TP 3.5×ATR — trendi taşı, gürültüye dayan',
+          },
+        };
+        questions['alarm_' + i] = {
+          type: 'choice',
+          instructions: `${sym} için fiyat alarmı kurulsun mu? Alarm SEVİYESİ gelince tur beklemeden uyanırsın (tek seferlik). Gereksizse yok seç.`,
+          criteria: {
+            yok: 'Alarm gerekmez',
+            ust_kirilim: 'Üst kırılım (son 20 mum tepesi) üzerinde alarm',
+            alt_kirilim: 'Alt kırılım (son 20 mum dibi) altında alarm',
+            yukari_atr: 'Fiyat +0.5×ATR üzerinde alarm',
+            asagi_atr: 'Fiyat -0.5×ATR altında alarm',
+          },
+        };
         if (posBySym[sym]) {
           const pp = posBySym[sym];
           const ps = finTsPosState(pp);
@@ -14032,6 +14178,17 @@ async function finTypeSafeRound(sid, agent) {
           };
         }
       });
+      /* ARAÇ İHTİYACI (tur düzeyi): eksik araç varsa TOOL botuna yazdırılır */
+      questions['arac'] = {
+        type: 'choice',
+        instructions: 'Bu turda eksik bir ARAÇ var mı? Varsa TOOL botuna yazdırılır (asenkron; rapor AJAN DM\'e düşer, ajan beklemez). İhtiyaç yoksa yok seç.',
+        criteria: {
+          yok: 'Araç isteği yok',
+          haber: 'Haber/makro veri aracı (ekonomik takvim + haber akışı)',
+          korelasyon: 'Korelasyon/maruziyet aracı (yönlü risk matrisi)',
+          rapor: 'Sembol performans raporu aracı (öğrenme deposundan özet)',
+        },
+      };
       let ans = null;
       try {
         ans = await finTsAsk(state, questions);
@@ -14051,6 +14208,8 @@ async function finTypeSafeRound(sid, agent) {
         const c = finTsChoice(ans, 'yon_' + i);
         const conf = finTsNoul(ans, 'teyit_' + i);
         const pos = posBySym[sym];
+        /* JEV FİYAT ALARMI: seçilen seviyeye tek seferlik alarm (kurulumu kod yapar) */
+        try { await finTsSetAlarm(sidS, agent, sym, market[sym], ans, i, lines); } catch {}
         /* ÖĞRENİLMİŞ EŞİK + RİSK ÇARPANI: kalibrasyon verisi biriktikçe kod
            eşiği ve riski kendisi ayarlar (sistem öğrendikçe o karar verir) */
         const cal = finTsCalibration(sym, market[sym].tf);
@@ -14082,34 +14241,71 @@ async function finTypeSafeRound(sid, agent) {
           lines.push(`- ${sym}: ${finTsFmtChoice(c)} · teyit=${conf == null ? 'yok' : conf.toFixed(2)} < ${FIN_TS_CONFIRM_P} → BEKLE`);
           continue;
         }
-        if (opened >= 1 || posList.length >= (Number(f.maxPositions) || 3)) {
-          lines.push(`- ${sym}: sinyal güçlü (${c.choice} p=${c.p.toFixed(2)}) ama pozisyon sınırı dolu — bu tur açılmadı`);
+        if (opened >= 1 || posList.length + pendCount >= (Number(f.maxPositions) || 3)) {
+          lines.push(`- ${sym}: sinyal güçlü (${c.choice} p=${c.p.toFixed(2)}) ama pozisyon+bekleyen emir sınırı dolu — bu tur açılmadı`);
           continue;
         }
-        /* SL/TP KOD ile: ATR(14) tabanlı — tip ve seviyeler deterministik */
+        /* GİRİŞ TİPİ + RİSK PROFİLİ (JEV kararı) — seviyeleri KOD hesaplar */
         const row = market[sym].row || {};
-        const price = c.choice === 'buy' ? Number(row.ask) || Number(row.bid) : Number(row.bid) || Number(row.ask);
-        if (!(price > 0)) { lines.push(`- ${sym}: fiyat okunamadı`); continue; }
+        const entryRef = c.choice === 'buy' ? Number(row.ask) || Number(row.bid) : Number(row.bid) || Number(row.ask);
+        if (!(entryRef > 0)) { lines.push(`- ${sym}: fiyat okunamadı`); continue; }
         const atr = Number(market[sym].ind && market[sym].ind.atr14) || 0;
-        const slDist = Math.max(atr > 0 ? atr * 1.5 : price * 0.003, price * 0.0004);
-        const tpDist = Math.max(atr > 0 ? atr * 2.5 : price * 0.006, slDist * 1.2);
         const digits = Math.max(0, Math.min(8, Number(row.digits) || 2));
         const rnd = (v) => Number(Number(v).toFixed(digits));
-        const sl = rnd(c.choice === 'buy' ? price - slDist : price + slDist);
-        const tp = rnd(c.choice === 'buy' ? price + tpDist : price - tpDist);
+        const point = Number(row.point) > 0 ? Number(row.point) : Math.pow(10, -digits);
+        const stopsPts = Number(row.trade_stops_level) || 0;
+        const minDist = stopsPts > 0 ? (stopsPts + 1) * point : point;
+        const isBuy = c.choice === 'buy';
+        /* RİSK PROFİLİ: SL/TP çarpanlarını Jev seçer, seviyeleri kod kurar */
+        const profC = finTsChoice(ans, 'risk_' + i);
+        const profKey = ['siki', 'dengeli', 'genis'].includes(String(profC && profC.choice)) ? String(profC.choice) : 'dengeli';
+        const prof = { siki: [1.0, 2.0], dengeli: [1.5, 2.5], genis: [2.0, 3.5] }[profKey];
+        const slDist = Math.max(atr > 0 ? atr * prof[0] : entryRef * 0.003, entryRef * 0.0004);
+        const tpDist = Math.max(atr > 0 ? atr * prof[1] : entryRef * 0.006, slDist * 1.2);
+        /* EMİR TİPİ: market / limit / stop — Jev seçer, giriş seviyesini kod kurar */
+        const emirC = finTsChoice(ans, 'emir_' + i);
+        const emirKind = emirC && emirC.p >= FIN_TS_CONFIRM_P && emirC.p - emirC.second >= FIN_TS_MARGIN_P ? String(emirC.choice) : 'market';
+        let orderType = 'market';
+        let entry = entryRef;
+        if (emirKind === 'limit') {
+          const pull = Math.max(atr > 0 ? atr * 0.5 : entryRef * 0.0015, minDist + point);
+          const atrLvl = isBuy ? entryRef - pull : entryRef + pull;
+          const ema = Number(market[sym].ind && market[sym].ind.ema50);
+          const emaOk =
+            isFinite(ema) && ema > 0 &&
+            (isBuy ? ema < entryRef - minDist : ema > entryRef + minDist) &&
+            Math.abs(entryRef - ema) <= Math.max(atr * 2, entryRef * 0.006);
+          entry = rnd(emaOk ? ema : atrLvl);
+          orderType = isBuy ? 'buy_limit' : 'sell_limit';
+        } else if (emirKind === 'stop') {
+          const breakDist = Math.max(atr > 0 ? atr * 0.25 : entryRef * 0.001, minDist + point);
+          entry = rnd(isBuy ? entryRef + breakDist : entryRef - breakDist);
+          orderType = isBuy ? 'buy_stop' : 'sell_stop';
+        }
+        const sl = rnd(isBuy ? entry - slDist : entry + slDist);
+        const tp = rnd(isBuy ? entry + tpDist : entry - tpDist);
         const riskBase = Number(f.riskPerTradePct) > 0 ? Number(f.riskPerTradePct) : 0.5;
         const riskPct = Math.max(0.1, Math.min(2, Math.round(riskBase * cal.riskMult * 100) / 100));
+        const emirLabel =
+          orderType === 'market' ? 'MARKET' :
+          isBuy && orderType === 'buy_limit' ? 'BUY LIMIT' :
+          !isBuy && orderType === 'sell_limit' ? 'SELL LIMIT' :
+          isBuy && orderType === 'buy_stop' ? 'BUY STOP' : 'SELL STOP';
         const r = await financetools.handlers.mt5_trade(
           {
             symbol: sym,
             side: c.choice,
-            type: 'market',
+            type: orderType,
+            ...(orderType === 'market' ? {} : { price: entry }),
             sl,
             tp,
             riskPct,
             timeframe: market[sym].tf,
             comment: 'TS',
-            reason: `TypeSafe: yön ${c.choice} p=${c.p.toFixed(2)} fark=${(c.p - c.second).toFixed(2)} teyit=${conf.toFixed(2)}`,
+            reason:
+              `TypeSafe: yön ${c.choice} p=${c.p.toFixed(2)} fark=${(c.p - c.second).toFixed(2)} teyit=${conf.toFixed(2)}` +
+              (orderType !== 'market' ? ` · ${orderType} @${entry}` : '') +
+              ` · ${profKey} profil`,
           },
           { sessionId: sidS }
         );
@@ -14131,20 +14327,26 @@ async function finTypeSafeRound(sid, agent) {
               hour: new Date().getHours(),
               emaAlign: ind.ema50 != null && ind.ema200 != null ? (ind.ema50 > ind.ema200) === (c.choice === 'buy') : null,
               rsi: ind.rsi14,
-              atrPct: atr > 0 && price > 0 ? atr / price : null,
+              atrPct: atr > 0 && entryRef > 0 ? atr / entryRef : null,
               riskPct,
+              orderType,
             });
           } catch {}
           lines.push(
-            `- ${sym}: ⚡ MARKET ${c.choice.toUpperCase()} açıldı (lot ${r.opened && r.opened.volume}, SL ${sl}, TP ${tp}, risk %${riskPct}${cal.riskMult !== 1 ? ` ×${cal.riskMult}` : ''}) · p=${c.p.toFixed(2)} teyit=${conf.toFixed(2)} · tf=${market[sym].tf}` +
+            (orderType === 'market'
+              ? `- ${sym}: ⚡ MARKET ${c.choice.toUpperCase()} açıldı (lot ${r.opened && r.opened.volume}, SL ${sl}, TP ${tp}, risk %${riskPct}${cal.riskMult !== 1 ? ` ×${cal.riskMult}` : ''})`
+              : `- ${sym}: ⏳ ${emirLabel} emri kondu @${entry} (${profKey} profil, SL ${sl}, TP ${tp}, risk %${riskPct})`) +
+              ` · p=${c.p.toFixed(2)} teyit=${conf.toFixed(2)} · tf=${market[sym].tf}` +
               (thAction !== FIN_TS_DEFAULT_TH.action ? ` · öğrenilmiş eşik p≥${thAction.toFixed(2)}` : '')
           );
         } else if (r && r.ok && r.shadow) {
-          lines.push(`- ${sym}: SHADOW mod — emir gönderilmedi (${c.choice} p=${c.p.toFixed(2)})`);
+          lines.push(`- ${sym}: SHADOW mod — emir gönderilmedi (${emirLabel} ${c.choice} p=${c.p.toFixed(2)})`);
         } else {
           lines.push(`- ${sym}: ${c.choice.toUpperCase()} sinyali reddedildi — ${(r && r.error) || 'hata'}`);
         }
       }
+      /* JEV ARAÇ İSTEĞİ (tur düzeyi): eksik araç varsa TOOL botuna asenkron yazdır */
+      try { await finTsToolRequest(sidS, agent, ans, lines); } catch {}
       finTsPost(
         sidS,
         agent,
@@ -14185,6 +14387,17 @@ async function finTypeSafeRound(sid, agent) {
         criteria: { true: 'Risk var — dikkat/engel', false: 'Risk normal' },
       };
     });
+    /* ARAÇ İHTİYACI (tur düzeyi): eksik araç varsa TOOL botuna yazdırılır */
+    questions['arac'] = {
+      type: 'choice',
+      instructions: 'Bu turda rolün için eksik bir ARAÇ var mı? Varsa TOOL botuna yazdırılır (asenkron; rapor AJAN DM\'e düşer, ajan beklemez). İhtiyaç yoksa yok seç.',
+      criteria: {
+        yok: 'Araç isteği yok',
+        haber: 'Haber/makro veri aracı (ekonomik takvim + haber akışı)',
+        korelasyon: 'Korelasyon/maruziyet aracı (yönlü risk matrisi)',
+        rapor: 'Sembol performans raporu aracı (öğrenme deposundan özet)',
+      },
+    };
     let ans = null;
     try {
       ans = await finTsAsk(state, questions);
@@ -14206,6 +14419,8 @@ async function finTypeSafeRound(sid, agent) {
         (rk == null ? '' : ` · risk=${rk.toFixed(2)}${rk >= 0.55 ? ' ⚠' : ''}`)
       );
     });
+    /* JEV ARAÇ İSTEĞİ (rol ajanı): eksik araç varsa TOOL botuna asenkron yazdır */
+    try { await finTsToolRequest(sidS, agent, ans, lines); } catch {}
     finTsPost(sidS, agent, `🧠 TypeSafe analiz (LLM yok — girdi yalnız TypeSafe):\n` + lines.join('\n'), symbols.join(','));
   } catch (e) {
     try { financeLog('[typesafe] tur hatası (' + sidS + '): ' + String((e && e.message) || e)); } catch {}
@@ -14235,7 +14450,7 @@ function finAgentRound(sid, opts) {
   }
   /* JEV-ONLY (SABİT): finance ajanları LLM HİÇ kullanmaz — tur deterministik
      TypeSafe hattıyla koşar (girdi yalnız TypeSafe'e gider, cevaplar AJAN
-     DM'e düşer, emirler yalnız market buy/sell) */
+     DM'e düşer; emir tipi/seviyeler/alarm/araç isteği Jev kararı + kod) */
   if (finTsAgentMode(agent)) {
     finTypeSafeRound(String(sid), agent).catch(() => {});
     return;

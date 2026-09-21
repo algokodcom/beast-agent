@@ -15,6 +15,11 @@ const path = require('path');
 const { spawn } = require('child_process');
 const { beastRoot } = require('./memory');
 
+/* Varsayılan 90 sn; tool.json'daki "timeoutMs" ile araç başına uzatılabilir
+   (üst sınır 15 dk) — uzun işler için (ör. fastbrowse tarayıcı ajanı). */
+const TOOL_TIMEOUT_MS = 90 * 1000;
+const TOOL_TIMEOUT_MAX_MS = 15 * 60 * 1000;
+
 let notify = () => {};
 function setNotify(fn) {
   notify = typeof fn === 'function' ? fn : () => {};
@@ -80,6 +85,7 @@ function readTool(d) {
           : { type: 'object', properties: {} },
       script: runJs,
       code: fs.readFileSync(runJs, 'utf8').slice(0, 20000),
+      timeoutMs: Math.max(5000, Math.min(TOOL_TIMEOUT_MAX_MS, Number(json.timeoutMs) || TOOL_TIMEOUT_MS)),
       updatedAt: json.updatedAt || null,
     };
   } catch {
@@ -122,8 +128,6 @@ function names() {
   return cache.map((t) => 'tool__' + t.id);
 }
 
-const TOOL_TIMEOUT_MS = 90 * 1000;
-
 /* Tool'u çocuk node prosesinde koşturur — uygulama asla çökmez */
 function call(name, args, sid) {
   return new Promise((resolve) => {
@@ -157,8 +161,8 @@ function call(name, args, sid) {
     };
     let killer = setTimeout(() => {
       try { child && child.kill(); } catch {}
-      finish({ ok: false, error: 'tool zaman aşımı (' + Math.round(TOOL_TIMEOUT_MS / 1000) + ' sn)' });
-    }, TOOL_TIMEOUT_MS);
+      finish({ ok: false, error: 'tool zaman aşımı (' + Math.round(t.timeoutMs / 1000) + ' sn)' });
+    }, t.timeoutMs);
     try {
       /* Araç ortamı: BEAST_* değişkenleri — tool'lar köprü/python yolunu ve
          argümanları buradan güvenle çözebilir (stdin yanı sıra yedek kanal).

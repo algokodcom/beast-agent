@@ -11505,10 +11505,11 @@ async function finWatchTick() {
             finJournal({ kind: 'watchdog', action: 'sl-move', ticket, symbol: p.symbol, sl: act.sl });
           }
         } else if (act.kind === 'partial') {
-          /* OTOMATİK KAPATMA YOK — kısmi TP/stop kararını AJAN verir: seviye
-             gelince ajanlar TUR BEKLEMEDEN uyandırılır; uygun görürse
-             mt5_close {percent, kind:"partial_tp"} ile kısmi kâr alır. */
-          st.partial = true;
+          /* OTOMATİK KAPATMA YOK — kısmi kapatma kararını JEV verir: seviye
+             gelince Jev turu TUR BEKLEMEDEN uyanır ve tur içinde karar verir.
+             primary flag 'partial' GERÇEK kapatmaya ayrıldı; burada yalnız
+             bildirim tekrarını engelleyen 'partialNotified' işaretlenir. */
+          st.partialNotified = true;
           const rNow = decision.r > 0
             ? Math.round(((Number(p.type) === 0 ? Number(p.price_current) - Number(p.price_open) : Number(p.price_open) - Number(p.price_current)) / decision.r) * 10) / 10
             : 0;
@@ -13736,6 +13737,131 @@ function finTsIndLine(ind) {
   };
 }
 
+/* AÇIK POZİSYON ÖZETİ (TypeSafe state girdisi): R mesafesi, kâr R'si, görülen
+   en iyi R ve koruma bayrakları — Jev'in pozisyon yönetimi kararları bunlara
+   dayanır. Saf okuma; hiçbir IO/karar yok. */
+function finTsPosState(p) {
+  const st = financeState.watch.get(String((p && p.ticket) || '')) || null;
+  const entry = Number(p && p.price_open) || 0;
+  const ref = Number(p && p.price_current) || 0;
+  const sl = Number(p && p.sl) || 0;
+  const isBuy = Number(p && p.type) === 0;
+  let r = Number(st && st.r) || 0;
+  if (!(r > 0) && sl > 0 && entry > 0) r = Math.abs(entry - sl);
+  const profitDist = entry > 0 && ref > 0 ? (isBuy ? ref - entry : entry - ref) : 0;
+  const bestDist = st && isFinite(Number(st.bestProfit)) ? Number(st.bestProfit) : profitDist;
+  const round2 = (v) => Math.round(v * 100) / 100;
+  return {
+    ticket: p.ticket, sembol: p.symbol, yon: isBuy ? 'buy' : 'sell',
+    hacim: p.volume, giris: p.price_open, sl: p.sl, tp: p.tp, kar: p.profit,
+    fiyat: ref || null,
+    r_mesafe: r > 0 ? Math.round(r * 1e6) / 1e6 : null,
+    kz_r: r > 0 && entry > 0 && ref > 0 ? round2(profitDist / r) : null,
+    en_iyi_r: r > 0 && entry > 0 && ref > 0 && isFinite(bestDist) ? round2(bestDist / r) : null,
+    be: !!(st && st.be),
+    kismi_alindi: !!(st && st.partial),
+  };
+}
+
+/* AÇIK POZİSYON YÖNETİMİ (JEV): tur yanıtındaki kısmi kapatma + SL/koruma
+   kararını KOD uygular. Seviyeler deterministik (R/ATR tabanlı) hesaplanır,
+   broker min mesafesine kırpılır ve SL ASLA geriye (risk yönüne) taşınmaz.
+   Kısmi kapatma pozisyon başına BİR kez uygulanır (st.partial). */
+async function finTsManageOpen(sidS, agent, sym, pos, mkt, ans, qi, lines) {
+  const st = financeState.watch.get(String(pos.ticket)) || null;
+  /* kısmi kapatma pozisyon başına BİR kez: watchdog kaydı yoksa ajan üstünde izle */
+  const partialDone = !!(st && st.partial) || !!(agent && agent.tsPartials && agent.tsPartials.has(String(pos.ticket)));
+  const isBuy = Number(pos.type) === 0;
+  const entry = Number(pos.price_open) || 0;
+  const ref = Number(pos.price_current) || 0;
+  const slNow = Number(pos.sl) || 0;
+  const row = (mkt && mkt.row) || {};
+  const digits = Math.max(0, Math.min(8, Number(row.digits) || 2));
+  const rnd = (v) => Number(Number(v).toFixed(digits));
+  const point = Number(row.point) > 0 ? Number(row.point) : Math.pow(10, -digits);
+  const stopsPts = Number(row.trade_stops_level) || 0;
+  const minDist = stopsPts > 0 ? (stopsPts + 1) * point : point;
+  const atr = Number(mkt && mkt.ind && mkt.ind.atr14) || 0;
+  let rDist = Number(st && st.r) || 0;
+  if (!(rDist > 0) && slNow > 0 && entry > 0) rDist = Math.abs(entry - slNow);
+  const base = rDist > 0 ? rDist : atr > 0 ? atr * 1.5 : ref > 0 ? ref * 0.003 : 0;
+  const profitDist = entry > 0 && ref > 0 ? (isBuy ? ref - entry : entry - ref) : 0;
+
+  /* ---- KISMİ KAPATMA (kısmi TP / kısmi stop): karar Jev'in, uygulama kodun */
+  const par = finTsChoice(ans, 'kismi_' + qi);
+  const pct = par && par.p >= FIN_TS_CONFIRM_P && par.p - par.second >= FIN_TS_MARGIN_P
+    ? ({ yuzde25: 25, yuzde50: 50, yuzde75: 75 }[String(par.choice)] || 0)
+    : 0;
+  if (pct > 0 && !partialDone) {
+    const kind = profitDist >= 0 ? 'partial_tp' : 'partial_sl';
+    let r = null;
+    try {
+      r = await financetools.handlers.mt5_close(
+        {
+          ticket: Number(pos.ticket),
+          percent: pct,
+          kind,
+          reason: `TypeSafe: kısmi %${pct} p=${par.p.toFixed(2)} (${kind === 'partial_tp' ? 'kâr al' : 'zarar kes'})`,
+        },
+        { sessionId: sidS }
+      );
+    } catch (e) {
+      r = { ok: false, error: String((e && e.message) || e) };
+    }
+    if (r && r.ok) {
+      if (st) { st.partial = true; finWatchSave(); }
+      if (agent) { agent.tsPartials = agent.tsPartials || new Set(); agent.tsPartials.add(String(pos.ticket)); }
+      lines.push(
+        `- ${sym} #${pos.ticket}: KISMİ %${pct} ${kind === 'partial_tp' ? 'TP ✓' : 'STOP ✓'}` +
+          ` (p=${par.p.toFixed(2)}${r.remaining != null ? ', kalan ' + r.remaining + ' lot' : ''})`
+      );
+    } else {
+      lines.push(`- ${sym} #${pos.ticket}: kısmi %${pct} reddedildi — ${(r && r.error) || 'hata'}`);
+    }
+  } else if (pct > 0 && partialDone) {
+    lines.push(`- ${sym} #${pos.ticket}: kısmi atlandı — daha önce alındı`);
+  }
+
+  /* ---- SL / KORUMA: yalnız İYİLEŞTİRME yönünde, kârsızda mevcut SL'ye dokunma */
+  const slc = finTsChoice(ans, 'sl_' + qi);
+  if (!slc || slc.p < FIN_TS_CONFIRM_P || slc.p - slc.second < FIN_TS_MARGIN_P) return;
+  const choice = String(slc.choice || '');
+  if (choice === 'birak' || !(ref > 0)) return;
+  if (profitDist <= 0 && slNow > 0) {
+    lines.push(`- ${sym} #${pos.ticket}: SL kararı (${choice}) uygulanmadı — kâr yok`);
+    return;
+  }
+  if (!(base > 0)) return;
+  let desired = 0;
+  if (choice === 'be' && rDist > 0) desired = isBuy ? entry + 0.05 * rDist : entry - 0.05 * rDist;
+  else if (choice === 'trail') desired = isBuy ? ref - 0.5 * base : ref + 0.5 * base;
+  else if (choice === 'sikilastir') desired = isBuy ? ref - Math.max(0.3 * base, minDist + point) : ref + Math.max(0.3 * base, minDist + point);
+  else if (choice === 'koru' && slNow <= 0) desired = isBuy ? ref - Math.max(atr > 0 ? atr * 1.5 : base, minDist + point) : ref + Math.max(atr > 0 ? atr * 1.5 : base, minDist + point);
+  if (!(desired > 0)) return;
+  desired = isBuy ? Math.min(desired, ref - minDist) : Math.max(desired, ref + minDist);
+  const improved = slNow <= 0 || (isBuy ? desired > slNow + point * 0.5 : desired < slNow - point * 0.5);
+  if (!improved) {
+    lines.push(`- ${sym} #${pos.ticket}: SL (${choice}) iyileştirme değil — dokunulmadı`);
+    return;
+  }
+  let mod = null;
+  try {
+    mod = await financetools.handlers.mt5_modify(
+      { ticket: Number(pos.ticket), sl: rnd(desired), tp: Number(pos.tp) || 0 },
+      { sessionId: sidS }
+    );
+  } catch (e) {
+    mod = { ok: false, error: String((e && e.message) || e) };
+  }
+  const label = { be: 'breakeven', trail: 'trailing', sikilastir: 'sıkılaştırma', koru: 'koruma' }[choice] || choice;
+  if (mod && mod.ok) {
+    if (st) { st.be = true; finWatchSave(); }
+    lines.push(`- ${sym} #${pos.ticket}: SL ${label} → ${rnd(desired)} ✓ (p=${slc.p.toFixed(2)})`);
+  } else {
+    lines.push(`- ${sym} #${pos.ticket}: SL ${label} reddedildi — ${(mod && mod.error) || 'hata'}`);
+  }
+}
+
 function finTsSchedule(sid, agent, sec) {
   if (!agent || !financeState.agents.has(String(sid))) return;
   clearTimeout(agent.timer);
@@ -13828,10 +13954,9 @@ async function finTypeSafeRound(sid, agent) {
         acik_pozisyon: posList.length,
       },
       limitler: { max_pozisyon: Number(f.maxPositions) || 3, min_lot: Number(f.minLot) || 0.01, max_lot: Number(f.maxLot) || 0.1 },
-      pozisyonlar: posList.map((p) => ({
-        ticket: p.ticket, sembol: p.symbol, yon: Number(p.type) === 0 ? 'buy' : 'sell',
-        hacim: p.volume, giris: p.price_open, sl: p.sl, tp: p.tp, kar: p.profit,
-      })),
+      /* AÇIK POZİSYONLAR: R/kâr R'si/en iyi R + koruma bayrakları — Jev'in
+         kapatma/kısmi/SL kararları bu bağlamla verilir (finTsPosState) */
+      pozisyonlar: posList.map((p) => finTsPosState(p)),
       piyasa: {},
       ogrenme: finBuildLearnDigest(symbols),
       /* KALİBRASYON: öğrenilmiş eşik + risk çarpanı + kazandıran kurallar */
@@ -13850,7 +13975,7 @@ async function finTypeSafeRound(sid, agent) {
       };
     }
 
-    /* ---------------- TRADER: yön + teyit + kapat kararı ---------------- */
+    /* -------- TRADER: yön + teyit + açık pozisyon yönetimi (kapat/kısmi/SL) -------- */
     if (isTrader) {
       const posBySym = {};
       for (const p of posList) {
@@ -13875,10 +14000,35 @@ async function finTypeSafeRound(sid, agent) {
         };
         if (posBySym[sym]) {
           const pp = posBySym[sym];
+          const ps = finTsPosState(pp);
+          const kzTxt = ps.kz_r == null ? 'R bilinmiyor' : `kâr ${ps.kz_r}R`;
+          const bestTxt = ps.en_iyi_r == null ? '' : ` · en iyi ${ps.en_iyi_r}R`;
+          const slTxt = Number(pp.sl) > 0 ? `SL ${pp.sl}` : 'SL YOK';
           questions['kapat_' + i] = {
             type: 'noul',
-            instructions: `${sym} açık pozisyon (${Number(pp.type) === 0 ? 'buy' : 'sell'}, kâr ${Number(pp.profit) || 0}) ŞİMDİ kapatılmalı mı? Kârı koruma, momentum dönüşü veya SL/TP yakınlığını değerlendir.`,
+            instructions: `${sym} açık pozisyon (${ps.yon}, kâr ${Number(pp.profit) || 0}, ${kzTxt}${bestTxt}, ${slTxt}) ŞİMDİ kapatılmalı mı? Kârı koruma, kâr geri verme, momentum dönüşü veya SL/TP yakınlığını değerlendir.`,
             criteria: { true: 'Kapat — risk/kâr koruma', false: 'Açık kalsın — tez sürüyor' },
+          };
+          questions['kismi_' + i] = {
+            type: 'choice',
+            instructions: `${sym} açık pozisyon (${kzTxt}${bestTxt}${ps.be ? ' · SL takipte' : ''}) için ŞİMDİ kısmi kapatma uygun mu?${ps.kismi_alindi ? ' Bu pozisyonda kısmi kapatma ZATEN yapıldı — yok seç.' : ' Kârı realize etmek/riski azaltmak için değerlendir.'}`,
+            criteria: {
+              yok: 'Kısmi kapatma yok — pozisyon tam kalsın',
+              yuzde25: 'Pozisyonun %25’i kapatılsın',
+              yuzde50: 'Pozisyonun %50’si kapatılsın',
+              yuzde75: 'Pozisyonun %75’i kapatılsın',
+            },
+          };
+          questions['sl_' + i] = {
+            type: 'choice',
+            instructions: `${sym} açık pozisyonu için SL/koruma aksiyonu: ${ps.yon}, giriş ${Number(pp.price_open) || '?'}, şimdi ${ps.fiyat || '?'}, ${slTxt}, ${kzTxt}. Kâr yoksa ve SL varsa 'birak'; SL yoksa 'koru' ile koruma koy.`,
+            criteria: {
+              birak: 'Dokunma — SL yerinde kalsın',
+              be: 'Breakeven — SL girişe çekilsin (kârı kilitle)',
+              trail: 'Trailing — SL fiyatın gerisine taşınsın (kârı takip et)',
+              sikilastir: 'Sıkılaştır — SL fiyata yaklaştırılsın (kârı daha çok koru)',
+              koru: 'Koruma koy — SL’siz pozisyona ATR tabanlı stop eklensin',
+            },
           };
         }
       });
@@ -13915,6 +14065,8 @@ async function finTypeSafeRound(sid, agent) {
             lines.push(`- ${sym}: KAPAT (p=${ex.toFixed(2)}) ${r && r.ok ? '✓ pozisyon kapatıldı' : '✗ ' + ((r && r.error) || 'hata')}`);
           } else {
             lines.push(`- ${sym}: pozisyon açık (kapat=${ex == null ? 'yanıt yok' : ex.toFixed(2)} < ${FIN_TS_EXIT_P}) — tez sürüyor`);
+            /* JEV POZİSYON YÖNETİMİ: kısmi kapatma + SL/koruma kararları */
+            try { await finTsManageOpen(sidS, agent, sym, pos, market[sym], ans, i, lines); } catch {}
           }
           continue;
         }

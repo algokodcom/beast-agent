@@ -99,7 +99,9 @@ function plan(pos, meta, st, cfg) {
   }
 
   /* ---- kısmi TP ---- */
-  if (partialR > 0 && partialPct > 0 && partialPct < 100 && r > 0 && !(st && st.partial) && profit >= partialR * r) {
+  /* partial = kısmi kapatma GERÇEKTEN yapıldı (Jev/kod); partialNotified =
+     yalnız bildirim gitti — ikisi de tekrar üretimi engeller */
+  if (partialR > 0 && partialPct > 0 && partialPct < 100 && r > 0 && !(st && (st.partial || st.partialNotified)) && profit >= partialR * r) {
     const step = num(meta.volume_step, 0.01);
     const vmin = num(meta.volume_min, 0.01);
     const vmax = num(meta.volume_max, 100);

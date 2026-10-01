@@ -2,6 +2,9 @@
 node_modules/
 dist/
 
+# freebuff aracı yerel durumu
+.freebuff/
+
 # gizli anahtarlar ve kişisel yapılandırma — ASLA commit edilmez
 .env
 config.yaml

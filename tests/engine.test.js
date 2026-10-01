@@ -140,119 +140,6 @@ test('todo hatırlatıcı: todo_write/clearTodos önbellekteki oturum kopyasın�
   assert.deepEqual(eng.openSession(sid).todos, []);
 });
 
-/* ---------- Beast Finance: skills kataloğu + skill aracı ---------- */
-
-test('finance: sistem promptu SKILLS kataloğunu içerir', () => {
-  const eng = makeEngine();
-  const s = eng._load(eng.createSession().id);
-  s.finance = true;
-  s.financeTrader = true;
-  const sys = eng.buildFinanceSystem(s);
-  assert.ok(sys.includes('# SKILLS'));
-  assert.ok(sys.includes('SKILL.md'));
-  /* tohumlar kurulu olmalı — katalogda en az bir isim görünür */
-  const list = require('../src/agent/skills').scan();
-  assert.ok(list.length > 0);
-  assert.ok(sys.includes('- ' + list[0].name));
-  /* tool yazma + MQL5 yetkileri promptta açıkça verilir */
-  assert.ok(sys.includes('YETKİLERİN'));
-  assert.ok(sys.includes('skill("tool-yazma")'));
-  assert.ok(sys.includes('skill("mql5")'));
-  /* grafik/ekran görüntüsü yeteneği + eksik araç devri promptta açık */
-  assert.ok(sys.includes('computer_look'), 'finans ajanı ekran görüntüsü aracını bilmeli');
-  assert.ok(sys.includes('browser_screenshot'), 'web grafik görüntüsü aracı promptta olmalı');
-  assert.ok(sys.includes('ocr_read'), 'metin modelleri için OCR yolu promptta olmalı');
-  assert.ok(sys.includes('tool_request'), 'eksik grafik aracı TOOL botuna yazdırılabilmeli');
-  /* BeastFinance EA otomatik kurulur ve entegrasyon kanalıdır */
-  assert.ok(sys.includes('BEASTFINANCE EA'), 'EA entegrasyon bilgisi promptta olmalı');
-  assert.ok(sys.includes('mt5_ea'), 'mt5_ea köprü aracı promptta olmalı');
-  const names = list.map((x) => x.name);
-  assert.ok(names.includes('tool-yazma'), 'tool-yazma skill varsayılan tohum olmalı');
-  assert.ok(names.includes('mql5'), 'mql5 skill varsayılan tohum olmalı');
-  assert.ok(names.includes('price-action') && names.includes('risk-yonetimi') && names.includes('haber-duygu'), 'finans skill tohumları kurulu olmalı');
-  assert.ok(names.includes('typesafe-ai'), 'typesafe-ai skill varsayılan tohum olmalı (rol eşleştirmesinde seçilebilir)');
-  /* rol → skill eşleştirmesi prompta gömülür: rol başına EN FAZLA 2 skill
-     (modal çoklu seçim yazar; fazlası düşer) */
-  const s2 = eng._load(eng.createSession().id);
-  s2.finance = true;
-  s2.financeRole = 'technic';
-  s2.financeRoleSkills = ['price-action', 'ozel-skill', 'ucuncu-skill'];
-  const sys2 = eng.buildFinanceSystem(s2);
-  assert.ok(sys2.includes('skill("price-action")'));
-  assert.ok(sys2.includes('skill("ozel-skill")'));
-  assert.ok(sys2.includes('ZORUNLU skill'));
-  /* seçili skill'in TAM GÖVDESİ prompta gömülür — ajan atlayamaz */
-  assert.ok(sys2.includes('===== SKILL: price-action ====='), 'skill tam metni prompta gömülü olmalı');
-  assert.ok(sys2.includes('===== /SKILL ====='), 'skill bloğu kapanmalı');
-  assert.ok(!sys2.includes('ucuncu-skill'), 'rol başına en fazla 2 skill prompta girer');
-  /* eşleştirme BOŞSA (varsayılan) zorunlu skill satırı eklenmez — AI seçer */
-  const s3 = eng._load(eng.createSession().id);
-  s3.finance = true;
-  s3.financeRole = 'risk';
-  const sys3 = eng.buildFinanceSystem(s3);
-  assert.ok(!sys3.includes('ZORUNLU skill'));
-});
-
-test('finance: trader playbook + işlem geçmişi digest prompta gömülür', () => {
-  const eng = makeEngine();
-  /* ANA TRADER: role yok, playbook skill'i financeRoleSkills ile gelir */
-  const s = eng._load(eng.createSession().id);
-  s.finance = true;
-  s.financeTrader = true;
-  s.financePlaybook = true;
-  s.financeRoleSkills = ['price-action', 'yedek-skill', 'ucuncu-skill'];
-  s.financeDigest = 'Bugün: 3 açılış · net -2.40\nDİKKAT: 2 ardışık kayıp';
-  const sys = eng.buildFinanceSystem(s);
-  assert.ok(sys.includes('TRADER PLAYBOOK'), 'playbook etiketi görünmeli');
-  assert.ok(sys.includes('===== SKILL: price-action ====='), 'playbook tam metni gömülmeli');
-  assert.ok(sys.includes('yedek-skill'), 'ikinci skill de prompta girer');
-  assert.ok(!sys.includes('ucuncu-skill'), 'en fazla 2 skill kuralı trader için de geçerli');
-  assert.ok(sys.includes('İŞLEM PERFORMANS GEÇMİŞİN'), 'geri bildirim digest bloğu olmalı');
-  assert.ok(sys.includes('net -2.40'));
-  /* SHADOW modu promptta açıkça bildirilir */
-  s.financeShadow = true;
-  const sys2 = eng.buildFinanceSystem(s);
-  assert.ok(sys2.includes('SHADOW MOD AKTİF'));
-  /* Playbook'suz (worker/rol) oturumda trader etiketi çıkmaz */
-  const w = eng._load(eng.createSession().id);
-  w.finance = true;
-  w.financeTrader = true;
-  w.financeRoleSkills = ['price-action'];
-  const sysW = eng.buildFinanceSystem(w);
-  assert.ok(!sysW.includes('TRADER PLAYBOOK'));
-  assert.ok(!sysW.includes('Bu rolün ZORUNLU'));
-});
-
-test('finance: zaman dilimi seçimi + hata dersi disiplini promptta', () => {
-  const eng = makeEngine();
-  const s = eng._load(eng.createSession().id);
-  s.finance = true;
-  s.financeTrader = true;
-  const sys = eng.buildFinanceSystem(s);
-  assert.ok(sys.includes('ZAMAN DİLİMİ SENİN KARARIN'), 'periyodu bot seçer kuralı promptta olmalı');
-  assert.ok(sys.includes('timeframe ver'), 'işlem açarken timeframe verilmesi istenmeli');
-  assert.ok(sys.includes('kind:"mistake"'), 'zarar sonrası hata dersi (kind:"mistake") kuralı olmalı');
-  assert.ok(sys.includes('TEKRAR EDEN HATA') || sys.includes('aynı hatayı tekrarlama'), 'hatadan ders çıkarma kuralı olmalı');
-});
-
-test('finance: typesafe-ai skill seçilince TypeSafe kullanım bloğu prompta girer', () => {  const eng = makeEngine();
-  const s = eng._load(eng.createSession().id);
-  s.finance = true;
-  s.financeRole = 'technic';
-  s.financeRoleSkills = ['typesafe-ai'];
-  const sys = eng.buildFinanceSystem(s);
-  assert.ok(sys.includes('skill("typesafe-ai")'), 'skill adı promptta olmalı');
-  assert.ok(sys.includes('typesafe_decision'), 'TypeSafe aracı anlatılmalı');
-  assert.ok(sys.includes('TYPESAFE'), 'TypeSafe entegrasyon bloğu gömülmeli');
-  /* seçilmeyen oturumda blok çıkmaz */
-  const s2 = eng._load(eng.createSession().id);
-  s2.finance = true;
-  s2.financeRole = 'technic';
-  s2.financeRoleSkills = ['price-action'];
-  const sys2 = eng.buildFinanceSystem(s2);
-  assert.ok(!sys2.includes('TYPESAFE (typesafe-ai skill)'), 'seçilmeyen rolde TypeSafe entegrasyon bloğu çıkmaz');
-});
-
 /* ---------- payload tool-çifti hizalama (HTTP 400 emniyeti) ---------- */
 
 test('payload hizalama: yetim tool sonucu / cevapsız tool_call temizlenir', () => {
@@ -508,36 +395,23 @@ test('send: sürekli ajan inbox DM\'lerini sıradaki planlı tura enjekte eder',
   assert.equal(last.role, 'user');
   assert.ok(String(last.content).includes('BEKLEYEN AJAN DM'));
   assert.ok(String(last.content).includes('altın 2400 üstü'));
-  assert.ok(String(last.content).includes('FINANCE TUR #7'));
-});
-
-test('execTool: mt5_* araçları dispatch edilir (unknown tool DEĞİL)', async () => {
-  const eng = makeEngine();
-  const s = eng._load(eng.createSession().id);
-  s.finance = true;
-  eng.cache.set(s.id, s);
-  /* köprü yok → zarif hata döner ama "unknown tool" ASLA olmamalı
-     (finance ajanının işlem açamama hatasının kök nedeni buydu) */
-  const r = JSON.parse(await eng._execTool('mt5_status', {}, null, s.id));
-  assert.doesNotMatch(String(r.error || ''), /unknown tool/i);
-  const r2 = JSON.parse(await eng._execTool('mt5_positions', {}, null, s.id));
-  assert.doesNotMatch(String(r2.error || ''), /unknown tool/i);
+  assert.ok(String(last.content).includes('TUR #7'));
 });
 
 test('agent_dm: tüm koşan ajanlar birbiriyle iletişim kurabilir', async () => {
   const eng = makeEngine();
   eng.flushPendingReports = () => {};
-  eng.cache.set('f1', { id: 'f1', finance: true }); // finance ajanı (GOLD işçisi)
+  eng.cache.set('f1', { id: 'f1' }); // arka plan ajanı (GOLD işçisi)
   eng.cache.set('c1', { id: 'c1', bgJob: true }); // normal ajan (kod işçisi)
-  eng._bgJobs.set('f1', { id: 'f1', code: 'F1', title: 'Finance · GOLD', status: 'running', continuous: true });
+  eng._bgJobs.set('f1', { id: 'f1', code: 'F1', title: 'Analiz · GOLD', status: 'running', continuous: true });
   eng._bgJobs.set('c1', { id: 'c1', code: 'C1', title: 'Kod İşçisi', status: 'running' });
-  /* finance → finance dışı iş ajanı: SERBEST (sınırsız DM) */
+  /* koşan ajan → başka koşan ajan: SERBEST (sınırsız DM) */
   const out = JSON.parse(await eng._execTool('agent_dm', { to: 'Kod', message: 'merhaba' }, null, 'f1'));
   assert.equal(out.ok, true);
-  /* dış ajan finance'e DM atabilir */
+  /* dış ajan işçiye DM atabilir */
   const into = JSON.parse(await eng._execTool('agent_dm', { to: 'GOLD', message: 'durum ne?' }, null, 'c1'));
   assert.equal(into.ok, true);
-  /* finance ajanı ANA SOHBETE rapor verebilir (kod ile eşleşme) */
+  /* işçi ajanı ANA SOHBETE rapor verebilir (kod ile eşleşme) */
   eng.cache.set('chat1', { id: 'chat1', code: '9KPH3U' });
   const reply = JSON.parse(await eng._execTool('agent_dm', { to: '9KPH3U', message: 'rapor: köprü down, bekliyorum' }, null, 'f1'));
   assert.equal(reply.ok, true);
@@ -557,16 +431,16 @@ test('agent_dm: tüm koşan ajanlar birbiriyle iletişim kurabilir', async () =>
 test('agent_dm: koşan ajanlara DM gider, kayıt kalıcı listeye düşer', async () => {
   const eng = makeEngine();
   eng.flushPendingReports = () => {}; // teslim akışı testin dışında
-  eng._bgJobs.set('a1', { id: 'a1', code: 'AAA', title: 'Finance · GOLD', status: 'running', continuous: true });
-  eng._bgJobs.set('a2', { id: 'a2', code: 'BBB', title: 'Beast Finance · Trader', status: 'running', continuous: true });
+  eng._bgJobs.set('a1', { id: 'a1', code: 'AAA', title: 'Analiz · GOLD', status: 'running', continuous: true });
+  eng._bgJobs.set('a2', { id: 'a2', code: 'BBB', title: 'Analiz · Trader', status: 'running', continuous: true });
   /* başlık anahtar kelimesiyle hedefleme */
   const r = JSON.parse(await eng._execTool('agent_dm', { to: 'GOLD', message: 'fiyat 2400 üstünde, dikkat' }, null, 'a2'));
   assert.equal(r.ok, true);
   assert.equal(r.to, 'a1');
   const list = eng.agentDmsList();
   assert.equal(list.dms.length, 1);
-  assert.equal(list.dms[0].fromTitle, 'Beast Finance · Trader');
-  assert.equal(list.dms[0].toTitle, 'Finance · GOLD');
+  assert.equal(list.dms[0].fromTitle, 'Analiz · Trader');
+  assert.equal(list.dms[0].toTitle, 'Analiz · GOLD');
   /* kendine DM reddedilir */
   const self = JSON.parse(await eng._execTool('agent_dm', { to: 'a2', message: 'selam' }, null, 'a2'));
   assert.equal(self.ok, false);
@@ -608,7 +482,7 @@ test('agent_dm: bot oturumu adıyla bulunur, DM bot oturumuna düşer (Tool botu
   eng.setSessionBot(beastSess.id, 'beast');
   const toolSess = eng._load(eng.createSession().id);
   eng.setSessionBot(toolSess.id, 'tool');
-  const r = JSON.parse(await eng._execTool('agent_dm', { to: 'Tool', message: 'mt5_shot bozuk, bak' }, null, beastSess.id));
+  const r = JSON.parse(await eng._execTool('agent_dm', { to: 'Tool', message: 'bir tool bozuk, bak' }, null, beastSess.id));
   assert.equal(r.ok, true);
   assert.equal(r.to, toolSess.id);
   assert.equal(r.toTitle, 'Tool · ' + toolSess.code);
@@ -650,8 +524,8 @@ test('agent_dm: bot↔bot DM bütçesi dolunca yeni tur açılmaz, mesaj sepete 
 test('agent_dm: grup sohbeti kurulur, tüm üyelere düşer, iş bitince kapanır', async () => {
   const eng = makeEngine();
   eng.flushPendingReports = () => {};
-  eng._bgJobs.set('a1', { id: 'a1', code: 'AAA', title: 'Finance · GOLD', status: 'running', continuous: true });
-  eng._bgJobs.set('a2', { id: 'a2', code: 'BBB', title: 'Beast Finance · Trader', status: 'running', continuous: true });
+  eng._bgJobs.set('a1', { id: 'a1', code: 'AAA', title: 'Analiz · GOLD', status: 'running', continuous: true });
+  eng._bgJobs.set('a2', { id: 'a2', code: 'BBB', title: 'Analiz · Trader', status: 'running', continuous: true });
   eng._bgJobs.set('a3', { id: 'a3', code: 'CCC', title: 'Kod İşçisi', status: 'running' });
   /* Trader grubu kurar: hedef GOLD — üye olur, mesaj a3'e düşmez */
   const g1 = JSON.parse(await eng._execTool('agent_dm', { to: 'GOLD', group: 'ALTIN EKİP', message: 'GOLD 2400 üstü — ortak karar: bekleyelim mi?' }, null, 'a2'));
@@ -692,8 +566,8 @@ test('agent_dm: dış kaynak grup postu grubu kurar + onAgentDm kancası her DM 
   eng.onAgentDm = (dm) => seen.push(dm);
   /* grup ÖNCEDEN yok → agentDmGroupPost grubu kurar, panelde görünür yapar */
   const r = eng.agentDmGroupPost({
-    gid: 'team:finance',
-    title: 'Beast Finance EKİP',
+    gid: 'team:analiz',
+    title: 'ANALİZ EKİP',
     fromSid: 'tg:42',
     fromTitle: 'Sahip · Telegram (Ali)',
     topic: 'telegram',
@@ -703,10 +577,10 @@ test('agent_dm: dış kaynak grup postu grubu kurar + onAgentDm kancası her DM 
   assert.equal(r.ok, true);
   const list = eng.agentDmsList();
   assert.equal(list.dms.length, 1);
-  assert.equal(list.dms[0].group, 'team:finance');
-  assert.equal(list.dms[0].groupTitle, 'Beast Finance EKİP');
+  assert.equal(list.dms[0].group, 'team:analiz');
+  assert.equal(list.dms[0].groupTitle, 'ANALİZ EKİP');
   assert.equal(list.dms[0].viaTelegram, true);
-  const g = list.groups.find((x) => x.id === 'team:finance');
+  const g = list.groups.find((x) => x.id === 'team:analiz');
   assert.ok(g && g.closed === false);
   /* kanca hem grup postunda hem normal DM'de tetiklenir */
   assert.equal(seen.length, 1);
@@ -719,7 +593,7 @@ test('agent_dm: dış kaynak grup postu grubu kurar + onAgentDm kancası her DM 
 test('agent_dm: TEK oturum silinir (agentDmDeleteThread), diğer oturumlar korunur', async () => {
   const eng = makeEngine();
   eng.flushPendingReports = () => {};
-  eng._bgJobs.set('a1', { id: 'a1', code: 'AAA', title: 'Finance · GOLD', status: 'running', continuous: true });
+  eng._bgJobs.set('a1', { id: 'a1', code: 'AAA', title: 'Analiz · GOLD', status: 'running', continuous: true });
   eng._bgJobs.set('a2', { id: 'a2', code: 'BBB', title: 'Kod İşçisi', status: 'running' });
   /* üç ayrı oturum: genel 1:1, konulu 1:1, grup sohbeti */
   const r1 = JSON.parse(await eng._execTool('agent_dm', { to: 'a2', message: 'merhaba' }, null, 'a1'));
@@ -772,7 +646,7 @@ test('agent_dm: aynı gruptaki üyelerin 1:1 DM\u2019leri GRUP İÇİNE düşer 
   eng.agentDmsClear();
 });
 
-test('finance ekibi: tüm finance ajanları TEK DM grubuna girer, mesajlar grup içinde toplanır', async () => {
+test('ekip: tüm ekip ajanları TEK DM grubuna girer, mesajlar grup içinde toplanır', async () => {
   const eng = makeEngine();
   eng.flushPendingReports = () => {};
   const mk = (id, title) => ({
@@ -783,26 +657,26 @@ test('finance ekibi: tüm finance ajanları TEK DM grubuna girer, mesajlar grup 
     continuous: true,
     parentId: '',
     groupId: null,
-    dmGroupId: 'team:finance',
-    dmGroupTitle: 'Beast Finance EKİP',
+    dmGroupId: 'team:analiz',
+    dmGroupTitle: 'ANALİZ EKİP',
   });
-  const j1 = mk('f1', 'Beast Finance · Trader');
-  const j2 = mk('f2', 'Finance · Risk Ajanı');
+  const j1 = mk('f1', 'Analiz · Trader');
+  const j2 = mk('f2', 'Analiz · Risk Ajanı');
   eng._bgJobs.set('f1', j1);
   eng._agentTeamJoin(j1);
   eng._bgJobs.set('f2', j2);
   eng._agentTeamJoin(j2);
   const list = eng.agentDmsList();
-  const g = list.groups.find((x) => x.id === 'team:finance');
+  const g = list.groups.find((x) => x.id === 'team:analiz');
   assert.ok(g);
-  assert.equal(g.title, 'Beast Finance EKİP');
+  assert.equal(g.title, 'ANALİZ EKİP');
   assert.ok(g.members.includes('f1') && g.members.includes('f2'));
   /* f2 group VERMEDEN f1'e yazar → mesaj GRUP thread'ine düşer */
   const dm = JSON.parse(await eng._execTool('agent_dm', { to: 'f1', message: 'risk raporu: SL eksik' }, null, 'f2'));
   assert.equal(dm.ok, true);
-  assert.equal(dm.group, 'Beast Finance EKİP');
+  assert.equal(dm.group, 'ANALİZ EKİP');
   const dms = eng.agentDmsList().dms;
-  assert.equal(dms[dms.length - 1].group, 'team:finance');
+  assert.equal(dms[dms.length - 1].group, 'team:analiz');
   /* temizleme */
   eng.agentDmsClear();
 });
@@ -818,27 +692,27 @@ test('agent_dm: grup adı ekip başlığıyla eşleşirse AYNI grup kullanılır
     continuous: true,
     parentId: '',
     groupId: null,
-    dmGroupId: 'team:finance',
-    dmGroupTitle: 'Beast Finance EKİP',
+    dmGroupId: 'team:analiz',
+    dmGroupTitle: 'ANALİZ EKİP',
   });
-  const j1 = mk('f1', 'Beast Finance · Trader');
-  const j2 = mk('f2', 'Finance · Risk Ajanı');
+  const j1 = mk('f1', 'Analiz · Trader');
+  const j2 = mk('f2', 'Analiz · Risk Ajanı');
   eng._bgJobs.set('f1', j1);
   eng._agentTeamJoin(j1);
   eng._bgJobs.set('f2', j2);
   eng._agentTeamJoin(j2);
   /* f3 henüz gruba katılmadı; başlığı grup adı vererek yazar */
-  eng._bgJobs.set('f3', mk('f3', 'Finance · Makro'));
+  eng._bgJobs.set('f3', mk('f3', 'Analiz · Makro'));
   const r = JSON.parse(
-    await eng._execTool('agent_dm', { to: 'Trader', group: 'Beast Finance EKİP', message: 'makro: faiz kararı bekleniyor' }, null, 'f3')
+    await eng._execTool('agent_dm', { to: 'Trader', group: 'ANALİZ EKİP', message: 'makro: faiz kararı bekleniyor' }, null, 'f3')
   );
   assert.equal(r.ok, true);
-  assert.equal(r.group, 'Beast Finance EKİP');
+  assert.equal(r.group, 'ANALİZ EKİP');
   const list = eng.agentDmsList();
   assert.equal(list.groups.length, 1, 'aynı iş için ikinci grup açılmamalı');
-  assert.equal(list.groups[0].id, 'team:finance');
+  assert.equal(list.groups[0].id, 'team:analiz');
   assert.ok(list.groups[0].members.includes('f3'), 'yeni ajan aynı gruba katılmalı');
-  assert.equal(list.dms[list.dms.length - 1].group, 'team:finance');
+  assert.equal(list.dms[list.dms.length - 1].group, 'team:analiz');
   /* ekip dışı iki ajan kendi grubunu kurabilir */
   eng._bgJobs.set('a3', { id: 'a3', code: 'A3', title: 'Serbest A', status: 'running' });
   eng._bgJobs.set('a4', { id: 'a4', code: 'A4', title: 'Serbest B', status: 'running' });
@@ -862,11 +736,11 @@ test('ekip grubu: durdurulmuş üye aktif kadrodan düşer, yeni ajan aynı grub
     continuous: true,
     parentId: '',
     groupId: null,
-    dmGroupId: 'team:finance',
-    dmGroupTitle: 'Beast Finance EKİP',
+    dmGroupId: 'team:analiz',
+    dmGroupTitle: 'ANALİZ EKİP',
   });
-  const j1 = mk('f1', 'Beast Finance · Trader');
-  const j2 = mk('f2', 'Finance · Risk Ajanı');
+  const j1 = mk('f1', 'Analiz · Trader');
+  const j2 = mk('f2', 'Analiz · Risk Ajanı');
   eng._bgJobs.set('f1', j1);
   eng._agentTeamJoin(j1);
   eng._bgJobs.set('f2', j2);
@@ -874,13 +748,13 @@ test('ekip grubu: durdurulmuş üye aktif kadrodan düşer, yeni ajan aynı grub
   /* f2 durduruldu: job aborted + DM kapanışı → f1 koştuğu için grup açık kalır */
   eng._bgJobs.get('f2').status = 'aborted';
   eng._agentDmClose('f2');
-  let g = eng._agentGroups.get('team:finance');
+  let g = eng._agentGroups.get('team:analiz');
   assert.equal(g.closed, false, 'koşan üye varken grup kapanmaz');
   /* yeni ajan aynı gruba girince durmuş eski üye aktif kadrodan düşer */
-  const j3 = mk('f3', 'Finance · Makro');
+  const j3 = mk('f3', 'Analiz · Makro');
   eng._bgJobs.set('f3', j3);
   eng._agentTeamJoin(j3);
-  g = eng._agentGroups.get('team:finance');
+  g = eng._agentGroups.get('team:analiz');
   assert.ok(g.members.includes('f1') && g.members.includes('f3'));
   assert.ok(!g.members.includes('f2'), 'durdurulmuş üye üye listesinde kalmamalı');
   /* son üyeler de durunca grup GEÇMİŞE düşer */
@@ -888,7 +762,7 @@ test('ekip grubu: durdurulmuş üye aktif kadrodan düşer, yeni ajan aynı grub
   eng._agentDmClose('f1');
   eng._bgJobs.get('f3').status = 'aborted';
   eng._agentDmClose('f3');
-  assert.equal(eng._agentGroups.get('team:finance').closed, true);
+  assert.equal(eng._agentGroups.get('team:analiz').closed, true);
 });
 
 test('agent_dm: aynı görevdeki paralel ajanlar OTOMATİK ekip grubuna girer (zorunlu)', async () => {
@@ -1088,14 +962,3 @@ test('send: mention mesajı bekleyen bağlam mesajıyla birleşir ve run başlar
   assert.ok(events.some((e) => e.type === 'error' || e.type === 'done'));
 });
 
-test('listSessions: 100+ oturumda eski finance sohbeti listeden DÜŞMEZ', () => {
-  const eng = makeEngine();
-  /* eski finance sohbeti (en eski updatedAt) */
-  const finS = eng.createSession();
-  eng.markFinance(finS.id, false);
-  /* üzerine 110 normal sohbet — normal liste 100 ile sınırlanır */
-  for (let i = 0; i < 110; i++) eng.createSession();
-  const list = eng.listSessions();
-  assert.ok(list.some((v) => v.id === finS.id && v.finance), 'finance sohbeti her zaman listede');
-  assert.ok(list.filter((v) => !v.finance).length <= 100, 'normal sohbetler 100 ile sınırlı');
-});

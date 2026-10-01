@@ -10,9 +10,6 @@ const llm = require('./llm');
 const { chatStream, chatStreamAuto, chatOnce } = llm;
 const { chatCompletionsUrl, beastDir } = require('./config');
 const tools = require('./tools');
-let financetools = null;
-try { financetools = require('./financetools'); } catch {}
-const FINANCE_TOOL_SET = new Set(financetools ? financetools.NAMES : []);
 const customtools = require('./customtools');
 const research = require('./research');
 const agentdefs = require('./agentdefs');
@@ -409,7 +406,7 @@ class Engine {
     /* #17 kalıcı ajan geçmişi: restart sonrası işler + sohbetler kaybolmasın */
     this._bgJobsFile = path.join(this.sessionsDir, 'bg-jobs.json');
     this._loadBgJobsPersisted();
-    /* AJAN DM: paralel/finance ajanlarının birbirine attığı mesajlar
+    /* AJAN DM: paralel ajanların birbirine attığı mesajlar
        (AJAN DM paneli buradan beslenir; restart sonrası da durur) */
     this._agentDms = [];
     this._agentDmsFile = path.join(this.sessionsDir, 'agent-dms.json');
@@ -451,7 +448,7 @@ class Engine {
     if (nrBoot.unref) nrBoot.unref();
     skills.seedIfEmpty();
     agentdefs.seedIfEmpty();
-    try { customtools.seedDefaults(); } catch {} // varsayılan MT5 toolları (mt5_shot, mt5_barlar2, ...) — tüm oturumlara açılır
+    try { customtools.seedDefaults(); } catch {} // varsayılan toollar — tüm oturumlara açılır
   }
 
   /* ---------- opencode agent.ts port: özel ajanlar ---------- */
@@ -1255,15 +1252,6 @@ class Engine {
           } else if (rec.t === 'bcws') {
             /* Beast Code oturumu: hangi çalışma klasörüne bağlı */
             session.bcWs = String(rec.ws || '');
-          } else if (rec.t === 'fin') {
-            /* Beast Finance oturumu: kalıcı izolasyon etiketi (finoff kapatır) */
-            session.finance = true;
-            session.financeTrader = !!rec.trader;
-            if (rec.role) session.financeRole = String(rec.role);
-          } else if (rec.t === 'finoff') {
-            session.finance = false;
-            session.financeTrader = false;
-            delete session.financeRole;
           } else if (rec.t === 'msg') {
             delete rec.t;
             session.messages.push(rec);
@@ -1324,12 +1312,9 @@ class Engine {
         let r;
         try { r = JSON.parse(l); } catch { continue; }
         if (r.t === 'meta') out.push(JSON.stringify({ t: 'meta', id: s.id, code: s.code, createdAt: s.createdAt }));
-        /* KALICİ ETİKETLER compact'ta ASLA düşmez — özellikle 'fin'/'finoff':
-           silinirse finance oturumu etiketini KAYBEDER ve mt5_* araçları
-           "unknown tool" olur (bayat compact kaybı bu yüzden) */
+        /* KALICİ ETİKETLER compact'ta ASLA düşmez */
         else if (
           r.t === 'meta2' || r.t === 'bot' || r.t === 'todo' ||
-          r.t === 'fin' || r.t === 'finoff' ||
           r.t === 'agent' || r.t === 'bcws' || r.t === 'botdm'
         ) out.push(l);
       }
@@ -1407,40 +1392,8 @@ class Engine {
       count: s.messages.length,
       isBg,
       isBotDm: !!s.isBotDm,
-      finance: !!s.finance,
       bgStatus: isBg ? (job ? job.status : null) : null,
     };
-  }
-
-  /* Beast Finance etiketi: oturumu finance sohbeti olarak KALICI işaretler
-     (jsonl'e 'fin' satırı düşer — restart sonrası da hatırlanır) */
-  markFinance(id, trader = false, role = '') {
-    const s = this._load(String(id));
-    s.finance = true;
-    s.financeTrader = !!trader;
-    if (role) s.financeRole = String(role);
-    else delete s.financeRole;
-    try {
-      fs.appendFileSync(
-        this._file(s.id),
-        JSON.stringify({ t: 'fin', trader: !!trader, role: String(role || ''), at: nowIso() }) + '\n'
-      );
-    } catch {}
-    this.cache.set(String(s.id), s);
-    return s;
-  }
-
-  /* Finance etiketini kaldır — oturum normal sohbete döner */
-  unmarkFinance(id) {
-    const s = this._load(String(id));
-    s.finance = false;
-    s.financeTrader = false;
-    delete s.financeRole;
-    try {
-      fs.appendFileSync(this._file(s.id), JSON.stringify({ t: 'finoff', at: nowIso() }) + '\n');
-    } catch {}
-    this.cache.set(String(s.id), s);
-    return s;
   }
 
   /* #17 paralel ajan oturumları sol sohbet listesine KARIŞMAZ;
@@ -1451,21 +1404,16 @@ class Engine {
       files = fs.readdirSync(this.sessionsDir).filter((f) => f.endsWith('.jsonl'));
     } catch {}
     const out = [];
-    const fin = [];
     for (const f of files) {
       const id = f.replace(/\.jsonl$/, '');
       const v = this._view(this._load(id));
       if (v.isBg) continue;
       if (v.isBotDm) continue; // botlar arası DM — yalnız admin DM Log ekranında
-      /* FİNANS GEÇMİŞİ KAYBOLMAZ: normal sohbet listesi 100 ile sınırlı olsa da
-         finance sohbetleri AYRICA listelenir — 100+ oturumu olan kullanıcıda
-         eski finance sohbetleri listeden düşüp "kaybolmuş" görünmez. */
-      (v.finance ? fin : out).push(v);
+      out.push(v);
     }
     const byNew = (a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt));
     out.sort(byNew);
-    fin.sort(byNew);
-    return out.slice(0, 100).concat(fin.slice(0, 60)).sort(byNew);
+    return out.slice(0, 100);
   }
 
   /* Panel oturumları: belirli bir bgTitle taşıyan gizli oturumlar (Beast Code,
@@ -1540,10 +1488,9 @@ class Engine {
       const kept = lines.filter((l) => {
         try {
           const r = JSON.parse(l);
-          /* kalıcı etiketler korunur (fin/finoff dahil — finance bayrağı kaybolmasın) */
+          /* kalıcı etiketler korunur */
           return (
             r.t === 'meta' || r.t === 'meta2' || r.t === 'bot' || r.t === 'todo' ||
-            r.t === 'fin' || r.t === 'finoff' ||
             r.t === 'agent' || r.t === 'bcws' || r.t === 'botdm'
           );
         } catch { return false; }
@@ -1694,11 +1641,11 @@ class Engine {
        - Sandbox oturumları (sbSandbox) → 'sandbox' ajanı (repo disiplini + panel_run)
        - session.bcAgent ('plan'|'build') — eski bcMode:'plan' oturumları geriye
          uyumlu plan ajanına düşer
-     Studio/Finance/bgJob kendi ajan dünyalarında koşar — opencode BC sistemine
-     katılmaz (buildStudioSystem/buildFinanceSystem/buildBgSystem öncelikli). */
+     Studio/bgJob kendi ajan dünyalarında koşar — opencode BC sistemine
+     katılmaz (buildStudioSystem/buildBgSystem öncelikli). */
   _bcAgentInfo(session) {
     if (!session || !session.bcCode) return null;
-    if (session.studio || session.finance || session.bgJob) return null;
+    if (session.studio || session.bgJob) return null;
     const name = session.sbSandbox
       ? 'sandbox'
       : session.bcAgent === 'plan' || session.bcAgent === 'build' || session.bcAgent === 'sandbox'
@@ -1970,167 +1917,6 @@ class Engine {
     );
   }
 
-  /* Beast Finance: MT5 trading ajanı — chat copilot'ı VEYA otonom trader.
-     Oturum alanları (main enjekte eder): financeTrader, financeAuto,
-     financeSymbols, financeStrategy, financeLimits, financeRole */
-  buildFinanceSystem(session) {
-    const nowD = new Date();
-    const localDate = nowD.toLocaleDateString('tr-TR');
-    const localTime = String(nowD.getHours()).padStart(2, '0') + ':00';
-    const isTrader = !!(session && session.financeTrader);
-    const auto = !!(session && session.financeAuto);
-    const symbols = Array.isArray(session && session.financeSymbols) ? session.financeSymbols.join(', ') : String((session && session.financeSymbols) || '');
-    const lim = (session && session.financeLimits) || {};
-    const modeBlock = isTrader
-      ? auto
-        ? 'ROL: OTONOM TRADER ⚡ — tur tur çalışıyorsun. Her turda: veri çek → değerlendir → GEREKİRSE işlem aç/kapat/SL-TP güncelle → kısa rapor. Sistem seni turlar; sohbette konuşmazsın.'
-        : 'ROL: GÖZLEMCİ ANALİST 🔍 — tur tur piyasa tararsın ama OTOMATİK İŞLEM KAPALI: mt5_trade/mt5_pending KULLANMA. Fırsatları net öneri olarak yaz (sembol, yön, giriş, SL, TP, sebep); sahibi onaylarsa açılır.'
-      : 'ROL: TRADING CO-PİLOT 💬 — sahibinle sohbet ediyorsun. Veri isterse mt5_* araçlarıyla çek, analiz et; işlem istenirse limitler içinde uygula, istenmezse sadece öneri ver.';
-    const proj = this._projectInstructions(session);
-    /* Skills kataloğu: finance oturumlarında da skill'ler çağrılabilir
-       (skill aracı _chatTurn'de finance oturumlarına enjekte edilir). */
-    const skList = (() => {
-      try { return skills.scan(); } catch { return []; }
-    })();
-    /* CHATTEKI BEAST KİMLİĞİ: finance ajanı da sahibin SOUL/USER/KURALLARINI taşır */
-    const mem = memory.loadAll();
-    const rules = memory.listRules();
-    const isWorker = !!(session && session.bgJob && !isTrader);
-    const modeBlock2 = isWorker
-      ? 'ROL: FİNANS İŞÇİSİ 🔎 — TEK bir görev için piyasa verisi toplar, analiz eder, RAPOR döndürürsün. mt5_trade/mt5_pending KULLANMA (yeni işlem AÇMA) — açık pozisyonlarda kısmi kapatma (mt5_close percent: kısmi TP/kısmi stop) ve SL/TP güncelleme (mt5_modify) SERBEST; okuma araçları (mt5_status/account/market/positions/orders/history) her zaman açık. İş bitince kısa final raporu yaz.'
-      : modeBlock;
-    /* ANALİZ EKİBİ rolü: trader'ın yanında koşan uzman ajanlar (risk/teknik/
-       makro) — hepsi İşlem AÇMAZ, kendi uzmanlık çerçevesinde rapor yazar */
-    const roleBlock =
-      ({
-        risk:
-          'ROL: RİSK AJANI 🛡 — portföyün RİSK GÖZCÜSÜSÜN, İşlem AÇMAZSIN (mt5_trade/mt5_pending KULLANMA — yeni işlem AÇMAZSIN; açık pozisyonda kısmi kapatma (mt5_close percent) ve SL/TP güncelleme (mt5_modify) SERBEST). Her turda: hesap + pozisyonlar + marj kullanımı → kaldıraç/exposure değerlendirmesi; SL\u2019siz pozisyon, limit aşımı, tek yönlü birikme, günlük kayıp hızı risklerini raporla; net düzeltme önerisi ver (hangi pozisyon küçültülmeli/kapatılmalı).',
-        technic:
-          'ROL: TEKNİK ANALİZ AJANI 📊 — fiyat yapısı uzmanısın, İşlem AÇMAZSIN (mt5_trade/mt5_pending KULLANMA — yeni işlem AÇMAZSIN; açık pozisyonda kısmi kapatma (mt5_close percent) ve SL/TP güncelleme (mt5_modify) SERBEST). Her turda odak semboller için: trend/yapı, destek-direnç bölgeleri, momentum (mt5_market + mt5_history verisiyle); sembol başına AL/SAT/BEKLE + giriş/SL/TP fikri üret — trader bu öneriyi işleme çevirir. Bulgularını mt5_ea action:"note" ile grafiğe ÇİZ (destek/direnç/SL/TP seviyeleri) ve tool__mt5_shot ile seviyelerin göründüğünü teyit et; önemli seviyeleri görselle birlikte agent_dm ile trader\'a/ekibe ilet — grafik üzerinde ortak karar alın.',
-        macro:
-          'ROL: MAKRO AJANI 🌍 — büyük resim uzmanısın, İşlem AÇMAZSIN (mt5_trade/mt5_pending KULLANMA — yeni işlem AÇMAZSIN; açık pozisyonda kısmi kapatma (mt5_close percent) ve SL/TP güncelleme (mt5_modify) SERBEST). Her turda web_search ile güncel makro manşetleri + ekonomik takvim riskleri (faiz, CPI, jeopolitik); DXY/altın/petrol bağıntılarını odak sembollere çevir; sembol başına yön eğilimi + TEMKİN/BEKLE notu ver.',
-        visual:
-          'ROL: GÖRSEL ANALİZ AJANI 👁 — grafik/ekran görüntüsü uzmanısın, İşlem AÇMAZSIN (mt5_trade/mt5_pending KULLANMA — yeni işlem AÇMAZSIN; açık pozisyonda kısmi kapatma (mt5_close percent) ve SL/TP güncelleme (mt5_modify) SERBEST). MT5 grafiği için ÖNCE tool__mt5_shot kullan (BeastFinance EA "shot": gerçek grafik PNG + görsel SONRAKİ TURDA gözüne gelir; symbol/timeframe vererek başka sembol/periyot çekebilirsin; dönen path send_file ile gönderilebilir); gerekirse EA panosuna mt5_ea action:"note" ile plan/seviye yaz. ÇOKLU SEMBOL: symbols:["GOLD","EURUSD","BTCUSD"] ile izleme listesindeki tüm semboller TEK çağrıda çekilip etiketli TEK PNG\'de birleştirilir — ayrı ayrı 3 DM atmak yerine bu birleşik görseli gönder. web grafiklerinde browser_open + browser_screenshot; bilgisayar ekranı için computer_look; görsel göremeyen metin-model isen ocr_read (source:"screen"/"browser") kullan. Gördüğün yapıyı yorumla: trend, formasyon, mum yapısı, destek-direnç ve SL/TP çizgileri; sembol başına GÖRSEL TEYİT + AL/SAT/BEKLE notu üret. Önemli bulguyu GÖRSELİYLE paylaş: agent_dm image:true (son ekran görüntün) ya da image:"<mt5_shot path>" ile ANA TRADER\'a/ekibe gönder — karşı ajan görüntüyü GERÇEKTEN görür, AJAN DM panelinde açılır. NOT: image:true DAİMA oturumdaki EN SON görseli yollar — her sembolün fotoğrafını ayrı göndermen gerekirse dönen path\'leri kullan (image:"<path>").',
-      })[String((session && session.financeRole) || '')] || '';
-    /* ROL → SKILL eşleştirmesi (ayarlar modalı): rol başına EN FAZLA 2 skill;
-       ANA TRADER için ayrıca PLAYBOOK skill'leri (roleSkills.trader).
-       Seçili SKILL.md'lerin TAM GÖVDESİ prompta gömülür — ajan skill aracını
-       çağırmayı atlasa bile prosedür KESİN uygulanır. */
-    const roleSkills = Array.isArray(session && session.financeRoleSkills)
-      ? session.financeRoleSkills.map((s) => String(s || '').trim()).filter(Boolean).slice(0, 2)
-      : [];
-    let roleSkillBlock = '';
-    if (roleSkills.length) {
-      const what = roleBlock
-        ? 'Bu rolün ZORUNLU skill\'i'
-        : session && session.financePlaybook
-          ? 'TRADER PLAYBOOK\'un (ZORUNLU skill)'
-          : 'BU OTURUMUN ZORUNLU skill\'i';
-      for (const roleSkillName of roleSkills) {
-        const sb = this._skillBody({ name: roleSkillName });
-        roleSkillBlock +=
-          ` ${what}: skill("${roleSkillName}")` +
-          (sb && sb.ok && sb.content
-            ? ' — aşağıda TAM prosedürü verilmiştir; HER TURDA birebir uygula (ayrıca okumana gerek yok):\n\n' +
-              `===== SKILL: ${roleSkillName} =====\n${sb.content}\n===== /SKILL =====`
-            : ' — ilk turda bu skill\'i mutlaka oku ve prosedürüne birebir uy.') +
-          '\n';
-      }
-    }
-    /* TYPESAFE ENTEGRASYONU: roleSkills'te "typesafe-ai" seçiliyse ajan tipli
-       kararlarını chat modeline yazdırmak yerine typesafe_decision aracıyla
-       TypeSafe System One'dan (Jev) alır — anahtar yoksa uyarır. */
-    const finTypeSkill = roleSkills.find((s) => s.toLowerCase() === 'typesafe-ai');
-    if (finTypeSkill) {
-      let tsReady = false;
-      try { tsReady = !!typesafe.cfg().apiKey; } catch {}
-      roleSkillBlock +=
-        tsReady
-          ? ' TYPESAFE (typesafe-ai skill) ZORUNLU: semantik/olasılıklı yargılarını (haber-makro etkisi, setup kalitesi, yön/aksiyon seçimi, tez doğrulama) chat modeline metin yazdırıp yorumlamak yerine typesafe_decision aracıyla TypeSafe System One\'a (Jev) sor: state içine tüm somut bağlamı (sembol, fiyat/seviye, haber metni, pozisyon) koy; aynı state üzerindeki bağımsız soruları TEK çağrıda birlikte sor (noul: evet olasılığı, choice: seçenek+dağılım, score: ağırlıklı puan+dağılım). Dönen olasılıkları eşikle yorumla (ör. >0.65 güçlü kanaat, 0.35-0.65 belirsiz → temkinli davran/teyit ara) ve kararının gerekçesine sayısal değerleri yaz. TypeSafe yargısı SENİN yerine karar vermez — nihai karar ve risk yönetimi sende.\n'
-          : ' TYPESAFE (typesafe-ai skill) SEÇİLİ ama API anahtarı ayarlı DEĞİL: kullanıcıya Ayarlar → TypeSafe sekmesinden anahtar girmesini söyle; o zamana kadar bu turda kendi analizinle devam et ve typesafe_decision aracını kullanma.\n';
-    }
-    const roleBlockFull = roleBlock + roleSkillBlock;
-    /* FİNANS EKİBİ: tüm finance ajanları tek DM grubundadır — sohbet grup
-       thread'inde toplanır (ayrı ayrı 1:1 thread'lere dağılmaz) */
-    const finJob = this._bgJobs && this._bgJobs.get(String(session && session.id));
-    const teamLine = finJob && finJob.teamGid ? this._agentTeamPromptLine(finJob.teamGid) : '';
-    return (
-      (mem.soul ? mem.soul.trim() + '\n\n' : '') +
-      'Sen BEAST FİNANS\u2019sın — bilgisayardaki MetaTrader 5 (MT5) terminaline köprüyle bağlı trading ajanı.\n' +
-      'ORTAM: Beast Finance uygulamasındasın — solda sohbet geçmişi + izleyiciler, ortada bu sohbet, SAĞ panelde MT5 işlem panosu (hesap, pozisyonlar, piyasa, AKIŞ) var.\n' +
-      'KÖPRÜ: MT5 terminaline Python stdio köprüsüyle bağlısın; panel 3 saniyede bir hesap/pozisyon/piyasa verisini tazeler. mt5_* araç çağrıların ve işlem hareketlerin (açılan/kapanan pozisyonlar) SAĞ paneldeki AKIŞ akışına canlı düşer — panelin orayı izlediğini bil.\n' +
-      'GÖREV ALANI: piyasa verisi okuma (fiyat/hesap/pozisyon/geçmiş), teknik değerlendirme, pozisyon yönetimi (aç/kapat/SL/TP), risk disiplini ve kısa karar raporları. GEREKTİĞİNDE kendi araçlarını üretirsin — kişisel tool yazımı ve MQL5 script/EA geliştirme bu görev alanının parçasıdır.\n' +
-      modeBlock2 + '\n' +
-      (roleBlockFull ? roleBlockFull + '\n' : '') +
-      (teamLine || '') +
-      'MT5 ARAÇLARI: mt5_status (bağlantı), mt5_account (hesap), mt5_market (canlı fiyat), mt5_positions (açık pozisyonlar), mt5_orders (bekleyen emirler), mt5_history (kapanan işlemler), mt5_alerts (fiyat alarmı: kur/listele/sil — modu SEN seçersin: once/repeat), mt5_ogrenme (SEMBOL + PERİYOT BAZLI ÖĞRENME: işlem istatistiği + periyot kırılımı + son hatalar + dersler — zarar/stop sonrası kind:"mistake" dersini ZORUNLU yaz, karar öncesi stats/list ile oku), mt5_limits (lot/pozisyon limitlerini gör/GÜNCELLE — yalnız trader; symbol ile SEMBOL BAZLI min/max lot — sembolün karakterine göre karar senin), mt5_ea (BeastFinance grafik panosu: status/ping/chart/note), mt5_trade (⚡PİYASA EMRİ: side:"buy"|"sell" ile ANLIK gir — bekleyen emir ZORUNLU DEĞİL; timeframe ver (M1..MN1, SEN seçersin — öğrenme o periyoda işlenir); lot için volume yerine riskPct+sl ver, sistem hesaplar; limit/stop tipleri de kabul eder), mt5_close (TAM ya da KISMİ kapat: percent ile kısmi TP & kısmi stop — karar ajanın), mt5_modify (SL/TP), mt5_pending (BEKLEYEN emir: limit/stop + price + timeframe — fiyatın seviyeye gelmesini beklemek için; anlık giriş için mt5_trade kullan), mt5_cancel (emir iptal).\n' +
-      'EMİR TİPLERİ (6 tip — HEPSİ AÇIK): buy_market/sell_market = anlık piyasa emri (fiyat beklenmez), buy_limit/sell_limit = bekleyen limit (price zorunlu), buy_stop/sell_stop = bekleyen stop (price zorunlu). mt5_trade ve mt5_pending İKİSİ DE 6 tipi kabul eder; emir tipini net söyle (ör. type:"sell_limit").\n' +
-      '⚡HIZLI AKSİYON (ZORUNLU ZİHNİYET): piyasa emri (market buy/sell) HER ZAMAN elinde ve bekleyen emir vermek ZORUNDA DEĞİLSİN. Fırsat anıksa / teyitli kırılım, momentum, haber veya seviye reddi anında mt5_trade {symbol, side:"buy"|"sell", sl, tp, riskPct ya da volume, reason} ile ANINDA market gir — type bile yazmana gerek yok. Bekleyen emir YALNIZ fiyatın seviyeye gelmesini beklemek gerçekten mantıklıysa kurulur (ör. geri çekilme limiti); "emir" diye her şeyi bekleyen emirle yapma. Hızlı girişte tek çağrı yeter: volume yerine riskPct+sl ver → lot otomatik hesaplanır.\n' +
-      'ALARM KARARI SENDE: mt5_alerts ile alarm kurarken mode ZORUNLU — "once" (tek seferlik; ilk tetiklemede kapanır) ya da "repeat" (tekrarlı; alarm açık kalır, koşul sürdükçe cooldownMin dakikada bir tekrar uyarır + seni uyandırır; cooldownMin varsayılan 5). Tekrarlı mı tek seferlik mi olacağını sen seç, varsayılana bırakma; seviyenin önemine göre cooldownMin belirle (ör. 5/15/60).\n' +
-      'ALARM TEMİZLİĞİ (ZORUNLU DİSİPLİN): alarm bir BEKÇİDİR, süs değil — gereksiz alarm biriktirme. Her turda (ya da en az birkaç turda bir) mt5_alerts action:"list" ile alarmları gör; listede "mine:true" senin kurduklarındır. Tezi/geçerliliği biten alarmı SİL: seviye kırıldı ve artık anlamsız, pozisyon kapandı, plan/hedef değişti, tetiklendi ve işlevi kalmadı. Silme: tekil kayıt action:"remove" {id} · kendi gereksizlerini toplu action:"clear" (varsayılan yalnız SENİN alarmların; symbol ile daralt; tümünü temizlemek için all:true — bunu başka ajanların alarmlarını da sileceği için YALNIZ açıkça gerekliyse kullan). Akan fiyatta işe yaramayan, üst üste aynı bölgeye kurulmuş alarmları temiz tut.\n' +
-      'KISMİ KAPATMA YETKİSİ (TÜM finance ajanlarında): açık pozisyonda kısmi kapatma — kısmi TP (kâr al) ve kısmi stop (zarar kes) — TAMAMEN SENİN KARARIN, OTOMATİK DEĞİLDİR; mt5_close {ticket, percent, kind:"partial_tp"|"partial_sl", reason}. Gerek gördüğünde kullan; kalan pozisyon SL/TP ile devam eder. Kısmi TP fırsatı bildirimi gelirse (fiyat seviyeye ulaştı) kapatıp kapatmamak sana bağlı.\n' +
-      'KİŞİSEL MT5 ARAÇLARI (VARSAYILAN KURULU — tool__* tüm oturumlarda çağrılabilir): tool__mt5_shot (grafikten GERÇEK PNG + görsel ajana enjekte — grafik işlerinde BİRİNCİL; timeframes:["M1","M15"] ile çoklu periyot, symbols:["GOLD","EURUSD","BTCUSD"] ile çoklu sembol TEK karede), tool__mt5_barlar2 (OHLC mumlar, köprüsüz), tool__mt5_m15_m5 (GOLD M15+M5 hazır paket), tool__mt5_fiyat, tool__mt5_durum (hesap+pozisyon+emir tek çağrı), tool__mt5_gecmis, tool__mt5_pozisyon_gecmis, tool__mt5_sltp, tool__mt5_kapat, tool__mt5_bekleyen, tool__mt5_emir, tool__mt5_emir_iptal.\n' +
-      'BEASTFINANCE EA (OTOMATİK GRAFİK UZMANI — ENTEGRASYON KANALI): MT5 terminaline bağlanıldığında BeastFinance uzman danışmanı İLK GRAFİĞE OTOMATİK yüklenir, AutoTrading izni açılır (kurulum sistem tarafından yapılır; elle ekleme gerekmez). Grafik panosu + seviye çizgileri + dosya köprüsü (beast_ea.json / beast_cmd.json / beast_note.json) bu EA üzerinden yürür: entegrasyon işlerinde (status/ping/chart/note) mt5_ea kullan; ekran görüntüsü işlerinde tool__mt5_shot ("shot" komutu — gerçek PNG + ajan görseli) birincildir. Yazdığın not ve çizgiler tool__mt5_shot ve computer_look screenshot\'ında GÖRÜNÜR.\n' +
-      'YETKİLERİN (AÇIK — çekinmeden kullan):\n' +
-      '- skill: kurulu SKILL.md kataloğunu oku ve uygula — tool yazmadan ÖNCE skill("tool-yazma"), MT5 tarafı işlerden ÖNCE skill("mql5") oku ve prosedürüne birebir uy.\n' +
-      '- Kişisel tool yazma: %APPDATA%\\beast\\tools\\<slug>\\ içine tool.json + run.js yaz (write_file/edit_file); run_command ile çıktısını (JSON, ok alanlı) doğrula → tool__<slug> ANINDA tüm finance ajanlarında çağrılabilir olur.\n' +
-      '- MQL5: MT5 tarafında script/gösterge/EA yaz (write_file), metaeditor64.exe /compile ile derle, MQL5\\Files dosya köprüsüyle veriyi Beast\'e taşı; kullanıcıya çalıştırma adımını açıkça söyle.\n' +
-      '- Yerleşik araçlar: run_command, python_run, read_file/write_file/edit_file, web_search/deep_search, browser_*, computer_look (ekran görüntüsü) — hepsi açık.\n' +
-      'GRAFİK & GÖRSEL DOĞRULAMA (karar öncesi — vazgeçilmez):\n' +
-      '- tool__mt5_shot: MT5 grafiğinin GERÇEK PNG\'si (BeastFinance EA "shot" komutu). Görsel SONRAKİ TURDA gözüne gelir; aktif grafikte Beast panosu + mt5_ea note ile çizilen seviyeler GÖRÜNÜR. symbol/timeframe ver → EA geçici grafik açıp o sembol/periyottan çeker; dönen path send_file ile kullanıcıya gönderilebilir. Grafik analizinde İLK tercih budur. ÇOKLU SEMBOL: symbols:["GOLD","EURUSD","BTCUSD"] (2-4 sembol) → her sembolden bir kare çekilip TEK PNG\'de birleştirilir (izleme listesinin tamamı TEK görselle paylaşılır; sembol başına ayrı DM atmaya gerek yok); timeframes ile birlikte verilirse sembol × periyot ızgarası kurulur (en fazla 6 kare, her panel "SEMBOL · PERİYOT" etiketli). ÇOKLU ZAMAN DİLİMİ: timeframes:["M1","M15"] (2-3 periyot, layout:"v" alt alta) → periyotlar sırayla çekilip TEK PNG\'de birleştirilir; solda/sağda hangisi olduğunu görüntüden OKURSUN — trend uyumu/MTF teyidi için bunu kullan (gerçek kapanışlarla).\n' +
-      '- mt5_ea action:"note": grafiğe kısa plan metni + yatay seviye çizgileri yazar (destek/direnç/SL/TP) — sonra tool__mt5_shot ile çekip seviyelerin doğru yerde olduğunu GÖRSEL doğrula.\n' +
-      '- computer_look: tüm masaüstü ekranı (MT5 dışı pencereler dahil); browser_screenshot: web grafikleri (TradingView/Investing) — browser_open ile aç.\n' +
-      '- Görsel göremiyorsan (metin-model) ocr_read (source:"screen"/"browser") ile grafikteki fiyat/seviyeleri metne çevir.\n' +
-      '- Grafikte gezinme/ölçek: computer_act ile timeframe, scroll, zoom (yerel fare/klavye sürer — imleci oynatır; kısa tut).\n' +
-      '- EKİPLE GÖRSEL PAYLAŞIM: chart PNG\'sini agent_dm image:true (son görüntün) ya da image:"<dosya yolu>" (ör. tool__mt5_shot dönen path) ile trader/ekibe gönder — karşı ajan görüntüyü GERÇEKTEN görür, AJAN DM panelinde açılır. Ortak kararlarda grafiği paylaşmak zorunlu disiplindir.\n' +
-      '- PARALEL EKİP AKIŞI: teknik ajan seviyeleri hesaplar → mt5_ea note ile grafiğe çizer; görsel ajan tool__mt5_shot ile çekip TEYİT eder ve agent_dm ile görseli trader\'a atar; risk ajanı aynı görsel üzerinden SL/TP yerleşimini denetler; trader kararı işleme çevirir. Aynı sembolde koşan ajanlar tek DM grubunda (agent_dm group) toplanır — çelişen hareket etme.\n' +
-      '- EKSİK ARAÇ: özel grafik aracı gerekiyorsa (ör. çoklu timeframe tek görüntü, indikatör paneli okuma) VAR SAYMA — tool_request ile TOOL botuna yazdır (asenkron çalışır; rapor sohbete düşer, araç doğrulanınca tool__<ad> olarak ANINDA çağrılır); küçük aracı skill("tool-yazma") prosedürüyle kendin de yazabilirsin.\n' +
-      'VERİ AKIŞI (her değerlendirmede): mt5_account + mt5_positions + mt5_market çağrılarını AYNI turda PARALEL ver; gerekiyorsa mt5_history ile son işlemleri gör.\n' +
-      'PARALEL + KOORDİNASYON: uzun araştırma/işleri run_background ile paralel finance işçisine devret (parent finance olduğu için işçi mt5 okuma araçlarını görür); koşan ajanlarla konuşmak için agent_dm (to: ajan başlığındaki anahtar kelime, örn "GOLD"; ortak karar için group: "İSİM" ile grup sohbeti kur — mesaj tüm üyelere düşer). Görevin bitince DM/grup sohbetleri otomatik KAPANIR (geçmiş panelde kalır).\n' +
-      (symbols ? `İZLEME LİSTESİ: ${symbols}\n` : '') +
-      (lim.minLot || lim.maxLot
-        ? 'LİMİTLER: ' +
-          [
-            lim.minLot ? `min lot ${lim.minLot}` : null,
-            lim.maxLot ? `max lot ${lim.maxLot}` : null,
-            lim.maxPositions ? `max eşzamanlı pozisyon ${lim.maxPositions}` : null,
-          ].filter(Boolean).join(' · ') +
-          ' (genel).' +
-          (lim.symbolLimits && Object.keys(lim.symbolLimits).length
-            ? ' SEMBOL BAZLI: ' +
-              Object.entries(lim.symbolLimits)
-                .map(([s, v]) => `${s} ${Number(v && v.minLot) > 0 ? Number(v.minLot) : lim.minLot}–${Number(v && v.maxLot) > 0 ? Number(v.maxLot) : lim.maxLot}`)
-                .join(' · ') +
-              ' — sembol limiti önceliklidir.'
-            : '') +
-          ' Bunları aşıp araç kullanma; sistem zaten reddeder (lot min lot altına inemez, max lot üstüne çıkamaz).\n'
-        : '') +
-      'TUR RİTMİ (yalnız trader kararı): mt5_limits {action:"set", intervalSec, intervalForMin} ile tur aralığını ayarlarsın — sert hareket/haber anında geçici hızlan (ör. 45-60 sn × 10-20 dk), sakinleşince geri çek (ör. 180-300 sn); süre dolunca taban aralığa OTOMATİK dönülür. SÜREKLİ en düşük aralıkta kalma — API/maliyet limitini koru; hız modu sınırları sistemce zorlanır.\n' +
-      'RİSK DİSİPLİNİ:\n' +
-      '- SL\u2019siz pozisyon BIRAKMA: açtığın her işlemde mantıklı bir SL koy; SL\u2019siz kalan pozisyonu mt5_modify ile tamamla.\n' +
-      '- KÂR KORUMA (SİSTEM OTOMATİK): kâr 0.3R\'ye ulaşınca SL, görülen en iyi kârın 0.15R gerisine kilitlenir — kâr eksiye dönmez. Bu yüzden kârı erken koru; hedefe ulaşmayan işlemde bile kârı geri verme.\n' +
-      '- TP İÇİN RR ≥ 1.5 ŞARTI YOK: scalp/hızlı işlemlerde TP 0.3R-0.5R olabilir. Kısmi kâr alımı SERBEST ve TEŞVİK EDİLİR: 0.3-0.5R\'de pozisyonun bir kısmını mt5_close {percent, kind:"partial_tp"} ile realize et, kalanı korumalı trailing ile taşı. Amaç: sık işlem + hızlı kâr toplama; kârı masada bekletme.\n' +
-      '- Martingale/kademeli lot artışı YASAK; kaybı geri kovalama (revenge trade) YASAK.\n' +
-      '- Emin olmadığında İŞLEM YOK — "BEKLE: <sebep>" yaz. Sık işlem tek başına iyi işlem değil; ama onaylı fırsatta HIZLI gir, kârı hızlı topla.\n' +
-      '- LOT KORKUSU YOK — önemli olan LOT DEĞİL, STOP YERİ ve risktir: SL yakın ve setup netse yüksek lot NORMALDİR (boyut zaten risk % + SL mesafesinden hesaplanır; sembol tavanı trader kararıdır). Tek işlemde serbest marjın tamamını riske atma; sık işlem için lotu değil, TUR RİTMİNİ (mt5_limits intervalSec) ve kısmi kâr alımını kullan.\n' +
-      'ZAMAN DİLİMİ SENİN KARARIN (BOT KARARI): işlemi hangi periyodun analizine dayandırdıysan mt5_trade/mt5_pending çağrısında timeframe ver (M1|M5|M15|M30|H1|H4|D1|W1|MN1). Kapanış otomatik o periyoda işlenir; aynı sembolde hangi periyot kazandırıyorsa onu kullan, NEGATİF periyotta riski düşür ya da teyit bekle. Hiçbir sabit periyoda bağlı kalma — istatistik neyi söylüyorsa onu seç.\n' +
-      (session && session.financeLearn ? `SEMBOL BAZLI ÖĞRENME HAFIZAN (otomatik istatistik + periyot kırılımı + son hatalar + kendi derslerin — kararlarında kullan):\n${session.financeLearn}\n` : '') +
-      'ÖĞRENME DÖNGÜSÜ (ZORUNLU KISIM: zarardan ders): ZARAR/STOP ile kapanan her işlemden sonra mt5_ogrenme {action:"add", symbol, timeframe, kind:"mistake", text:"yanlış neydi + bundan sonra kaçınma kuralı"} ile hatayı MUTLAKA yaz — bu ders bir sonraki turların karar girdisine girer (tek kısa cümle, sebep-sonuç; ör. "M5 destek kırılımında teyitsiz girdim; kapanış teyidi beklemeliydim"). İşe yarayan deseni ise kind:"pattern" ile yaz (her kapanışa ders değil; günde en fazla 2-3). YASAK: günlük/rapor tarzı uzun metin ("bugün şunu yaptım"), genel laf ("dikkatli olmalıyım"), aynı dersin tekrarı. Karar öncesi mt5_ogrenme {action:"stats"|"list", symbol, timeframe?} ile periyot istatistiğini ve son hataları oku; TEKRAR EDEN HATA uyarısı varsa o periyotta riski düşür/teyit ara; aynı hatayı tekrarlama, işleyen deseni kullan. Hafıza kendini sadeleştirir: eski dersler otomatik özetlenir ve süresi geçenler unutulur; gerekirse mt5_ogrenme {action:"compact", symbol} ile hemen özetlet, geçersiz dersi remove/clear ile sil.\n' +
-      (session && session.financeStrategy ? `SAHİBİNİN STRATEJİ NOTU (önceliklidir):\n${session.financeStrategy}\n` : '') +
-      (session && session.financeShadow ? 'SHADOW MOD AKTİF: mt5_trade/mt5_pending emir GÖNDERMEZ — kararını teziyle raporla; gerçek işlem açılmaz (karar günlüğe yazılır).\n' : '') +
-      (session && session.financeDigest ? `İŞLEM PERFORMANS GEÇMİŞİN (kendi kayıtların — kararlarında ders çıkar):\n${session.financeDigest}\n` : '') +
-      (mem.user ? `# USER\n${mem.user}\n` : '') +
-      (rules.length ? `# KURALLAR (sahibinin kalıcı talimatları — daima uy)\n${rules.map((r) => '- ' + r).join('\n')}\n` : '') +
-      (skList.length
-        ? '# SKILLS\nKurulu skill kataloğu: görev bir skill\u2019in tanımına uyarsa skill aracıyla gövdesini (SKILL.md) yükleyip uygula — tekerleği yeniden icat etme. Analysis/rapor/PDF gibi işlerde skill\u2019in prosedürüne uy. Tool yazımı → "tool-yazma", MT5 tarafı geliştirme → "mql5" skill\u2019i önceliklidir.\n' +
-          skList.map((s) => `- ${s.name}: ${s.description} [${s.path}]`).join('\n') + '\n'
-        : '') +
-      'RAPOR DİSİPLİNİ: kısa ve sayısal — sembol, yön, lot, giriş, SL/TP, sebep tek satırda. Uzun fal açma; tablo/liste kullanabilirsin.\n' +
-      `Yerel zaman: ${localDate} ${localTime} — piyasa saatlerine dikkat et (borsa/metal seansları kapalıysa spread genişler; hafta sonu FX kapalıdır).\n` +
-      (proj ? '# PROJE TALİMATLARI\n' + proj + '\n' : '') +
-      FORMAT_RULES
-    );
-  }
 
   async buildSystem(queryText, session) {
     /* BOT OTURUMU: non-admin bota bağlıysa global Beast hafızası HIÇ girmez —
@@ -2174,14 +1960,6 @@ class Engine {
     if (sk.length) {
       parts.push(
         '# SKILLS\nKullanmadan önce ilgili SKILL.md dosyasını read_file ile oku.\n' + sk.join('\n')
-      );
-    }
-    /* BOTLAR: MT5/Beast Finance entegrasyon kanalı — BeastFinance EA'sı otomatik
-       kurulur; botlar grafik/entegrasyon işlerinde bunu bilerek hareket etsin */
-    if (bctx) {
-      parts.push(
-        '# MT5 / BEAST FINANCE ENTEGRASYONU\n' +
-          'Beast Finance açıldığında MT5 terminaline bağlanılır; BeastFinance.mq5 uzman danışmanı İLK GRAFİĞE OTOMATİK kurulur ve AutoTrading açılır. Grafik/entegrasyon işleri bu EA üzerinden yürür (heartbeat beast_ea.json, komut köprüsü beast_cmd.json, grafik panosu/seviyeler beast_note.json; finance oturumlarında mt5_ea status/ping/chart/note). Grafik görseli için varsayılan kurulu tool__mt5_shot kullan (EA "shot" komutu: gerçek PNG + görsel ajana enjekte edilir; path send_file/agent_dm ile paylaşılabilir) — pano ve çizgiler bu screenshot\'ta görünür. Elle EA ekleme varsayma; eksik araç gerekiyorsa Tool botuna tool_request at.'
       );
     }
     /* opencode instruction port (ajan modu): workspace AGENTS/CLAUDE/CONTEXT
@@ -2798,10 +2576,7 @@ class Engine {
         `- kullanıcının hedefleri ve net talepleri\n` +
         `- alınan kararlar, önemli bilgi parçaları (isim, sayı, dosya/klasör yolu, hata ve çözümü)\n` +
         `- tamamlanan işler ve sonuçları\n` +
-        (session.finance
-          ? `- FİNANS İŞLEMLERİ (KRİTİK, atlama): açılan/kapatılan/güncellenen pozisyonlar — sembol, yön (AL/SAT), lot, giriş/SL/TP, kâr/zarar ve gerekçe; sonraki turlarda birebir hatırlanmalı\n`
-          : '') +
-        `Madde madde yaz, en fazla ${session.finance ? 180 : 120} kelime, başlık/selamlama yok. Alakasız ayrıntıyı at.\n\n` +
+        `Madde madde yaz, en fazla 120 kelime, başlık/selamlama yok. Alakasız ayrıntıyı at.\n\n` +
         `# SOHBET PARÇASI\n${transcript}`;
       const res = await chatOnce(
         this.sel,
@@ -3177,15 +2952,6 @@ class Engine {
       if (adef && (adef.mode === 'bg' || adef.mode === 'all')) bg.agentName = adef.name;
     }
     this.cache.set(bg.id, bg);
-    /* FİNANS İŞÇİSİ: parent finance oturumuyken (Beast Finance sohbeti) açılan
-       arka plan işi mt5_* okuma araçlarını görür ve finance promptuyla koşar —
-       chat Beast'i Finance'tan paralel finance ajanı açabilir */
-    const parentSess = parent ? this.cache.get(parent) || null : null;
-    if (parentSess && parentSess.finance) {
-      bg.finance = true;
-      bg.financeTrader = false; /* işçi — asla otonom trade, yalnız analiz/rapor */
-      bg.financeAuto = false;
-    }
     const ttl = String(title || t).replace(/\s+/g, ' ').trim().slice(0, 80) || 'arka plan görevi';
     /* #17 cache'teki nesneye de işaret koy — listSessions temiz başlık göstersin */
     bg.bgTitle = ttl;
@@ -3456,7 +3222,7 @@ class Engine {
   }
 
   /* İş bitişi kaydı: status=done|error|aborted. Hata olursa üst sohbete haber gider.
-     SÜREKLİ (continuous) işler — Finance trade ajanları gibi tur tur koşanlar —
+     SÜREKLİ (continuous) işler — tur tur koşanlar —
      'done'/'error'da KAPANMAZ: tur sonu = aktivite tazelenir, iş koşmaya devam
      eder (döngüyü main yönetir). Yalnız 'aborted' (kullanıcı iptali) gerçek bitiştir. */
   _bgFinish(sid, status, errorMsg) {
@@ -3561,7 +3327,7 @@ class Engine {
   }
 
   /* Saf sınıflandırma (test edilebilir): null | 'stuck' | 'long'
-     continuous işler (Finance trade ajanları) denetlenmez — turlar arası
+     continuous işler denetlenmez — turlar arası
      boşluk normaldir; döngüyü main yönetir. */
   static superviseReason(job, nowMs) {
     if (!job || job.status !== 'running' || job.continuous) return null;
@@ -3775,12 +3541,10 @@ class Engine {
       return;
     }
     const job = this._bgJobs && this._bgJobs.get(String(sessionId));
-    /* SÜREKLİ ajan (Beast Finance): DM/rapor teslimi YENİ TUR AÇMAZ — aksi
+    /* SÜREKLİ ajan: DM/rapor teslimi YENİ TUR AÇMAZ — aksi
        halde ajanlar birbirine DM attıkça sonsuz tur döngüsü doğar (bağlam
        şişer, ajan hiç dinlenmez). Mesaj inbox'a yazılır; bir sonraki PLANLI
-       turda send() tarafından tek blok halinde enjekte edilir.
-       İSTİSNA: kullanıcı/chat kaynaklı DM'ler (wake) onDmQueued kancasıyla
-       ajanı HEMEN uyandırabilir — ajan-ajan trafiği beklemede kalır. */
+       turda send() tarafından tek blok halinde enjekte edilir. */
     const continuous = !!(job && job.continuous);
     const rest = [];
     for (const r of this._pendingReports) {
@@ -3834,7 +3598,7 @@ class Engine {
       `- Bağımsız araç çağrılarını aynı turda PARALEL ver.\n` +
       `- PDF gerekirse pip\u2019ten paket kurma (Türkçe bozar); Node\u2019un kurulu \`pdf-lib\`+fontkit\u2019iyle .js script yazıp \`node\` ile çalıştır. md→pdf çevirme: belge çıktısını doğrudan PDF olarak üret.\n` +
       `- ARAŞTIRMA SINIRI: 3-5 kaynak yeter; süre hedefi ~3 dakika. 2-3 denemede bulunamayan bilgiyi BIRAK — bulabildiğin kısmi sonucu raporla ve neyi bulamadığını yaz. Kapalı/gizli içerik peşinde koşma.\n` +
-      `AJAN KOORDİNASYONU: diğer koşan ajanlarla (paralel işler, finance ajanları) konuşman gerekiyorsa agent_dm aracını kullan — to: hedefin başlığındaki anahtar kelime (örn "GOLD", "Trader"), message: 1-3 cümlelik net mesaj. Senden istenen görevde başka bir ajanın zaten yaptığın işe ihtiyacı varsa DM ile haber ver. Birden fazla ajanla ORTAK KARAR almanız gerekiyorsa group: "İSİM" vererek grup sohbeti kur — mesajın tüm üyelere düşer, cevaplar aynı gruba gelir. Görevin bitince DM/grup sohbetleri otomatik KAPANIR (geçmiş panelde kalır).\n` +
+      `AJAN KOORDİNASYONU: diğer koşan ajanlarla (paralel işler) konuşman gerekiyorsa agent_dm aracını kullan — to: hedefin başlığındaki anahtar kelime, message: 1-3 cümlelik net mesaj. Senden istenen görevde başka bir ajanın zaten yaptığın işe ihtiyacı varsa DM ile haber ver. Birden fazla ajanla ORTAK KARAR almanız gerekiyorsa group: "İSİM" vererek grup sohbeti kur — mesajın tüm üyelere düşer, cevaplar aynı gruba gelir. Görevin bitince DM/grup sohbetleri otomatik KAPANIR (geçmiş panelde kalır).\n` +
       (job.teamGid ? this._agentTeamPromptLine(job.teamGid) : '') +
       FORMAT_RULES + '\n' +
       `SON ÇIKTI: 3-5 satırlık net sonuç raporu, madde madde. Soru sorma, sohbet etme.`
@@ -3847,10 +3611,8 @@ class Engine {
   _bgTrim(session) {
     const max = Engine.BG_KEEP_MSGS;
     const msgs = session.messages;
-    /* bg işleri + Beast Code + SÜREKLİ finance ajanları: uzun geçmiş payload'ı
-       şişirip yavaşlatır — finance ajanları binlerce tur döndüğü için bağlam
-       tavanı onlara da şart */
-    if ((!session.bgJob && !session.bcCode && !session.finance) || msgs.length <= max) return;
+    /* bg işleri + Beast Code: uzun geçmiş payload'ı şişirip yavaşlatır */
+    if ((!session.bgJob && !session.bcCode) || msgs.length <= max) return;
     let keep = msgs.slice(-max);
     /* GÜVENLİ SINIR: kesim bir assistant(tool_calls) + tool sonuç çiftini BÖLMESİN.
        Yetim 'tool' mesajı ya da sonuçları pencere dışında kalan tool_calls'lı
@@ -3885,13 +3647,13 @@ class Engine {
       /* Beast Apps: kurulu app'lerin araçları (app__<id>__<tool>) modele açılır */
       toolsList = apps.mergeTools(toolsList);
       /* KİŞİSEL TOOLLAR: %APPDATA%\beast\tools\<ad>\ — kullanıcı yazmışsa
-         TÜM oturumlara (BEAST FINANCE dahil) tool__<ad> olarak açılır */
+         TÜM oturumlara tool__<ad> olarak açılır */
       toolsList = [...toolsList, ...customtools.definitions()];
-      /* SKILL ARACI: kurulu SKILL.md gövdesini modele açar — finance oturumları
-         kadar BOT oturumları (Tool botu: tool-yazma/mql5) ve arka plan ajanları
-         da promptlarında skill() kullanır. Tanım yalnız finance'a verilince bot
-         skill çağrısı yapamıyor, tur rapor üretmeden boşa düşüyordu. */
-      if (session && (session.finance || session.botId || session.bgJob)) {
+      /* SKILL ARACI: kurulu SKILL.md gövdesini modele açar — BOT oturumları
+         (Tool botu: tool-yazma) ve arka plan ajanları promptlarında skill()
+         kullanır. Tanım yalnız botlara verilince diğer oturumlar skill
+         çağrısı yapamıyordu. */
+      if (session && (session.botId || session.bgJob)) {
         const skillDef = (opencode.toolmap.definitions() || []).find(
           (d) => d && d.function && d.function.name === 'skill'
         );
@@ -3899,7 +3661,7 @@ class Engine {
           toolsList = [...toolsList, skillDef];
         }
       }
-      /* AJAN DM: koşan ajanlara (arka plan işleri + finance), ana sohbete VE
+      /* AJAN DM: koşan ajanlara (arka plan işleri), ana sohbete VE
          bot sohbetlerine verilir — botlar birbirine iş atar/cevap verir
          (ör. Beast → Tool botu; Tool botu da sonucu DM ile geri yazar).
          Yalnız botlar arası DM pair oturumunda kapalı (döngü koruması). */
@@ -3907,7 +3669,7 @@ class Engine {
         toolsList = [...toolsList, AGENT_DM_DEF];
       }
       /* TOOL İSTEĞİ (cephane): tool botu hariç TÜM oturumlar — müşteri bot
-         sohbetleri, paralel ajanlar ve finance ajanları dahil */
+         sohbetleri, paralel ajanlar dahil */
       if (session && !session.isBotDm && session.botId !== 'tool') {
         toolsList = [...toolsList, TOOL_REQUEST_DEF];
       }
@@ -3920,15 +3682,13 @@ class Engine {
     /* opencode agent.ts port: özel ajan tanımı — prompt/model/araç/steps */
     const adef = this._agentDefFor(session, !!session.bgJob);
     const promptText = this._lastUserText(session);
-    let system = session.finance
-      ? this.buildFinanceSystem(session) /* finance önceliklidir — bg finance işçileri de finance promptuyla koşar */
-      : session.bgJob
-        ? this.buildBgSystem(session)
-        : session.studio
-          ? this.buildStudioSystem(session)
-          : bcAgent
-            ? this.buildOcSystem(session, bcAgent)
-            : await this.buildSystem(promptText, session);
+    let system = session.bgJob
+      ? this.buildBgSystem(session)
+      : session.studio
+        ? this.buildStudioSystem(session)
+        : bcAgent
+          ? this.buildOcSystem(session, bcAgent)
+          : await this.buildSystem(promptText, session);
     // Granül izin: oturumun yetki seviyesine göre araç seti daraltılır.
     // Çoklu izin (ör. web+read) seçiliyse kümeler BİRLEŞİR — hepsinin araçları açık olur.
     // BC'de opencode adları Beast adına çevrilerek denetlenir (read → read_file).
@@ -3941,10 +3701,6 @@ class Engine {
     let activeTools = allowedSet
       ? toolsList.filter((t) => allowedSet.has(opencode.toolmap.TO_BUILTIN[t.function.name] || t.function.name))
       : toolsList;
-    /* Beast Finance: mt5_* araçları YALNIZ finance oturumlarında görünür */
-    if (FINANCE_TOOL_SET.size && !(session && session.finance)) {
-      activeTools = activeTools.filter((t) => !FINANCE_TOOL_SET.has(t.function.name));
-    }
     /* bot skill kısıtı: bota verilen yetkiye göre araç seti daraltılır */
     const toolLimit = this.sessionTools.get(String(session.id));
     if (toolLimit) activeTools = activeTools.filter((t) => toolLimit.has(t.function.name));
@@ -5398,15 +5154,13 @@ const skills = require('./skills');
       }
       if (name === 'ocr_read') return JSON.stringify(await this._ocrRead(args || {}, signal));
       if (name === 'sandbox_repo') return JSON.stringify(await this._sandboxRepo(args || {}));
-      /* opencode general-agent portu: alt-ajan da edit/grep/glob kullanır.
-         MT5 (mt5_*) araçları da tools.exec'e geçer (finance işçileri/danışma). */
+      /* opencode general-agent portu: alt-ajan da edit/grep/glob kullanır. */
       if (!(name === 'run_command' || name === 'read_file' || name === 'write_file' || name === 'edit_file' ||
             name === 'list_dir' || name === 'grep' || name === 'glob' ||
             name === 'git_commit' || name === 'git_diff_review' || name === 'git_pr_create' ||
             name === 'repo_map' || name === 'repo_symbols' ||
             name === 'xlsx_read' || name === 'xlsx_write' || name === 'xlsx_edit' ||
-            name === 'web_search' || name === 'http_fetch' || name === 'webfetch' || name === 'python_run') &&
-          !FINANCE_TOOL_SET.has(name)) {
+            name === 'web_search' || name === 'http_fetch' || name === 'webfetch' || name === 'python_run')) {
         return JSON.stringify({ ok: false, error: `unknown tool ${name}` });
       }
       return await tools.exec(name, args, { cwd: this.workspace, signal });
@@ -5489,7 +5243,7 @@ const skills = require('./skills');
   }
 
   /* opencode skill aracı gövdesi: katalogdan eşleşen SKILL.md'yi okur.
-     Salt-okur — tüm oturum türlerinde (BC/finance/chat/trader) aynı yol. */
+     Salt-okur — tüm oturum türlerinde (BC/chat) aynı yol. */
   _skillBody(args) {
     const wanted = String((args && args.name) || '').trim();
     let list = [];
@@ -5513,9 +5267,9 @@ const skills = require('./skills');
       /* opencode mantığı (BC): model opencode builtin dilinde çağırır —
          read/edit/write/bash/todowrite/task... execMap Beast'in yerleşik
          aracına çevirir (implementasyon değişmez, dil opencode olur).
-         Studio/Finance/bgJob kendi dünyasında koşar — bu akışa girmez. */
+         Studio/bgJob kendi dünyasında koşar — bu akışa girmez. */
       const bcSess = this.cache.get(String(sessionId || '')) || null;
-      const isBc = !!(bcSess && bcSess.bcCode && !bcSess.studio && !bcSess.finance && !bcSess.bgJob);
+      const isBc = !!(bcSess && bcSess.bcCode && !bcSess.studio && !bcSess.bgJob);
       if (isBc) {
         const mapped = opencode.toolmap.execMap(name, args);
         name = mapped.name;
@@ -5525,8 +5279,7 @@ const skills = require('./skills');
       const blocked = this._guardTool(name, args);
       if (blocked) return blocked;
       /* opencode skill aracı: katalogdaki SKILL.md gövdesini modele açar.
-         Salt-okur ve güvenli — BC dahil TÜM oturum türlerinde çalışır
-         (Beast Finance chat copilot + trader buradan kullanır). */
+         Salt-okur ve güvenli — BC dahil TÜM oturum türlerinde çalışır. */
       if (name === 'skill') {
         return JSON.stringify(this._skillBody(args));
       }
@@ -6127,16 +5880,12 @@ const skills = require('./skills');
         return JSON.stringify(await apps.call(name, args || {}, signal));
       }
       /* opencode tool registry portu: edit_file/grep/glob ana ajanın da araçları —
-         bunlar olmadan model write_file + tam dosya okuma döngüsüne düşer.
-         MT5 (mt5_*) araçları tools.exec → financetools.handlers'a yönlendirilir —
-         whitelist'te yoklarsa finance ajanı "unknown tool" yiyordu (işlem açamama
-         hatasının kök nedeni). */
+         bunlar olmadan model write_file + tam dosya okuma döngüsüne düşer. */
       if (
         !(name === 'run_command' || name === 'read_file' || name === 'write_file' || name === 'edit_file' ||
           name === 'list_dir' || name === 'grep' || name === 'glob' ||
           name === 'web_search' || name === 'http_fetch' || name === 'webfetch' || name === 'python_run' ||
-          name === 'typesafe_decision') &&
-        !FINANCE_TOOL_SET.has(name)
+          name === 'typesafe_decision')
       ) {
         return JSON.stringify({ ok: false, error: `unknown tool ${name}` });
       }
@@ -6238,7 +5987,7 @@ function emitSafe(engine, sessionId, ev) {
   engine.emit({ ...ev, sessionId });
 }
 
-/* AJAN DM aracı: paralel/finance ajanlarının birbirine kısa mesaj atması.
+/* AJAN DM aracı: paralel ajanların birbirine kısa mesaj atması.
    Salt metin — hedef ajanın oturumuna [AJAN DM] bloğu olarak düşer; AJAN DM
    panelinde iki yönlü görünür. topic verirsen aynı konudaki mesajlar aynı
    oturumda toplanır (cevap zinciri tek thread'de devam eder). */
@@ -6247,15 +5996,15 @@ const AGENT_DM_DEF = {
   function: {
     name: 'agent_dm',
     description:
-      'Send a short DM to another agent or BOT (parallel agents, finance agents, bot chats like "Tool") to coordinate: share findings, ask status, warn about risk, hand off work, and MAKE JOINT DECISIONS. `to` = target session id, a bot name/id (e.g. "Tool", "Trader"), or a keyword from the agent title (e.g. "GOLD"). `topic` = short subject label — replies to the same topic stay in the SAME conversation thread, so ALWAYS reuse the topic you were DMed with when replying. `group` = optional group-chat name (e.g. "GOLD EKIP"): creates or reuses a group conversation, adds the target agent as a member, and your message is delivered to EVERY member — use groups when a decision needs multiple agents. `image` shares a chart/screen as an attachment the receiving agent REALLY sees and the AJAN DM panel shows: true = your last screenshot (fresh capture if none); a file path (e.g. the tool__mt5_shot "path") or a data URL = that exact image.',
+      'Send a short DM to another agent or BOT (parallel agents, bot chats like "Tool") to coordinate: share findings, ask status, warn about risk, hand off work, and MAKE JOINT DECISIONS. `to` = target session id, a bot name/id (e.g. "Tool"), or a keyword from the agent title. `topic` = short subject label — replies to the same topic stay in the SAME conversation thread, so ALWAYS reuse the topic you were DMed with when replying. `group` = optional group-chat name: creates or reuses a group conversation, adds the target agent as a member, and your message is delivered to EVERY member — use groups when a decision needs multiple agents. `image` shares a screenshot as an attachment the receiving agent REALLY sees and the AJAN DM panel shows: true = your last screenshot (fresh capture if none); a file path or a data URL = that exact image.',
     parameters: {
       type: 'object',
       properties: {
         to: { type: 'string', description: 'Target session id, bot name/id (e.g. "Tool") or a title keyword' },
-        topic: { type: 'string', description: 'Short subject label for the conversation thread, e.g. "GOLD pozisyon riski"' },
+        topic: { type: 'string', description: 'Short subject label for the conversation thread' },
         message: { type: 'string', description: 'Short message (1-3 sentences)' },
         group: { type: 'string', description: 'Optional group-chat name — send to ALL members of that group (creates it on first use, adds the target agent)' },
-        image: { type: ['boolean', 'string'], description: 'true = son ekran görüntün (yoksa taze yakalar); dosya yolu (ör. tool__mt5_shot dönen PNG path) ya da data:image URL = o görsel iliştirilir. Panelde ve karşı ajanda GÖRÜNÜR; grafik/ekran bulgusunu paylaşmak için kullan' },
+        image: { type: ['boolean', 'string'], description: 'true = son ekran görüntün (yoksa taze yakalar); dosya yolu ya da data:image URL = o görsel iliştirilir. Panelde ve karşı ajanda GÖRÜNÜR; ekran bulgusunu paylaşmak için kullan' },
       },
       required: ['message'],
     },
@@ -7140,7 +6889,7 @@ Engine.prototype.clearTodos = function (sid) {
 
 /* ---------- AJAN DM: ajanların birbirine mesajı ---------- */
 
-/* Ajan DM gönder: hedef koşan paralel/finance ajanı (id YA DA başlık
+/* Ajan DM gönder: hedef koşan paralel ajanı (id YA DA başlık
    anahtar kelimesi). Teslim _pendingReports kuyruğuyla yapılır — hedef
    meşgulse mesaj done olunca düşer, kaybolmaz. Panel agent-dms.json'dan. */
 Engine.prototype._agentDmSend = async function (fromSid, args) {
@@ -7149,8 +6898,8 @@ Engine.prototype._agentDmSend = async function (fromSid, args) {
     const text = String((args && args.message) || '').trim().slice(0, 1200);
     if (!text) return { ok: false, error: 'mesaj boş' };
     /* GÖRSEL DM: image:true → son ekran görüntüsü (yoksa taze yakalama);
-       image:"<dosya yolu>" ya da data URL → o görsel BİREBİR iliştirilir
-       (ör. tool__mt5_shot dönen PNG path'i). Karşı ajan görüntüyü görür. */
+       image:"<dosya yolu>" ya da data URL → o görsel BİREBİR iliştirilir.
+       Karşı ajan görüntüyü görür. */
     const imgArg = args && args.image;
     let image = '';
     if (typeof imgArg === 'string' && imgArg.trim()) {
@@ -7171,8 +6920,7 @@ Engine.prototype._agentDmSend = async function (fromSid, args) {
           ? this._agentDmSessionTitle(fromSess)
           : 'Ajan';
     /* hedef çöz: oturum id YA DA başlık anahtar kelimesi (koşan ajanlar +
-       ANA OTURUM FALLBACK: chat oturumları this.cache'te yaşar — finance
-       trader → ana Beast DM zinciri böyle kapanır). */
+       ANA OTURUM FALLBACK: chat oturumları this.cache'te yaşar). */
     let target = '';
     if (to) {
       target = jobs.has(to) ? to : '';
@@ -7228,8 +6976,8 @@ Engine.prototype._agentDmSend = async function (fromSid, args) {
        tüm iç trafiği TEK grup sohbetinde canlı toplanır. */
     /* TEK İŞ = TEK GRUP: taraflar AÇIK bir ekip/grup üyesiyse mesaj HER ZAMAN o
        gruba düşer — group: verilse bile yeni grup AÇILMAZ. Ayrıca group adı
-       mevcut bir grubun başlığıyla eşleşiyorsa (ör. "Beast Finance EKİP" →
-       team:finance) o grup kullanılır; aynı iş için ikinci grup oluşmaz. */
+       mevcut bir grubun başlığıyla eşleşiyorsa o grup kullanılır; aynı iş
+       için ikinci grup oluşmaz. */
     const shared = target ? this._agentDmSharedGroup(fromSid, target) : null;
     let gid = '';
     let g = null;
@@ -7341,7 +7089,7 @@ Engine.prototype._agentDmDeliver = function (dm, target, opts = {}) {
       wake: !!opts.wake,
     };
     /* bot↔bot sigorta: boş bot oturumunu her DM'de yeni turla uyandırma.
-       TOOL BOTU İSTİSNA (yalnız bot OLMAYAN gönderenden): ajan (finance/paralel
+       TOOL BOTU İSTİSNA (yalnız bot OLMAYAN gönderenden): ajan (paralel
        sohbet) → Tool DM'i gerçek görevdir, beklemeden uyandırılır; bot↔bot
        ping-pong'u ise bütçeye tabidir (sonsuz tur fırtınası korunur). */
     const fromSess = this.cache.get(String(dm.from)) || null;
@@ -7378,7 +7126,7 @@ Engine.prototype._agentDmWakeAllowed = function (a, b) {
 };
 
 /* AJAN DM görseli (dosyadan): png/jpg/webp/gif dosyasını data URL'e çevirir.
-   Send_file kapısına takılmadan (ör. tool__mt5_shot path'i) görsel paylaşımı;
+   Send_file kapısına takılmadan görsel paylaşımı;
    2.5MB üstü DM kaydını şişmesin diye atlanır. */
 Engine.prototype._agentDmImageFromFile = function (p) {
   try {
@@ -7489,7 +7237,7 @@ Engine.prototype._agentDmSharedGroup = function (a, b) {
 };
 
 /* Grup adı anahtarı: Türkçe-kararsız normalize — ALTIN/Altın/altın aynı gruba
-   iner; başlık eşleştirmede de kullanılır (ör. "Beast Finance EKİP"). */
+   iner; başlık eşleştirmede de kullanılır. */
 Engine.prototype._agentGroupKey = function (name) {
   return String(name || '')
     .toLowerCase()
@@ -7518,7 +7266,7 @@ Engine.prototype._pushAgentDm = function (dm) {
 
 /* İş başlarken çağrılır: aynı parent / bg-gruptan başka ajan varsa (varsa
    önceden kurulmuştur) hepsini TEK ekip grubuna katar + katılım postu düşer.
-   dmGroupId verilirse (finans ekibi gibi hazır grup) parent şartı aranmaz —
+   dmGroupId verilirse (hazır grup) parent şartı aranmaz —
    aynı dmGroupId'li TÜM ajanlar tek gruba toplanır. */
 Engine.prototype._agentTeamJoin = function (job) {
   try {
@@ -7616,7 +7364,7 @@ Engine.prototype._agentTeamPost = function (gid, fromSid, fromTitle, text) {
   } catch {}
 };
 
-/* Grubu hazırla (yoksa kur): Telegram köprüsü ve finans alarmları grubu önceden
+/* Grubu hazırla (yoksa kur): Telegram köprüsü grubu önceden
    hiç kurulmamış olsa da panele düşebilsin. */
 Engine.prototype._agentGroupEnsure = function (gid, title, opts) {
   gid = String(gid || '');

@@ -83,56 +83,12 @@ test('customtools: çocuk süreç node modunda koşar (ELECTRON_RUN_AS_NODE — 
   customtools.remove('test_node_mode');
 });
 
-test('customtools: trade hook başarılı çağrıda (id, args, sonuç, sid) ile tetiklenir', async () => {
-  customtools.save({
-    name: 'test_hook',
-    description: 'hook toolu',
-    parameters: { type: 'object', properties: {} },
-    code: "const fs=require('fs');let r='';try{r=fs.readFileSync(0,'utf8')}catch{};console.log(JSON.stringify({ ok: true, args: JSON.parse(r||'{}') }));",
-  });
-  let seen = null;
-  customtools.setTradeHook((id, args, res, sid) => { seen = { id, args, res, sid }; });
-  try {
-    const out = await customtools.call('tool__test_hook', { symbol: 'GOLD', volume: 0.1 }, 'sid-1');
-    assert.equal(out.ok, true);
-    assert.ok(seen, 'hook tetiklenmeli');
-    assert.equal(seen.id, 'test_hook');
-    assert.equal(seen.args.symbol, 'GOLD');
-    assert.equal(seen.res.ok, true);
-    assert.equal(seen.sid, 'sid-1');
-  } finally {
-    customtools.setTradeHook(null);
-    customtools.remove('test_hook');
-  }
-});
-
-test('customtools: seedDefaults sürüm güncellemesi yapar + düzenlenen dosyayı yedekler', () => {
+test('customtools: seedDefaults eksik varsayılan araçları kurar, güncelde iş yapmaz', () => {
   const fs = require('fs');
   const path = require('path');
   customtools.seedDefaults(); // temiz kurulum (test veri kökü izole)
-  const dir = path.join(customtools.dir(), 'mt5_shot');
-  const runPath = path.join(dir, 'run.js');
-  const toolPath = path.join(dir, 'tool.json');
-  assert.ok(fs.existsSync(runPath), 'mt5_shot kurulmalı');
-
-  /* eski sürümü simüle et: defaultsVersion sil + kullanıcı düzenlemesi ekle */
-  const j = JSON.parse(fs.readFileSync(toolPath, 'utf8'));
-  delete j.defaultsVersion;
-  fs.writeFileSync(toolPath, JSON.stringify(j, null, 2));
-  fs.appendFileSync(runPath, '\n// KULLANICI DUZENLEMESI\n');
-  fs.mkdirSync(path.join(dir, 'shots'), { recursive: true });
-  fs.writeFileSync(path.join(dir, 'shots', 'x.png'), 'x');
-
-  const n = customtools.seedDefaults();
-  assert.equal(n, 1, 'yalnız mt5_shot güncellenmeli');
-  const after = JSON.parse(fs.readFileSync(toolPath, 'utf8'));
-  assert.ok(Number(after.defaultsVersion) >= 2, 'defaultsVersion yükselmeli');
-  const runNew = fs.readFileSync(runPath, 'utf8');
-  assert.ok(runNew.includes('runPanels') && runNew.includes('normalizeSymbols'), 'run.js yeni sürüm olmalı (çoklu sembol)');
-  assert.ok(fs.existsSync(path.join(dir, 'stitch.js')), 'stitch.js kurulmalı');
-  assert.ok(fs.existsSync(runPath + '.user-bak'), 'kullanıcı düzenlemesi yedeklenmeli');
-  assert.ok(fs.readFileSync(runPath + '.user-bak', 'utf8').includes('KULLANICI DUZENLEMESI'), 'yedek eski içeriği taşımalı');
-  assert.ok(fs.existsSync(path.join(dir, 'shots', 'x.png')), 'shots/ korunmalı');
-
-  assert.equal(customtools.seedDefaults(), 0, 'güncel sürümde iş yapılmamalı');
+  const dir = path.join(customtools.dir(), 'fastbrowse_task');
+  assert.ok(fs.existsSync(path.join(dir, 'run.js')), 'fastbrowse_task kurulmalı');
+  assert.ok(fs.existsSync(path.join(dir, 'tool.json')), 'tool.json kurulmalı');
+  assert.equal(customtools.seedDefaults(), 0, 'güncel kurulumda iş yapılmamalı');
 });

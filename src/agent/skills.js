@@ -129,7 +129,7 @@ Get-Content "$env:APPDATA\\beast\\sessions\\bg-jobs.json" | ConvertFrom-Json | %
 | \`agent/agentdefs.js\` | Özel ajan tanımları: %APPDATA%\beast\agents\\*.md (frontmatter: model/tools/steps/mode + prompt gövdesi); /agent ile bağlanır, run_background(agent:) ile paralel ajana verilir |
 | \`agent/searxng.js\` | SearXNG entegrasyonu: gömülü Python'a kurulum + 127.0.0.1:8888 başlatıcı + JSON arama motoru |
 | \`agent/bots.js\` | Bot CRUD, 5 haneli bot kodu, izolasyon; ad-ilk-harf doğrulaması |
-| \`agent/skills.js\` | Builtin tohumlar (help, email, python-web-search, pdf, gold-trading, tool-yazma + superpowers metodoloji paketi: brainstorming/writing-plans/executing-plans/TDD/paralel-ajan/alt-ajan-geliştirme/sistematik-debugging/doğrulama/skill-yazma) + SKILL.md taraması + taslaklar |
+| \`agent/skills.js\` | Builtin tohumlar (help, email, python-web-search, pdf, tool-yazma + superpowers metodoloji paketi: brainstorming/writing-plans/executing-plans/TDD/paralel-ajan/alt-ajan-geliştirme/sistematik-debugging/doğrulama/skill-yazma) + SKILL.md taraması + taslaklar |
 | \`agent/customtools.js\` | Kişisel toollar: %APPDATA%\\beast\\tools\\<ad>\\tool.json + run.js (stdin JSON → stdout JSON) — tool__<ad> olarak TÜM oturumlara açılır; sol panel TOOLLAR kutusunda yazılır/test edilir. Yeni tool yazarken \`tool-yazma\` skill'ini oku. |
 | \`agent/memory.js\`, \`agent/kb.js\` | Kalıcı hafıza + bilgi bankası |
 | \`cron.js\` (src kökü), \`agent/watchers.js\`, \`agent/bus.js\` | Cron, izleyici, olay merkezi — /stop bunlara DOKUNMAZ |
@@ -276,24 +276,6 @@ for q in ["sorgu 1", "sorgu 2", "sorgu 3"]:
 - DDG boş/engelli dönerse "DuckDuckGo kapandı" DEME: bot koruması devrededir (~1 saatte kendiliğinden açılır) ve zincir otomatik olarak Obscura/Bing/Mojeek/tarayıcıya geçer — bu normal çalışmadır.
 - Araştırma hedefi: ~3 dakika, 3-5 kaynak. Derinleşme = zaman kaybı.
 - Motor hata verirse bir kez farklı sorguyla dene, sonra elindekiyle raporu kapat.`,
-  },
-  {
-    folder: 'gold-trading',
-    body: `---
-name: gold-trading
-description: Kullanıcının GOLD (FxPro MT5) işlem tercihleri — market structure kontrol listesi.
-version: 1.0.0
----
-
-# GOLD İşlem Tercihleri (Batuhan)
-
-Sembol: "GOLD" (XAUUSD değil), FxPro MT5 demo, M1.
-
-Zorunlu kurallar:
-- Market structure şart: swing/HH-LL analizi olmadan ve BOS teyidi olmadan İŞLEM YOK. MA kesişimi tek başına gürültüdür.
-- Geniş SL: ~4xATR; BE: ~2xATR kârda.
-- Yetki sende: açmadan önce sorma; SADECE sonucu (STOP/TP) raporla, giriş/trailing tiklerini anlatma.
-- AI komite yaklaşımı: sinyal yakalanır → görsel/teknik/risk analizi → açılış.`,
   },
   {
     folder: 'pdf',
@@ -462,7 +444,7 @@ const { createWorker } = require('tesseract.js');
     force: true,
     body: `---
 name: tool-yazma
-description: Kişisel TOOL yazma/düzenleme rehberi — %APPDATA%\\beast\\tools\\<ad>\\ altına tool.json + run.js yazılacak veya mevcut bir tool editlenecekse ÖNCE bu skill'i oku. Tool'un sözleşmesi: stdin JSON argüman → stdout JSON sonuç; ajan tool__<ad> olarak çağırır (Beast Finance dahil tüm oturumlarda çalışır).
+description: Kişisel TOOL yazma/düzenleme rehberi — %APPDATA%\\beast\\tools\\<ad>\\ altına tool.json + run.js yazılacak veya mevcut bir tool editlenecekse ÖNCE bu skill'i oku. Tool'un sözleşmesi: stdin JSON argüman → stdout JSON sonuç; ajan tool__<ad> olarak çağırır (tüm oturumlarda çalışır).
 version: 1.0.0
 ---
 
@@ -470,9 +452,9 @@ version: 1.0.0
 
 ## TOOL NEDİR / NE ZAMAN YAZILIR
 
-Kişisel tool = modelin alet çantasına GİREN gerçek bir araçtır: %APPDATA%\\beast\\tools\\<slug>\\ klasöründe **tool.json** (tanım) + **run.js** (kod) bulunur. Tüm oturumlarda — Beast Finance chat/trader/işçiler dahil — \`tool__<slug>\` adıyla çağrılır.
+Kişisel tool = modelin alet çantasına GİREN gerçek bir araçtır: %APPDATA%\\beast\\tools\\<slug>\\ klasöründe **tool.json** (tanım) + **run.js** (kod) bulunur. Tüm oturumlarda \`tool__<slug>\` adıyla çağrılır.
 
-Yaz ZAMAN: mevcut araçlar işi görmüyorsa (örn. broker sembol adlandırması mt5_trade'i düşürüyorsa), özel bir API'ye bağlanman, tekrarlı bir hesap/işlem rutini gerekiyorsa. Basit işler için YAZMA — önce yerleşik araçları (mt5_*, web_search, python_run, run_command) dene.
+Yaz ZAMAN: mevcut araçlar işi görmüyorsa (örn. özel bir API'ye bağlanman), tekrarlı bir hesap/veri rutini gerekiyorsa. Basit işler için YAZMA — önce yerleşik araçları (web_search, python_run, run_command) dene.
 
 ## SÖZLEŞME (birebir uygula)
 
@@ -487,17 +469,14 @@ Yaz ZAMAN: mevcut araçlar işi görmüyorsa (örn. broker sembol adlandırması
 \`%APPDATA%\\beast\\tools\\<slug>\\tool.json\`:
 \`\`\`json
 {
-  "name": "gold_emir",
-  "description": "GOLD için özel emir açar — side (buy/sell), lot, sl, tp alır; sonucu ticket ile döndürür.",
+  "name": "hava_durumu",
+  "description": "Şehir için güncel hava durumunu döndürür — city alır; sonucu sıcaklık/durum ile döndürür.",
   "parameters": {
     "type": "object",
     "properties": {
-      "side": { "type": "string", "description": "buy | sell" },
-      "lot": { "type": "number", "description": "0.01-1.0" },
-      "sl": { "type": "number" },
-      "tp": { "type": "number" }
+      "city": { "type": "string", "description": "şehir adı" }
     },
-    "required": ["side", "lot"]
+    "required": ["city"]
   },
   "updatedAt": "2026-09-09T00:00:00.000Z"
 }
@@ -511,18 +490,18 @@ const fs = require('fs');
 let args = {};
 try { args = JSON.parse(fs.readFileSync(0, 'utf8') || '{}'); } catch {}
 (function main() {
-  const { side, lot, sl, tp } = args;
-  if (!side || !lot) {
-    console.log(JSON.stringify({ ok: false, error: 'side ve lot zorunlu' }));
+  const { city } = args;
+  if (!city) {
+    console.log(JSON.stringify({ ok: false, error: 'city zorunlu' }));
     return;
   }
-  // --- kendi işin burada: HTTP çağrısı, MT5 köprüsü, dosya, hesap... ---
+  // --- kendi işin burada: HTTP çağrısı, dosya, hesap... ---
   // Örn: https modülüyle özel endpoint'e istek at, sonucu ok alanıyla sar.
-  console.log(JSON.stringify({ ok: true, side, lot, sl: sl || 0, tp: tp || 0, ticket: 0 }));
+  console.log(JSON.stringify({ ok: true, city, sicaklik: 0 }));
 })();
 \`\`\`
 
-Slug kuralları: a-z, 0-9, alt çizgi, tire — 2-24 karakter (örn: gold_emir, haber_ozet). Hazır taslak: %APPDATA%\\beast\\tools\\ornek_echo klasörünü referans al; yeni tool'u o biçimle yaz.
+Slug kuralları: a-z, 0-9, alt çizgi, tire — 2-24 karakter (örn: hava_durumu, haber_ozet). Hazır taslak: %APPDATA%\\beast\\tools\\ornek_echo klasörünü referans al; yeni tool'u o biçimle yaz.
 
 ## DÜZENLEME / DOĞRULAMA
 

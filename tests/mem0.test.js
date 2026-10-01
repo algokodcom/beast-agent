@@ -59,10 +59,10 @@ function storeItems(scope) {
 
 test('add + hash dedup: aynı metin ikinci kez eklenmez', async () => {
   const s = freshScope('dedup');
-  const r1 = await mem0.add(s, ['kullanıcı FxPro MT5 kullanıyor']);
+  const r1 = await mem0.add(s, ['kullanıcı Python öğreniyor']);
   assert.equal(r1.ok, true);
   assert.equal(r1.added, 1);
-  const r2 = await mem0.add(s, ['kullanıcı FxPro MT5 kullanıyor']);
+  const r2 = await mem0.add(s, ['kullanıcı Python öğreniyor']);
   assert.equal(r2.added, 0);
   assert.equal(r2.skipped, 1);
   assert.equal(storeItems(s).length, 1);

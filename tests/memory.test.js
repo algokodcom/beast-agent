@@ -6,11 +6,11 @@ const assert = require('node:assert');
 const memory = require('../src/agent/memory');
 
 test('append + entries turu', () => {
-  memory.append('Kullanıcı FxPro MT5 kullanıyor');
+  memory.append('Kullanıcı Python öğreniyor');
   memory.append('Beast hızlı olmalı, gereksiz sormaz');
   const list = memory.entries();
   assert.ok(list.length >= 2);
-  assert.ok(list.some((l) => l.includes('FxPro')));
+  assert.ok(list.some((l) => l.includes('Python')));
 });
 
 test('search ilgili kaydı bulur (Türkçe büyük/küçük + diakritik duyarsız)', () => {

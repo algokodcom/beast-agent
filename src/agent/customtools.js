@@ -2,8 +2,7 @@
 
 /* KİŞİSEL TOOLLAR: %APPDATA%\beast\tools\<slug>\tool.json + run.js
    Kullanıcı (ya da ajan) Node ile koşan kendi araçlarını yazar; TÜM oturumlar
-   — BEAST FINANCE dahil — bunları model'e açılan gerçek araç olarak çağırır
-   (tool__<slug>). Sözleşme:
+   bunları model'e açılan gerçek araç olarak çağırır (tool__<slug>). Sözleşme:
      - stdin  : JSON argümanlar
      - stdout : JSON sonuç (son satır JSON'a çevrilmeye çalışılır)
      - çalışma klasörü: tool'un kendi klasörü (%APPDATA%\beast\tools\<slug>)
@@ -23,14 +22,6 @@ const TOOL_TIMEOUT_MAX_MS = 15 * 60 * 1000;
 let notify = () => {};
 function setNotify(fn) {
   notify = typeof fn === 'function' ? fn : () => {};
-}
-
-/* KİŞİSEL MT5 TOOLLARI köprüyü doğrudan çağırır (iç mt5_* handler'ı devreye
-   girmez) — başarılı çağrıyı trade olayı olarak ana sürece bildir ki jurnal +
-   panel/kanal bildirimi (işlem açıldı, SL/TP güncellendi…) kaçmasın. */
-let tradeHook = null;
-function setTradeHook(fn) {
-  tradeHook = typeof fn === 'function' ? fn : null;
 }
 
 function dir() {
@@ -154,9 +145,6 @@ function call(name, args, sid) {
           error: r && r.error ? String(r.error).slice(0, 200) : null,
         });
       } catch {}
-      try {
-        if (tradeHook) tradeHook(id, args || {}, r || {}, sid ? String(sid) : '');
-      } catch {}
       resolve(r);
     };
     let killer = setTimeout(() => {
@@ -178,7 +166,6 @@ function call(name, args, sid) {
         BEAST_APP_DIR: path.join(__dirname, '..', '..'), // tool'lar uygulama node_modules'ına (ör. @napi-rs/canvas) buradan erişir
         BEAST_TOOL_ID: id,
         BEAST_TOOL_ARGS: JSON.stringify(args || {}),
-        BEAST_FINANCE_DIR: path.join(beastRoot(), 'finance'),
       };
       child = spawn(process.execPath, [t.script], { cwd: path.dirname(t.script), env, stdio: ['pipe', 'pipe', 'pipe'] });
     } catch (e) {
@@ -252,7 +239,7 @@ function remove(id) {
 }
 
 /* VARSAYILAN TOOLLAR: uygulamayla gelen hazır araçlar (src/agent/defaulttools) —
-   MT5 köprúsü + grafik screenshot'ı. Kullanıcı klasöründe YOKSA kurulur;
+   Kullanıcı klasöründe YOKSA kurulur;
    var olanın üzerine YAZILMAZ (kullanıcı düzenlemesi korunur).
 
    NOT: fs.cpSync Windows'ta bazı klasörlerde süreci düşürebildiği için
@@ -296,7 +283,7 @@ function backupEditedFiles(fromDir, toDir) {
 }
 
 /* SÜRÜM GÜNCELLEMESİ: shipped tool.json'da "defaultsVersion" varsa ve kurulu
-   sürümden büyükse araç güncellenir (ör. mt5_shot çoklu periyot); düzenlenmiş
+   sürümden büyükse araç güncellenir; düzenlenmiş
    dosyalar .user-bak olarak yedeklenir. Alan yoksa eski davranış: yalnız eksikse kur. */
 function seedDefaults() {
   const src = path.join(__dirname, 'defaulttools');
@@ -344,7 +331,7 @@ function seedIfEmpty() {
     save({
       name: 'ornek_echo',
       description:
-        'Örnek kişisel tool — gelen argümanları geri döndürür. Bu klasörü kopyalayarak kendi toollarını yaz; agent finance dahil tüm oturumlarda tool__<ad> olarak çağırır.',
+        'Örnek kişisel tool — gelen argümanları geri döndürür. Bu klasörü kopyalayarak kendi toollarını yaz; tüm oturumlarda tool__<ad> olarak çağırır.',
       parameters: {
         type: 'object',
         properties: {
@@ -355,7 +342,7 @@ function seedIfEmpty() {
       code:
         "'use strict';\n" +
         "// KİŞİSEL TOOL — stdin: JSON args · stdout: JSON sonuç\n" +
-        "// Bu klasörü kopyalayıp kendi araçlarını yaz (örn. MT5 emir köprüsü, özel API çağrısı…)\n" +
+        "// Bu klasörü kopyalayıp kendi araçlarını yaz (örn. özel API çağrısı…)\n" +
         "const fs = require('fs');\n" +
         "let raw = '';\n" +
         "try { raw = fs.readFileSync(0, 'utf8'); } catch {}\n" +
@@ -366,4 +353,4 @@ function seedIfEmpty() {
   } catch {}
 }
 
-module.exports = { setNotify, setTradeHook, list, scan, definitions, names, call, save, remove, seedIfEmpty, seedDefaults, invalidate, dir, slugify };
+module.exports = { setNotify, list, scan, definitions, names, call, save, remove, seedIfEmpty, seedDefaults, invalidate, dir, slugify };

@@ -14,8 +14,6 @@ const gittools = require('./gittools');
 const repomap = require('./repomap');
 const xlsxtools = require('./xlsxtools');
 const typesafe = require('./typesafe');
-let financetools = null;
-try { financetools = require('./financetools'); } catch {}
 
 const MAX_CMD_OUTPUT = 16000;
 const MAX_FILE_CHARS = 200000;
@@ -1794,11 +1792,10 @@ function readCacheDrop(abs) {
 }
 
 const definitions = [
-  /* yerleşik modül araçları: git, repo haritası, excel, finance (MT5), TypeSafe */
+  /* yerleşik modül araçları: git, repo haritası, excel, TypeSafe */
   ...gittools.definitions,
   ...repomap.definitions,
   ...xlsxtools.definitions,
-  ...(financetools ? financetools.definitions : []),
   ...typesafe.definitions,
   {
     type: 'function',
@@ -2082,13 +2079,12 @@ const definitions = [
 
 async function exec(name, args, ctx) {
   const cwd = ctx.cwd;
-  /* modül araçları: gittools / repomap / xlsxtools / financetools / typesafe — kendi handler'larında */
+  /* modül araçları: gittools / repomap / xlsxtools / typesafe — kendi handler'larında */
   const modHandler =
     gittools.handlers[name] ||
     repomap.handlers[name] ||
     xlsxtools.handlers[name] ||
-    typesafe.handlers[name] ||
-    (financetools && financetools.handlers[name]);
+    typesafe.handlers[name];
   if (modHandler) {
     try {
       return JSON.stringify(await modHandler(args, ctx));

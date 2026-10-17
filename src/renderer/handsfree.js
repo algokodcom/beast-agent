@@ -61,6 +61,7 @@
   const TRIGGER_CEILING = 0.37; // ≈ int16 RMS 4000 (Hermes TRIGGER_CEILING)
   const SUSTAINED_WIN = 22; // ~350ms rAF penceresi
   const SUSTAINED_MAJORITY = 0.85; // %85 çoğunluk — tek kare gürültü asla geçmez
+  const LEAK_WIN = 60; // TTS sızıntı penceresi (~1sn rAF karesi)
 
   function percentile90(arr) {
     if (!arr.length) return 0.02;
@@ -81,6 +82,10 @@
     let silenceStartedAt = null;
     let stopResolver = null;
     let stopWaiters = [];
+
+    /* KALICI ORTAM ZEMİNİ: kayıt-yeniden-açmalar arasında korunur — yeni izleme
+       turu konuşma/TTS sesinden yeniden tohumlanmaz (sağırlığın asıl kaynağı) */
+    let ambFloor = 0.03;
 
     const resolveWaiters = (v) => {
       const w = stopWaiters;
@@ -113,8 +118,11 @@
         const aboveWin = []; // konuşma penceresi
         const trgBuf = []; // barge kesme kararı penceresi (daha uzun, daha sıkı)
         const ttsWin = []; // TTS sızıntı zemini (son ~1sn)
-        let floor = -1; // EMA gürültü zemini (openclaw)
+        let floor = -1; // EMA gürültü zemini (ambFloor kalıcı kopyasıyla beslenir)
         let trigger = options.silenceLevel || 0;
+        let lastFloorAt = 0; // zemin güncellenme zamanı (dt-tabanlı alfa)
+        let calibUntil = Date.now() + 350; // ilk 350ms kalibrasyon: yalnız aşağı çeker
+        let aboveStreak = 0; // üst üste konuşma kare sayacı — markNoisy sustırmalı
         const tick = () => {
           analyser.getByteTimeDomainData(data);
           let sum = 0;
@@ -129,22 +137,37 @@
           const idleSilenceMs = options.idleSilenceMs || 0;
 
           if (speechThreshold > 0 && options.onSilence && !silenceTriggered) {
-            /* EMA zemin (openclaw noteAudioLevel birebir):
-               sessizken hızlı düşer (α 0.08), sesliyken çok yavaş yükselir (α 0.01)
-               — sürekli uyarlanır, kalibrasyon penceresi gerekmez */
-            if (floor < 0) floor = Math.max(normalized, 0.03);
-            if (normalized < floor) floor += (normalized - floor) * 0.08;
-            else floor += (normalized - floor) * 0.01;
+            /* ZEMİN — ortada konuşurken STT sağırlaşıyordu; 3 düzeltme:
+               a) ambFloor KALICI: tur açılışında konuşma/TTS sesinden tohumlanmaz
+               b) konuşma algılandığında zemin DONAR — kendi sesin zemini şişirmez
+               c) TTS sırasında yükselmez (hoparlör sızıntısı zemini şişirmesin)
+               sessizken hızlı düşer (α 0.08), ortam gürültüsü dt'ye bağlı yavaş
+               α ile yükselir — rAF karesi değil saniye ölçeğinde uyarlanır */
+            const dtMs = lastFloorAt ? Math.min(250, now - lastFloorAt) : 16.7;
+            lastFloorAt = now;
+            const inCalib = now < calibUntil;
+            if (floor < 0) floor = ambFloor; // kalıcı değerden başla
+            if (inCalib) {
+              if (normalized < floor) floor += (normalized - floor) * 0.5; // kalibrasyon yalnız AŞAĞI çeker
+            } else if (heardSpeech || ttsState.playing) {
+              /* konuşma/TTS sırada: zemin DONMUŞ — güncellenmez */
+            } else if (normalized < floor) {
+              floor += (normalized - floor) * 0.08;
+            } else {
+              floor += (normalized - floor) * Math.min(0.03, dtMs / 20000);
+            }
+            ambFloor = floor;
 
             /* tetik = zemin × 5.0 (uzaktan ses de geçsin), konuşma alt sınırı ile */
             trigger = Math.max(speechThreshold, Math.min(TRIGGER_CEILING, floor * 5.0));
 
-            /* TTS çalarken: hoparlör sızıntısı ayrı hızlı zemin — tetik sızıntı × 1.9;
-               kullanıcı erken başlarsa da yakalanır (Chrome AEC sızıntıyı dener) */
-            if (ttsState.playing) {
+            /* TTS çalarken: sızıntı zemini tetiği BÜYÜTMEZ — yalnız barge-in
+               izlemesinde (ttsLeak) sızıntı p90'ı tetikler; kullanıcı erken
+               başlarsa da yakalanır (Chrome AEC sızıntıyı dener) */
+            if (ttsState.playing && options.ttsLeak) {
               ttsWin.push(normalized);
-              if (ttsWin.length > 12) ttsWin.shift();
-              trigger = Math.max(BARGE_MIN_TRIGGER, Math.min(0.5, percentile90(ttsWin) * 1.9));
+              if (ttsWin.length > LEAK_WIN) ttsWin.shift();
+              trigger = Math.max(BARGE_MIN_TRIGGER, Math.min(0.40, percentile90(ttsWin) * 1.6));
             }
 
             /* grace: submit sonrası kısa süre konuşma tetiklenmez (zemin yine güncellenir) */
@@ -164,8 +187,11 @@
             }
             if (isAbove) {
               silenceStartedAt = null;
-              if (options.markNoisy) options.markNoisy(); // spec öldü → normal final yolu
-            }
+              aboveStreak++;
+              /* ~80ms üst üste konuşma → spekülatif final bozuldu sayılır
+                 (tek kare gürültü spec'i öldürmesin) */
+              if (aboveStreak >= 5 && options.markNoisy) options.markNoisy();
+            } else aboveStreak = 0;
 
             /* barge kesme kararı: daha uzun pencere + çoğunluk */
             if (options.onTrigger && !triggered && !inGrace) {
@@ -328,6 +354,11 @@
   const REPLY_WAIT_MS = 300000; // cevap bekleme tavanı
   const DRIVE_MS = 500; // döngü kalp atışı
   const PARTIAL_MS = 800; // canlı önizleme aralığı — "anlık" his (Duyu ctc hızlı)
+  /* BÜYÜKLÜK TAVANLARI: uzun turda MB'lık blob'un yeniden transkribesi CPU'yu
+     kilitliyordu — tavan aşılırsa önizleme/spec atlanır, final normal yolu */
+  const SPEC_MAX_BYTES = 600000; // spekülatif final tavanı (~40sn webm/opus)
+  const PREVIEW_MAX_BYTES = 700000; // canlı önizleme tavanı
+  let previewSeq = 0; // artan önizleme sırası — bayat sonuçlar atılır
 
   /* Tek mikrofon politikası: bir panel eller-serbeste girince diğeri kapanır */
   let activePanel = null;
@@ -419,6 +450,7 @@
       spec = null;
       const blob = recorder.partialBlob();
       if (!blob || blob.size < 16000) return; // ~1 sn'den kısa ses — değer değil
+      if (blob.size > SPEC_MAX_BYTES) return; // dev segment — normal final yolu
       const pending = timedTranscribe(blob, () => !active, 1)
         .then((t) => { if (spec) spec.text = String(t || '').trim(); })
         .catch(() => { if (spec) spec.text = ''; });
@@ -469,11 +501,14 @@
         if (sttLatencyMs > 3500) return;
         const blob = recorder.partialBlob();
         if (!blob || blob.size <= partialSize + 4000) return; // yeni ses yoksa atla
+        if (blob.size > PREVIEW_MAX_BYTES) return; // uzun tur: önizleme kilitli
+        const mySeq = ++previewSeq;
+        const isStale = () => state !== 'listening' || mySeq !== previewSeq;
         partialBusy = true;
         partialCount++;
         try {
           const text = String(
-            (await timedTranscribe(blob, () => state !== 'listening', 0)) || ''
+            (await timedTranscribe(blob, isStale, 0)) || ''
           ).trim();
           partialSize = blob.size;
           if (text && active && state === 'listening' && !echoLikely(text)) {
@@ -531,19 +566,21 @@
         transcript = '';
       }
       if (!active) return 'closed';
-      /* TTS yankısı — ajanın kendi sesi; asla tur yapılmaz */
-      if (transcript && echoLikely(transcript)) return 'echo';
       if (!transcript || transcript.replace(/\s/g, '').length < 2) {
         noSpeechStrikes++;
         if (noSpeechStrikes >= NO_SPEECH_LIMIT) { end(true); toast(t('hf_stopped')); return 'closed'; }
         return 'empty';
       }
+      /* ANLAMLI transkript = mikrofon canlı → boş-tur sayacı SIFIRLANIR.
+         Yankı dahi mikrofonun çalıştığını kanıtlar; sıfırlama yankı kontrolünden ÖNCE. */
+      noSpeechStrikes = 0;
+      /* TTS yankısı — ajanın kendi sesi; asla tur yapılmaz */
+      if (echoLikely(transcript)) return 'echo';
       if (isVoiceStopCommand(transcript)) {
         end(true);
         toast(t('hf_stopped'));
         return 'closed';
       }
-      noSpeechStrikes = 0;
       setState('thinking');
       showStatus(t('hf_thinking'));
       await submit(transcript);
@@ -590,6 +627,7 @@
             idleSilenceMs: IDLE_SILENCE_MS,
             graceMs: 600, // kısa grace — erken başlayan sözler kaybolmasın
             triggerWinFrames: 30, // ~500ms pencerede %85 çoğunluk — TV kesintisi zor
+            ttsLeak: true, // TTS sırasında sızıntı p90'ı tetikleyi belirler
             onLevel: opts.onLevel,
             onTrigger: () => {
               triggered = true;
@@ -646,6 +684,9 @@
     async function startListening() {
       pendingStart = false;
       if (!active || isBusy() || state !== 'idle') return;
+      /* TTS ÇALARKEN dinleme turu AÇILMAZ — zemin sızıntıdan şişip sağıra
+         dönmesin; drive() 500ms sonra tekrar dener (TTS bitince açılır) */
+      if (ttsState.playing) { pendingStart = true; return; }
       spec = null; // önceki turdan kalma spekülatif artık temizlenir
       try {
         await recorder.start({

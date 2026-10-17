@@ -12,6 +12,7 @@
   let statusEl = null, draftEl = null, hintEl = null, engEl = null;
   let engTimer = 0;
   let panel = null;
+  let mirrorCb = null; // gizliyken olaylar chat durum balonuna yansıtılır
   let open = false;
   let uiHidden = false; // ekrana dizilir: oturum SÜRER, overlay saklanır
   let peek = null;
@@ -41,6 +42,14 @@
 }
 #convOverlay[hidden] { display: none; }
 #convOverlay.conv-in { opacity: 1; }
+/* tarayıcı dock alanı (sağ, --bw px) açıkken konuşma modu SOL YARIDA kalır —
+   konuşma ekranı + tarayıcı yan yana görünür */
+body.browser-open #convOverlay:not([hidden]) { inset: 0 var(--bw, 480px) 0 0; }
+body.phone-mode #convOverlay:not([hidden]) { inset: 0 var(--bw, 480px) 0 0; }
+/* gizli modda (simge durumu) alt chip: tam ekranın değil CHAT alanının
+   ortasında durur — tarayıcı açıkken bildirim sohbet üstünde ortalı */
+body.browser-open #convPeek { left: calc((100vw - var(--bw, 480px)) / 2); }
+body.phone-mode #convPeek { left: calc((100vw - var(--bw, 480px)) / 2); }
 #convOverlay[data-st="listening"] { color: #7dd3fc; }
 #convOverlay[data-st="thinking"] { color: #c4b5fd; }
 #convOverlay[data-st="speaking"] { color: #6ee7b7; }
@@ -202,7 +211,7 @@
       else if (!s.installed) stt = { cls: 'err', label: tFn('conv_missing') };
     } catch {}
     try {
-      const e = (window.beast && (await window.beast.emaStatus())) || {};
+      const e = (window.beast && (await (window.beast.ttsStatus ? window.beast.ttsStatus() : window.beast.emaStatus()))) || {};
       if (e.running) tts = { cls: 'ok', label: tFn('conv_ready') };
       else if (e.installing) tts = { cls: 'warm', label: tFn('conv_warming') };
       else if (!e.installed) tts = { cls: 'err', label: tFn('conv_missing') };
@@ -242,7 +251,9 @@
     if (!open || uiHidden) return;
     uiHidden = true;
     cancelAnimationFrame(raf);
-    raf = 0;
+    /* döngü DURMAZ — hafif kipte koşar: gizliyken canlı durum etiketi
+       chat balonuna aynalanır (animasyon/statusEl güncellemesi atlanır) */
+    raf = requestAnimationFrame(loop);
     overlay.classList.remove('conv-in'); // opacity 0 → 240ms sonra gizle
     setTimeout(() => { if (uiHidden) overlay.hidden = true; }, 240);
     showPeek();
@@ -252,16 +263,57 @@
     if (!open || !uiHidden) return;
     uiHidden = false;
     hidePeek();
+    if (mirrorCb) mirrorCb(''); // chat balonu temizlenir — ekrana döndü
     overlay.hidden = false;
     requestAnimationFrame(() => overlay.classList.add('conv-in'));
+    cancelAnimationFrame(raf); // gizli kipte koşan döngü varsa çift zincir oluşmasın
     raf = requestAnimationFrame(loop);
   }
 
+  /* DURUM ETİKETİ: TTS cümle cümle çalar — kullanıcı "bitti mi?" bilmeli.
+     cümle N/M ve "(son)"; cümle arası "sıradaki geliyor"; sonda kısa "bitti"
+     vurgusu. Görünürken statusEl'e, gizliyken chat balonuna yazılır. */
+  function speakLabel(st, speaking, ts) {
+    let endFlash = false;
+    if (st && (st.total > 0 || lastSpeak)) {
+      if (speaking) {
+        lastSpeak = true;
+      } else if (lastSpeak) { // oynatma az önce döndü
+        lastSpeak = false;
+        if (st.total > 0 && st.done >= st.total && !st.streamOpen) flashTs = ts;
+      }
+      if (flashTs && ts - flashTs < 1800) endFlash = true;
+    }
+    const pieceLabel = () => {
+      if (!st || st.total <= 1) return tFn('conv_speaking');
+      const cur = Math.min(st.total, st.done + 1);
+      const isLast = cur >= st.total && !st.streamOpen;
+      return `${tFn('conv_speaking')} · ${cur}/${st.total}${isLast ? ` · ${tFn('conv_last')}` : ''}`;
+    };
+    const moreComing = !!(st && st.total > 0 && st.done < st.total); // kuyrukta konuşulmamış cümle var
+    return speaking
+      ? pieceLabel()
+      : endFlash
+        ? tFn('conv_done')
+        : moreComing
+          ? tFn('conv_next')
+          : statusMsg;
+  }
+
   function loop(ts) {
-    if (!open || uiHidden) return;
+    if (!open) return;
     const st = window.BeastHandsFree && window.BeastHandsFree.ttsState;
     const speaking = !!(st && st.playing);
     const ttsLevel = st ? Math.min(1, st.level || 0) : 0;
+
+    /* GİZLİ (simge durumu): animasyon yok — yalnızca etiket hesaplanıp
+       chat balonuna aynalanır; tarayıcı vb. kullanırken ilerleme orada görünür */
+    if (uiHidden) {
+      if (mirrorCb) mirrorCb(speakLabel(st, speaking, ts) || tFn('hf_listening'));
+      raf = requestAnimationFrame(loop);
+      return;
+    }
+
     const eff = speaking
       ? 'speaking'
       : hfState === 'listening'
@@ -322,32 +374,7 @@
       overlay.dataset.st = eff;
     }
 
-    /* KONUŞMA İLERLEME: TTS cümle cümle çalar — kullanıcı "bitti mi?" bilmeli.
-       cümle N/M ve "(son)"; cümle arası "sıradaki geliyor"; sonda kısa "bitti" vurgusu. */
-    let endFlash = false;
-    if (st && (st.total > 0 || lastSpeak)) {
-      if (speaking) {
-        lastSpeak = true;
-      } else if (lastSpeak) { // oynatma az önce döndü
-        lastSpeak = false;
-        if (st.total > 0 && st.done >= st.total && !st.streamOpen) flashTs = ts;
-      }
-      if (flashTs && ts - flashTs < 1800) endFlash = true;
-    }
-    const pieceLabel = () => {
-      if (!st || st.total <= 1) return tFn('conv_speaking');
-      const cur = Math.min(st.total, st.done + 1);
-      const isLast = cur >= st.total && !st.streamOpen;
-      return `${tFn('conv_speaking')} · ${cur}/${st.total}${isLast ? ` · ${tFn('conv_last')}` : ''}`;
-    };
-    const moreComing = !!(st && st.total > 0 && st.done < st.total); // kuyrukta konuşulmamış cümle var
-    const label = speaking
-      ? pieceLabel()
-      : endFlash
-        ? tFn('conv_done')
-        : moreComing
-          ? tFn('conv_next')
-          : statusMsg;
+    const label = speakLabel(st, speaking, ts);
     if (statusEl.textContent !== label) statusEl.textContent = label || tFn('hf_listening');
 
     raf = requestAnimationFrame(loop);
@@ -357,6 +384,7 @@
     if (open) return;
     if (!window.BeastHandsFree) return;
     tFn = cfg.t || ((k) => k);
+    mirrorCb = cfg.mirrorStatus || null;
     onClosedCb = cfg.onClosed || null;
     build();
     hintEl.textContent = tFn('conv_hint');
@@ -418,6 +446,7 @@
     open = false;
     uiHidden = false;
     hidePeek();
+    if (mirrorCb) { mirrorCb(''); mirrorCb = null; }
     cancelAnimationFrame(raf);
     raf = 0;
     clearInterval(engTimer);

@@ -337,6 +337,23 @@ function setStatus(text) {
   els.statusPill.textContent = text;
 }
 
+/* konuşma modu GİZLİ iken olay balonu: statusRow içinde yan yana pill
+   (çevriliyor… / cevap geliyor… / konuşuyor… · 3/7 / konuşma bitti) */
+let hfPillEl = null;
+function mirrorHFStatus(text) {
+  const row = document.getElementById('statusRow');
+  if (!row) return;
+  if (!hfPillEl || !hfPillEl.isConnected) {
+    hfPillEl = document.createElement('div');
+    hfPillEl.id = 'hfPill';
+    hfPillEl.hidden = true;
+    row.appendChild(hfPillEl);
+  }
+  if (!text) { hfPillEl.hidden = true; return; }
+  hfPillEl.hidden = false;
+  if (hfPillEl.textContent !== text) hfPillEl.textContent = text;
+}
+
 /* ---------------- OFFLINE MESAJ KUYRUĞU (chat) ----------------
    İnternet yokken gönderilen mesajlar main'deki diske yazılan kuyruğa düşer;
    burada ⏳ "kuyrukta" balonu gösterilir. Bağlantı gelince kuyruk otomatik
@@ -2729,6 +2746,13 @@ async function renderTtsPane() {
         <div class="voice-slider"><span>${_t('tts_ema_speed')}</span><input id="emaSpeed" type="range" min="0.5" max="2" step="0.05" value="1"/><b id="emaSpeedVal">1.00x</b></div>
       </div>
       <div class="voice-row" style="margin-top:10px">
+        <span style="min-width:120px">Motor</span>
+        <select id="ttsEngine" class="inp" style="max-width:340px">
+          <option value="ema">eMa Lightning — hızlı, sohbet tonu</option>
+          <option value="ahenk">Ahenk Cep — doğal Türkçe (34 MB)</option>
+        </select>
+      </div>
+      <div class="voice-row" style="margin-top:6px">
         <span style="min-width:120px">${_t('tts_ema_sr')}</span>
         <select id="emaSr" class="inp" style="max-width:200px">
           <option value="48000" selected>48 kHz (WhatsApp için ideal)</option>
@@ -2761,14 +2785,26 @@ async function renderTtsPane() {
     if (sv) sv.textContent = Number($('#emaSpeed').value).toFixed(2) + 'x';
   };
 
+  /* ---------- motor seçimi: Ahenk Cep sabit 48 kHz çıkarır — oran seçici kilitlenir ---------- */
+  const engineName = () => (($('#ttsEngine') && $('#ttsEngine').value) === 'ahenk' ? 'ahenk' : 'ema');
+  const syncEngineUi = () => {
+    const sr = $('#emaSr');
+    if (sr) {
+      sr.disabled = engineName() === 'ahenk';
+      if (sr.parentElement) sr.parentElement.style.opacity = engineName() === 'ahenk' ? '0.6' : '';
+    }
+  };
+  const motorLabel = () => (engineName() === 'ahenk' ? 'Ahenk Cep' : 'eMa Lightning');
+
   /* ---------- durum satırları ---------- */
-  const refreshEmaStatus = async () => {
+  /* ---------- durum satırları (AKTİF motor: tts:status eMa | Ahenk Cep döndürür) ---------- */
+  const refreshEngineStatus = async () => {
     try {
-      const st = await beast.emaStatus();
+      const st = await beast.ttsStatus();
       const txt = $('#emaStatusTxt'), dot = $('#emaDot'), btn = $('#emaDlBtn');
       if (!st) return null;
-      if (txt) txt.textContent = st.running ? 'Hazır — yerel/offline (aktif)'
-        : st.installed ? 'Hazır — yerel/offline (eMa Lightning)'
+      if (txt) txt.textContent = st.running ? 'Hazır — yerel/offline (' + (st.engineLabel || motorLabel()) + ')'
+        : st.installed ? 'Hazır — yerel/offline (' + (st.engineLabel || motorLabel()) + ')'
         : st.installing ? 'Kuruluyor… (Python paketi + ~34MB ağırlık)'
         : 'Kurulmadı — ilk kullanımda otomatik kurulur';
       if (dot) dot.className = 'voice-dot' + (st.installed ? ' ok' : st.installing ? ' warn' : '');
@@ -2798,21 +2834,32 @@ async function renderTtsPane() {
     $('#emaSpeed').value = Number.isFinite(Number(tts.speed)) ? tts.speed : 1;
     $('#emaSr').value = String([48000, 24000, 16000, 8000].includes(Number(tts.sampleRate)) ? tts.sampleRate : 48000);
     $('#ttsChatAuto').checked = !!tts.chatAutoSpeak;
+    const engSel0 = $('#ttsEngine');
+    if (engSel0) engSel0.value = (tts.engine === 'ahenk' ? 'ahenk' : 'ema');
   } catch {}
   syncEmaLabels();
-  await refreshEmaStatus();
+  syncEngineUi();
+  await refreshEngineStatus();
   await refreshSttStatus();
 
   /* ---------- olaylar ---------- */
   const emaSpeedEl = $('#emaSpeed');
   if (emaSpeedEl) emaSpeedEl.addEventListener('input', syncEmaLabels);
+  const engSelEl = $('#ttsEngine');
+  if (engSelEl) engSelEl.addEventListener('change', () => { syncEngineUi(); void refreshEngineStatus(); });
   $('#emaDlBtn').addEventListener('click', async () => {
-    toast('eMa Lightning kuruluyor… (ilk seferde Python paketi + ~34MB ağırlık)');
-    const poll = setInterval(refreshEmaStatus, 4000);
-    const r = await beast.emaInstall().catch((e) => ({ ok: false, error: String((e && e.message) || e) }));
+    const isAhenk = engineName() === 'ahenk';
+    toast(isAhenk
+      ? 'Ahenk Cep kuruluyor… (ilk seferde trnorm git-pip kurulumu + ~34MB ağırlık indirmesi)'
+      : 'eMa Lightning kuruluyor… (ilk seferde Python paketi + ~34MB ağırlık)');
+    const poll = setInterval(refreshEngineStatus, 4000);
+    const r = await (isAhenk ? beast.ahenkInstall() : beast.emaInstall())
+      .catch((e) => ({ ok: false, error: String((e && e.message) || e) }));
     clearInterval(poll);
-    await refreshEmaStatus();
-    toast(r && r.ok ? 'eMa Lightning hazır ✓ — artık çevrimdışı seslendirme yapılır' : 'eMa kurulamadı: ' + ((r && r.error) || '?'));
+    await refreshEngineStatus();
+    toast(r && r.ok
+      ? (isAhenk ? 'Ahenk Cep hazır ✓ — artık çevrimdışı seslendirme yapılır' : 'eMa Lightning hazır ✓ — artık çevrimdışı seslendirme yapılır')
+      : (isAhenk ? 'Ahenk Cep kurulamadı: ' : 'eMa kurulamadı: ') + ((r && r.error) || '?'));
   });
   $('#sttDlBtn').addEventListener('click', async () => {
     await beast.sttPrefetchNow().catch(() => {});
@@ -2825,6 +2872,7 @@ async function renderTtsPane() {
   $('#ttsSave').addEventListener('click', async () => {
     await beast.waSetTts({
       enabled: $('#ttsOn').checked,
+      engine: engineName(),
       speed: Number($('#emaSpeed').value),
       sampleRate: Number($('#emaSr').value),
       chatAutoSpeak: $('#ttsChatAuto').checked,
@@ -2833,12 +2881,15 @@ async function renderTtsPane() {
     /* hoparlör düğmesiyle TEK doğruluk kaynağı senkronu — asıl seslendirmeme bug'ı */
     chatTtsOn = $('#ttsChatAuto').checked;
     if (els.ttsBtn) els.ttsBtn.classList.toggle('on', chatTtsOn);
-    toast($('#ttsOn').checked ? 'TTS açık — cevaplar sesli (eMa Lightning)' : 'TTS kapalı');
+    toast($('#ttsOn').checked ? 'TTS açık — cevaplar sesli (' + motorLabel() + ')' : 'TTS kapalı');
   });
   $('#ttsTest').addEventListener('click', async () => {
     /* motor + IPC + çalma zincirini uçtan uca dener — sorun neredeyse görünür */
-    const line = 'Merhaba kanka, eMa Lightning yerel TTS testi. Ben Beast.';
-    toast('TTS test ediliyor… (eMa ilk seferde kuruluyorsa uzun sürebilir)');
+    const isAhenkTest = engineName() === 'ahenk';
+    const line = isAhenkTest
+      ? 'Merhaba kanka, Ahenk Cep yerel TTS testi. Ben Beast.'
+      : 'Merhaba kanka, eMa Lightning yerel TTS testi. Ben Beast.';
+    toast('TTS test ediliyor… (ilk seferde kurulum varsa uzun sürebilir)');
     const r = await beast.ttsSpeak(line).catch((e) => ({ ok: false, error: String((e && e.message) || e) }));
     if (!(r && r.ok)) { toast('TTS test HATA: ' + ((r && r.error) || '?')); return; }
     try {
@@ -7580,14 +7631,14 @@ async function init() {
       fr.onload = () => res(fr.result);
       fr.readAsDataURL(b);
     });
-  /* STT çağrıları main'deki öncelikli sıraya gider: final (priority 1)
-     önizlemelerin (0) önüne geçer — Duyu ctc önizlemesi yavaşlasa bile
-     konuşanın cevabı önce transkribe edilir */
-  let hfSttChain = Promise.resolve();
+  /* STT çağrıları main'deki öncelikli sıraya GİRER — renderer tarafında ek
+     zincir YOK. Eski hfSttChain tüm çağrıları sıraya çevirip main'in öncelik
+     kuyruğunu etkisizleştiriyordu: final (priority 1) bekliyorken yeni
+     önizleme (0) da arkasında kuyruğa giriyordu → birikme + sağırlık hissi. */
   let hfWarmAt = 0; // motor ön-ısıtma zamanı (60 sn'de bir yokla)
   const hfTranscribe = (blob, isStale, priority) => {
-    /* ses kullanımı başlar başlamaz eMa'yı ısıt — ilk TTS cümlesi soğuk
-       yükleme (~9 sn) beklemesin; hazırken bu çağrı ~1 ms'lik yoklamadır */
+    /* ses kullanımı başlar başlamaz TTS'i ısıt — ilk cümle soğuk yükleme
+       (~9 sn) beklemesin; hazırken bu çağrı ~1 ms'lik yoklamadır */
     if (Date.now() - hfWarmAt > 60000) {
       hfWarmAt = Date.now();
       void beast.emaPrefetch().catch(() => {});
@@ -7601,9 +7652,7 @@ async function init() {
       if (r && r.ok && r.text) return String(r.text);
       throw new Error((r && r.error) || 'stt-fail');
     };
-    const p = hfSttChain.then(run, run);
-    hfSttChain = p.then(() => {}, () => {});
-    return p;
+    return run();
   };
   if (window.BeastHandsFree) {
     const mkHF = (cfg) => { if (cfg.btn) window.BeastHandsFree.createPanel(cfg); };
@@ -7695,6 +7744,7 @@ async function init() {
             interrupt: () => { if (activeId) beast.interrupt(activeId, 'konuşma modu: kesme').catch(() => {}); },
             cutTts,
             toast,
+            mirrorStatus: mirrorHFStatus, // gizliyken canlı durum chat balonuna aynalanır
             t: _t,
             onClosed: async () => {
               const r = convRestore;

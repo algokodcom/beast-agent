@@ -28,6 +28,7 @@ const bus = require('./agent/bus');
 const computeruse = require('./agent/computeruse');
 const duyu = require('./agent/duyu');
 const ema = require('./agent/ema');
+const ahenk = require('./agent/ahenk'); // TTS motor 2: Ahenk Cep (ozgurguler/ahenk-cep-tr)
 const fsguard = require('./agent/fsguard');
 const log = require('./agent/logger');
 const squeeze = require('./agent/squeeze');
@@ -806,10 +807,21 @@ function decodeAudioToPcm16k(buf) {
       const p = spawn(ffmpegPath, ['-hide_banner', '-loglevel', 'error', '-i', 'pipe:0', '-f', 's16le', '-ar', '16000', '-ac', '1', 'pipe:1']);
       const chunks = [];
       let err = '';
+      let done = false;
+      /* 60 sn tavan: asılı ffmpeg, STT öncelikli sırasını sonsuza kadar
+         kilitler — asıl sağırlık sebeplerinden biri bu olabilir */
+      const killTimer = setTimeout(() => {
+        if (done) return;
+        try { p.kill(); } catch {}
+        reject(new Error('ffmpeg zaman aşımı'));
+      }, 60000);
       p.stdout.on('data', (c) => chunks.push(c));
       p.stderr.on('data', (c) => { err += c.toString(); });
-      p.on('error', reject);
+      p.on('error', (e) => { if (!done) { done = true; clearTimeout(killTimer); reject(e); } });
       p.on('close', (code) => {
+        if (done) return;
+        done = true;
+        clearTimeout(killTimer);
         if (code !== 0) return reject(new Error('ffmpeg ' + code + ': ' + err.slice(0, 200)));
         const pcm = Buffer.concat(chunks);
         const f32 = new Float32Array(Math.floor(pcm.length / 2));
@@ -908,8 +920,21 @@ async function transcribeAudioInner(buf, langOverride /* 'tr' | 'en' | 'auto' */
   }
 }
 
-/* TTS sentezi: TEK motor — eMa Lightning (canberkkkkkk/ema-lightning).
-   Yerel/offline PyTorch (CPU), Türkçe. Dönen { audio: WAV Buffer, mime } —
+/* TTS motoru seçimi: 'ema' (varsayılan) ya da 'ahenk' — ikisi de yerel/offline.
+   Ahenk Cep başarısızsa eMa'ya sessizce düşülür; ses asla susmasın. */
+function ttsEngineName() {
+  return (settings.waTts || {}).engine === 'ahenk' ? 'ahenk' : 'ema';
+}
+function ttsEngineLabel() {
+  return ttsEngineName() === 'ahenk' ? 'Ahenk Cep (yerel)' : 'eMa Lightning (yerel)';
+}
+function ttsModule() {
+  return ttsEngineName() === 'ahenk' ? ahenk : ema;
+}
+
+/* TTS sentezi: ÇİFT motor — eMa Lightning (canberkkkkkk/ema-lightning,
+   varsayılan, yerel/offline PyTorch) + Ahenk Cep (ozgurguler/ahenk-cep-tr,
+   ikinci seçenek, sabit 48 kHz) — Türkçe. Dönen { audio: WAV Buffer, mime } —
    WA sesli notu ffmpeg ile ogg/opus'a çevrilir, oynatıcı WAV'ı doğrudan çalar. */
 async function synthesizeSpeech(text, opts = {}) {
   const cfg = settings.waTts || {};
@@ -917,7 +942,19 @@ async function synthesizeSpeech(text, opts = {}) {
   try {
     const t = ttsCleanText(text);
     if (!t || t.length < 2) return null;
-    const out = await ema.synthesize(t, { speed: cfg.speed, sampleRate: cfg.sampleRate, pad: opts.pad });
+    let out = null;
+    if (ttsEngineName() === 'ahenk') {
+      if (!ahenk.status().pkg) {
+        waLog('ahenk kurulu değil — eMa kullanıldı');
+      } else {
+        try {
+          out = await ahenk.synthesize(t, { speed: cfg.speed, pad: opts.pad });
+        } catch (e) {
+          waLog('ahenk hatası — eMa düştü: ' + String((e && e.message) || e));
+        }
+      }
+    }
+    if (!out) out = await ema.synthesize(t, { speed: cfg.speed, sampleRate: cfg.sampleRate, pad: opts.pad });
     return out && out.audio ? out : null;
   } catch (e) {
     waLog('tts hata: ' + String((e && e.message) || e));
@@ -3611,13 +3648,14 @@ app.whenReady().then(() => {
     // Paket kurulu değilse sessizce atlanır — açılışta torch indirmesi başlamaz.
     setTimeout(() => {
       try {
-        const st = ema.status();
+        const m = ttsModule();
+        const st = m.status();
         if (!st.pkg) {
-          waLog('TTS prefetch atlandı: eMa kurulu değil (pip paketi yok)');
+          waLog('TTS prefetch atlandı: ' + ttsEngineLabel() + ' kurulu değil (pip paketi yok)');
           return;
         }
-        ema.warm()
-          .then(() => waLog('TTS hazır: eMa Lightning (yerel)'))
+        m.warm()
+          .then(() => waLog('TTS hazır: ' + ttsEngineLabel()))
           .catch((e) => waLog('TTS prefetch atlandı: ' + String((e && e.message) || e)));
       } catch {}
     }, 15000);
@@ -11831,6 +11869,7 @@ ipcMain.handle('wa:tts:get', () => {
   const c = settings.waTts || {};
   return {
     enabled: !!c.enabled,
+    engine: c.engine === 'ahenk' ? 'ahenk' : 'ema',
     speed: clampTtsNum(c.speed, 0.5, 2, 1),
     sampleRate: [48000, 24000, 16000, 8000].includes(Number(c.sampleRate)) ? Number(c.sampleRate) : 48000,
     chatAutoSpeak: !!c.chatAutoSpeak,
@@ -11839,8 +11878,8 @@ ipcMain.handle('wa:tts:get', () => {
 ipcMain.handle('wa:tts:set', (_e, cfg) => {
   settings.waTts = {
     enabled: !!(cfg && cfg.enabled),
-    /* TEK motor: eMa Lightning (canberkkkkkk/ema-lightning) — yerel/offline PyTorch, Türkçe */
-    engine: 'ema',
+    /* İKİ motor: eMa Lightning (varsayılan) + Ahenk Cep (ozgurguler/ahenk-cep-tr) — ikisi de yerel */
+    engine: cfg && cfg.engine === 'ahenk' ? 'ahenk' : 'ema',
     speed: clampTtsNum(cfg && cfg.speed, 0.5, 2, 1),
     sampleRate: [48000, 24000, 16000, 8000].includes(Number(cfg && cfg.sampleRate)) ? Number(cfg.sampleRate) : 48000,
     chatAutoSpeak: !!(cfg && cfg.chatAutoSpeak),
@@ -11855,15 +11894,28 @@ ipcMain.handle('ema:install', async () => {
   const r = await ema.install();
   return { ...r, status: ema.status() };
 });
-/* eMa ÖN-ISI: konuşma modu/eller serbest başlarken çağrılır — motor 15 dk
+/* Ahenk Cep (yerel/offline TTS #2): durum + elle kurulum/ısıtma */
+ipcMain.handle('ahenk:status', () => ahenk.status());
+ipcMain.handle('ahenk:install', async () => {
+  const r = await ahenk.install();
+  return { ...r, status: ahenk.status() };
+});
+/* AKTİF TTS MOTORU durumu: seçili motor (eMa | Ahenk Cep) — ayarlar + rozetler bunu kullanır */
+ipcMain.handle('tts:status', () => {
+  const m = ttsModule();
+  return { engine: ttsEngineName(), engineLabel: ttsEngineLabel(), ...m.status() };
+});
+/* TTS ÖN-ISI: seçili motora göre (eMa ya da Ahenk Cep) ısıtılır — motor 15 dk
    boşta bellekten düşüyor ve soğuk ilk sentez ~9 sn sürüyor (ölçüldü);
    ön-ısıtma bu yüklemeyi kullanıcı konuşurken gizler */
 ipcMain.handle('ema:prefetch', async () => {
   if (!settings.waTts || !settings.waTts.enabled) return { ok: false, skipped: true };
-  const st = ema.status();
-  if (!st.pkg) return { ok: false, error: 'eMa kurulu değil' };
+  const m = ttsModule();
+  const st = m.status();
+  if (!st.pkg) return { ok: false, error: ttsEngineName() === 'ahenk' ? 'Ahenk Cep kurulu değil' : 'eMa kurulu değil' };
+  if (ttsEngineName() === 'ahenk' && !st.weights) return { ok: false, error: 'Ahenk Cep ağırlıkları inmemiş — KUR düğmesiyle kur' };
   try {
-    await ema.warm();
+    await m.warm();
     return { ok: true };
   } catch (e) {
     return { ok: false, error: String((e && e.message) || e) };
@@ -11881,10 +11933,10 @@ ipcMain.handle('tts:synthesize', async (_e, text) => {
      (varsayılan 300ms dolgu her cümle arasında ölü boşluk yaratıyordu) */
   const out = await synthesizeSpeech(t.slice(0, 4000), { pad: 0.05 });
   if (!out || !out.audio) {
-    waLog('tts chat seslendirilemedi — motor: eMa Lightning');
+    waLog('tts chat seslendirilemedi — motor: ' + ttsEngineLabel());
     return { ok: false, error: 'seslendirilemedi' };
   }
-  waLog('tts chat ok: ' + out.audio.length + ' bayt, motor: eMa Lightning (yerel)');
+  waLog('tts chat ok: ' + out.audio.length + ' bayt, motor: ' + ttsEngineLabel());
   return { ok: true, audioB64: out.audio.toString('base64'), mime: out.mime || 'audio/wav' };
 });
 

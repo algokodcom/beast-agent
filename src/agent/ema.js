@@ -190,9 +190,8 @@ function request(payload, timeoutMs) {
   }));
 }
 
-/* sentez kuyruğu: tek motor, istekler sırayla (uzun metin diğerini beklemesin diye
-   çağıran taraf zaten cümle cümle besler) */
-let chain = Promise.resolve();
+  /* sentez kuyruğu: TEK eMa motoru istekleri sırayla işler (serialize chain) */
+  let chain = Promise.resolve();
 function serialize(task) {
   const p = chain.then(task, task);
   chain = p.then(() => {}, () => {});
@@ -208,7 +207,14 @@ async function synthesize(text, opts = {}) {
   const sr = [48000, 24000, 16000, 8000].includes(Number(opts.sampleRate)) ? Number(opts.sampleRate) : 48000;
   const speed = Math.max(0.5, Math.min(2, Number(opts.speed) || 1));
   return serialize(async () => {
-    const r = await request({ op: 'say', text: t.slice(0, 4000), sample_rate: sr, speed });
+    const r = await request({
+      op: 'say',
+      text: t.slice(0, 4000),
+      sample_rate: sr,
+      speed,
+      /* baş/son sessizlik dolgusu: sohbet akıcılığı için kısa, WA için varsayılan */
+      pad: opts.pad != null ? Number(opts.pad) : undefined,
+    });
     const audio = Buffer.from(String(r.wav_b64 || ''), 'base64');
     if (!audio.length) throw new Error('ses üretilemedi');
     return { audio, mime: 'audio/wav' };

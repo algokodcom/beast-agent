@@ -206,6 +206,7 @@ contextBridge.exposeInMainWorld('beast', {
   waSetTts: (cfg) => ipcRenderer.invoke('wa:tts:set', cfg),
   emaStatus: () => ipcRenderer.invoke('ema:status'),
   emaInstall: () => ipcRenderer.invoke('ema:install'),
+  emaPrefetch: () => ipcRenderer.invoke('ema:prefetch'),
   waGetGroups: () => ipcRenderer.invoke('wa:groups:get'),
   waSetGroups: (cfg) => ipcRenderer.invoke('wa:groups:set', cfg),
   tgGetStatus: () => ipcRenderer.invoke('tg:status:get'),

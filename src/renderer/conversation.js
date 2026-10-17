@@ -9,9 +9,12 @@
 (() => {
   let overlay = null;
   let orb = null, coreGlow = null, barsG = null, rippleA = null, rippleB = null, rippleC = null;
-  let statusEl = null, draftEl = null, hintEl = null;
+  let statusEl = null, draftEl = null, hintEl = null, engEl = null;
+  let engTimer = 0;
   let panel = null;
   let open = false;
+  let uiHidden = false; // ekrana dizilir: oturum SÜRER, overlay saklanır
+  let peek = null;
   let onClosedCb = null;
   let tFn = (k) => k;
   let hfState = 'idle';
@@ -19,6 +22,8 @@
   let micLevel = 0;
   let raf = 0;
   let stNow = '';
+  let lastSpeak = false; // konuşma ilerleme flash: oynatma bitti anını yakalar
+  let flashTs = 0;
 
   const STYLE_ID = 'convModeStyle';
 
@@ -45,6 +50,26 @@
   color: #8b9ab0; font-size: 20px; line-height: 1; cursor: pointer;
 }
 #convClose:hover { color: #e8eef8; border-color: #33405a; }
+#convHide {
+  position: absolute; top: 14px; right: 64px; width: 38px; height: 38px;
+  border-radius: 10px; border: 1px solid #232c3d; background: #0f1522;
+  color: #8b9ab0; font-size: 15px; line-height: 1; cursor: pointer;
+}
+#convHide:hover { color: #e8eef8; border-color: #33405a; }
+#convPeek {
+  position: fixed; left: 50%; transform: translateX(-50%); bottom: 16px;
+  z-index: 8900; display: inline-flex; align-items: center; gap: 9px;
+  padding: 9px 15px; border-radius: 999px; border: 1px solid #233047;
+  background: rgba(13, 19, 31, 0.94); color: #9fb0c7; font-size: 13px;
+  cursor: pointer; box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+  transition: color 200ms ease, border-color 200ms ease;
+}
+#convPeek:hover { color: #e8eef8; border-color: #33405a; }
+#convPeek .dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: #34d399; box-shadow: 0 0 6px #34d399;
+  animation: convEngPulse 1.2s ease infinite;
+}
 #convStage { display: flex; flex-direction: column; align-items: center; gap: 16px; max-width: 620px; padding: 28px 20px 34px; }
 #convOrbSvg {
   width: min(42vw, 320px); height: auto;
@@ -64,6 +89,22 @@
   font-size: 19px; line-height: 1.45; color: #e8eef8; opacity: 0.94;
 }
 #convHint { font-size: 12.5px; color: #5f6d84; text-align: center; }
+#convEngines { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
+#convEngines .eng {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 3px 10px; border: 1px solid #232c3d; border-radius: 999px;
+  background: #0f1522; font-size: 12px; color: #8b9ab0; cursor: pointer;
+  transition: border-color 200ms ease, color 200ms ease;
+}
+#convEngines .eng:hover { border-color: #33405a; color: #e8eef8; }
+#convEngines .eng i { width: 7px; height: 7px; border-radius: 50%; background: #3a4557; }
+#convEngines .eng.ok { color: #b9f6d8; border-color: #1d4a36; }
+#convEngines .eng.ok i { background: #34d399; box-shadow: 0 0 6px #34d399; }
+#convEngines .eng.warm { color: #fde8b7; border-color: #4a3d1d; }
+#convEngines .eng.warm i { background: #fbbf24; animation: convEngPulse 1s ease infinite; }
+#convEngines .eng.err { color: #f8c4c4; border-color: #4a2323; }
+#convEngines .eng.err i { background: #f87171; }
+@keyframes convEngPulse { 50% { opacity: 0.35; } }
 `;
     document.head.appendChild(css);
   }
@@ -88,6 +129,7 @@
     }
 
     overlay.innerHTML = `
+  <button id="convHide" title="" aria-label="minimize">─&#xFE0E;</button>
   <button id="convClose" title="" aria-label="close">&#x2715;&#xFE0E;</button>
   <div id="convStage">
     <svg id="convOrbSvg" viewBox="0 0 360 360" fill="none" aria-hidden="true">
@@ -113,6 +155,7 @@
     </svg>
     <div id="convStatus"></div>
     <div id="convDraft"></div>
+    <div id="convEngines"></div>
     <div id="convHint"></div>
   </div>`;
     document.body.appendChild(overlay);
@@ -125,16 +168,97 @@
     statusEl = overlay.querySelector('#convStatus');
     draftEl = overlay.querySelector('#convDraft');
     hintEl = overlay.querySelector('#convHint');
+    engEl = overlay.querySelector('#convEngines');
+    /* rozete tık = motoru hemen ısıt */
+    engEl.addEventListener('click', (ev) => {
+      const chip = ev.target && ev.target.closest ? ev.target.closest('.eng') : null;
+      if (!chip || !window.beast) return;
+      if (chip.dataset.eng === 'stt') void window.beast.sttPrefetchNow().catch(() => {});
+      else void window.beast.emaPrefetch().catch(() => {});
+      setTimeout(pollEngines, 250);
+    });
     overlay.querySelector('#convClose').addEventListener('click', () => closeInternal(false));
+    /* gizle: oturum sürer, ana ekran görünür — dönmek için alt chip'e tıkla */
+    overlay.querySelector('#convHide').addEventListener('click', hideOverlay);
     document.addEventListener('keydown', (e) => {
-      if (!open || e.key !== 'Escape') return;
+      if (!open || uiHidden || e.key !== 'Escape') return;
       e.preventDefault();
       closeInternal(false);
     });
   }
 
+  /* ---------- MOTOR ROZETLERİ: STT (Duyu-small) + TTS (eMa) canlı durum ----------
+     hazır = motor bellekte (anında çalışır) · ısınıyor = yükleniyor ·
+     bekliyor = kurulu ama bellekte değil (ilk kullanımda yüklenir) ·
+     kurulu değil = paket/model eksik. Rozete tık = hemen ısıt. */
+  async function pollEngines() {
+    if (!engEl || !engTimer) return;
+    let stt = { cls: '', label: tFn('conv_standby') };
+    let tts = { cls: '', label: tFn('conv_standby') };
+    try {
+      const s = (window.beast && (await window.beast.sttStatus())) || {};
+      if (s.state === 'ready') stt = { cls: 'ok', label: tFn('conv_ready') };
+      else if (s.state === 'loading' || s.installing) stt = { cls: 'warm', label: tFn('conv_warming') };
+      else if (!s.installed) stt = { cls: 'err', label: tFn('conv_missing') };
+    } catch {}
+    try {
+      const e = (window.beast && (await window.beast.emaStatus())) || {};
+      if (e.running) tts = { cls: 'ok', label: tFn('conv_ready') };
+      else if (e.installing) tts = { cls: 'warm', label: tFn('conv_warming') };
+      else if (!e.installed) tts = { cls: 'err', label: tFn('conv_missing') };
+    } catch {}
+    const chip = (eng, name, st) =>
+      `<span class="eng ${st.cls}" data-eng="${eng}"><i></i>${name} ${st.label}</span>`;
+    engEl.innerHTML = chip('stt', tFn('conv_stt'), stt) + chip('tts', tFn('conv_tts'), tts);
+  }
+
+  /* ---------- EKRAN GİZLEME: oturum ARKA PLANDA SÜRER ----------
+     "─" düğmesi overlay gizler, ana ekran görünür (dahili tarayıcı vs.).
+     Alt ortada canlı chip: durum yazısı + tek tıkla tekrar açma. ✕ hâlâ tam kapanır. */
+  function updatePeekText() {
+    if (!peek) return;
+    const txt = peek.querySelector('.txt');
+    if (txt) txt.textContent = statusMsg ? `${tFn('conv_peek')} · ${statusMsg}` : tFn('conv_peek');
+  }
+
+  function hidePeek() {
+    if (!peek) return;
+    peek.remove();
+    peek = null;
+  }
+
+  function showPeek() {
+    if (peek || !open) return;
+    peek = document.createElement('button');
+    peek.id = 'convPeek';
+    peek.appendChild(Object.assign(document.createElement('span'), { className: 'dot' }));
+    peek.appendChild(Object.assign(document.createElement('span'), { className: 'txt' }));
+    updatePeekText();
+    peek.addEventListener('click', showOverlay);
+    document.body.appendChild(peek);
+  }
+
+  function hideOverlay() {
+    if (!open || uiHidden) return;
+    uiHidden = true;
+    cancelAnimationFrame(raf);
+    raf = 0;
+    overlay.classList.remove('conv-in'); // opacity 0 → 240ms sonra gizle
+    setTimeout(() => { if (uiHidden) overlay.hidden = true; }, 240);
+    showPeek();
+  }
+
+  function showOverlay() {
+    if (!open || !uiHidden) return;
+    uiHidden = false;
+    hidePeek();
+    overlay.hidden = false;
+    requestAnimationFrame(() => overlay.classList.add('conv-in'));
+    raf = requestAnimationFrame(loop);
+  }
+
   function loop(ts) {
-    if (!open) return;
+    if (!open || uiHidden) return;
     const st = window.BeastHandsFree && window.BeastHandsFree.ttsState;
     const speaking = !!(st && st.playing);
     const ttsLevel = st ? Math.min(1, st.level || 0) : 0;
@@ -197,7 +321,33 @@
       stNow = eff;
       overlay.dataset.st = eff;
     }
-    const label = speaking ? tFn('conv_speaking') : statusMsg;
+
+    /* KONUŞMA İLERLEME: TTS cümle cümle çalar — kullanıcı "bitti mi?" bilmeli.
+       cümle N/M ve "(son)"; cümle arası "sıradaki geliyor"; sonda kısa "bitti" vurgusu. */
+    let endFlash = false;
+    if (st && (st.total > 0 || lastSpeak)) {
+      if (speaking) {
+        lastSpeak = true;
+      } else if (lastSpeak) { // oynatma az önce döndü
+        lastSpeak = false;
+        if (st.total > 0 && st.done >= st.total && !st.streamOpen) flashTs = ts;
+      }
+      if (flashTs && ts - flashTs < 1800) endFlash = true;
+    }
+    const pieceLabel = () => {
+      if (!st || st.total <= 1) return tFn('conv_speaking');
+      const cur = Math.min(st.total, st.done + 1);
+      const isLast = cur >= st.total && !st.streamOpen;
+      return `${tFn('conv_speaking')} · ${cur}/${st.total}${isLast ? ` · ${tFn('conv_last')}` : ''}`;
+    };
+    const moreComing = !!(st && st.total > 0 && st.done < st.total); // kuyrukta konuşulmamış cümle var
+    const label = speaking
+      ? pieceLabel()
+      : endFlash
+        ? tFn('conv_done')
+        : moreComing
+          ? tFn('conv_next')
+          : statusMsg;
     if (statusEl.textContent !== label) statusEl.textContent = label || tFn('hf_listening');
 
     raf = requestAnimationFrame(loop);
@@ -211,14 +361,23 @@
     build();
     hintEl.textContent = tFn('conv_hint');
     overlay.querySelector('#convClose').title = tFn('conv_exit');
+    overlay.querySelector('#convHide').title = tFn('conv_hide');
     hfState = 'idle';
     statusMsg = '';
     micLevel = 0;
     stNow = '';
+    lastSpeak = false;
+    flashTs = 0;
     draftEl.textContent = '';
+    uiHidden = false;
+    hidePeek();
     open = true;
     overlay.hidden = false;
     requestAnimationFrame(() => overlay.classList.add('conv-in'));
+    /* motor rozetleri canlı izlenir */
+    clearInterval(engTimer);
+    engTimer = setInterval(() => { void pollEngines(); }, 1200);
+    void pollEngines();
     /* panel butonu görünmez kukla: gerçek tıklama convBtn'de bizde;
        panelin kendi tık dinleyicisi çift tetikleme yapmasın */
     const dummyBtn = document.createElement('button');
@@ -231,13 +390,20 @@
       draft: (text) => { if (draftEl) draftEl.textContent = text || ''; },
       interrupt: cfg.interrupt,
       cutTts: cfg.cutTts,
-      status: (m) => { statusMsg = m || ''; },
-      statusHide: () => { statusMsg = ''; },
+      status: (m) => {
+        statusMsg = m || '';
+        if (uiHidden) updatePeekText();
+      },
+      statusHide: () => {
+        statusMsg = '';
+        if (uiHidden) updatePeekText();
+      },
       toast: cfg.toast || (() => {}),
       t: tFn,
       onState: (s) => {
         hfState = s;
         if (s !== 'listening' && draftEl) draftEl.textContent = '';
+        if (uiHidden) updatePeekText();
       },
       onLevel: (v) => { micLevel = v; },
       onEnd: () => { closeInternal(true); },
@@ -250,8 +416,13 @@
   function closeInternal(fromPanel) {
     if (!open) return;
     open = false;
+    uiHidden = false;
+    hidePeek();
     cancelAnimationFrame(raf);
     raf = 0;
+    clearInterval(engTimer);
+    engTimer = 0;
+    if (engEl) engEl.innerHTML = '';
     overlay.classList.remove('conv-in');
     overlay.hidden = true;
     const p = panel;
@@ -265,6 +436,8 @@
   window.BeastConversation = {
     open: openConversation,
     close: () => closeInternal(false),
+    show: showOverlay,
+    isHidden: () => uiHidden,
     isOpen: () => open,
   };
 })();

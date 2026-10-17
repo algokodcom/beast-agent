@@ -21,10 +21,12 @@
     'stop', 'stop listening', 'stop it', 'stop please', 'please stop', 'stop stop',
     'that is all', "that's all", 'never mind', 'nevermind',
     'end conversation', 'end the conversation', 'goodbye', 'good bye', 'bye', 'cancel',
-    // Türkçe stop komutları — yalnızca TÜM cümle bu ise eşleşir
-    'dur', 'durur', 'dur dinleme', 'dinlemeyi durdur', 'yeter', 'yeterli',
-    'boş ver', 'bos ver', 'iptal', 'iptal et', 'görüşürüz', 'gorusuruz',
-    'bay bay', 'hoşça kal', 'hosca kal', 'kapat', 'kapat konuşmayı', 'sus',
+    /* Türkçe stop komutları — TEK KELİMELİK 'dur/sus/kapat/yeter/iptal' ÇIKARILDI:
+       arka planda TV/konuşma transkriptleri bunlarla EŞLEŞİP modu bazen
+       kendiliğinden kapatıyordu (false alarm). Açık konuşmalı hâlleri geçer. */
+    'dur dinleme', 'dinlemeyi durdur', 'dinlemeyi bırak',
+    'boş ver artık', 'iptal et', 'görüşürüz', 'gorusuruz',
+    'bay bay', 'hoşça kal', 'hosca kal', 'kapat konuşmayı',
   ];
   const ADDRESS_PREFIXES = ['hey beast', 'beast', 'eyvah', 'ok', 'okay', 'hey', 'hadi'];
 
@@ -155,8 +157,15 @@
               aboveWin.length >= SUSTAINED_WIN &&
               aboveWin.filter(Boolean).length >= Math.ceil(SUSTAINED_WIN * SUSTAINED_MAJORITY);
 
-            if (majority && !inGrace) heardSpeech = true;
-            if (isAbove) silenceStartedAt = null;
+            if (majority && !inGrace && !heardSpeech) {
+              heardSpeech = true;
+              /* canlı durum köprüsü: panel "çevriliyor…" gösterir */
+              if (options.onSpeechChange) options.onSpeechChange(true);
+            }
+            if (isAbove) {
+              silenceStartedAt = null;
+              if (options.markNoisy) options.markNoisy(); // spec öldü → normal final yolu
+            }
 
             /* barge kesme kararı: daha uzun pencere + çoğunluk */
             if (options.onTrigger && !triggered && !inGrace) {
@@ -172,10 +181,17 @@
               }
             }
 
-            /* cümle sonu: konuşma bitince sessizlik süresi */
+            /* cümle sonu: konuşma bitince sessizlik süresi; önizleme soru/ünlemle
+               bittiyse ERKEN gönder (soru sorup bekleme olmaz) */
             if (heardSpeech && silenceMs > 0) {
-              if (silenceStartedAt == null) silenceStartedAt = now;
-              if (now - silenceStartedAt >= silenceMs) {
+              if (silenceStartedAt == null) {
+                silenceStartedAt = now;
+                /* susma başladı: spekütatif final STT hemen paralel başlat */
+                if (options.onSilenceStart) options.onSilenceStart();
+              }
+              const waitMs =
+                options.onEarlyEnd && options.onEarlyEnd() ? Math.min(EARLY_END_MS, silenceMs) : silenceMs;
+              if (now - silenceStartedAt >= waitMs) {
                 silenceTriggered = true;
                 options.onSilence();
                 return;
@@ -304,19 +320,29 @@
 
   const SILENCE_LEVEL = 0.085; // konuşma eşiği alt sınırı (uzaktan ses de geçsin)
   const BARGE_MIN_TRIGGER = 0.15; // barge kesme eşiği
-  const SILENCE_MS = 700; // openclaw: 700ms sessizlik = cümle sonu (hızlı tur)
-  const IDLE_SILENCE_MS = 12000; // boş hava timeout
+  const SILENCE_MS = 550; // hızlı tur: kısa sessizlik cümle sonu sayılır
+  const EARLY_END_MS = 400; // önizleme soru/ünlemle bittiyse DAHA ERKEN gönder
+  const IDLE_SILENCE_MS = 15000; // boş hava timeout
   const TURN_TIMEOUT_MS = 90000; // tek dinleme turu tavanı
-  const NO_SPEECH_LIMIT = 3; // üst üste 3 boş tur → modu kapat (Hermes)
+  const NO_SPEECH_LIMIT = 6; // üst üste 6 boş tur (~1.5dk tam sessizlik) → modu kapat
   const REPLY_WAIT_MS = 300000; // cevap bekleme tavanı
   const DRIVE_MS = 500; // döngü kalp atışı
-  const PARTIAL_MS = 1500; // canlı önizleme aralığı (Duyu ctc hızlı — 1.5sn'de bir tazele)
+  const PARTIAL_MS = 800; // canlı önizleme aralığı — "anlık" his (Duyu ctc hızlı)
 
   /* Tek mikrofon politikası: bir panel eller-serbeste girince diğeri kapanır */
   let activePanel = null;
 
   /* TTS YANKI KÖPRÜSÜ — renderer.js doldurur */
-  const ttsState = { lastText: '', playing: false, lastEndedAt: 0, level: 0 };
+  const ttsState = {
+    lastText: '',
+    playing: false,
+    lastEndedAt: 0,
+    level: 0,
+    /* konuşma ilerleme (renderer TTS kuyruğu günceller) */
+    total: 0, // bu turda kuyruğa giren cümle sayısı
+    done: 0, // tam oynanan cümle sayısı
+    streamOpen: false, // yanıt akmaya devam ediyor — sonrası gelebilir
+  };
 
   /* transkript, az önce SESLENDİRİLEN metnin yankısı mı? (Hermes is_tts_echo)
      kelime örtüşmesi ≥%65 veya birbiri içinde geçme → yankı say.
@@ -367,6 +393,8 @@
     let partialBusy = false;
     let partialSize = 0;
     let partialCount = 0; // tur başına önizleme bütçesi (CPU koruması)
+    let lastPreview = ''; // en taze kısmi transkript — erken gönder kararı için
+    let spec = null; // SPEKÜLATİF FINAL: { fresh, text, done }
     let sttLatencyMs = 0; // son transkript süresi — yavaşsa önizlemeler kapanır
     let driveTimer = null;
     let noSpeechStrikes = 0;
@@ -381,6 +409,32 @@
         sttLatencyMs = Date.now() - t0;
       }
     };
+
+    /* SPEKÜLATİF FINAL STT — akıcılığın kalan büyük kaybını kapatır:
+       sessizlik başlar başlamaz (550ms'lik bekleme SIRASINDA) o ana kadarki
+       sesi son kaliteyle (öncelik 1 → beam 2, normal finalin aynısı)
+       derinlemesine transcribe eder. Sessizlik bozulmazsa (yeni konuşma sesi
+       gelmezse) dur anında transkript HAZIR → gönderim ~0.6-1.5 sn hızlanır. */
+    const startSpec = () => {
+      spec = null;
+      const blob = recorder.partialBlob();
+      if (!blob || blob.size < 16000) return; // ~1 sn'den kısa ses — değer değil
+      const pending = timedTranscribe(blob, () => !active, 1)
+        .then((t) => { if (spec) spec.text = String(t || '').trim(); })
+        .catch(() => { if (spec) spec.text = ''; });
+      spec = { fresh: true, text: null, done: pending };
+    };
+
+    /* hazırsa transkripti PAKETLE; bekleme SIRASINDA konuşma devamsa
+       (fresh=false) null → normal final yolu kullanılır */
+    async function gatherSpec() {
+      if (!spec || !spec.fresh) return null;
+      try { await spec.done; } catch {}
+      if (!spec || !spec.fresh) return null; // bekleme sırasında bozuldu
+      const t = spec.text;
+      spec = null;
+      return typeof t === 'string' && t.length >= 3 ? t : null;
+    }
 
     const setState = (s) => {
       state = s;
@@ -405,6 +459,7 @@
       stopPartial();
       if (!opts.draft) return;
       partialCount = 0;
+      lastPreview = '';
       sttLatencyMs = 0; // yeni tur — bir kez ölçüp karar ver
       partialTimer = setInterval(async () => {
         if (partialBusy || state !== 'listening' || !active) return;
@@ -421,7 +476,10 @@
             (await timedTranscribe(blob, () => state !== 'listening', 0)) || ''
           ).trim();
           partialSize = blob.size;
-          if (text && active && state === 'listening' && !echoLikely(text)) showDraft(text);
+          if (text && active && state === 'listening' && !echoLikely(text)) {
+            lastPreview = text;
+            showDraft(text);
+          }
         } catch {} finally {
           partialBusy = false;
         }
@@ -457,12 +515,18 @@
       }
     }
 
-    /* transkript ortak yolu: döner 'closed' | 'echo' | 'empty' | 'submitted' */
-    async function utteranceTurn(audio) {
+    /* transkript ortak yolu: döner 'closed' | 'echo' | 'empty' | 'submitted'
+       preTranscript: spekütatif final STT'nin hazır metni (varsa final bekleme ATLANIR) */
+    async function utteranceTurn(audio, preTranscript = null) {
       let transcript = '';
       try {
-        /* final transkript ÖNCELİKLİ (1) — önizlemelerin önüne geçer */
-        transcript = String((await timedTranscribe(audio, null, 1)) || '').trim();
+        if (preTranscript != null) {
+          /* susma sırasında biten spekülatif transkript — ANINDA gönderim */
+          transcript = preTranscript;
+        } else {
+          /* final transkript ÖNCELİKLİ (1) — önizlemelerin önüne geçer */
+          transcript = String((await timedTranscribe(audio, null, 1)) || '').trim();
+        }
       } catch {
         transcript = '';
       }
@@ -503,7 +567,7 @@
           rearm();
           return;
         }
-        const outcome = await utteranceTurn(result.audio);
+        const outcome = await utteranceTurn(result.audio, await gatherSpec());
         if (outcome === 'closed' || !active) return;
         if (outcome === 'echo') { rearm(); return; } // yankı — sessizce yeniden dinle
         await thinkingPhase();
@@ -582,12 +646,21 @@
     async function startListening() {
       pendingStart = false;
       if (!active || isBusy() || state !== 'idle') return;
+      spec = null; // önceki turdan kalma spekülatif artık temizlenir
       try {
         await recorder.start({
           silenceLevel: SILENCE_LEVEL,
           silenceMs: SILENCE_MS,
           idleSilenceMs: IDLE_SILENCE_MS,
           onLevel: opts.onLevel,
+          /* canlı aşama: kullanıcı konuşurken "çevriliyor…" görünür */
+          onSpeechChange: () => { if (state === 'listening') showStatus(t('hf_transcribing')); },
+          /* önizleme ?/! ile bitti → 400ms'de gönder (550'yi bekleme) */
+          onEarlyEnd: () => /[?!]\s*$/.test(lastPreview),
+          /* susma başlarken spekülatif final STT paralel başlatılır;
+             sessizlik bozulursa (markNoisy) tur normal final yoluyla gider */
+          onSilenceStart: () => { void startSpec(); },
+          markNoisy: () => { if (spec) spec.fresh = false; },
           onError: () => {
             pendingStart = false;
             end(true);

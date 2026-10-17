@@ -127,6 +127,20 @@ def main():
             # BAŞ SONSUZU: ses aygıtı uyanma gecikmesi ilk kelimeleri yutmasın
             # ("bazen ilk kelimeleri duymuyoruz") — başa 300ms, sona 120ms sessizlik.
             # WhatsApp da ilk 100-200ms'de kırpabilir; bu dolgu ikisini de çözer.
+            # PAD PARAMETRİK: sohbet (chat) kısa dolgu (pad hızı bitmez), WA varsayılan.
+            pad_head, pad_tail = 0.30, 0.12
+            pad = req.get("pad")
+            if pad is not None:
+                try:
+                    v = max(0.0, min(0.30, float(pad)))
+                    pad_head, pad_tail = v, max(0.02, v * 0.4)
+                except Exception:
+                    pass
+            pcm = np.concatenate([
+                np.zeros(int(pad_head * sr), dtype=np.float32),
+                pcm,
+                np.zeros(int(pad_tail * sr), dtype=np.float32),
+            ])
             pcm = np.concatenate([
                 np.zeros(int(0.30 * sr), dtype=np.float32),
                 pcm,

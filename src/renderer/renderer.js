@@ -2323,7 +2323,8 @@ async function playTtsB64(r) {
       if (st2) st2.lastEndedAt = Date.now(); // yankı penceresi için
       setTimeout(() => {
         const st = window.BeastHandsFree && window.BeastHandsFree.ttsState;
-        if (st) st.playing = false;
+        /* yeni cümle zaten çalıyor mu? (peş peşe oynatmada eski sayacı ezme) */
+        if (st && !ttsQBusy) st.playing = false;
       }, 300);
       resolve();
     };
@@ -2353,18 +2354,34 @@ let ttsQBusy = false;    // şu an bir cümle ÇALIYOR mu
 let ttsQGen = 0;
 let ttsPending = '';
 let ttsPlayResolve = null;
+let ttsStreamTurn = false; // bu turda cümleler AKARAK okundu mu — done'da tamamını tekrar okumayı önler
 
 function ttsAutoOn() {
   return !!chatTtsOn && !ideModeOn() && !studioModeOn();
 }
 
 /* openclaw tts-payload politikası: kısa metin okunmaz; kod-ağır metnin yerine
-   "ekranda bıraktım" denir — kod okumak anlamsız ve kafa karıştırır */
+   "ekranda bıraktım" denir — kod okumak anlamsız ve kafa karıştırır.
+   STREAMING yolu ham markdown akıtır: biçim işaretleri sesli okunmaz. */
+function mdToSpeech(t) {
+  return String(t || '')
+    .replace(/```[\s\S]*?```/g, ' Kod bloğunu ekranda bıraktım. ')
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, '')
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+    .replace(/^#{1,6}\s+/gm, '')
+    .replace(/^\s*[-*•]\s+/gm, '')
+    .replace(/\*\*|__|~~|[*_`]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 function speechReadyText(t) {
-  const s = String(t || '').replace(/\s+/g, ' ').trim();
+  const raw = String(t || '');
+  if (/```/.test(raw)) return 'Kod bloklarını ekranda bıraktım.';
+  const s = mdToSpeech(raw);
   if (s.length < 10) return '';
   const codeChars = (s.match(/[{}();=<>[\]\\]/g) || []).length;
-  if (/```/.test(s) || codeChars / s.length >= 0.3) return 'Kod bloklarını ekranda bıraktım.';
+  if (codeChars / s.length >= 0.3) return 'Kod bloklarını ekranda bıraktım.';
   return s;
 }
 
@@ -2372,25 +2389,30 @@ function ttsQueueReset() {
   ttsQList = [];
   ttsReady = [];
   ttsPending = '';
+  ttsStreamTurn = false;
   ttsQGen++;
   ttsSynthBusy = false; // in-flight sentez sonuçları gen kontrolüyle atılır
   ttsQBusy = false;
   try { if (ttsAudioEl) ttsAudioEl.pause(); } catch {}
   const st = window.BeastHandsFree && window.BeastHandsFree.ttsState;
-  if (st) st.playing = false;
+  if (st) { st.playing = false; st.total = 0; st.done = 0; st.streamOpen = false; }
   if (ttsPlayResolve) { const r = ttsPlayResolve; ttsPlayResolve = null; r(); }
 }
 
 function ttsEnqueueSentence(sentence) {
   ttsQList.push(sentence);
+  const st = window.BeastHandsFree && window.BeastHandsFree.ttsState;
+  if (st) { st.total++; st.streamOpen = true; } // konuşma ilerleme: N/M sayacı
   ttsKick();
 }
 
-/* PREFETCH: çalan cümlenin süresi boyunca SIRADAKİ cümle sentezlenir →
-   cümleler arasında boşluk kalmaz (Edge istek gecikmesi gizlenir) */
-function ttsKick() {
+/* GERÇEK PREFETCH: oynatılan cümlenin SÜRESİ BOYUNCA sıradaki cümle(ler)
+   sentezlenir → cümleler boşluksuz arka arkaya gelir. (Eski kod sentezi
+   çalma BİTİNCE başlatıyordu; her cümle arasında ~0.5-2 sn ölü boşluk
+   kalıyordu — akıcılık sorununun kökü buydu.) */
+function ttsSynth() {
   const myGen = ttsQGen;
-  if (ttsSynthBusy) { ttsPump(); return; }
+  if (ttsSynthBusy) return;
   if (!ttsQList.length) { ttsPump(); return; }
   const sentence = ttsQList.shift();
   ttsSynthBusy = true;
@@ -2399,15 +2421,20 @@ function ttsKick() {
       ttsSynthBusy = false;
       if (myGen !== ttsQGen) return;
       if (r && r.ok && r.audioB64) ttsReady.push({ text: sentence, r });
-      ttsKick();
+      ttsSynth(); // kuyruktaki sonrakini başlat — oynatmayla PARALEL
       ttsPump();
     })
     .catch(() => {
       ttsSynthBusy = false;
       if (myGen !== ttsQGen) return;
-      ttsKick();
+      ttsSynth();
       ttsPump();
     });
+  ttsPump(); // hazırda ses varsa beklemeden çalmaya başla
+}
+
+function ttsKick() {
+  ttsSynth();
 }
 
 async function ttsPump() {
@@ -2417,11 +2444,12 @@ async function ttsPump() {
     if (myGen !== ttsQGen) return;
     const item = ttsReady.shift();
     ttsQBusy = true;
+    const st = window.BeastHandsFree && window.BeastHandsFree.ttsState;
     try {
       ttsLastSpoken = item.text;
-      const st = window.BeastHandsFree && window.BeastHandsFree.ttsState;
       if (st) { st.lastText = item.text; st.playing = true; }
       await playTtsB64(item.r);
+      if (st) st.done++; // bu cümle tam oynandı → ilerleme N/M
     } catch {}
     ttsQBusy = false;
     if (myGen !== ttsQGen) return;
@@ -2429,14 +2457,42 @@ async function ttsPump() {
   }
 }
 
+/* uzun İLK cümleyi son doğal sınırından erken kes → konuşma beklemeden başlar.
+   { head, tail } döner; sınır yoksa null. Kafa virgülle biter (TTS duraklaması). */
+function ttsSoftCut(text, max) {
+  const upto = text.slice(0, max);
+  for (let i = upto.length - 1; i >= 48; i--) {
+    const ch = upto[i];
+    if ((ch === ',' || ch === ';' || ch === ':' || ch === '—') && /\s/.test(text[i + 1] || '')) {
+      return { head: text.slice(0, i + 1), tail: text.slice(i + 1).replace(/^\s+/, '') };
+    }
+  }
+  return null;
+}
+
+/* TOKEN AKIŞINDAN beslenir: tamamlanan cümle ANINDA kuyruğa girer — cevabın
+   bitmesi beklenmez. İlk parça için ek erken-kesim: TTFT sonrası ~1 cümle
+   dolmadan konuşma başlar (akıcı sohbet). */
 function ttsFeedDelta(delta) {
   if (!ttsAutoOn()) return;
   ttsPending += String(delta || '');
+  ttsStreamTurn = true; // done'da tamamını tekrar seslendirmemek için işaretle
   const parts = ttsPending.split(/(?<=[.!?…])\s+|\n+/);
-  if (parts.length <= 1) return;
-  const done = parts.slice(0, -1).map((s) => speechReadyText(s)).filter(Boolean);
-  ttsPending = parts[parts.length - 1] || '';
-  for (const s of done) ttsEnqueueSentence(s);
+  if (parts.length > 1) {
+    const done = parts.slice(0, -1).map((s) => speechReadyText(s)).filter(Boolean);
+    ttsPending = parts[parts.length - 1] || '';
+    for (const s of done) ttsEnqueueSentence(s);
+    return;
+  }
+  /* erken kesim YALNIZCA ilk parça için: kuyruk/oynatma boşken */
+  if (!ttsQList.length && !ttsReady.length && !ttsSynthBusy && !ttsQBusy && ttsPending.length >= 120) {
+    const cut = ttsSoftCut(ttsPending, 120);
+    if (cut) {
+      ttsPending = cut.tail;
+      const s = speechReadyText(cut.head);
+      if (s) ttsEnqueueSentence(s);
+    }
+  }
 }
 
 function ttsFlushTail() {
@@ -2444,6 +2500,8 @@ function ttsFlushTail() {
   ttsPending = '';
   if (rest) ttsEnqueueSentence(rest);
   else ttsKick();
+  const st = window.BeastHandsFree && window.BeastHandsFree.ttsState;
+  if (st) st.streamOpen = false; // akmak bitti — kalan kuyruk tükenince konuşma tamamlanır
 }
 /* ---------------- KURULUM SEKMESİ: bileşenler OTOMATİK kurulur ----------------
    Eksik/kısmen inmiş bileşen sekme açılınca kendiliğinden indirilir; kullanıcı
@@ -6204,6 +6262,7 @@ function onEvent(ev) {
       ensureStreamBubble();
       streamRaw += ev.delta;
       if (!renderQueued) { renderQueued = true; setTimeout(renderStream, 50); }
+      ttsFeedDelta(ev.delta); // AKICI SES: cümle tamamlanınca ANINDA seslendirilir
       break;
     case 'tool-start':
       addToolCard(ev.callId, ev.name, ev.args);
@@ -6276,11 +6335,17 @@ function onEvent(ev) {
       }
       setBusy(false);
       setStatus('');
-      /* TTS (eski hal): cevap bitince TAMAMINI seslendir */
+      /* TTS: streaming'de cümleler zaten AKARKEN okundu → yalnız kuyruk artığını
+         boşalt. Streaming yoksa (TTS kapalıyken açıldı vb.) eski yol: tamamını oku */
       if (!ev.aborted && (!ev.sessionId || String(ev.sessionId) === String(activeId))) {
-        const mdEl = [...els.msgs.querySelectorAll('.msg-assistant .md')].pop();
-        const replyText = mdEl ? mdEl.innerText.trim() : '';
-        if (replyText) void speakText(replyText);
+        if (ttsStreamTurn) {
+          ttsStreamTurn = false;
+          ttsFlushTail();
+        } else {
+          const mdEl = [...els.msgs.querySelectorAll('.msg-assistant .md')].pop();
+          const replyText = mdEl ? mdEl.innerText.trim() : '';
+          if (replyText) void speakText(replyText);
+        }
       }
       /* cevabın SONU görünsün: markdown son render sonrası iki kez en alta kilitle */
       scrollDown(true);
@@ -7519,7 +7584,14 @@ async function init() {
      önizlemelerin (0) önüne geçer — Duyu ctc önizlemesi yavaşlasa bile
      konuşanın cevabı önce transkribe edilir */
   let hfSttChain = Promise.resolve();
+  let hfWarmAt = 0; // motor ön-ısıtma zamanı (60 sn'de bir yokla)
   const hfTranscribe = (blob, isStale, priority) => {
+    /* ses kullanımı başlar başlamaz eMa'yı ısıt — ilk TTS cümlesi soğuk
+       yükleme (~9 sn) beklemesin; hazırken bu çağrı ~1 ms'lik yoklamadır */
+    if (Date.now() - hfWarmAt > 60000) {
+      hfWarmAt = Date.now();
+      void beast.emaPrefetch().catch(() => {});
+    }
     const run = async () => {
       if (isStale && isStale()) throw new Error('stale');
       const b64 = await hfBlobToDataUrl(blob);
@@ -7592,7 +7664,11 @@ async function init() {
     if (els.convBtn) {
       els.convBtn.addEventListener('click', () => {
         if (!window.BeastConversation) return;
-        if (window.BeastConversation.isOpen()) return; // kapanış panel/× içinde
+        if (window.BeastConversation.isOpen()) {
+          /* oturum arka planda sürerken düğme ekrana geri döndürür */
+          if (window.BeastConversation.isHidden()) window.BeastConversation.show();
+          return;
+        }
         void (async () => {
           const cfgT = await ttsCfg();
           convRestore = { chatTtsOn, enabled: null };
@@ -7603,6 +7679,10 @@ async function init() {
             await beast.waSetTts(ttsCfgCache).catch(() => {});
             convRestore.enabled = false;
           }
+          /* MOTORLARI ÖN-ISIT (TTS ayarı açıldıktan SONRA): rozetler hemen
+             "hazır"a dönsün; ilk seslendirme soğuk yükleme (~9 sn) beklemesin */
+          void beast.emaPrefetch().catch(() => {});
+          void beast.sttPrefetchNow().catch(() => {});
           window.BeastConversation.open({
             isBusy: () => busy,
             submit: async (text) => {

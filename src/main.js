@@ -911,13 +911,13 @@ async function transcribeAudioInner(buf, langOverride /* 'tr' | 'en' | 'auto' */
 /* TTS sentezi: TEK motor — eMa Lightning (canberkkkkkk/ema-lightning).
    Yerel/offline PyTorch (CPU), Türkçe. Dönen { audio: WAV Buffer, mime } —
    WA sesli notu ffmpeg ile ogg/opus'a çevrilir, oynatıcı WAV'ı doğrudan çalar. */
-async function synthesizeSpeech(text) {
+async function synthesizeSpeech(text, opts = {}) {
   const cfg = settings.waTts || {};
   if (!cfg.enabled) return null;
   try {
     const t = ttsCleanText(text);
     if (!t || t.length < 2) return null;
-    const out = await ema.synthesize(t, { speed: cfg.speed, sampleRate: cfg.sampleRate });
+    const out = await ema.synthesize(t, { speed: cfg.speed, sampleRate: cfg.sampleRate, pad: opts.pad });
     return out && out.audio ? out : null;
   } catch (e) {
     waLog('tts hata: ' + String((e && e.message) || e));
@@ -3606,15 +3606,21 @@ app.whenReady().then(() => {
           .catch((e) => waLog('STT prefetch atlandı: ' + String((e && e.message) || e)));
       }, 10000);
     }
-    // TTS motoru: eMa Lightning (yerel) — yalnız sesli yanıt AÇIKSA ısıtılır
-    // (ilk seferde ~34MB ağırlık iner; kapalıyken indirme başlatılmaz).
-    if (settings.waTts && settings.waTts.enabled) {
-      setTimeout(() => {
+    // TTS motoru: eMa Lightning (yerel) — AÇILIŞTA ısıtılır; TTS tercihi kapalı
+    // olsa bile motor hazır bekler (soğuk ilk sentez ~9 sn geciktiriyordu).
+    // Paket kurulu değilse sessizce atlanır — açılışta torch indirmesi başlamaz.
+    setTimeout(() => {
+      try {
+        const st = ema.status();
+        if (!st.pkg) {
+          waLog('TTS prefetch atlandı: eMa kurulu değil (pip paketi yok)');
+          return;
+        }
         ema.warm()
           .then(() => waLog('TTS hazır: eMa Lightning (yerel)'))
           .catch((e) => waLog('TTS prefetch atlandı: ' + String((e && e.message) || e)));
-      }, 15000);
-    }
+      } catch {}
+    }, 15000);
 
     /* EMBEDDING modeli (hafıza semantik arama) — açılışta otomatik indir */
     setTimeout(() => {
@@ -11849,6 +11855,20 @@ ipcMain.handle('ema:install', async () => {
   const r = await ema.install();
   return { ...r, status: ema.status() };
 });
+/* eMa ÖN-ISI: konuşma modu/eller serbest başlarken çağrılır — motor 15 dk
+   boşta bellekten düşüyor ve soğuk ilk sentez ~9 sn sürüyor (ölçüldü);
+   ön-ısıtma bu yüklemeyi kullanıcı konuşurken gizler */
+ipcMain.handle('ema:prefetch', async () => {
+  if (!settings.waTts || !settings.waTts.enabled) return { ok: false, skipped: true };
+  const st = ema.status();
+  if (!st.pkg) return { ok: false, error: 'eMa kurulu değil' };
+  try {
+    await ema.warm();
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+});
 
 /* CHAT TTS: masaüstü sohbetinde ajanın son yazısını seslendirir (base64 WAV).
    chatAutoSpeak açıkken renderer 'done' olayında bu kanalı çağırır. */
@@ -11857,7 +11877,9 @@ ipcMain.handle('tts:synthesize', async (_e, text) => {
   if (!cfg.enabled) return { ok: false, error: 'tts kapalı' };
   const t = String(text || '').trim();
   if (!t) return { ok: false, error: 'boş metin' };
-  const out = await synthesizeSpeech(t.slice(0, 4000));
+  /* SOHBET AKICILIK: baş/son dolgu kısa — cümleler boşluksuz peş peşe gelsin
+     (varsayılan 300ms dolgu her cümle arasında ölü boşluk yaratıyordu) */
+  const out = await synthesizeSpeech(t.slice(0, 4000), { pad: 0.05 });
   if (!out || !out.audio) {
     waLog('tts chat seslendirilemedi — motor: eMa Lightning');
     return { ok: false, error: 'seslendirilemedi' };

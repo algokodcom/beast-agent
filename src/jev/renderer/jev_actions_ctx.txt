@@ -1,0 +1,150 @@
+﻿13331:   if (pct > 1) pct = pct / 100;
+13332:   const vol = Number(d.volume != null ? d.volume : d.lot) || 0;
+13333:   const partial = vol > 0 || (pct > 0 && pct < 0.999);
+13334:   const invalidated = d.invalidated === true || d.gecersiz === true || d.tez === false;
+13335:   let ok = 0, fail = 0, blocked = 0;
+13336:   for (const p of targets) {
+13337:     /* KORUMA: zararda kÄ±smi kapatma ve gerekÃ§esiz zararda tam kapatma engellenir.
+13338:        YanlÄ±ÅŸlÄ±kla panik satÄ±ÅŸ yapÄ±lmamasÄ± iÃ§in bu kural isteme deÄŸil KODA baÄŸlÄ±dÄ±r. */
+13339:     const kind = partial ? 'CLOSE_PARTIAL' : 'CLOSE_FULL';
+13340:     const v = posGuardVerdict(kind, p, { src: 'ai', invalidated });
+13341:     if (!v.ok) { posGuardBlock(kind, p, v.why, { src: 'ai', rAt: v.r && v.r.rNow }); blocked++; continue; }
+13342:     let r = false;
+13343:     if (vol > 0) r = await closeExactVolume(p, vol);
+13344:     else if (partial) r = await closePartialPosition(p, pct, targets.length > 1);
+13345:     else r = await quickClosePosition(p);
+13346:     if (r) {
+13347:       ok++;
+13348:       const rk = v.r || posRisk(p);
+13349:       setExitHint(p.ticket, p.symbol, partial ? 'ai-partial' : 'ai');
+13350:       journalAction({ kind: partial ? 'partial' : 'close', src: 'ai', sym: p.symbol, ticket: p.ticket, rAt: rk.rNow, netAt: rk.profit, why: partial ? 'pct ' + pct : 'tam' });
+13351:     } else fail++;
+13352:   }
+13353:   refreshPositions();
+13354:   refreshClosed();
+13355:   const how = vol > 0 ? ' (' + vol + ' lot)' : (partial ? ' (%' + Math.round(pct * 100) + ')' : ' (tamamÄ±)');
+13356:   const msg = 'KAPAT Â· ' + ok + ' pozisyon' + how + (fail ? ' Â· ' + fail + ' baÅŸarÄ±sÄ±z' : '') +
+13357:     (blocked ? ' Â· ' + blocked + ' koruma tarafÄ±ndan reddedildi' : '');
+13358:   jevLogAdd(msg, blocked && !ok ? 'err' : 'cmd');
+13359:   return ok;
+13360: }
+13361: 
+13362: /* yanÄ±ttaki <<KOMUT {json}>> bloklarÄ±nÄ± uygular ve metinden temizler */
+13363: async function applyJevCommands(text, depth) {
+13364:   depth = Math.max(0, Number(depth) || 0);
+13365:   let out = String(text || '');
+13366:   const cmds = [];
+13367:   out = out.replace(JEV_CMD_RE, (m, name, json) => {
+13368:     try {
+13369:       const obj = JSON.parse(json);
+13370:       if (obj && typeof obj === 'object') cmds.push({ name: String(name).toUpperCase(), data: obj });
+13371:     } catch {}
+13372:     return '';
+13373:   });
+13374:   /* Ã¶nce grafik komutlarÄ±: sembol deÄŸiÅŸirse Ã§izimler yeni sembole yazÄ±lsÄ±n */
+13375:   const chartChanges = [];
+13376:   for (const c of cmds) {
+13377:     if (c.name !== 'CHART') continue;
+13378:     const bits = [];
+13379:     if (c.data && typeof c.data.symbol === 'string' && c.data.symbol.trim()) bits.push('sembol ' + c.data.symbol.trim().toUpperCase());
+13380:     if (c.data && typeof c.data.tf === 'string' && c.data.tf.trim()) bits.push('TF sabit (deÄŸiÅŸtirilmedi)');
+13381:     try {
+13382:       await applyChartCommand(c.data);
+13383:       if (bits.length) chartChanges.push(bits.join(' Â· '));
+13384:     } catch {}
+13385:   }
+13386:   const stat = { draw: 0, plan: 0, alert: 0, clear: 0, sltp: 0, look: 0, order: 0, oco: 0, code: 0, skill: 0, auto: 0, web: 0, file: 0, tool: 0, trail: 0, be: 0, close: 0 };
+13387:   const lookShots = [];
+13388:   const codeEdits = [];
+13389:   const toolResults = [];
+13390:   let changedDraw = false, changedPlan = false, changedAlert = false;
+13391:   for (const c of cmds) {
+13392:     try {
+13393:       if (c.name === 'DRAW') {
+13394:         if (stat.draw < JEV_MAX_DRAWS && jevDraw(c.data)) { stat.draw++; changedDraw = true; }
+13395:       } else if (c.name === 'PLAN') {
+13396:         if (jevPlan(c.data)) { stat.plan++; changedPlan = true; }
+13397:       } else if (c.name === 'ALERT') {
+13398:         if (jevAlert(c.data)) { stat.alert++; changedAlert = true; }
+13399:       } else if (c.name === 'SLTP') {
+13400:         stat.sltp += await jevSltp(c.data);
+13401:       } else if (c.name === 'TRAIL') {
+13402:         stat.trail += await jevTrail(c.data);
+13403:       } else if (c.name === 'BE') {
+13404:         stat.be += await jevBe(c.data);
+13405:       } else if (c.name === 'CLOSE') {
+13406:         stat.close += await jevClose(c.data);
+13407:       } else if (c.name === 'ORDER') {
+13408:         stat.order += await jevOrders(c.data);
+13409:       } else if (c.name === 'OCO') {
+13410:         stat.oco += await jevOco(c.data);
+13411:       } else if (c.name === 'LOOK') {
+13412:         if (await jevLook(c.data, depth, lookShots)) stat.look++;
+13413:       } else if (c.name === 'WEB') {
+13414:         if (toolResults.length < 4) {
+13415:           const r = await jevWeb(c.data);
+13416:           if (r) { toolResults.push(r); stat.web++; }
+13417:         }
+13418:       } else if (c.name === 'FILE') {
+13419:         if (toolResults.length < 4) {
+13420:           const r = await jevFile(c.data);
+13421:           if (r) { toolResults.push(r); stat.file++; }
+13422:         }
+13423:       } else if (c.name === 'TOOL') {
+13424:         if (await jevToolCommand(c.data)) stat.tool++;
+13425:       } else if (c.name === 'SKILL') {
+13426:         if (await jevSkillCommand(c.data)) stat.skill++;
+13427:       } else if (c.name === 'AUTO') {
+13428:         if (jevAutoCommand(c.data)) stat.auto++;
+13429:       } else if (c.name === 'CODE') {
+13430:         const ed = jevCodeEdit(c.data);
+13431:         if (ed) { codeEdits.push(ed); stat.code++; }
+13432:       } else if (c.name === 'CLEAR') {
+13433:         const n = jevClear(c.data);
+13434:         if (n > 0) { stat.clear += n; changedDraw = changedPlan = changedAlert = true; }
+13435:       }
+13436:     } catch (e) {
+13437:       jevLogAdd('KOMUT HATASI Â· ' + c.name + ' Â· ' + String((e && e.message) || e), 'err');
+13438:     }
+13439:   }
+13440:   if (changedDraw) { saveDrawings(); drawChart(); }
+13441:   if (changedPlan) { savePlans(); applyPlanButtons(); drawChart(); }
+13442:   if (changedAlert) { saveAlerts(); renderAlertSide(); drawChart(); }
+13443:   const parts = [];
+13444:   for (const ch of chartChanges) parts.push('grafik ' + ch);
+13445:   if (stat.draw) parts.push(stat.draw + ' Ã§izim');
+13446:   if (stat.plan) parts.push(stat.plan + ' plan (grafikteki GÄ°R ile aÃ§)');
+13447:   if (stat.alert) parts.push(stat.alert + ' alarm');
+13448:   if (stat.sltp) parts.push(stat.sltp + ' pozisyon SL/TP gÃ¼ncellendi');
+13449:   if (stat.trail) parts.push(stat.trail + ' pozisyonda trailing ayarlandÄ±');
+13450:   if (stat.be) parts.push(stat.be + ' pozisyon BE');
+13451:   if (stat.close) parts.push(stat.close + ' pozisyon kapatÄ±ldÄ±');
+13452:   if (stat.order) parts.push(stat.order + ' iÅŸlem aÃ§Ä±ldÄ±');
+13453:   if (stat.oco) parts.push(stat.oco + ' OCO kuruldu (biri tetiklenince diÄŸeri iptal)');
+13454:   if (stat.look) parts.push(stat.look + ' gÃ¶rsel isteÄŸi (sohbete gÃ¶nderildi)');
+13455:   if (stat.web) parts.push(stat.web + ' web isteÄŸi (sonuÃ§ LLM\'e geri gÃ¶nderiliyor)');
+13456:   if (stat.file) parts.push(stat.file + ' dosya okuma (sonuÃ§ LLM\'e geri gÃ¶nderiliyor)');
+13457:   if (stat.tool) parts.push(stat.tool + ' toolbox aracÄ± iÅŸlemi');
+13458:   if (stat.clear) parts.push(stat.clear + ' Ã¶ÄŸe temizlendi');
+13459:   if (stat.skill) parts.push(stat.skill + ' skill iÅŸlemi');
+13460:   if (stat.auto) parts.push('ayar gÃ¼ncellendi (risk/analiz sÄ±klÄ±ÄŸÄ±)');
+13461:   if (stat.code) parts.push(stat.code + ' kod dÃ¼zenleme (test edilip uygulama yeniden baÅŸlatÄ±lacak)');
+13462:   if (parts.length) {
+13463:     toast((stat.order || stat.oco ? 'Jev iÅŸlem aÃ§tÄ±: ' : (stat.sltp || stat.trail || stat.be || stat.close) ? 'Jev uyguladÄ±: ' : (stat.code || stat.skill || stat.tool) && !stat.draw && !stat.plan && !stat.alert ? 'Jev: ' : 'Jev Ã§izdi: ') + parts.join(' Â· '));
+13464:     termLogAdd('JEV UYGULADI Â· ' + parts.join(' Â· '), 'sys');
+13465:     jevLogAdd('UYGULADI Â· ' + parts.join(' Â· '), 'cmd');
+13466:   }
+13467:   if (lookShots.length) jevSendLookShots(lookShots, depth).catch(() => {});
+13468:   if (toolResults.length) jevSendToolResults(toolResults, depth).catch(() => {});
+13469:   if (codeEdits.length) applyCodeEdits(codeEdits).catch((e) => jevLogAdd('KOD Â· hata Â· ' + String((e && e.message) || e), 'err'));
+13470:   const clean = out.trim();
+13471:   /* yanÄ±t yalnÄ±zca komut bloklarÄ±ndan oluÅŸuyorsa boÅŸ gÃ¶rÃ¼nmesin: uygulananlarÄ± Ã¶zetle */
+13472:   if (!clean && parts.length) return 'UygulandÄ±: ' + parts.join(' Â· ');
+13473:   return clean;
+13474: }
+13475: 
+13476: async function loadSymbolList() {
+13477:   if (chartState.symLoaded) return;
+13478:   const r = await jev.mt5AllSymbols({}).catch(() => null);
+13479:   if (!r || !r.ok) return;
+13480:   const rows = (r.data && r.data.symbols) || [];

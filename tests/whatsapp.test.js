@@ -101,3 +101,107 @@ test('presence: composing etiketlenir, bilinmeyen durum yok sayılır', () => {
   wa._handlePresence({ id: 'x@s.whatsapp.net', presences: { p: { lastKnownPresence: 'uzaylı' } } });
   assert.equal(events.length, 0);
 });
+
+/* ---------- LID → gerçek telefon numarası (allow listesi PN ile eşleşsin) ---------- */
+
+test('_pnOnly: PN jid, cihaz eki ve alt: sarmalayıcısı soyulur', () => {
+  const { wa } = makeBridge();
+  assert.equal(wa._pnOnly('905414178456@s.whatsapp.net'), '905414178456');
+  assert.equal(wa._pnOnly('905414178456:12@s.whatsapp.net'), '905414178456');
+  assert.equal(wa._pnOnly('alt:905414178456@s.whatsapp.net'), '905414178456');
+});
+
+test('_pnOnly: LID adresi PN sayılmaz (LID rakamı numara sanılmamalı)', () => {
+  const { wa } = makeBridge();
+  assert.equal(wa._pnOnly('83391152132258@lid'), '');
+  assert.equal(wa._pnOnly('83391152132258:0@lid'), '');
+  assert.equal(wa._pnOnly('120363428012942576@g.us'), '');
+  assert.equal(wa._pnOnly(''), '');
+  assert.equal(wa._pnOnly(undefined), '');
+});
+
+test('_lidToPn: Baileys eşleme deposundan gerçek numarayı çıkarır', async () => {
+  const { wa } = makeBridge();
+  let calls = 0;
+  wa.sock = {
+    signalRepository: {
+      lidMapping: {
+        getPNForLID: async (lid) => { calls++; assert.equal(lid, '83391152132258@lid'); return '905414178456:0@s.whatsapp.net'; },
+      },
+    },
+  };
+  assert.equal(await wa._lidToPn('83391152132258@lid'), '905414178456');
+  assert.equal(calls, 1);
+  // ikinci çağrı önbellekten — depoya tekrar gitmez
+  assert.equal(await wa._lidToPn('83391152132258@lid'), '905414178456');
+  assert.equal(calls, 1);
+});
+
+test('_lidToPn: eşleme yoksa boş döner ve LID rakamına düşmez', async () => {
+  const { wa } = makeBridge();
+  let calls = 0;
+  wa.sock = { signalRepository: { lidMapping: { getPNForLID: async () => { calls++; return null; } } } };
+  assert.equal(await wa._lidToPn('111222333444@lid'), '');
+  // negatif sonuç cache'lenmez — eşleme sonradan gelebilir
+  assert.equal(await wa._lidToPn('111222333444@lid'), '');
+  assert.equal(calls, 2);
+  // @lid olmayan adres hiç sorulmaz
+  assert.equal(await wa._lidToPn('905414178456@s.whatsapp.net'), '');
+  assert.equal(calls, 2);
+});
+
+test('_cacheLidPn / _cacheLidPnList: olaylardan gelen eşlemeler önbelleğe alınır', async () => {
+  const { wa } = makeBridge();
+  wa.sock = { signalRepository: { lidMapping: { getPNForLID: async () => null } } };
+  wa._cacheLidPn({ lid: '83391152132258@lid', pn: '905414178456@s.whatsapp.net' });
+  wa._cacheLidPnList([{ id: '74110331809870@lid', phoneNumber: '905513558456:36@s.whatsapp.net' }]);
+  assert.equal(await wa._lidToPn('83391152132258@lid'), '905414178456');
+  assert.equal(await wa._lidToPn('74110331809870@lid'), '905513558456');
+  // geçersiz kayıtlar sessizce atlanır
+  wa._cacheLidPn({ lid: 'x@lid', pn: '' });
+  wa._cacheLidPnList([{ id: '905414178456@s.whatsapp.net', phoneNumber: '' }]);
+});
+
+test('_processIncoming: LID DM (alt alanı yok) gerçek numaraya çözülür', async () => {
+  const got = [];
+  const wa = new WhatsAppBridge({
+    authDir: '/tmp/x',
+    emit: () => {},
+    onIncoming: (jid, payload, senderNum) => got.push({ jid, payload, senderNum }),
+  });
+  wa.sock = {
+    user: { id: '905513558456:36@s.whatsapp.net', lid: '74110331809870:36@lid' },
+    signalRepository: { lidMapping: { getPNForLID: async () => '905414178456:0@s.whatsapp.net' } },
+  };
+  await wa._processIncoming({
+    key: { remoteJid: '83391152132258@lid', id: 'M1', fromMe: false },
+    message: { conversation: 'selam' },
+    messageTimestamp: Math.floor(Date.now() / 1000),
+  });
+  assert.equal(got.length, 1);
+  assert.equal(got[0].jid, '83391152132258@lid');
+  assert.equal(got[0].senderNum, '905414178456'); // allow listesi bu numarayla eşleşir
+  assert.equal(got[0].payload.text, 'selam');
+});
+
+test('_processIncoming: remoteJidAlt PN veriyorsa eşleme deposuna gitmez', async () => {
+  const got = [];
+  const wa = new WhatsAppBridge({
+    authDir: '/tmp/x',
+    emit: () => {},
+    onIncoming: (jid, payload, senderNum) => got.push({ jid, payload, senderNum }),
+  });
+  let calls = 0;
+  wa.sock = {
+    user: { id: '905513558456:36@s.whatsapp.net', lid: '74110331809870:36@lid' },
+    signalRepository: { lidMapping: { getPNForLID: async () => { calls++; return null; } } },
+  };
+  await wa._processIncoming({
+    key: { remoteJid: '83391152132258@lid', remoteJidAlt: '905414178456:4@s.whatsapp.net', id: 'M2', fromMe: false },
+    message: { extendedTextMessage: { text: 'merhaba' } },
+    messageTimestamp: Math.floor(Date.now() / 1000),
+  });
+  assert.equal(got.length, 1);
+  assert.equal(got[0].senderNum, '905414178456');
+  assert.equal(calls, 0);
+});

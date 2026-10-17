@@ -68,7 +68,8 @@ function runFfmpeg(args, input) {
   });
 }
 
-/* Herhangi bir ses buffer'ı → OGG/Opus (WhatsApp sesli not formatı). Zaten OggS ise olduğu gibi döner. */
+/* Herhangi bir ses buffer'ı → OGG/Opus (WhatsApp sesli not formatı). Zaten OggS ise olduğu gibi döner.
+   Opus native 48 kHz: -ar 48000 ile yeniden örnekleme kaybı yok (TTS çıkışı da 48k). */
 async function toVoiceOggOpus(buf) {
   if (buf.length > 4 && buf.subarray(0, 4).toString('latin1') === 'OggS') return buf;
   const ff = getFfmpegPath();
@@ -76,7 +77,7 @@ async function toVoiceOggOpus(buf) {
   return runFfmpeg([
     '-hide_banner', '-loglevel', 'error',
     '-i', 'pipe:0',
-    '-c:a', 'libopus', '-b:a', '48k', '-ar', '24000', '-ac', '1',
+    '-c:a', 'libopus', '-b:a', '48k', '-ar', '48000', '-ac', '1',
     '-application', 'voip', '-vbr', 'on',
     '-f', 'ogg', 'pipe:1',
   ], buf);
@@ -136,6 +137,63 @@ class WhatsAppBridge {
     this._tracked = new Map(); // msgId -> { jid, preview, ts, status, receiptDetail }
     this._watchJids = new Set(); // presence aboneliği tutulacak sohbetler
     this._seenIds = new Set(); // işlenen mesaj id'leri — offline replay + notify çift işlemeyi önler
+    this._lidPn = new Map(); // LID jid -> gerçek telefon numarası (831...@lid → 905...)
+  }
+
+  /* Ham JID'den telefon numarası — YALNIZ PN (s.whatsapp.net) kökenliyse.
+     rc9+ sarmalayıcı 'alt:' ön eki ve cihaz soneki (:12) soyulur; @lid gibi
+     adresler PN sayılmaz (aksi halde LID rakamı numara sanılıp allow listesi
+     hiç eşleşmiyordu). */
+  _pnOnly(jid) {
+    let s = String(jid || '');
+    if (!s) return '';
+    if (s.startsWith('alt:')) s = s.slice(4);
+    const at = s.indexOf('@');
+    if (at < 0) return ''; // host yok — LID/PN ayrımı yapılamaz
+    const host = s.slice(at + 1);
+    if (host !== 's.whatsapp.net' && host !== 'hosted') return ''; // @lid vs. → PN değil
+    s = s.slice(0, at).split(':')[0];
+    return /^\d{6,}$/.test(s) ? s : '';
+  }
+
+  /* LID jid → gerçek telefon numarası. Baileys'in LID eşleme deposu
+     (signalRepository.lidMapping) auth klasöründe kalıcıdır — uygulama
+     kapansa bile eşleme korunur, allow listesi TELEFON NUMARASIYLA
+     eşleşmeye devam eder. Bilinmeyen LID'de '' döner (LID rakamı
+     numara sanılmaz). */
+  async _lidToPn(lidJid) {
+    const lid = String(lidJid || '');
+    if (!lid.endsWith('@lid')) return '';
+    const cached = this._lidPn.get(lid);
+    if (cached) return cached;
+    let pn = '';
+    try {
+      const store = this.sock && this.sock.signalRepository && this.sock.signalRepository.lidMapping;
+      if (store && typeof store.getPNForLID === 'function') {
+        pn = this._pnOnly(await store.getPNForLID(lid));
+      }
+    } catch {}
+    /* negatif sonuçlar cache'lenmez: eşleme 'lid-mapping.update' ile
+       sonradan gelebilir, her mesajda yeniden denensin */
+    if (pn) this._lidPn.set(lid, pn);
+    return pn;
+  }
+
+  /* Tek LID↔PN eşlemesini önbelleğe al */
+  _cacheLidPn(m) {
+    try {
+      const lid = String((m && m.lid) || '');
+      const pn = this._pnOnly(m && m.pn);
+      if (lid.endsWith('@lid') && pn) this._lidPn.set(lid, pn);
+    } catch {}
+  }
+
+  /* Kişi listesinden LID↔PN eşlemelerini önbelleğe al (contacts.upsert /
+     messaging-history.set) */
+  _cacheLidPnList(list) {
+    for (const c of list || []) {
+      this._cacheLidPn({ lid: c && (c.lid || c.id), pn: c && (c.phoneNumber || c.pn) });
+    }
   }
 
   /* main tarafı waChats anahtarlarını bildirir; bağlantı varsa anında abone olunur */
@@ -260,6 +318,12 @@ class WhatsAppBridge {
     });
 
     this.sock.ev.on('messages.upsert', (m) => this._handleMessages(m));
+
+    /* LID → gerçek telefon eşlemeleri: allow listesi telefon numarasıyla
+       eşleştiği için bu olaylardan gelen eşlemeler de önbelleğe alınır */
+    this.sock.ev.on('lid-mapping.update', (m) => this._cacheLidPn(m));
+    this.sock.ev.on('contacts.upsert', (list) => this._cacheLidPnList(list));
+    this.sock.ev.on('messaging-history.set', (d) => this._cacheLidPnList(d && d.contacts));
 
     /* Teslim/okundu takibi — sadece kendi gönderdiklerimiz izlenir */
     this.sock.ev.on('messages.update', (ups) => this._handleStatusUpdates(ups));
@@ -494,19 +558,28 @@ class WhatsAppBridge {
       } catch {}
 
       if (!t && !media) return;
-      // Yeni WA LID sistemi: gerçek numara remoteJidAlt'ta geliyor
+      /* Yeni WA LID sistemi: gerçek numara önce remoteJidAlt / participantAlt
+         içinde gelir. WhatsApp bu alanları göndermezse (LID çağı — DM jid'si
+         …@lid olur) Baileys'in LID eşleme deposundan çözülür, böylece allow
+         listesi TELEFON NUMARASIYLA (905…) eşleşmeye devam eder. */
       const alt =
         msg.key.remoteJidAlt ||
-        (msg.message && msg.message.extendedTextMessage && msg.message.extendedTextMessage.remoteJidAlt) ||
+        (mm.extendedTextMessage && mm.extendedTextMessage.remoteJidAlt) ||
+        msg.key.participantAlt ||
         '';
-      let senderNum = '';
-      const pnSrc = String(alt || '').startsWith('alt:') ? String(alt).slice(4) : String(alt || '');
-      if (/^\d+@s\.whatsapp\.net$/.test(pnSrc)) {
-        senderNum = pnSrc.split('@')[0];
-      } else if (/^\d+@(s\.whatsapp\.net)?$/.test(jid)) {
-        senderNum = jid.split('@')[0].split(':')[0];
+      let senderNum = this._pnOnly(alt);
+      /* grup etiketi için katılımcının gerçek PN'si (LID çağında eşlemeden) */
+      let pnLabel = this._pnOnly(msg.key.participantAlt);
+      if (!senderNum) {
+        /* DM'de jid, grupta katılımcı jid'si LID olabilir → eşleme deposundan çöz */
+        const lidJid = String(jid).endsWith('@lid')
+          ? jid
+          : String(participantJid).endsWith('@lid') ? participantJid : '';
+        if (lidJid) senderNum = await this._lidToPn(lidJid);
+        if (!pnLabel && senderNum) pnLabel = senderNum;
       }
       if (!senderNum) {
+        /* son çare: ham jid'in rakam kısmı (grup katılımcıları / PN jid) */
         senderNum = (participantJid || jid).split('@')[0].split(':')[0];
         if (!/^\d+$/.test(senderNum)) senderNum = '';
       }
@@ -518,8 +591,8 @@ class WhatsAppBridge {
         media,
         isGroup,
         participant: participantJid,
-        /* LID çağında gerçek telefon: participantAlt; varsa WA kullanıcı adı */
-        participantPn: isGroup ? String(msg.key.participantAlt || '') : '',
+        /* LID çağında gerçek telefon: participantAlt; yoksa eşlemeden çözülen PN */
+        participantPn: isGroup ? pnLabel : '',
         participantUsername: isGroup ? String(msg.key.participantUsername || '') : '',
         mentioned,
       }, senderNum);

@@ -38,6 +38,9 @@ const els = {
   statusPill: $('#statusPill'),
   todoPanel: $('#todoPanel'),
   browserBtn: $('#browserBtn'),
+  jevBtn: $('#jevBtn'),
+  jevPane: $('#jevPane'),
+  jevView: $('#jevView'),
   eyeBtn: $('#eyeBtn'),
   netDot: $('#netDot'),
   railBtn: $('#railBtn'),
@@ -235,6 +238,7 @@ const els = {
   attachBtn: $('#attachBtn'),
   ttsBtn: $('#ttsBtn'),
   micBtn: $('#micBtn'),
+  convBtn: $('#convBtn'),
   fileInput: $('#fileInput'),
   fileTasks: $('#fileTasks'),
   tasksPanel: $('#tasksPanel'),
@@ -262,7 +266,6 @@ function toggleRail(hide) {
   document.body.classList.toggle('rail-hidden', !!hide);
   if (els.railBtn) els.railBtn.classList.toggle('on', !hide);
 }
-
 /* ---------------- mini markdown ---------------- */
 
 function escapeHtml(s) {
@@ -2178,9 +2181,12 @@ async function renderSkillsPane() {
 
 /* ---------------- CHAT TTS: ajan yazılarını otomatik seslendirme ----------------
    Ayarlar → Sesli Yanıt'ta "chat'te otomatik seslendir" açıksa her tur sonunda
-   ajanın son yazısı Edge TTS (veya seçili motor) ile okunur. */
+   ajanın son yazısı eMa Lightning (yerel) ile okunur. */
 let ttsCfgCache = null;
 let ttsAudioEl = null;
+let ttsGraph = null; // { ctx, an, data } — konuşma modu ağız senkronu için TTS analizörü
+let ttsLevelRaf = 0;
+let ttsCurUrl = null;
 let ttsLastSpoken = '';
 let chatTtsOn = false; // hoparlör düğmesi: chat'te otomatik seslendirme
 
@@ -2236,6 +2242,62 @@ async function speakText(text) {
   } catch {}
 }
 
+/* TEK AUDIO ELEMENTİ: cümle cümle çalma aynı elementi yeniden kullanır.
+   WebAudio grafiğine bir kez bağlanır (createMediaElementSource bir element
+   için tek kez çağrılabilir) → AnalyserNode TTS ses düzeyini canlı verir;
+   konuşma modu ağzı bu düzeyle senkron oynar. Graph kurulamazsa yedek zarf. */
+function ttsAudio() {
+  if (ttsAudioEl) return ttsAudioEl;
+  ttsAudioEl = new Audio();
+  ttsAudioEl.preload = 'auto';
+  try {
+    const Ctor = window.AudioContext || window.webkitAudioContext;
+    if (Ctor) {
+      const ctx = new Ctor();
+      const src = ctx.createMediaElementSource(ttsAudioEl);
+      const an = ctx.createAnalyser();
+      an.fftSize = 256;
+      an.smoothingTimeConstant = 0.55;
+      src.connect(an);
+      an.connect(ctx.destination);
+      ttsGraph = { ctx, an, data: new Uint8Array(an.fftSize) };
+    }
+  } catch { ttsGraph = null; }
+  return ttsAudioEl;
+}
+
+function ttsLevelStop() {
+  if (ttsLevelRaf) { cancelAnimationFrame(ttsLevelRaf); ttsLevelRaf = 0; }
+  const st = window.BeastHandsFree && window.BeastHandsFree.ttsState;
+  if (st) st.level = 0;
+}
+
+function ttsLevelStart() {
+  ttsLevelStop();
+  const st = window.BeastHandsFree && window.BeastHandsFree.ttsState;
+  if (!st) return;
+  if (ttsGraph && ttsGraph.ctx.state === 'suspended') ttsGraph.ctx.resume().catch(() => {});
+  const t0 = performance.now();
+  const tick = () => {
+    let v;
+    if (ttsGraph) {
+      ttsGraph.an.getByteTimeDomainData(ttsGraph.data);
+      let sum = 0;
+      for (let i = 0; i < ttsGraph.data.length; i++) {
+        const d = (ttsGraph.data[i] - 128) / 128;
+        sum += d * d;
+      }
+      v = Math.min(1, Math.sqrt(sum / ttsGraph.data.length) * 3.4);
+    } else {
+      const t = (performance.now() - t0) / 1000; // yedek: konuşma benzeri zarf
+      v = 0.30 + 0.34 * Math.abs(Math.sin(t * 9.1)) * (0.55 + 0.45 * Math.abs(Math.sin(t * 3.7)));
+    }
+    st.level = v;
+    ttsLevelRaf = requestAnimationFrame(tick);
+  };
+  ttsLevelRaf = requestAnimationFrame(tick);
+}
+
 /* base64 mp3 → Blob URL → Audio. data: URL CSP'de engellendiği için blob kullanılır.
    Promise, çalma BİTTİĞİNDE çözülür (cümle kuyruğu sırayı böyle kurar);
    kesinti (pause/barge) ttsPlayResolve üzerinden anında çözer. */
@@ -2245,14 +2307,18 @@ async function playTtsB64(r) {
   for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
   const blob = new Blob([bytes], { type: r.mime || 'audio/mpeg' });
   const url = URL.createObjectURL(blob);
-  if (ttsAudioEl) { try { ttsAudioEl.pause(); } catch {} }
+  const el = ttsAudio();
+  if (!el.paused) { try { el.pause(); } catch {} }
+  if (ttsCurUrl) { try { URL.revokeObjectURL(ttsCurUrl); } catch {} }
+  ttsCurUrl = url;
   return new Promise((resolve) => {
     let settled = false;
     const done = () => {
       if (settled) return;
       settled = true;
       ttsPlayResolve = null;
-      try { URL.revokeObjectURL(url); } catch {}
+      if (ttsCurUrl === url) { try { URL.revokeObjectURL(url); } catch {} ttsCurUrl = null; }
+      ttsLevelStop();
       const st2 = window.BeastHandsFree && window.BeastHandsFree.ttsState;
       if (st2) st2.lastEndedAt = Date.now(); // yankı penceresi için
       setTimeout(() => {
@@ -2262,12 +2328,12 @@ async function playTtsB64(r) {
       resolve();
     };
     ttsPlayResolve = done;
-    ttsAudioEl = new Audio(url);
-    ttsAudioEl.onended = done;
-    ttsAudioEl.onerror = done;
+    el.onended = done;
+    el.onerror = done;
+    el.src = url;
     const st0 = window.BeastHandsFree && window.BeastHandsFree.ttsState;
     if (st0) st0.playing = true; // ses başlıyor — mikrofon adaptif zemin moduna geçer
-    ttsAudioEl.play().catch((e) => {
+    el.play().then(() => ttsLevelStart()).catch((e) => {
       const st = window.BeastHandsFree && window.BeastHandsFree.ttsState;
       if (st) st.playing = false;
       toast('TTS çalınamadı: ' + String((e && e.message) || e));
@@ -2573,70 +2639,6 @@ async function renderTtsPane() {
   /* STT DURUMU: model indirildi mi / iniyor mu / hangi motor */
   let stt = null;
   try { stt = await beast.sttStatus(); } catch {}
-  const EDGE_VOICES = [
-    ['tr-TR-AhmetNeural', 'Ahmet — Türkçe (erkek)'],
-    ['tr-TR-EmelNeural', 'Emel — Türkçe (kadın)'],
-    ['en-US-GuyNeural', 'Guy — English (male)'],
-    ['en-US-AriaNeural', 'Aria — English (female)'],
-    ['de-DE-KatjaNeural', 'Katja — Deutsch'],
-    ['ar-SA-HamedNeural', 'Hamed — العربية'],
-  ];
-  const PIPER_VOICES = [
-    ['tr_TR-fahrettin-medium', 'Fahrettin — Türkçe (erkek)'],
-    ['tr_TR-fettah-medium', 'Fettah — Türkçe (erkek)'],
-    ['en_US-lessac-medium', 'Lessac — English (male)'],
-    ['en_US-amy-medium', 'Amy — English (female)'],
-  ];
-  /* Supertonic 3: 10 hazır ses (M1-M5 erkek, F1-F5 kadın) + 31 dil */
-  const SUPERTONIC_VOICES = [
-    ['M1', 'M1 — Erkek 1'],
-    ['M2', 'M2 — Erkek 2'],
-    ['M3', 'M3 — Erkek 3'],
-    ['M4', 'M4 — Erkek 4'],
-    ['M5', 'M5 — Erkek 5'],
-    ['F1', 'F1 — Kadın 1'],
-    ['F2', 'F2 — Kadın 2'],
-    ['F3', 'F3 — Kadın 3'],
-    ['F4', 'F4 — Kadın 4'],
-    ['F5', 'F5 — Kadın 5'],
-  ];
-  const SUPERTONIC_LANGS = [
-    ['ar', 'العربية'],
-    ['bg', 'Български'],
-    ['cs', 'Čeština'],
-    ['da', 'Dansk'],
-    ['de', 'Deutsch'],
-    ['el', 'Ελληνικά'],
-    ['en', 'English'],
-    ['es', 'Español'],
-    ['et', 'Eesti'],
-    ['fi', 'Suomi'],
-    ['fr', 'Français'],
-    ['hi', 'हिन्दी'],
-    ['hr', 'Hrvatski'],
-    ['hu', 'Magyar'],
-    ['id', 'Bahasa Indonesia'],
-    ['it', 'Italiano'],
-    ['ja', '日本語'],
-    ['ko', '한국어'],
-    ['lt', 'Lietuvių'],
-    ['lv', 'Latviešu'],
-    ['nl', 'Nederlands'],
-    ['pl', 'Polski'],
-    ['pt', 'Português'],
-    ['ro', 'Română'],
-    ['ru', 'Русский'],
-    ['sk', 'Slovenčina'],
-    ['sl', 'Slovenščina'],
-    ['sv', 'Svenska'],
-    ['tr', 'Türkçe'],
-    ['uk', 'Українська'],
-    ['vi', 'Tiếng Việt'],
-    ['na', 'Otomatik (dil bilinmiyor)'],
-  ];
-  const seg = (name, items) => '<div class="voice-seg" id="' + name + '">' +
-    items.map(([v, n]) => `<label><input type="radio" name="${name}" value="${v}"/><span>${n}</span></label>`).join('') +
-    '</div>';
   pane.innerHTML =
     '<h2>' + _t('tts_h2') + '</h2><div class="sub">' + _t('tts_sub') + '</div>' +
     `<div class="voice-card" style="margin-top:14px">
@@ -2647,7 +2649,6 @@ async function renderTtsPane() {
           <div class="voice-sub">${_t('tts_stt_sub')}</div>
         </div>
       </div>
-      ${seg('sttEngine', [['', _t('stt_seg_auto')], ['local', _t('stt_seg_whisper')], ['groq', 'Groq'], ['openai', 'OpenAI']])}
       <div class="voice-status">
         <span id="sttDot" class="voice-dot"></span><span id="sttStatusTxt"></span>
         <button id="sttDlBtn" class="btn ghost" style="margin-left:auto">${_t('stt_download_now')}</button>
@@ -2662,43 +2663,23 @@ async function renderTtsPane() {
         </div>
         <label class="lock-row" style="margin-left:auto"><input type="checkbox" id="ttsOn" /><span>${_t('tts_active')}</span></label>
       </div>
-      ${seg('ttsEngine', [['edge', 'Edge'], ['piper', 'Piper'], ['supertonic', 'Supertonic'], ['openai', 'OpenAI']])}
-      <div class="voice-row">
-        <select id="ttsVoiceSel" class="inp"></select>
+      <div class="voice-status" id="emaStatusRow">
+        <span id="emaDot" class="voice-dot"></span><span id="emaStatusTxt"></span>
+        <button id="emaDlBtn" class="btn ghost" style="margin-left:auto">${_t('tts_ema_download')}</button>
+      </div>
+      <div class="voice-sliders" id="emaAdvWrap">
+        <div class="voice-slider"><span>${_t('tts_ema_speed')}</span><input id="emaSpeed" type="range" min="0.5" max="2" step="0.05" value="1"/><b id="emaSpeedVal">1.00x</b></div>
+      </div>
+      <div class="voice-row" style="margin-top:10px">
+        <span style="min-width:120px">${_t('tts_ema_sr')}</span>
+        <select id="emaSr" class="inp" style="max-width:200px">
+          <option value="48000" selected>48 kHz (WhatsApp için ideal)</option>
+          <option value="24000">24 kHz</option>
+          <option value="16000">16 kHz</option>
+          <option value="8000">8 kHz</option>
+        </select>
       </div>
       <label class="lock-row" style="margin-top:10px"><input type="checkbox" id="ttsChatAuto" /><span>${_t('tts_chat_auto')}</span></label>
-      <div class="voice-status" id="piperStatusRow">
-        <span id="piperDot" class="voice-dot"></span><span id="piperStatusTxt"></span>
-        <button id="piperDlBtn" class="btn ghost" style="margin-left:auto">${_t('tts_piper_download')}</button>
-      </div>
-      <div class="voice-sliders" id="piperAdvWrap">
-        <div class="voice-slider"><span>${_t('tts_piper_speed')}</span><input id="piperSpeed" type="range" min="0.6" max="1.6" step="0.05" value="1"/><b id="piperSpeedVal">1.00x</b></div>
-        <div class="voice-slider"><span>${_t('tts_piper_silence')}</span><input id="piperSil" type="range" min="0" max="1" step="0.05" value="0.2"/><b id="piperSilVal">0.20s</b></div>
-        <div class="voice-slider"><span>${_t('tts_piper_noise')}</span><input id="piperNoise" type="range" min="0" max="1.2" step="0.05" value="0.667"/><b id="piperNoiseVal">0.67</b></div>
-      </div>
-      <div id="stxWrap" style="display:none">
-        <div class="voice-row" style="margin-top:10px">
-          <select id="stxLang" class="inp" style="max-width:240px;flex:none"></select>
-        </div>
-        <div class="voice-status" id="stxStatusRow">
-          <span id="stxDot" class="voice-dot"></span><span id="stxStatusTxt"></span>
-          <button id="stxDlBtn" class="btn ghost" style="margin-left:auto">${_t('tts_supertonic_download')}</button>
-        </div>
-        <div class="voice-sliders" id="stxAdvWrap">
-          <div class="voice-slider"><span>${_t('tts_supertonic_speed')}</span><input id="stxSpeed" type="range" min="0.7" max="2" step="0.05" value="1.05"/><b id="stxSpeedVal">1.05x</b></div>
-          <div class="voice-slider"><span>${_t('tts_supertonic_quality')}</span><input id="stxSteps" type="range" min="5" max="12" step="1" value="8"/><b id="stxStepsVal">8</b></div>
-        </div>
-      </div>
-      <div id="ttsOpenaiWrap" style="display:none">
-        <div class="voice-row" style="margin-top:10px">
-          <input id="ttsUrl" class="inp" placeholder="https://api.openai.com/v1" autocomplete="off" />
-          <input id="ttsKey" class="inp" type="password" placeholder="API Key" autocomplete="off" />
-        </div>
-        <div class="voice-row">
-          <input id="ttsModel" class="inp" placeholder="tts-1" autocomplete="off" />
-          <input id="ttsVoice" class="inp" placeholder="alloy" autocomplete="off" />
-        </div>
-      </div>
       <div class="voice-actions">
         <button id="ttsSave" class="btn">${_t('tts_save')}</button>
         <button id="ttsTest" class="btn ghost">${_t('tts_test')}</button>
@@ -2707,96 +2688,31 @@ async function renderTtsPane() {
     </div>`;
 
   /* ---------- yardımcılar ---------- */
-  const ttsEng = () => (document.querySelector('input[name="ttsEngine"]:checked') || {}).value || 'edge';
-  const setSeg = (name, val) => {
-    document.querySelectorAll('input[name="' + name + '"]').forEach((r) => {
-      r.checked = r.value === String(val);
-      const lab = r.closest('label');
-      if (lab) lab.classList.toggle('on', r.checked);
-    });
-  };
-  const refreshSeg = (name) => {
-    document.querySelectorAll('input[name="' + name + '"]').forEach((r) => {
-      const lab = r.closest('label');
-      if (lab) lab.classList.toggle('on', r.checked);
-    });
-  };
-  const sttName = (st) => (st.provider === 'groq' ? 'Groq Whisper' : st.provider === 'openai' ? 'Whisper (API)' : 'Whisper (yerel)');
+  const sttName = () => 'Duyu-small';
   const sttState = {
     ready: 'hazır',
     loading: 'iniyor…',
     downloaded: 'hazır (ilk kullanımda yüklenir)',
     partial: 'kısmen indi',
     missing: 'indirilmedi',
-    cloud: 'bulut',
   };
 
-  /* ---------- ses listeleri (motor başına) ---------- */
-  let edgeVoice = 'tr-TR-AhmetNeural';
-  let piperVoice = 'tr_TR-fahrettin-medium';
-  let stxVoice = 'M1';
-  let stxLang = 'tr';
-  const fillVoices = () => {
-    const eng = ttsEng();
-    const sel = $('#ttsVoiceSel');
-    if (!sel) return;
-    const list = eng === 'piper' ? PIPER_VOICES : eng === 'supertonic' ? SUPERTONIC_VOICES : EDGE_VOICES;
-    sel.innerHTML = list.map(([v, n]) => `<option value="${v}">${n}</option>`).join('');
-    sel.value = eng === 'piper' ? piperVoice : eng === 'supertonic' ? stxVoice : edgeVoice;
-    sel.style.display = eng === 'openai' ? 'none' : '';
-  };
-  const captureVoice = () => {
-    const eng = ttsEng();
-    const sel = $('#ttsVoiceSel');
-    if (!sel) return;
-    if (eng === 'piper') piperVoice = sel.value || piperVoice;
-    else if (eng === 'supertonic') stxVoice = sel.value || stxVoice;
-    else if (eng === 'edge') edgeVoice = sel.value || edgeVoice;
-  };
-
-  const syncEngineUi = () => {
-    const eng = ttsEng();
-    const isPiper = eng === 'piper';
-    $('#piperStatusRow').style.display = isPiper ? '' : 'none';
-    $('#piperAdvWrap').style.display = isPiper ? '' : 'none';
-    const stxWrap = $('#stxWrap');
-    if (stxWrap) stxWrap.style.display = eng === 'supertonic' ? '' : 'none';
-    $('#ttsOpenaiWrap').style.display = eng === 'openai' ? '' : 'none';
-  };
-
-  /* Piper ince ayar etiketleri (hız/duraklama/ifade) */
-  const syncPiperLabels = () => {
-    const sv = $('#piperSpeedVal'), lv = $('#piperSilVal'), nv = $('#piperNoiseVal');
-    if (sv) sv.textContent = Number($('#piperSpeed').value).toFixed(2) + 'x';
-    if (lv) lv.textContent = Number($('#piperSil').value).toFixed(2) + 's';
-    if (nv) nv.textContent = Number($('#piperNoise').value).toFixed(2);
-  };
-
-  /* Supertonic ince ayar etiketleri (hız/kalite adımı) */
-  const syncStxLabels = () => {
-    const sv = $('#stxSpeedVal'), qv = $('#stxStepsVal');
-    if (sv) sv.textContent = Number($('#stxSpeed').value).toFixed(2) + 'x';
-    if (qv) qv.textContent = String(Math.round(Number($('#stxSteps').value)));
+  /* ---------- eMa ince ayar etiketi (hız) ---------- */
+  const syncEmaLabels = () => {
+    const sv = $('#emaSpeedVal');
+    if (sv) sv.textContent = Number($('#emaSpeed').value).toFixed(2) + 'x';
   };
 
   /* ---------- durum satırları ---------- */
-  const refreshPiperStatus = async () => {
+  const refreshEmaStatus = async () => {
     try {
-      const st = await beast.piperStatus(piperVoice);
-      const txt = $('#piperStatusTxt'), dot = $('#piperDot'), btn = $('#piperDlBtn');
+      const st = await beast.emaStatus();
+      const txt = $('#emaStatusTxt'), dot = $('#emaDot'), btn = $('#emaDlBtn');
       if (!st) return null;
-      if (txt) txt.textContent = st.installed ? 'Hazır — yerel/offline' : st.installing ? 'İndiriliyor…' : 'İndirilmedi (~80MB)';
-      if (dot) dot.className = 'voice-dot' + (st.installed ? ' ok' : st.installing ? ' warn' : '');
-      if (btn) btn.disabled = !!st.installed;
-      return st;
-    } catch { return null; }
-  };
-  const refreshSupertonicStatus = async () => {
-    try {
-      const st = await beast.supertonicStatus(stxVoice);
-      const txt = $('#stxStatusTxt'), dot = $('#stxDot'), btn = $('#stxDlBtn');
-      if (!st) return null;
-      if (txt) txt.textContent = st.installed ? 'Hazır — yerel/offline (Supertonic 3)' : st.installing ? 'İndiriliyor…' : 'İndirilmedi (~400MB)';
+      if (txt) txt.textContent = st.running ? 'Hazır — yerel/offline (aktif)'
+        : st.installed ? 'Hazır — yerel/offline (eMa Lightning)'
+        : st.installing ? 'Kuruluyor… (Python paketi + ~34MB ağırlık)'
+        : 'Kurulmadı — ilk kullanımda otomatik kurulur';
       if (dot) dot.className = 'voice-dot' + (st.installed ? ' ok' : st.installing ? ' warn' : '');
       if (btn) btn.disabled = !!st.installed;
       return st;
@@ -2806,10 +2722,10 @@ async function renderTtsPane() {
     try {
       stt = await beast.sttStatus();
       const txt = $('#sttStatusTxt'), dot = $('#sttDot');
-      if (txt && stt) txt.textContent = sttName(stt) + ' · ' + (sttState[stt.state] || stt.state) + (stt.mb ? ' · ' + stt.mb + ' MB' : '');
+      if (txt && stt) txt.textContent = sttName() + ' · ' + (sttState[stt.state] || stt.state) + (stt.mb ? ' · ' + stt.mb + ' MB' : '');
       if (dot && stt) {
         dot.className = 'voice-dot' + (
-          ['ready', 'cloud', 'downloaded'].includes(stt.state) ? ' ok' :
+          ['ready', 'downloaded'].includes(stt.state) ? ' ok' :
           ['loading', 'partial'].includes(stt.state) ? ' warn' : ''
         );
       }
@@ -2821,138 +2737,50 @@ async function renderTtsPane() {
   try {
     const tts = await beast.waGetTts();
     $('#ttsOn').checked = !!tts.enabled;
-    edgeVoice = tts.edgeVoice || edgeVoice;
-    piperVoice = tts.piperVoice || piperVoice;
-    stxVoice = tts.supertonicVoice || stxVoice;
-    stxLang = tts.supertonicLang || stxLang;
-    $('#piperSpeed').value = Number.isFinite(Number(tts.piperSpeed)) ? tts.piperSpeed : 1;
-    $('#piperSil').value = Number.isFinite(Number(tts.piperSilence)) ? tts.piperSilence : 0.2;
-    $('#piperNoise').value = Number.isFinite(Number(tts.piperNoise)) ? tts.piperNoise : 0.667;
-    $('#stxSpeed').value = Number.isFinite(Number(tts.supertonicSpeed)) ? tts.supertonicSpeed : 1.05;
-    $('#stxSteps').value = Number.isFinite(Number(tts.supertonicSteps)) ? tts.supertonicSteps : 8;
+    $('#emaSpeed').value = Number.isFinite(Number(tts.speed)) ? tts.speed : 1;
+    $('#emaSr').value = String([48000, 24000, 16000, 8000].includes(Number(tts.sampleRate)) ? tts.sampleRate : 48000);
     $('#ttsChatAuto').checked = !!tts.chatAutoSpeak;
-    $('#ttsUrl').value = tts.baseUrl || '';
-    $('#ttsKey').value = tts.key || '';
-    $('#ttsModel').value = tts.model || 'tts-1';
-    $('#ttsVoice').value = tts.voice || 'alloy';
-    setSeg('ttsEngine', ['edge', 'piper', 'supertonic', 'openai'].includes(tts.engine) ? tts.engine : 'edge');
   } catch {}
-  setSeg('sttEngine', (stt && stt.pref) || '');
-  const stxLangSel = $('#stxLang');
-  if (stxLangSel) {
-    stxLangSel.innerHTML = SUPERTONIC_LANGS.map(([v, n]) => `<option value="${v}">${n}</option>`).join('');
-    stxLangSel.value = SUPERTONIC_LANGS.some(([v]) => v === stxLang) ? stxLang : 'tr';
-    stxLang = stxLangSel.value;
-    stxLangSel.addEventListener('change', () => { stxLang = stxLangSel.value; });
-  }
-  syncPiperLabels();
-  syncStxLabels();
-  fillVoices();
-  syncEngineUi();
-  await refreshPiperStatus();
-  await refreshSupertonicStatus();
+  syncEmaLabels();
+  await refreshEmaStatus();
   await refreshSttStatus();
 
   /* ---------- olaylar ---------- */
-  ['piperSpeed', 'piperSil', 'piperNoise'].forEach((id) => {
-    const el = $('#' + id);
-    if (el) el.addEventListener('input', syncPiperLabels);
-  });
-  ['stxSpeed', 'stxSteps'].forEach((id) => {
-    const el = $('#' + id);
-    if (el) el.addEventListener('input', syncStxLabels);
-  });
-  document.querySelectorAll('input[name="ttsEngine"]').forEach((r) => {
-    r.addEventListener('change', () => {
-      captureVoice();
-      refreshSeg('ttsEngine');
-      fillVoices();
-      syncEngineUi();
-      refreshPiperStatus();
-      refreshSupertonicStatus();
-    });
-  });
-  document.querySelectorAll('input[name="sttEngine"]').forEach((r) => {
-    r.addEventListener('change', async () => {
-      refreshSeg('sttEngine');
-      const res = await beast.sttProviderSet(r.value).catch(() => null);
-      if (res && res.ok) {
-        await refreshSttStatus();
-        toast('STT motoru: ' + sttName(res));
-      } else {
-        toast('STT motoru değiştirilemedi');
-      }
-    });
-  });
-  $('#piperDlBtn').addEventListener('click', async () => {
-    captureVoice();
-    toast('Piper indiriliyor… (ilk seferde ~80MB)');
-    const poll = setInterval(refreshPiperStatus, 4000);
-    const r = await beast.piperInstall(piperVoice).catch((e) => ({ ok: false, error: String((e && e.message) || e) }));
+  const emaSpeedEl = $('#emaSpeed');
+  if (emaSpeedEl) emaSpeedEl.addEventListener('input', syncEmaLabels);
+  $('#emaDlBtn').addEventListener('click', async () => {
+    toast('eMa Lightning kuruluyor… (ilk seferde Python paketi + ~34MB ağırlık)');
+    const poll = setInterval(refreshEmaStatus, 4000);
+    const r = await beast.emaInstall().catch((e) => ({ ok: false, error: String((e && e.message) || e) }));
     clearInterval(poll);
-    await refreshPiperStatus();
-    toast(r && r.ok ? 'Piper hazır ✓ — artık çevrimdışı seslendirme yapılır' : 'Piper indirilemedi: ' + ((r && r.error) || '?'));
-  });
-  $('#stxDlBtn').addEventListener('click', async () => {
-    captureVoice();
-    toast('Supertonic indiriliyor… (ilk seferde ~400MB)');
-    const poll = setInterval(refreshSupertonicStatus, 4000);
-    const r = await beast.supertonicInstall(stxVoice).catch((e) => ({ ok: false, error: String((e && e.message) || e) }));
-    clearInterval(poll);
-    await refreshSupertonicStatus();
-    toast(r && r.ok ? 'Supertonic hazır ✓ — artık çevrimdışı seslendirme yapılır' : 'Supertonic indirilemedi: ' + ((r && r.error) || '?'));
+    await refreshEmaStatus();
+    toast(r && r.ok ? 'eMa Lightning hazır ✓ — artık çevrimdışı seslendirme yapılır' : 'eMa kurulamadı: ' + ((r && r.error) || '?'));
   });
   $('#sttDlBtn').addEventListener('click', async () => {
-    const s0 = await refreshSttStatus();
-    if (s0 && s0.state === 'cloud') { toast('Bulut motoru seçili — indirme gerekmez'); return; }
     await beast.sttPrefetchNow().catch(() => {});
     toast('STT modeli indiriliyor/yükleniyor…');
     const poll = setInterval(async () => {
       const s2 = await refreshSttStatus();
-      if (s2 && (s2.state === 'ready' || s2.state === 'cloud')) { clearInterval(poll); toast('STT hazır ✓'); }
+      if (s2 && s2.state === 'ready') { clearInterval(poll); toast('STT hazır ✓'); }
     }, 3000);
   });
   $('#ttsSave').addEventListener('click', async () => {
-    captureVoice();
     await beast.waSetTts({
       enabled: $('#ttsOn').checked,
-      engine: ttsEng(),
-      edgeVoice,
-      piperVoice,
-      piperSpeed: Number($('#piperSpeed').value),
-      piperSilence: Number($('#piperSil').value),
-      piperNoise: Number($('#piperNoise').value),
-      supertonicVoice: stxVoice,
-      supertonicLang: stxLang,
-      supertonicSpeed: Number($('#stxSpeed').value),
-      supertonicSteps: Number($('#stxSteps').value),
+      speed: Number($('#emaSpeed').value),
+      sampleRate: Number($('#emaSr').value),
       chatAutoSpeak: $('#ttsChatAuto').checked,
-      baseUrl: $('#ttsUrl').value.trim(),
-      key: $('#ttsKey').value.trim(),
-      model: $('#ttsModel').value.trim(),
-      voice: $('#ttsVoice').value.trim(),
     });
     ttsCfgCache = null; // ayar önbelleğini tazele
     /* hoparlör düğmesiyle TEK doğruluk kaynağı senkronu — asıl seslendirmeme bug'ı */
     chatTtsOn = $('#ttsChatAuto').checked;
     if (els.ttsBtn) els.ttsBtn.classList.toggle('on', chatTtsOn);
-    toast($('#ttsOn').checked ? 'TTS açık — cevaplar sesli' : 'TTS kapalı');
+    toast($('#ttsOn').checked ? 'TTS açık — cevaplar sesli (eMa Lightning)' : 'TTS kapalı');
   });
   $('#ttsTest').addEventListener('click', async () => {
     /* motor + IPC + çalma zincirini uçtan uca dener — sorun neredeyse görünür */
-    const eng = ttsEng();
-    const line = eng === 'piper'
-      ? 'Merhaba kanka, Piper yerel TTS testi. Ben Beast.'
-      : eng === 'supertonic'
-        ? 'Merhaba kanka, Supertonic yerel TTS testi. Ben Beast.'
-        : eng === 'openai'
-          ? 'Merhaba kanka, OpenAI TTS testi. Ben Beast.'
-          : 'Merhaba kanka, Edge TTS testi. Ben Beast.';
-    toast(eng === 'piper'
-      ? 'TTS test ediliyor… (Piper ilk seferde indiriyorsa uzun sürebilir)'
-      : eng === 'supertonic'
-        ? 'TTS test ediliyor… (Supertonic ilk seferde ~400MB indiriyorsa uzun sürebilir)'
-        : 'TTS test ediliyor…');
+    const line = 'Merhaba kanka, eMa Lightning yerel TTS testi. Ben Beast.';
+    toast('TTS test ediliyor… (eMa ilk seferde kuruluyorsa uzun sürebilir)');
     const r = await beast.ttsSpeak(line).catch((e) => ({ ok: false, error: String((e && e.message) || e) }));
     if (!(r && r.ok)) { toast('TTS test HATA: ' + ((r && r.error) || '?')); return; }
     try {
@@ -7688,14 +7516,14 @@ async function init() {
       fr.readAsDataURL(b);
     });
   /* STT çağrıları main'deki öncelikli sıraya gider: final (priority 1)
-     önizlemelerin (0) önüne geçer — whisper CPU'da yavaş olsa bile
+     önizlemelerin (0) önüne geçer — Duyu ctc önizlemesi yavaşlasa bile
      konuşanın cevabı önce transkribe edilir */
   let hfSttChain = Promise.resolve();
   const hfTranscribe = (blob, isStale, priority) => {
     const run = async () => {
       if (isStale && isStale()) throw new Error('stale');
       const b64 = await hfBlobToDataUrl(blob);
-      /* arayüz dili = Whisper dili: TR ise Türkçe, EN ise İngilizce algılar */
+      /* arayüz dili = Duyu dili: TR ise Türkçe, EN ise İngilizce algılar */
       const uiLang = (window.I18N && window.I18N.lang) || 'tr';
       const r = await beast.sttTranscribe(b64, uiLang, priority).catch(() => ({ ok: false, error: 'ipc' }));
       if (r && r.ok && r.text) return String(r.text);
@@ -7756,6 +7584,55 @@ async function init() {
       toast,
       t: _t,
     });
+
+    /* KONUŞMA MODU: tam ekran, eller serbest gerçek sohbet.
+       Girişte TTS zorla açık (chatTtsOn + settings.enabled), çıkışta
+       kullanıcının kendi ayarına aynen döner. */
+    let convRestore = null;
+    if (els.convBtn) {
+      els.convBtn.addEventListener('click', () => {
+        if (!window.BeastConversation) return;
+        if (window.BeastConversation.isOpen()) return; // kapanış panel/× içinde
+        void (async () => {
+          const cfgT = await ttsCfg();
+          convRestore = { chatTtsOn, enabled: null };
+          chatTtsOn = true;
+          els.ttsBtn.classList.add('on');
+          if (!cfgT.enabled) {
+            ttsCfgCache = { ...cfgT, enabled: true };
+            await beast.waSetTts(ttsCfgCache).catch(() => {});
+            convRestore.enabled = false;
+          }
+          window.BeastConversation.open({
+            isBusy: () => busy,
+            submit: async (text) => {
+              els.input.value = text;
+              els.input.dispatchEvent(new Event('input'));
+              autosize();
+              await sendCurrent();
+            },
+            transcribe: hfTranscribe,
+            interrupt: () => { if (activeId) beast.interrupt(activeId, 'konuşma modu: kesme').catch(() => {}); },
+            cutTts,
+            toast,
+            t: _t,
+            onClosed: async () => {
+              const r = convRestore;
+              convRestore = null;
+              if (!r) return;
+              chatTtsOn = r.chatTtsOn;
+              els.ttsBtn.classList.toggle('on', chatTtsOn);
+              if (!chatTtsOn) ttsQueueReset();
+              if (r.enabled === false) {
+                const c2 = await ttsCfg();
+                ttsCfgCache = { ...c2, enabled: false };
+                await beast.waSetTts(ttsCfgCache).catch(() => {});
+              }
+            },
+          });
+        })();
+      });
+    }
   }
 
   beast.onWaEvent(onWaEvent);
@@ -7767,6 +7644,8 @@ async function init() {
 
   /* dahili tarayıcı çubuğu */
   els.browserBtn.addEventListener('click', () => beast.toggleBrowser());
+  /* JevTrader gömülü mod butonu (tarayıcı butonunun yanında) */
+  if (els.jevBtn) els.jevBtn.addEventListener('click', () => setJevMode(!jevModeOn()));
   if (els.eyeBtn) {
     els.eyeBtn.addEventListener('click', async () => {
       const next = !els.eyeBtn.classList.contains('on');
@@ -8809,6 +8688,7 @@ async function setIdeMode(on) {
   if (on && studioModeOn()) await setStudioMode(false); /* Studio açıkken IDE'ye geçiş — Studio kapanır */
   if (on && sbModeOn()) setSandboxMode(false); /* Sandbox açıkken IDE'ye geçiş — Sandbox kapanır */
   if (on && mcpModeOn()) setMcpMode(false); /* MCP açıkken IDE'ye geçiş — MCP kapanır */
+  if (on && jevModeOn()) setJevMode(false); /* Jev açıkken IDE'ye geçiş — Jev kapanır */
   document.body.classList.toggle('ide-mode', !!on);
   if (els.ideBtn) els.ideBtn.classList.toggle('on', !!on);
   /* soldaki marka: chat modunda BEAST Agent, IDE modunda BEAST Code, Studio modunda BEAST Studio */
@@ -8884,6 +8764,7 @@ async function setStudioMode(on) {
   if (on && ideModeOn()) await setIdeMode(false); /* IDE açıkken Studio'ya geçiş — IDE kapanır */
   if (on && sbModeOn()) setSandboxMode(false); /* Sandbox açıkken Studio'ya geçiş — Sandbox kapanır */
   if (on && mcpModeOn()) setMcpMode(false); /* MCP açıkken Studio'ya geçiş — MCP kapanır */
+  if (on && jevModeOn()) setJevMode(false); /* Jev açıkken Studio'ya geçiş — Jev kapanır */
   document.body.classList.toggle('studio-mode', !!on);
   if (els.studioBtn) els.studioBtn.classList.toggle('on', !!on);
   /* ALT TERMINAL: yalnız Beast Code'a özgü — Studio'ya geçişte kapanır */
@@ -11397,6 +11278,7 @@ function setSandboxMode(on) {
   if (on && ideModeOn()) { setIdeMode(false); }
   if (on && studioModeOn()) { setStudioMode(false); }
   if (on && mcpModeOn()) setMcpMode(false); /* MCP açıkken Sandbox'a geçiş — MCP kapanır */
+  if (on && jevModeOn()) setJevMode(false); /* Jev açıkken Sandbox'a geçiş — Jev kapanır */
   document.body.classList.toggle('sandbox-mode', !!on);
   if (els.sbBtn) els.sbBtn.classList.toggle('on', !!on);
   sbPreviewApply();
@@ -11433,6 +11315,7 @@ async function setMcpMode(on) {
   if (on && ideModeOn()) await setIdeMode(false);
   if (on && studioModeOn()) await setStudioMode(false);
   if (on && sbModeOn()) setSandboxMode(false);
+  if (on && jevModeOn()) setJevMode(false); /* Jev açıkken MCP'ye geçiş — Jev kapanır */
   document.body.classList.toggle('mcp-mode', !!on);
   if (els.mcpBtn) els.mcpBtn.classList.toggle('on', !!on);
   const brandSub = document.querySelector('#brand .brand-sub');
@@ -11447,6 +11330,64 @@ async function setMcpMode(on) {
   } else if (mcpTimer) {
     clearInterval(mcpTimer);
     mcpTimer = null;
+  }
+}
+
+/* ================= JEV TRADER GÖMÜLÜ MODU =================
+   Beast içinde tam ekran: JevTrader arayüzü bir webview'da açılır; arka uç
+   (MT5 / Binance / OKX / paper / entegrasyonlar) Beast ana sürecinde koşar ve
+   veriler %APPDATA%\jevtrader altında aynen korunur. Beast üst barı, sol bar,
+   paralel ajanlar, DM, watchers ve cron aynen çalışmaya devam eder. */
+
+let jevViewInit = false;
+
+function jevModeOn() {
+  return document.body.classList.contains('jev-mode');
+}
+
+function jevEnsureWebview() {
+  const wv = els.jevView;
+  if (!wv || jevViewInit) return wv;
+  jevViewInit = true;
+  const attach = () => {
+    try {
+      const id = wv.getWebContentsId();
+      if (id) beast.jevAttach(id).catch(() => {});
+    } catch {}
+  };
+  wv.addEventListener('dom-ready', attach);
+  wv.addEventListener('did-attach', attach);
+  beast.jevInfo().then((info) => {
+    if (!info || !info.url) return;
+    try { if (info.preload) wv.setAttribute('preload', info.preload); } catch {}
+    try { wv.src = info.url; } catch {}
+  }).catch(() => {});
+  /* arka uç süreçleri (haber, MT5, entegrasyonlar) ilk açılışta başlar */
+  beast.jevStart().catch(() => {});
+  return wv;
+}
+
+function setJevMode(on) {
+  /* arka uca modu bildir: JevTrader kapalıyken MT5 köprüsü/terminali hiç
+     çalışmaz — MT5 yalnız JevTrader açıkken bağlanır */
+  try { beast.jevMode(!!on).catch(() => {}); } catch {}
+  if (on) {
+    if (ideModeOn()) setIdeMode(false);
+    if (studioModeOn()) setStudioMode(false);
+    if (sbModeOn()) setSandboxMode(false);
+    if (mcpModeOn()) setMcpMode(false);
+    /* Jev tam ekran: açık tarayıcı native view'ı JEV arayüzünü kapatmasın */
+    if (document.body.classList.contains('browser-open')) {
+      try { beast.toggleBrowser(); } catch {}
+    }
+  }
+  document.body.classList.toggle('jev-mode', !!on);
+  if (els.jevBtn) els.jevBtn.classList.toggle('on', !!on);
+  const brandSub = document.querySelector('#brand .brand-sub');
+  if (brandSub) brandSub.textContent = on ? 'Jev Trader' : 'Agent';
+  if (on) {
+    jevEnsureWebview();
+    try { if (els.jevView) els.jevView.focus(); } catch {}
   }
 }
 

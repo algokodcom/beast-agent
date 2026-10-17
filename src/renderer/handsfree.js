@@ -310,13 +310,13 @@
   const NO_SPEECH_LIMIT = 3; // üst üste 3 boş tur → modu kapat (Hermes)
   const REPLY_WAIT_MS = 300000; // cevap bekleme tavanı
   const DRIVE_MS = 500; // döngü kalp atışı
-  const PARTIAL_MS = 2500; // canlı önizleme aralığı
+  const PARTIAL_MS = 1500; // canlı önizleme aralığı (Duyu ctc hızlı — 1.5sn'de bir tazele)
 
   /* Tek mikrofon politikası: bir panel eller-serbeste girince diğeri kapanır */
   let activePanel = null;
 
   /* TTS YANKI KÖPRÜSÜ — renderer.js doldurur */
-  const ttsState = { lastText: '', playing: false, lastEndedAt: 0 };
+  const ttsState = { lastText: '', playing: false, lastEndedAt: 0, level: 0 };
 
   /* transkript, az önce SESLENDİRİLEN metnin yankısı mı? (Hermes is_tts_echo)
      kelime örtüşmesi ≥%65 veya birbiri içinde geçme → yankı say.
@@ -386,6 +386,7 @@
       state = s;
       btn.classList.toggle('rec', s === 'listening');
       btn.classList.toggle('hf', active && s !== 'listening');
+      if (opts.onState) { try { opts.onState(s); } catch {} }
     };
 
     const clearTurnTimeout = () => {
@@ -445,6 +446,7 @@
       setState('idle');
       hideStatus();
       if (!silent) toast(t('hf_stopped'));
+      if (opts.onEnd) { try { opts.onEnd(silent); } catch {} }
     };
 
     async function waitReplyDone() {
@@ -524,6 +526,7 @@
             idleSilenceMs: IDLE_SILENCE_MS,
             graceMs: 600, // kısa grace — erken başlayan sözler kaybolmasın
             triggerWinFrames: 30, // ~500ms pencerede %85 çoğunluk — TV kesintisi zor
+            onLevel: opts.onLevel,
             onTrigger: () => {
               triggered = true;
               doInterrupt(); // çalışan turu kes — Stop düğmesiyle aynı kanal
@@ -584,6 +587,7 @@
           silenceLevel: SILENCE_LEVEL,
           silenceMs: SILENCE_MS,
           idleSilenceMs: IDLE_SILENCE_MS,
+          onLevel: opts.onLevel,
           onError: () => {
             pendingStart = false;
             end(true);
@@ -625,7 +629,7 @@
       end();
     });
 
-    const panel = { end, get state() { return state; }, get active() { return active; } };
+    const panel = { start, end, get state() { return state; }, get active() { return active; } };
     return panel;
   }
 

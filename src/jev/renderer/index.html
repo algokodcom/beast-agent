@@ -1,0 +1,621 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: file:; script-src 'self'" />
+  <title>JevTrader</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="app">
+    <aside id="sidebar">
+      <div id="brand">
+        <img id="brandLogo" src="../assets/app.png" alt="JEV" />
+        <span class="brand-beast">JEV</span><span class="brand-sub">Trader</span>
+        <button id="sideCollapse" title="Sohbet geçmişini daralt"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 6l-6 6 6 6"/></svg></button>
+      </div>
+      <button id="newChat" title="Yeni sohbet"><span class="newChatIcon">+</span><span class="newChatLabel"> Yeni Sohbet</span></button>
+      <div id="sessList"></div>
+      <div id="alertSide">
+        <div id="alertSideHead">
+          <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 8-3 8h18s-3-1-3-8"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>
+          <span class="alert-side-title">ALARMLAR</span>
+          <span id="alertCount" class="pos-count"></span>
+          <span class="drag-spacer"></span>
+          <button id="alertSetBtn" class="chart-icon-btn" title="Alarm ayarları (ses / süre)"><svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg></button>
+          <button id="alertSoundBtn" class="chart-icon-btn active" title="Alarm sesi açık"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5L6 9H2v6h4l5 4V5z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M18.5 5.5a9 9 0 0 1 0 13"/></svg></button>
+          <button id="alertAddBtn" class="chart-icon-btn" title="Alarm kur">+</button>
+        </div>
+        <div id="alertSideList"></div>
+      </div>
+      <div id="sideFoot">
+        <button id="gearBtn" title="Ayarlar">&#x2699;&#xFE0E;</button>
+        <button id="themeBtn" title="Koyu/açık tema">&#x263E;</button>
+        <span id="netDot" class="net-on" title="İnternet durumu"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 8.82a15 15 0 0 1 20 0"/><path d="M5 12.85a10 10 0 0 1 14 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg></span>
+      </div>
+    </aside>
+
+    <main id="main">
+      <header id="topbar">
+        <span id="botChip" title="Jev Trader"><img class="chipLogo" src="../assets/app.png" alt="" />Jev</span>
+        <div id="exDD" class="dd">
+          <button id="exBtn" class="dd-btn" title="Borsa seç: MT5 / Binance / OKX — seçili borsaya entegre olur"><span id="exBtnLabel">MT5</span></button>
+          <div id="exMenu" class="dd-menu" hidden>
+            <div class="dd-list">
+              <button class="dd-item" data-ex="mt5">MT5</button>
+              <button class="dd-item" data-ex="binance">Binance</button>
+              <button class="dd-item" data-ex="okx">OKX</button>
+            </div>
+          </div>
+        </div>
+        <div id="modelDD" class="dd">
+          <button id="modelBtn" class="dd-btn" title="Model seç"><span id="modelBtnLabel">Model</span></button>
+          <div id="modelMenu" class="dd-menu" hidden>
+            <input id="modelFilter" class="dd-filter" placeholder="Model ara…" autocomplete="off" />
+            <div id="modelList" class="dd-list"></div>
+          </div>
+        </div>
+        <button id="chatCollapseBtn" class="chart-icon-btn" title="Sohbet panelini gizle (tam grafik)"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><line x1="10" y1="5" x2="10" y2="19"/></svg></button>
+        <div id="tabsBar"></div>
+        <div class="drag-spacer"></div>
+        <div class="win-controls" id="winControls">
+          <button id="winMin" title="Simge durumunda küçült">&#x2500;&#xFE0E;</button>
+          <button id="winMax" title="Pencereyi büyüt/küçült">&#x25A1;&#xFE0E;</button>
+          <button id="winClose" class="win-close" title="Kapat">&#x2715;&#xFE0E;</button>
+        </div>
+      </header>
+
+      <div id="split">
+        <section id="chatCol">
+          <div id="chatScroll">
+            <div id="empty">
+              <img id="emptyLogo" src="../assets/app.png" alt="JEV" />
+              <div id="emptyHint">Hızlı · kararlı · tipli. Piyasada ne yapalım?</div>
+            </div>
+            <div id="msgs"></div>
+          </div>
+
+          <div id="composerWrap">
+            <div id="statusRow"><div id="toast" hidden></div></div>
+            <div id="quickRow">
+              <button class="quick-msg" data-msg="Grafiği analiz et: yön, önemli seviyeler ve uygun bir işlem planı öner.">Analiz et</button>
+              <button class="quick-msg" data-msg="Açık pozisyonları ve bekleyen emirleri kontrol et: SL/TP durumlarını ve genel riski değerlendir.">Pozisyonları kontrol et</button>
+            </div>
+            <div id="composer">
+              <textarea id="input" rows="1" placeholder="Bir şey sor… (Enter: gönder)"></textarea>
+              <button id="shotBtn" class="active" title="Grafik ekran görüntüsünü mesaja ekle (her mesajda canlı grafik)"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8h3l1.5-2h7L17 8h3a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z"/><circle cx="12" cy="13" r="3.5"/></svg></button>
+            <button id="chatSetBtn" title="Sohbet ayarları (bu sekme için): zamansal analiz + görsel"><svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg></button>
+              <button id="stopBtn" title="Durdur" hidden>&#9632;</button>
+              <button id="sendBtn" title="Gönder">&#x27A4;&#xFE0E;</button>
+            </div>
+          </div>
+        </section>
+
+        <div id="chartResizer" title="Sürükleyerek boyutlandır"></div>
+
+        <section id="chartCol">
+          <div id="chartHead">
+            <span id="mt5Dot" class="mt5-dot off" title="MT5 bağlantısı"></span>
+            <input id="chartSymbol" class="chart-sym" list="symList" value="EURUSD" spellcheck="false" autocomplete="off" title="Sembol (Enter: yükle)" />
+            <datalist id="symList"></datalist>
+            <div id="tfRow"></div>
+            <button id="zoomInBtn" class="chart-icon-btn" title="Yakınlaştır (zaman)"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="10.5" cy="10.5" r="6.5"/><line x1="15.5" y1="15.5" x2="21" y2="21"/><line x1="10.5" y1="7.5" x2="10.5" y2="13.5"/><line x1="7.5" y1="10.5" x2="13.5" y2="10.5"/></svg></button>
+            <button id="zoomOutBtn" class="chart-icon-btn" title="Uzaklaştır (zaman)"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="10.5" cy="10.5" r="6.5"/><line x1="15.5" y1="15.5" x2="21" y2="21"/><line x1="7.5" y1="10.5" x2="13.5" y2="10.5"/></svg></button>
+            <button id="playBtn" class="chart-icon-btn" title="Son muma git (canlı takip)"><svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M7 4.5l12 7.5-12 7.5z"/><rect x="19" y="4.5" width="2" height="15" rx="0.6"/></svg></button>
+            <button id="dualBtn" class="chart-icon-btn" title="İkili grafik modu: yan yana iki grafik (sağdaki kendi sembol/TF'sine sahip)"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><rect x="3" y="4" width="8" height="16" rx="1"/><rect x="13" y="4" width="8" height="16" rx="1"/></svg></button>
+            <button id="invertBtn" class="chart-icon-btn" title="Grafiği ters çevir: fiyat ekseni aşağı-yukarı döner (düşüş yukarı görünür)"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 21V3"/><path d="M4 7l4-4 4 4"/><path d="M16 3v18"/><path d="M12 17l4 4 4-4"/></svg></button>
+            <button id="avgBtn" class="chart-icon-btn active" title="AVG: açık işlemlerin hacim ağırlıklı ortalama giriş çizgisi (kırmızı) — long/short fark etmez, göster/gizle"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 12h18"/><circle cx="7.5" cy="6.5" r="2.2" fill="currentColor" stroke="none"/><circle cx="16.5" cy="17.5" r="2.2" fill="currentColor" stroke="none"/><path d="M7.5 8.7V12M16.5 12v3.3" opacity="0.6"/></svg></button>
+            <button id="newsBtn" class="chart-icon-btn" title="Günlük forex haberleri (her gün 08:30'da otomatik çekilir)"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h12a2 2 0 0 1 2 2v12H6a2 2 0 0 1-2-2z"/><path d="M18 8h1a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2h-1"/><path d="M8 9h6M8 12h6M8 15h3"/></svg></button>
+            <span id="pane2Ctrls" hidden>
+              <input id="chartSymbol2" class="chart-sym" list="symList" spellcheck="false" autocomplete="off" title="2. grafik sembolü (Enter: yükle)" />
+              <div id="tfRow2"></div>
+            </span>
+            <span class="drag-spacer"></span>
+            <span id="chartLast" class="chart-last">—</span>
+            <button id="posBoxBtn" class="chart-icon-btn" title="Açık işlemleri plan kutusu olarak göster/gizle (giriş · SL · TP)"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 12h18" stroke-dasharray="3 3"/></svg></button>
+            <button id="posTextBtn" class="chart-icon-btn active" title="Açık işlem yazılarını göster/gizle (giriş/SL/TP etiketleri)"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 7h14"/><path d="M5 12h9"/><path d="M5 17h6"/></svg></button>
+            <button id="levelsBtn" class="chart-icon-btn active" title="Açık işlem seviyelerini (SL/TP) göster/gizle"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 7h18"/><path d="M3 12h18"/><path d="M3 17h18"/></svg></button>
+            <button id="ordLevelsBtn" class="chart-icon-btn active" title="Bekleyen işlem seviyelerini (limit/stop) göster/gizle"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8h18"/><path d="M3 16h18" stroke-dasharray="4 3"/></svg></button>
+            <button id="alertLevelsBtn" class="chart-icon-btn active" title="Alarm seviyelerini göster/gizle"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 8-3 8h18s-3-1-3-8"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg></button>
+            <button id="volBtn" class="chart-icon-btn" title="Hacmi göster/gizle"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 20V12"/><path d="M9 20V6"/><path d="M14 20V10"/><path d="M19 20V4"/></svg></button>
+            <button id="chartClear" class="chart-icon-btn" title="Bu semboldeki tüm çizimleri temizle"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"/><path d="M6 6l1 14a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-14"/><path d="M10 11v6"/><path d="M14 11v6"/></svg></button>
+            <button id="chartColorBtn" class="chart-icon-btn" title="Grafik renkleri"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="13.5" cy="6.5" r="2.5"/><circle cx="17.5" cy="10.5" r="2.5"/><circle cx="8.5" cy="7.5" r="2.5"/><circle cx="6.5" cy="12.5" r="2.5"/><path d="M12 22a10 10 0 1 1 10-10c0 2-1.5 3-3 3h-2a2 2 0 0 0-1 4v1a2 2 0 0 1-2 2z"/></svg></button>
+            <button id="chartRefresh" class="chart-icon-btn" title="Yenile">&#x27F3;</button>
+            <button id="chartListBtn" class="chart-icon-btn" title="MT5 listesi (pozisyonlar / bekleyen / kapananlar)"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg></button>
+          </div>
+          <div id="chartMid">
+            <div id="chartWrap">
+              <canvas id="chart"></canvas>
+            <div id="toolbox">
+              <div id="toolboxGrip" title="Taşımak için sürükle">&#x22EE;</div>
+              <button data-tool="cursor" class="active" title="İmleç / gezinme"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 3l14 8-6 1.5L10 19z"/></svg></button>
+              <button data-tool="hline" title="Yatay çizgi"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="12" x2="21" y2="12"/><circle cx="12" cy="12" r="2.2" fill="currentColor" stroke="none"/></svg></button>
+              <button data-tool="hray" title="Yatay ışın (konulduğu yerden sağa uzar)"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="4" cy="12" r="2.2" fill="currentColor" stroke="none"/><line x1="4" y1="12" x2="19" y2="12"/><path d="M19 9l3 3-3 3z" fill="currentColor" stroke="none"/></svg></button>
+              <button data-tool="seg" title="Kısa çizgi (sürükle ya da tıkla-tıkla · Ctrl: yatay paralel · Shift: son çizgiye paralel)"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="6" y1="16" x2="18" y2="8"/><circle cx="6" cy="16" r="2" fill="currentColor" stroke="none"/><circle cx="18" cy="8" r="2" fill="currentColor" stroke="none"/></svg></button>
+              <button data-tool="fibo" title="Fibonacci düzeltme"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="4" y1="6" x2="20" y2="6"/><line x1="4" y1="11" x2="20" y2="11" opacity="0.75"/><line x1="4" y1="15.5" x2="20" y2="15.5" opacity="0.55"/><line x1="4" y1="20" x2="20" y2="20" opacity="0.4"/></svg></button>
+              <button data-tool="rect" title="Kutu (dikdörtgen alan)"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><rect x="4" y="5" width="16" height="14" rx="1.5"/><path d="M4 19L20 5" opacity="0.35"/></svg></button>
+              <button data-tool="zigzag" title="Zigzag (tıkla-tıkla · noktalar mum yüksek/düşüğüne yapışır · bitir: Enter / sağ tık)"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 18l4.5-9 4 6L16 6.5l5 3.5"/><circle cx="3" cy="18" r="1.6" fill="currentColor" stroke="none"/><circle cx="16" cy="6.5" r="1.6" fill="currentColor" stroke="none"/></svg></button>
+              <button data-tool="channel" title="Paralel kanal (3 tık: ana çizgi 2 nokta + paralelin genişliği)"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 16.5L13 5.5"/><path d="M8 19.5L18 8.5"/><path d="M3 16.5l5 3" opacity="0.45"/><path d="M13 5.5l5 3" opacity="0.45"/></svg></button>
+              <button data-tool="range" title="Range (sürükle ya da tıkla-tıkla: başlangıç→bitiş arası üst/alt yatay bant)"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="8" x2="19" y2="8"/><line x1="5" y1="16" x2="19" y2="16"/><circle cx="5" cy="8" r="1.7" fill="currentColor" stroke="none"/><circle cx="19" cy="16" r="1.7" fill="currentColor" stroke="none"/></svg></button>
+              <button data-tool="free" title="Serbest çizim"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21l3.5-.9L20 6.6a2 2 0 0 0-2.8-2.8L3.7 17.3z"/><path d="M14.5 5.5l4 4"/></svg></button>
+              <button data-tool="text" title="Metin"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 5h14"/><path d="M12 5v14"/></svg></button>
+              <button data-action="emoji" title="Emoji ekle (panelden seç, grafiğe tıkla)"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M8.5 14.5a4.5 4.5 0 0 0 7 0"/><line x1="9" y1="9.5" x2="9.01" y2="9.5"/><line x1="15" y1="9.5" x2="15.01" y2="9.5"/></svg></button>
+              <button data-tool="alert" title="Alarm kur (tıkladığın fiyata)"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 8-3 8h18s-3-1-3-8"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg></button>
+              <button data-action="long" class="plan-long" title="Long planı: giriş + SL/TP (2R) — çizgileri sürükleyerek ayarla"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="M5 12l7-7 7 7"/></svg></button>
+              <button data-action="short" class="plan-short" title="Short planı: giriş + SL/TP (2R) — çizgileri sürükleyerek ayarla"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"/><path d="M19 12l-7 7-7-7"/></svg></button>
+              <button data-action="settings" class="plan-cfg" title="Plan ayarları: RR + risk % + max spread + otomasyon"><svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg></button>
+              <button data-action="erase" class="erase-btn" title="Seçili çizim / plan / alarmı sil (Delete)"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"/><path d="M6 6l1 14a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-14"/><path d="M10 11v6"/><path d="M14 11v6"/></svg></button>
+            </div>
+            <div id="chartMsg"></div>
+          </div>
+          <div id="chartWrap2" hidden>
+            <div id="chart2Body"><canvas id="chart2"></canvas></div>
+          </div>
+          <div id="chartList">
+            <div id="clHead">
+              <span id="clHeadTitle">MT5 LİSTESİ</span>
+              <span class="drag-spacer"></span>
+              <button id="clRefresh" class="chart-icon-btn" title="Yenile">&#x27F3;</button>
+              <button id="clClose" class="chart-icon-btn" title="Kapat">&#x2715;&#xFE0E;</button>
+            </div>
+            <div id="clBody">
+              <div id="clSymbols"></div>
+            </div>
+          </div>
+        </div>
+        <div id="posPanel">
+            <div id="posResizer" title="Sürükleyerek yüksekliği ayarla (çift tık: sıfırla)"></div>
+            <div id="posHead">
+              <span id="posTabPos" class="pos-tab active" title="Açık pozisyonlar">POZİSYONLAR</span>
+              <span id="posCount" class="pos-count"></span>
+              <span id="posTabOrd" class="pos-tab" title="Bekleyen limit/stop emirleri">BEKLEYEN İŞLEMLER</span>
+              <span id="ordCount" class="pos-count"></span>
+              <span id="posTabHist" class="pos-tab" title="Bugün kapanan işlemler">KAPANANLAR</span>
+              <span id="histCount" class="pos-count"></span>
+              <span id="posTabTerm" class="pos-tab" title="Arka plan işlem günlüğü: trailing, SL/TP, girişler, otomasyon">TERMİNAL</span>
+              <span id="posTabJev" class="pos-tab" title="Jev'in yaptıkları: istekler, yanıtlar, grafik komutları, alarm analizleri">JEV</span>
+              <button id="jevSetBtn" class="chart-icon-btn" title="Jev ayarları (kontrol sıklığı, alarm analizi)"><svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg></button>
+              <span class="drag-spacer"></span>
+              <button id="posCloseAll" class="pos-act mt5-act" title="Tüm açık pozisyonları anında kapat">Close All <span id="posCloseAllVal" class="val"></span></button>
+              <button id="posPct25" class="pos-act mt5-act" title="Tüm açık pozisyonların %25'ini kapat">%25 Close <span id="posPct25Val" class="val"></span></button>
+              <button id="posPct50" class="pos-act mt5-act" title="Tüm açık pozisyonların %50'sini kapat">%50 Close <span id="posPct50Val" class="val"></span></button>
+              <button id="posBeAll" class="pos-act mt5-act" title="Tüm açık pozisyonlarda SL'i başabaş noktasına çek (komisyon + swap + bugünkü realize dahil)">All BE <span id="posBeAllVal" class="val"></span></button>
+              <button id="posSeAll" class="pos-act mt5-act" title="Tüm açık pozisyonlarda SL'i giriş fiyatına çek">All SE <span id="posSeAllVal" class="val"></span></button>
+              <button id="posCloseProfit" class="pos-act gain mt5-act" title="Kârda olan pozisyonları anında kapat">Close Profit <span id="posCloseProfitVal" class="val"></span></button>
+              <button id="posCloseLoss" class="pos-act loss mt5-act" title="Zararda olan pozisyonları anında kapat">Close Loss <span id="posCloseLossVal" class="val"></span></button>
+              <button id="ordCancelAll" class="pos-act mt5-act" style="display:none" title="Tüm bekleyen emirleri iptal et">Tümünü İptal <span id="ordCancelAllVal" class="val"></span></button>
+              <button id="posRefresh" class="chart-icon-btn" title="Yenile">&#x27F3;</button>
+              <button id="posMin" class="chart-icon-btn" title="Simge durumuna küçült"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg></button>
+            </div>
+            <div id="posScroll">
+              <table id="posTable">
+                <thead>
+                  <tr>
+                    <th data-k="sym">Sembol</th><th data-k="ticket" style="display:none">Fiş</th><th data-k="time">Zaman</th><th data-k="type">Tür</th><th data-k="vol">Hacim</th>
+                    <th data-k="price">Giriş</th><th data-k="sl">S/L</th><th data-k="tp">T/P</th><th data-k="last">Fiyat</th><th data-k="cprice" style="display:none">Fiyat</th><th data-k="profit">Kâr</th><th data-k="be">Başabaş</th><th data-k="act">İşlem</th>
+                  </tr>
+                </thead>
+                <tbody id="posBody"></tbody>
+              </table>
+              <div id="posEmpty">Açık pozisyon yok</div>
+              <div id="posSummary" hidden></div>
+              <div id="termBody" hidden></div>
+              <div id="jevBody" hidden></div>
+            </div>
+          </div>
+          <div id="chartFoot">
+            <span id="footCountdown" class="foot-count" title="Mum kapanışına kalan süre"></span>
+            <span id="footBalance">Bakiye: —</span>
+            <span id="footEquity">Varlık: —</span>
+            <span id="footMargin">Teminat: —</span>
+            <span id="footFree">Serbest: —</span>
+            <span id="footLevel">Seviye: —</span>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+
+  <div id="alertToasts"></div>
+
+  <div id="alertsOverlay" hidden>
+    <div id="alertsDialog">
+      <div id="alertsHead">
+        <span id="alertsTitle">ALARM KUR</span>
+        <button id="alertsClose" class="chart-icon-btn" title="Kapat">&#x2715;&#xFE0E;</button>
+      </div>
+      <div class="color-row"><span>Sembol</span><span id="alertSym" class="range-val"></span></div>
+      <div class="color-row"><span>Fiyat</span><input id="alertPrice" class="inp" style="width:130px" inputmode="decimal" autocomplete="off" placeholder="örn. 1.14700" /></div>
+      <div class="color-row"><span>Koşul</span><select id="alertCond">
+        <option value="above">Üstüne çıkınca</option>
+        <option value="below">Altına inince</option>
+        <option value="cross">Kesişince (iki yön)</option>
+      </select></div>
+      <div class="color-row"><span>Tekrar</span><select id="alertRepeat">
+        <option value="0">Tek (çalınca silinir)</option>
+        <option value="1">Tekrarlı (her mumda 1 kez)</option>
+      </select></div>
+      <div class="color-row"><span>Ses</span><span style="display:flex;gap:6px;align-items:center"><select id="alertSoundSel"></select><button id="alertSoundTest" class="btn ghost" style="padding:3px 9px" title="Seçili sesi dinle">Dinle</button></span></div>
+      <div class="color-row"><span>Not</span><input id="alertNote" class="inp" style="width:150px" maxlength="60" autocomplete="off" placeholder="(opsiyonel)" /></div>
+      <div style="display:flex;gap:8px">
+        <button id="alertSave" class="btn" style="flex:1">Alarm kur</button>
+        <button id="alertDelete" class="btn ghost" hidden>Sil</button>
+        <button id="alertCancel" class="btn ghost">Vazgeç</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="alertSetOverlay" hidden>
+    <div id="alertSetDialog">
+      <div id="alertSetHead">
+        <span>ALARM AYARLARI</span>
+        <button id="alertSetClose" class="chart-icon-btn" title="Kapat">&#x2715;&#xFE0E;</button>
+      </div>
+      <div class="color-row"><span>Ses</span><select id="asSound"></select></div>
+      <div class="color-row"><span>Süre (çalma sayısı)</span><select id="asRepeat">
+        <option value="1">1 kez</option>
+        <option value="2">2 kez</option>
+        <option value="3">3 kez</option>
+        <option value="5">5 kez</option>
+        <option value="10">10 kez</option>
+      </select></div>
+      <div class="range-val">Bu ayarlar yeni kurulan alarmlar için geçerli olur. Alarma özel ses, alarm penceresinden seçilir.</div>
+      <div style="display:flex;gap:8px">
+        <button id="asTest" class="btn" style="flex:1">Dinle</button>
+        <button id="asSave" class="btn ghost">Kaydet</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="jevSetOverlay" hidden>
+    <div id="jevSetDialog">
+      <div id="jevSetHead">
+        <span>JEV AYARLARI</span>
+        <button id="jevSetClose" class="chart-icon-btn" title="Kapat">&#x2715;&#xFE0E;</button>
+      </div>
+      <div class="color-row"><span>Açık pozisyon/emir kontrolü</span><select id="jsPosPoll">
+        <option value="1">her 1 sn</option>
+        <option value="2">her 2 sn</option>
+        <option value="3">her 3 sn</option>
+        <option value="5">her 5 sn</option>
+        <option value="10">her 10 sn</option>
+        <option value="15">her 15 sn</option>
+        <option value="30">her 30 sn</option>
+        <option value="60">her 60 sn</option>
+      </select></div>
+      <div class="color-row"><span>Jev (TypeSafe) analiz sıklığı</span><span style="display:flex;gap:6px;align-items:center"><select id="jsJevAnalyze">
+        <option value="0">Kapalı</option>
+        <option value="1">her 1 dk</option>
+        <option value="2">her 2 dk</option>
+        <option value="5">her 5 dk</option>
+        <option value="10">her 10 dk</option>
+        <option value="15">her 15 dk</option>
+        <option value="30">her 30 dk</option>
+        <option value="60">her 60 dk</option>
+      </select><input id="jsJevMin" class="inp" style="width:70px" inputmode="numeric" autocomplete="off" placeholder="özel dk" title="Elle dakika gir (kapalıyı ezer)" /></span></div>
+      <div class="color-row"><span>Alarm tetiklenince Jev (TypeSafe) analiz etsin</span><input type="checkbox" id="jsJevAlert" /></div>
+      <div class="color-row"><span>Gelişim turu (yeni kapanan işlem)</span><select id="jsEvolveEvery">
+        <option value="0">Kapalı</option>
+        <option value="3">her 3 işlemde</option>
+        <option value="5">her 5 işlemde</option>
+        <option value="10">her 10 işlemde</option>
+        <option value="20">her 20 işlemde</option>
+      </select></div>
+      <div class="range-val" style="margin-top:-4px">Gelişim turunda sohbet LLM'i gerçekleşen sonuçları ve p kalibrasyonunu değerlendirir; pozitif beklenen değerli yapıları güçlendirip skill/tool/kod/ayar güncellemesi yapabilir (kesin öğrenme değil, EV odaklı iyileştirme).</div>
+      <div class="range-val">Jev = TypeSafe (jev-latest) tipli analiz: her açık pozisyon turunda SL/TP güncelleme ve anlık kapatma kararı üretir; ayrıca seçilen sıklıkta yön/uygunluk analizi yapıp yüksek güvenle plan kutusu kurar. Kapanan işlemler sabit 15 sn'de yenilenir. Zamansal analiz (sohbet LLM) Ayarlar &gt; Chat Ayarları'ndan yönetilir.</div>
+      <div style="display:flex;gap:8px">
+        <button id="jsSave" class="btn" style="flex:1">Kaydet</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="newsOverlay" hidden>
+    <div id="newsDialog">
+      <div id="newsHead">
+        <span>GÜNLÜK FOREX HABERLERİ</span>
+        <button id="newsRefresh" class="chart-icon-btn" title="Şimdi yenile (kaynaklardan hemen çek)">&#x27F3;</button>
+        <button id="newsClose" class="chart-icon-btn" title="Kapat">&#x2715;&#xFE0E;</button>
+      </div>
+      <div id="newsMeta" class="range-val"></div>
+      <div id="newsList"></div>
+    </div>
+  </div>
+
+  <div id="chatSetOverlay" hidden>
+    <div id="chatSetDialog">
+      <div id="chatSetHead">
+        <span id="csTitle">SOHBET AYARLARI</span>
+        <button id="chatSetClose" class="chart-icon-btn" title="Kapat">&#x2715;&#xFE0E;</button>
+      </div>
+      <div id="chatSetBody">
+      <div class="color-row"><span>Zamansal analiz (LLM)</span><span style="display:flex;gap:6px;align-items:center"><select id="csAutoAnalyze">
+        <option value="0">Kapalı</option>
+        <option value="1">her 1 dk</option>
+        <option value="2">her 2 dk</option>
+        <option value="5">her 5 dk</option>
+        <option value="10">her 10 dk</option>
+        <option value="15">her 15 dk</option>
+        <option value="30">her 30 dk</option>
+        <option value="60">her 60 dk</option>
+        <option value="-1">özel…</option>
+      </select><input id="csAutoMin" class="inp" style="width:70px" inputmode="decimal" autocomplete="off" placeholder="özel" title="Elle dakika gir (örn. 2.5)" /></span></div>
+      <div class="color-row"><span>Her mesaja grafik görüntüsü ekle</span><input type="checkbox" id="csShot" /></div>
+      <div class="color-row"><span title="Görünür grafiği değiştirmeden üst/giriş/alt zaman dilimlerinin görüntülerini de arka planda hazırlayıp mesaja ekler">Çoklu TF görüntüsü (arka plan)</span><input type="checkbox" id="csMultiTf" /></div>
+      <div class="color-row"><span>İşlem açılış/kapanışında LLM analiz etsin</span><input type="checkbox" id="csTrade" /></div>
+      <div class="color-row"><span title="LLM yalnız bu saat aralığında yeni emir açabilir">İşlem saatleri (yeni emir)</span><span style="display:flex;gap:6px;align-items:center"><input type="time" id="csTradeStart" class="inp" style="width:96px" /><span>—</span><input type="time" id="csTradeEnd" class="inp" style="width:96px" /></span></div>
+
+      <div class="color-sec">ANALİZ ZAMAN DİLİMİ</div>
+      <div class="color-row"><span title="Otomatik: uygulama volatilite ve trendi ölçüp uygun üst+giriş zaman dilimini kendisi seçer">Mod</span><select id="csTfMode">
+        <option value="auto">Otomatik — rejime göre kendisi seçsin</option>
+        <option value="fixed">Elle seç — aşağıdan belirle</option>
+      </select></div>
+      <div class="color-row"><span title="Üst zaman dilimi: ana yön/trend ve kilit seviyeler">Üst TF (yön / trend)</span><select id="csTfHtf"></select></div>
+      <div class="color-row"><span title="Giriş zaman dilimi: tetik, retest, kırılım zamanlaması ve çizim ölçeği">Giriş TF (zamanlama)</span><select id="csTfEtf"></select></div>
+      <div class="color-row"><span title="İkili grafik modunda ikinci grafik seçilen üst TF'e geçer (sol: giriş, sağ: üst)">İkili grafik: ikinci pane = üst TF</span><input type="checkbox" id="csTfDual" /></div>
+      <div class="sub" id="csTfWhy" style="margin:2px 0 6px">—</div>
+
+      <div class="color-sec">İŞLEM TARZI</div>
+      <div class="color-row"><span title="Varsayılan tarz swing. Scalp yalnız 'scalp':true ile işaretlenen emirlerde ve seçilen izin ölçüsünde yapılır; scalp riski %0,5 ile sınırlıdır.">Scalp izni</span><select id="csScalp">
+        <option value="off">Kapalı — yalnız swing</option>
+        <option value="some">Ara sıra — günde en fazla 1-2 scalp</option>
+        <option value="on">Açık — fırsat bulunca serbest</option>
+      </select></div>
+
+      <div class="color-sec">POZİSYON KORUMA (KOD ZORUNLU)</div>
+      <div class="color-row"><span title="Kapalıyken risk kuralları yalnız isteme bağlı kalır">Koruma katmanı açık</span><input type="checkbox" id="csPgOn" /></div>
+      <div class="color-row"><span title="Kapalıyken yapay zeka zarardaki pozisyonu hiçbir koşulda kapatamaz (SL devretsin)">Zararda kapatmaya izin ver</span><input type="checkbox" id="csPgLossClose" /></div>
+      <div class="color-row"><span title="Zararda kapatma izni varsa bu R'nin ötesindeki zararda uygulanabilir">Zararda kapatma eşiği (R)</span><input id="csPgLossR" class="inp" style="width:70px" inputmode="decimal" placeholder="1" /></div>
+      <div class="color-row"><span title="SL'nin fiyata bu kadar yaklaşması engellenir (daha küçük değer = daha gevşek koruma)">SL en yakın mesafe (R)</span><input id="csPgTrailR" class="inp" style="width:70px" inputmode="decimal" placeholder="0.25" /></div>
+      <div class="color-row"><span title="Bu R'nin altındaki kârda kısmi kâr alma yapılmaz">Kısmi kâr alma asgarî R</span><input id="csPgProfitR" class="inp" style="width:70px" inputmode="decimal" placeholder="0.3" /></div>
+
+      <div class="color-sec">GÜNLÜK KORUMA</div>
+      <div class="color-row"><span title="Günlük zarar limiti ve seri kayıp sayısı dolunca yeni işlem açılmaz (pozisyon yönetimi serbest kalır)">Günlük koruma açık</span><input type="checkbox" id="csDgOn" /></div>
+      <div class="color-row"><span>Günlük zarar limiti (R)</span><input id="csDgMaxR" class="inp" style="width:70px" inputmode="decimal" placeholder="3" /></div>
+      <div class="color-row"><span>Günlük zarar limiti (%)</span><input id="csDgMaxPct" class="inp" style="width:70px" inputmode="decimal" placeholder="6" /></div>
+      <div class="color-row"><span>Üst üste kayıp sayısı</span><input id="csDgConsec" class="inp" style="width:70px" inputmode="decimal" placeholder="4" /></div>
+
+      <div class="color-sec">PERFORMANS HAFIZASI (KALICI)</div>
+      <div class="sub" id="csMemBox" style="text-align:left;white-space:pre-wrap">Yükleniyor…</div>
+      <button id="csMemRefresh" class="btn ghost" style="width:100%">Hafızayı yenile</button>
+      <button id="csMemClear" class="btn ghost danger" style="width:100%">Hafızayı sıfırla</button>
+
+      <div class="color-sec">SKILL'LER (BU SEKMENİN SOHBETİNE BAĞLI)</div>
+      <div id="csSkills" class="skill-picks"></div>
+      <button id="csSkillsManage" class="btn ghost" style="width:100%">Skill'leri yönet…</button>
+      <div id="csSaveRow">
+        <button id="csSave" class="btn" style="flex:1">Kaydet</button>
+      </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="slashOverlay" hidden>
+    <div id="slashDialog">
+      <div id="slashHead">
+        <span>SLASH KOMUTLARI</span>
+        <button id="slashClose" class="chart-icon-btn" title="Kapat">&#x2715;&#xFE0E;</button>
+      </div>
+      <div class="sub" style="text-align:left">Sohbet kutusuna yazıp Enter'a bas:</div>
+      <div class="slash-row"><code>/help</code><span>Bu komut listesini gösterir</span></div>
+      <div class="slash-row"><code>/clear</code><span>Tüm sohbet geçmişini siler (tüm sekmeler/borsalar)</span></div>
+      <div class="slash-row"><code>/new</code><span>Bu sekmede yeni sohbet başlatır</span></div>
+      <div class="slash-row"><code>/stop</code><span>Süren LLM isteğini durdurur</span></div>
+    </div>
+  </div>
+
+  <div id="emojiOverlay" hidden>
+    <div id="emojiDialog">
+      <div id="emojiHead">
+        <span>EMOJİ SEÇ</span>
+        <button id="emojiClose" class="chart-icon-btn" title="Kapat">&#x2715;&#xFE0E;</button>
+      </div>
+      <div id="emojiGrid"></div>
+      <div class="range-val">Emoji seç → grafikte istediğin yere tıkla</div>
+    </div>
+  </div>
+
+  <div id="orderOverlay" hidden>
+    <div id="orderDialog">
+      <div id="orderHead">
+        <span id="orderTitle">İŞLEM AÇ</span>
+        <button id="orderClose" class="chart-icon-btn" title="Kapat">&#x2715;&#xFE0E;</button>
+      </div>
+      <div class="color-row"><span>Sembol</span><span id="orderSym" class="range-val"></span></div>
+      <div class="color-row"><span>Yön</span><span id="orderSide" class="range-val"></span></div>
+      <div class="color-row"><span>Hacim (lot)</span><input id="orderVol" class="inp" style="width:110px" inputmode="decimal" autocomplete="off" /></div>
+      <div class="color-row"><span>Giriş</span><span id="orderEntry" class="range-val"></span></div>
+      <div class="color-row"><span>SL</span><span id="orderSl" class="range-val"></span></div>
+      <div class="color-row"><span>TP</span><span id="orderTp" class="range-val"></span></div>
+      <div id="orderMsg"></div>
+      <div style="display:flex;gap:8px">
+        <button id="orderOk" class="btn mt5-act" style="flex:1">İşlem Aç</button>
+        <button id="orderCancel" class="btn ghost">Vazgeç</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="rrOverlay" hidden>
+    <div id="rrDialog">
+      <div id="rrHead">
+        <span>PLAN AYARLARI (RR / RİSK / SPREAD)</span>
+        <button id="rrClose" class="chart-icon-btn" title="Kapat">&#x2715;&#xFE0E;</button>
+      </div>
+      <div class="color-row"><span>Sabit RR (TP = SL mesafesi × RR)</span></div>
+      <div class="color-row"><span>RR değeri</span><input id="rrInput" class="inp" style="width:90px" inputmode="decimal" autocomplete="off" /></div>
+      <div class="color-row"><span>Serbest (kilitsiz)</span><input type="checkbox" id="rrFree" /></div>
+      <div class="color-sec">OTOMATİK LOT</div>
+      <div class="color-row"><span>Risk %</span><input id="rrRisk" class="inp" style="width:90px" inputmode="decimal" autocomplete="off" /></div>
+      <div class="color-sec" id="rrLevSec">KALDIRAÇ (KRİPTO)</div>
+      <div class="color-row" id="rrLevRow"><span>Kaldıraç (x)</span><span style="display:flex;gap:6px;align-items:center"><input id="rrLev" class="inp" style="width:70px" inputmode="decimal" autocomplete="off" placeholder="oto" /><button id="rrLevMax" class="btn ghost" style="padding:2px 8px" title="Sembolün maksimum kaldıracı">MAX</button></span></div>
+      <div class="range-val" id="rrLevHint" style="margin-top:-2px">Sembole özel kaydedilir. Boş = otomatik: teminat yetmezse sembol maksimumuna kadar yükseltilir.</div>
+      <div class="color-sec">SPREAD FİLTRESİ</div>
+      <div class="color-row"><span>Max spread (puan)</span><input id="rrMaxSpread" class="inp" style="width:90px" inputmode="decimal" autocomplete="off" /></div>
+      <div class="range-val" style="margin-top:-2px">0 = sınırsız. Spread bu değerin üzerindeyse market işlem açılmaz. Sekmeye özel kaydedilir.</div>
+      <div class="color-sec">BEKLENEN DEĞER (EV)</div>
+      <div class="color-row"><span>Min EV (R)</span><input id="rrEvMin" class="inp" style="width:90px" inputmode="decimal" autocomplete="off" /></div>
+      <div class="color-row"><span>Varsayılan kazanma olasılığı %</span><input id="rrEvProb" class="inp" style="width:90px" inputmode="decimal" autocomplete="off" /></div>
+      <div class="color-row" id="rrPlanPRow" hidden><span>Bu planın olasılığı %</span><input id="rrPlanP" class="inp" style="width:90px" inputmode="decimal" autocomplete="off" placeholder="varsayılan" /></div>
+      <div class="color-row"><span>Min EV altında otomatik işlem açılmasın</span><input type="checkbox" id="rrEvEnforce" /></div>
+      <div class="range-val" style="margin-top:-2px">EV = p × RR − (1 − p). LLM emirlerinde p komutta gelir, TypeSafe planlarında yön güveni kullanılır, manuel planlarda varsayılan olasılık geçerlidir. Min EV altındaki otomatik emirler reddedilir; manuel girişlerde uyarı gösterilir. 0 = yalnız pozitif EV.</div>
+      <div class="color-sec">OTOMASYON (SEKMEYE ÖZEL)</div>
+      <div class="color-row"><span>Otomasyon açık</span><input type="checkbox" id="autoOn" /></div>
+      <div class="color-row"><span>Takip mesafesi (R)</span><input id="autoTrailDistR" class="inp" style="width:90px" inputmode="decimal" autocomplete="off" /></div>
+      <div class="color-row"><span>Takip adımı (R)</span><input id="autoTrailStepR" class="inp" style="width:90px" inputmode="decimal" autocomplete="off" /></div>
+      <div class="color-row"><span>Trailing başlangıç (R)</span><input id="autoTrailStartR" class="inp" style="width:90px" inputmode="decimal" autocomplete="off" title="Kâr bu R'ye ulaşınca trailing başlar (yalnız kârda çalışır). Boşsa 0.5R kullanılır." /></div>
+      <div class="color-row"><span>Kâr kilidi (R)</span><input id="autoTrailLockR" class="inp" style="width:90px" inputmode="decimal" autocomplete="off" title="Trailing başladığında SL en az bu kadar kâra çekilir (ör. 0.25 = 0.25R kâr kilidi). Boşsa başlangıcın yarısı kullanılır." /></div>
+      <div class="color-row"><span>Kısmi TP1 (R / %)</span><span style="display:flex;gap:6px"><input id="autoTp1R" class="inp" style="width:62px" inputmode="decimal" autocomplete="off" /><input id="autoTp1Pct" class="inp" style="width:62px" inputmode="decimal" autocomplete="off" /></span></div>
+      <div class="color-row"><span>Kısmi TP2 (R / %)</span><span style="display:flex;gap:6px"><input id="autoTp2R" class="inp" style="width:62px" inputmode="decimal" autocomplete="off" /><input id="autoTp2Pct" class="inp" style="width:62px" inputmode="decimal" autocomplete="off" /></span></div>
+      <div class="color-row"><span>TP1 sonrası SL başabaş</span><input type="checkbox" id="autoBeTp1" /></div>
+      <div class="range-val" style="margin-top:-2px">R = girişe göre ilk SL mesafesi. Açık pozisyonlara 3 sn'de bir uygulanır. Grafikte "OTO" yazısı aktif olduğunu gösterir.</div>
+      <div class="color-sec">JEV OTOMASYONU (GENEL)</div>
+      <div class="color-row"><span>Alarm tetiklenince Jev analiz etsin</span><input type="checkbox" id="jevAlertOn" /></div>
+      <div class="range-val" style="margin-top:-2px">Herhangi bir alarm (senin ya da Jev'in kurduğu) tetiklendiğinde sohbete otomatik bildirim gider; Jev analiz edip kararını (plan/çizim/alarm) üretir. En fazla 30 sn'de bir çalışır.</div>
+      <div id="rrInfo" class="range-val"></div>
+      <div style="display:flex;gap:8px">
+        <button id="rrOk" class="btn" style="flex:1">Uygula</button>
+        <button id="rrCancel" class="btn ghost">Vazgeç</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="textOverlay" hidden>
+    <div id="textDialog">
+      <div id="textHead">
+        <span>METİN EKLE</span>
+        <button id="textClose" class="chart-icon-btn" title="Kapat">&#x2715;&#xFE0E;</button>
+      </div>
+      <input id="textInp" class="inp" placeholder="Metni yaz…" maxlength="120" autocomplete="off" />
+      <div id="textLabelBottomRow" hidden><input id="textLabelBottom" class="inp" placeholder="Alt yazı (alt çizgiye yazılır)…" maxlength="120" autocomplete="off" /></div>
+      <div id="textAlignRow" hidden>
+        <span>Hizalama</span>
+        <button type="button" data-align="left" title="Sola hizala">Sol</button>
+        <button type="button" data-align="center" title="Ortala">Orta</button>
+        <button type="button" data-align="right" title="Sağa hizala">Sağ</button>
+      </div>
+      <div class="color-row" id="textSizeRow" hidden><span>Boyut <span id="textSizeVal" class="range-val"></span></span><input type="range" id="textSize" min="9" max="48" step="1" /></div>
+      <div class="color-row" id="textColorRow" hidden><span>Metin rengi</span><input type="color" id="textColor" /></div>
+      <div class="color-row" id="textDrawColorRow" hidden><span>Çizim rengi</span><input type="color" id="textDrawColor" /></div>
+      <div class="color-row" id="textFiboRow" hidden><span>Fibonacci 0 ↔ 100</span><button id="textFiboSwap" class="btn ghost" style="padding:3px 10px">Yer değiştir</button></div>
+      <div class="color-row" id="textPdRow" hidden><span>PD Array (orta EQ %50)</span><button id="textPdBtn" class="btn ghost" style="padding:3px 10px">PD Array Ekle</button></div>
+      <div class="color-row" id="textVAlignRow" hidden><span>Dikey</span><select id="textVAlign"><option value="top">Üst</option><option value="middle">Orta</option><option value="bottom">Alt</option></select></div>
+      <div id="textAlarmBox" hidden>
+        <div class="color-sec">ALARM</div>
+        <div class="color-row"><span>Alarm kur</span><input type="checkbox" id="textAlarmOn" /></div>
+        <div class="color-row" id="textAlarmEdgeRow" hidden><span>Kenar</span><select id="textAlarmEdge"><option value="top">Üst kenar</option><option value="bottom">Alt kenar</option></select></div>
+        <div class="color-row"><span>Fiyat</span><span id="textAlarmPrice" class="range-val"></span></div>
+        <div class="color-row"><span>Koşul</span><select id="textAlarmCond"><option value="above">Üstüne çıkınca</option><option value="below">Altına inince</option><option value="cross">Kesişince (iki yön)</option></select></div>
+        <div class="color-row"><span>Tekrar</span><select id="textAlarmRepeat">
+          <option value="0">Tek (çalınca silinir)</option>
+          <option value="1">Tekrarlı (her mumda 1 kez)</option>
+        </select></div>
+        <div class="color-row"><span>Ses</span><select id="textAlarmSound"></select></div>
+      </div>
+      <div style="display:flex;gap:8px">
+        <button id="textOk" class="btn" style="flex:1">Ekle</button>
+        <button id="textDel" class="btn ghost" hidden>Metni sil</button>
+        <button id="textCancel" class="btn ghost">Vazgeç</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="colorOverlay" hidden>
+    <div id="colorDialog">
+      <div id="colorHead">
+        <span>GRAFİK RENKLERİ</span>
+        <button id="colorClose" class="chart-icon-btn" title="Kapat">&#x2715;&#xFE0E;</button>
+      </div>
+      <div id="colorCols">
+        <div class="color-col">
+          <div class="color-row"><span>Yükseliş mumu</span><input type="color" id="colUp" /></div>
+          <div class="color-row"><span>Düşüş mumu</span><input type="color" id="colDown" /></div>
+          <div class="color-row"><span>Arkaplan</span><input type="color" id="colBg" /></div>
+          <div class="color-row"><span>Arkaplan kullan</span><input type="checkbox" id="colBgOn" /></div>
+          <div class="color-sec">FİYAT ÇİZGİSİ (SON FİYAT)</div>
+          <div class="color-row"><span>Mum yönüne göre renk</span><input type="checkbox" id="colLineAuto" /></div>
+          <div class="color-row"><span>Renk</span><input type="color" id="colLine" /></div>
+          <div class="color-row"><span>Opaklık <span id="colLineAlphaVal" class="range-val"></span></span><input type="range" id="colLineAlpha" min="0" max="100" step="5" /></div>
+          <div class="color-sec">CROSSHAIR (ARTI İMLECİ)</div>
+          <div class="color-row"><span>Renk</span><input type="color" id="colCross" /></div>
+          <div class="color-row"><span>Opaklık <span id="colCrossAlphaVal" class="range-val"></span></span><input type="range" id="colCrossAlpha" min="0" max="100" step="5" /></div>
+          <div class="color-sec">İŞLEM PLANI (LONG/SHORT KUTUSU)</div>
+          <div class="color-row"><span>SL rengi</span><input type="color" id="colPlanSl" /></div>
+          <div class="color-row"><span>TP rengi</span><input type="color" id="colPlanTp" /></div>
+          <div class="color-row"><span>Metin rengi</span><input type="color" id="colPlanText" /></div>
+          <div class="color-row"><span>Giriş çizgisi</span><input type="color" id="colPlanEntry" /></div>
+          <div class="color-row"><span>Dolgu opaklık <span id="colPlanFillVal" class="range-val"></span></span><input type="range" id="colPlanFill" min="5" max="70" step="5" /></div>
+          <div class="color-sec">AÇIK İŞLEM PLANI (POZİSYON KUTUSU)</div>
+          <div class="color-row"><span>SL alanı</span><input type="color" id="colPosSl" /></div>
+          <div class="color-row"><span>TP alanı</span><input type="color" id="colPosTp" /></div>
+        </div>
+        <div class="color-col">
+          <div class="color-sec">HACİM</div>
+          <div class="color-row"><span>Hacim yükseliş</span><input type="color" id="colVolUp" /></div>
+          <div class="color-row"><span>Hacim düşüş</span><input type="color" id="colVolDown" /></div>
+          <div class="color-sec">İŞLEM SEVİYELERİ (GRAFİK)</div>
+          <div class="color-row"><span>Açık işlem fiyatı</span><input type="color" id="colLvlEntry" /></div>
+          <div class="color-row"><span>Bekleyen emir fiyatı</span><input type="color" id="colLvlPending" /></div>
+          <div class="color-row"><span>SL çizgisi</span><input type="color" id="colLvlSl" /></div>
+          <div class="color-row"><span>TP çizgisi</span><input type="color" id="colLvlTp" /></div>
+          <div class="color-row"><span>Opaklık <span id="colLvlAlphaVal" class="range-val"></span></span><input type="range" id="colLvlAlpha" min="10" max="100" step="5" /></div>
+          <div class="color-row"><span>Kalınlık <span id="colLvlWidthVal" class="range-val"></span></span><input type="range" id="colLvlWidth" min="1" max="5" step="1" /></div>
+          <div class="color-sec">ÇİZİM RENKLERİ (VARSAYILAN)</div>
+          <div class="color-row"><span>Yatay çizgi</span><input type="color" id="dcolHline" /></div>
+          <div class="color-row"><span>Yatay ışın</span><input type="color" id="dcolHray" /></div>
+          <div class="color-row"><span>Kısa çizgi</span><input type="color" id="dcolSeg" /></div>
+          <div class="color-row"><span>Işın</span><input type="color" id="dcolRay" /></div>
+          <div class="color-row"><span>Fibonacci</span><input type="color" id="dcolFibo" /></div>
+          <div class="color-row"><span>Kutu</span><input type="color" id="dcolRect" /></div>
+          <div class="color-row"><span>Kutu opaklık <span id="dcolRectAlphaVal" class="range-val"></span></span><input type="range" id="dcolRectAlpha" min="0" max="100" step="5" /></div>
+          <div class="color-row"><span>Serbest çizim</span><input type="color" id="dcolFree" /></div>
+          <div class="color-row"><span>Zigzag</span><input type="color" id="dcolZigzag" /></div>
+          <div class="color-row"><span>Paralel kanal</span><input type="color" id="dcolChannel" /></div>
+          <div class="color-row"><span>Range</span><input type="color" id="dcolRange" /></div>
+          <div class="color-row"><span>Metin</span><input type="color" id="dcolText" /></div>
+          <div class="color-row" id="dcolSelRow" hidden><span>Seçili çizim</span><input type="color" id="dcolSel" /></div>
+          <div class="color-row" id="dcolSelAlphaRow" hidden><span>Seçili çizim opaklık <span id="dcolSelAlphaVal" class="range-val"></span></span><input type="range" id="dcolSelAlpha" min="0" max="100" step="5" /></div>
+        </div>
+      </div>
+      <button id="colorReset" class="btn ghost" style="width:100%">Varsayılana dön</button>
+    </div>
+  </div>
+
+  <div id="settingsOverlay" hidden>
+    <div id="settingsDialog">
+      <aside id="setTabs">
+        <div class="set-tabs-title">AYARLAR</div>
+        <nav class="set-tabs-list">
+          <button class="tab active" data-tab="provider">Provider</button>
+          <button class="tab" data-tab="typesafe">TypeSafe API</button>
+          <button class="tab" data-tab="api">API</button>
+          <button class="tab" data-tab="skills">Skills</button>
+          <button class="tab" data-tab="integrations">Entegrasyonlar</button>
+          <button class="tab" data-tab="binance">Binance API</button>
+          <button class="tab" data-tab="okx">OKX API</button>
+          <button class="tab" data-tab="transfer">Para Transferi</button>
+          <button class="tab" data-tab="code">Kod</button>
+          <button class="tab" data-tab="logs">Loglar</button>
+        </nav>
+        <div class="set-tabs-foot">
+          <button id="setClose">Kapat</button>
+          <div id="setVersion" class="set-version">—</div>
+        </div>
+      </aside>
+      <section id="setContent">
+        <div id="tab-provider" class="pane"></div>
+        <div id="tab-typesafe" class="pane" hidden></div>
+        <div id="tab-api" class="pane" hidden></div>
+        <div id="tab-skills" class="pane" hidden></div>
+        <div id="tab-integrations" class="pane" hidden></div>
+        <div id="tab-binance" class="pane" hidden></div>
+        <div id="tab-okx" class="pane" hidden></div>
+        <div id="tab-transfer" class="pane" hidden></div>
+        <div id="tab-code" class="pane" hidden></div>
+        <div id="tab-logs" class="pane" hidden></div>
+      </section>
+    </div>
+  </div>
+
+  <script src="renderer.js"></script>
+</body>
+</html>

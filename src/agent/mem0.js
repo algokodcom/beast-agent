@@ -2,7 +2,7 @@
 
 /* mem0-native: mem0 mimarisinin (github.com/mem0ai/mem0) Beast'e uyarlanmış
    Node çekirdeği. Python/mem0-ts BAĞIMLILIĞI YOK:
-     - Vektör: @xenova/transformers (whisper için zaten var) → all-MiniLM-L6-v2 (384d)
+     - Vektör: @xenova/transformers (projede npm bağımlılığı) → all-MiniLM-L6-v2 (384d)
      - Store: JSON dosya per scope → bot başına AYRI dosya = tam izolasyon
      - Konsolidasyon: mem0 klasik update prompt'u → ADD / UPDATE / DELETE / NONE
      - Audit: JSONL geçmiş (mem0 history.db karşılığı)

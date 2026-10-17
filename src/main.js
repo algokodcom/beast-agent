@@ -1,6 +1,6 @@
 'use strict';
 
-const { app, BrowserWindow, WebContentsView, ipcMain, shell, dialog, Tray, Menu, nativeImage, desktopCapturer, screen, session, net: electronNet, clipboard, Notification } = require('electron');
+const { app, BrowserWindow, WebContentsView, webContents, ipcMain, shell, dialog, Tray, Menu, nativeImage, desktopCapturer, screen, session, net: electronNet, clipboard, Notification } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const http = require('http');
@@ -26,8 +26,8 @@ const watchers = require('./agent/watchers');
 const usageMod = require('./agent/usage');
 const bus = require('./agent/bus');
 const computeruse = require('./agent/computeruse');
-const piper = require('./agent/piper');
-const supertonic = require('./agent/supertonic');
+const duyu = require('./agent/duyu');
+const ema = require('./agent/ema');
 const fsguard = require('./agent/fsguard');
 const log = require('./agent/logger');
 const squeeze = require('./agent/squeeze');
@@ -285,7 +285,7 @@ function assignAppUserModelId() {
     }
   } catch {}
 }
-/* mem0-native embedding modeli whisper ile AYNI cache'i kullanır (src/agent/mem0.js okur) */
+/* mem0-native embedding modeli kendi cache'ini kullanır (src/agent/mem0.js okur) */
 process.env.BEAST_MODELS_DIR = path.join(APP_DIR, 'models');
 
 /* ÖNCÜ SAĞLAYICILAR (BÖLÜM 9): endpoint bilmeye gerek yok — picker'dan seç,
@@ -755,132 +755,14 @@ function isOwnerSender(senderNum) {
   return !!num && (num === own || num.endsWith(own));
 }
 
-/* ---------- WA ses: ÜCRETSİZ yerel Whisper STT + opsiyonel TTS ---------- */
-
-let sttPipeline = null;
-let sttLoading = null;
-let sttModel = null;
-
-function sttModelName() {
-  /* Yerel motor SADECE whisper-large-v3-turbo: Hermes'in bulut varsayılanıyla
-     aynı model (q4f16 ONNX). Başka bir yerel STT (tiny/base/small) KULLANILMAZ. */
-  return String(settings.sttModel || process.env.BEAST_STT_MODEL || 'onnx-community/whisper-large-v3-turbo').trim();
-}
-
-/* ---------- STT sağlayıcı zinciri (Hermes transcription_tools.py port) ----------
-   Hermes otodetect sırası: groq → openai → local; varsayılan bulut motoru
-   Groq whisper-large-v3-turbo (STT_GROQ_MODEL varsayılanı). Anahtar sırası:
-   settings → %APPDATA%\beast\.env → process.env (Hermes env adları birebir). */
-const STT_GROQ_BASE = 'https://api.groq.com/openai/v1';
-const STT_OPENAI_BASE = 'https://api.openai.com/v1';
-
-function sttEnvKey(name) {
-  try {
-    const env = parseEnvFile(path.join(beastDir(), '.env'));
-    return String(env[name] || '').trim();
-  } catch {
-    return '';
-  }
-}
-function sttGroqKey() {
-  return String(settings.sttGroqKey || sttEnvKey('GROQ_API_KEY') || process.env.GROQ_API_KEY || '').trim();
-}
-function sttOpenaiKey() {
-  return String(settings.sttOpenaiKey || sttEnvKey('OPENAI_API_KEY') || process.env.OPENAI_API_KEY || '').trim();
-}
-function sttBaseUrl() {
-  return String(settings.sttBaseUrl || process.env.STT_OPENAI_BASE_URL || '').trim();
-}
-function sttProvider() {
-  const explicit = String(settings.sttProvider || '').trim().toLowerCase();
-  /* açık seçim: anahtar yoksa bulut seçimi yerel Whisper'a düşer (sessiz hata olmasın) */
-  if (explicit === 'local') return 'local';
-  if (explicit === 'groq' && sttGroqKey()) return 'groq';
-  if (explicit === 'openai' && (sttOpenaiKey() || sttBaseUrl())) return 'openai';
-  if (sttGroqKey()) return 'groq';
-  if (sttOpenaiKey() || sttBaseUrl()) return 'openai';
-  return 'local';
-}
+/* ---------- STT: Duyu-small (yerel ONNX int8, TR+EN) — TEK motor ----------
+   KaanAydinli/Duyu-small (conformer + CTC/attention); model
+   %APPDATA%\beast\duyu-small, çıkarım src/agent/duyu.js python köprüsünde.
+   Öncelik → mod: 0 önizleme (ctc greedy) · 1 canlı final (attention beam 2)
+   · belirtilmemiş (WA sesli mesaj) attention beam 5 (en doğru). */
 
 function sttEngineLabel() {
-  const p = sttProvider();
-  if (p === 'groq') {
-    const model = String(settings.sttGroqModel || process.env.STT_GROQ_MODEL || 'whisper-large-v3-turbo').trim();
-    return 'Groq ' + model + ' (Hermes STT motoru)';
-  }
-  if (p === 'openai') {
-    const base = sttBaseUrl() || STT_OPENAI_BASE;
-    const model = String(settings.sttOpenaiModel || process.env.STT_OPENAI_MODEL || 'whisper-1').trim();
-    return 'OpenAI-multipart ' + model + ' @ ' + base + ' (Hermes STT motoru)';
-  }
-  return 'yerel whisper-large-v3-turbo (' + (sttModel || sttModelName()) + ')';
-}
-
-/* Hermes _transcribe_groq / _transcribe_openai karşılığı: OpenAI-multipart upload.
-   Ham webm/ogg blobu gider; Groq whisper-large-v3-turbo webm/opus'u yerli yerinde alır. */
-async function transcribeCloud(provider, buf, mimetype, lang) {
-  const key = provider === 'groq' ? sttGroqKey() : sttOpenaiKey();
-  const base = (provider === 'groq' ? STT_GROQ_BASE : sttBaseUrl() || STT_OPENAI_BASE).replace(/\/+$/, '');
-  const model = provider === 'groq'
-    ? String(settings.sttGroqModel || process.env.STT_GROQ_MODEL || 'whisper-large-v3-turbo').trim()
-    : String(settings.sttOpenaiModel || process.env.STT_OPENAI_MODEL || 'whisper-1').trim();
-  const mime = String(mimetype || 'audio/webm');
-  const ext = /mp3/.test(mime) ? 'mp3' : /wav|x-wav/.test(mime) ? 'wav' : /ogg/.test(mime) ? 'ogg' : /mp4|m4a/.test(mime) ? 'm4a' : 'webm';
-  const form = new FormData();
-  form.append('file', new Blob([buf], { type: mime }), 'audio.' + ext);
-  form.append('model', model);
-  form.append('response_format', 'json');
-  if (lang === 'tr' || lang === 'en') form.append('language', lang);
-  const res = await fetch(base + '/audio/transcriptions', {
-    method: 'POST',
-    headers: { Authorization: 'Bearer ' + key, 'x-opencode-session': OPENCODE_SESSION },
-    body: form,
-  });
-  if (!res.ok) throw new Error(provider + ' ' + res.status + ': ' + String(await res.text()).slice(0, 180));
-  const data = await res.json();
-  return String((data && data.text) || '').trim();
-}
-
-async function ensureStt() {
-  const model = sttModelName();
-  if (sttPipeline && sttModel === model) return sttPipeline;
-  if (!sttLoading || sttModel !== model) {
-    const wanted = model;
-    sttLoading = (async () => {
-      waLog('STT: whisper-large-v3-turbo hazırlanıyor (ilk kurulumda arka planda iner)');
-      const modelsDir = path.join(APP_DIR, 'models');
-      fs.mkdirSync(modelsDir, { recursive: true });
-      /* @huggingface/transformers: turbo repo yalnız bu paketle uyumlu.
-         Sırayla en sıkıştırılmış dtype denenir; BAŞKA MODEL falllback YOK —
-         yüklenemezse STT temiz hata verir (dandık STT'ye düşülmez). */
-      const hf = require('@huggingface/transformers');
-      hf.env.cacheDir = modelsDir;
-      hf.env.allowLocalModels = false;
-      let lastErr = null;
-      const bus = require('./agent/progressbus');
-      for (const dtype of ['q4f16', 'q4', 'q8']) {
-        try {
-          const p = await hf.pipeline('automatic-speech-recognition', wanted, {
-            dtype,
-            progress_callback: bus.fileProgressAggregator('stt'),
-          });
-          sttPipeline = p;
-          sttModel = wanted;
-          bus.emitInstallProgress('stt', { pct: 100 });
-          waLog('STT hazır: ' + wanted + ' (dtype ' + dtype + ')');
-          return sttPipeline;
-        } catch (e) {
-          lastErr = e;
-          waLog('STT dtype ' + dtype + ' başarısız: ' + String((e && e.message) || e).slice(0, 140));
-        }
-      }
-      throw lastErr || new Error('whisper-large-v3-turbo yüklenemedi');
-    })().catch((e) => {
-      sttLoading = null;
-      throw e;
-    });
-  }
-  return sttLoading;
+  return 'Duyu-small (yerel ONNX int8 · TR+EN)';
 }
 
 /* ---------- Kurulum yüzde göstergesi: agent modüllerinden gelen progress
@@ -942,15 +824,9 @@ function decodeAudioToPcm16k(buf) {
   });
 }
 
-/* ---------- Hermes anti-hallosinasyon katmanı (tools/voice_mode.py + transcription_tools.py portu) ----------
-
-   Whisper sessizlik/gürültüde "Thank you.", "You" gibi junk üretir. Üç katman:
-   1) Enerji kapısı: konuşma enerjisi yoksa model HİÇ çağrılmaz (Silero VAD muadili)
-   2) condition_on_previous_text=False muadili: transformers.js chunk çağrısında
-      birikimli bağlam yok — tek chunk tek karar
-   3) Hallosinasyon filtresi: bilinen junk cümleleri + tekrar kalıpları elenir */
-
-const STT_SILENCE_RMS = 200 / 32768; // Hermes SILENCE_RMS_THRESHOLD (int16 200)
+/* Enerji kapısı (Silero VAD muadili): konuşma enerjisi yoksa model HİÇ
+   çağrılmaz — sessizlik/gürültüden transkript üretilmez. */
+const STT_SILENCE_RMS = 200 / 32768; // int16 200 eşdeğeri
 const STT_MIN_SPEECH_MS = 200; // bu kadar konuşma yoksa "sessiz" say
 
 function hasSpeechEnergy(f32) {
@@ -967,68 +843,8 @@ function hasSpeechEnergy(f32) {
   return speechFrames * 100 >= STT_MIN_SPEECH_MS;
 }
 
-/* Whisper sessizlikte sıkça uydurduğu cümleler (Hermes WHISPER_HALLUCINATIONS birebir
-   + Türkçe set: "thanks for watching" modeli Türkçeleşmiş halüsinasyonlardır) */
-const STT_HALLUCINATIONS = new Set([
-  'thank you.', 'thank you', 'thanks for watching.', 'thanks for watching',
-  'subscribe to my channel.', 'subscribe to my channel', 'like and subscribe.', 'like and subscribe',
-  'please subscribe.', 'please subscribe', 'thank you for watching.', 'thank you for watching',
-  'bye.', 'bye', 'you', 'the end.', 'the end',
-  'продолжение следует', 'продолжение следует...',
-  'sous-titres', "sous-titres réalisés par la communauté d'amara.org",
-  'sottotitoli creati dalla comunità amara.org', 'untertitel von stephanie geiges',
-  'amara.org', 'www.mooji.org', 'ご視聴ありがとうございました',
-  // Türkçe junk (sessizlikte gözlenenler)
-  'harika', 'tamam.', 'tamam',
-  'izlediğiniz için teşekkür ederim', 'izlediğiniz için teşekkürler', 'izlediğiniz için teşekkür ederiz',
-  'izlediğiniz için çok teşekkür ederim', 'izlediğiniz için teşekkür ederim.', 'izlemeniz için teşekkür ederim',
-  'teşekkür ederim', 'teşekkürler', 'teşekkür ederiz', 'çok teşekkürler', 'çok teşekkür ederim',
-  'abone olmayı unutmayın', 'kanalıma abone olun', 'abone olun', 'beğenmeyi unutmayın', 'like atmayı unutmayın',
-  'hoş geldiniz', 'bir sonraki videoda görüşürüz', 'bir sonraki videoda görüşmek üzere',
-  'sorusu olan var mı', 'izlemeye devam edin', 'altyazılar amara.org', 'altyazı: amara.org',
-  // alt yazı türevleri (sessizlikte en sık görülen hayalet transkript)
-  'altyazı mk', 'altyazı: mk', 'altyazı mk.', 'altyazi mk', 'altyazi', 'altyazı', 'altyazılar',
-  'altyazı: mk efendi', 'mk', 'm.k', 'm.k.', 'altyazı ekibi',
-]);
-
-/* Türkçe'ye özgü fold: whisper bazen diakritikleri DÜŞÜRÜR ("Izlediginiz icin"),
-   bazen İ→i̇ (combining dot) çıkarır — karşılaştırma ASCII-fold üzerinden yapılır */
-function sttFold(s) {
-  return String(s || '')
-    .toLowerCase()
-    .replace(/[çğıöşüâîûİÇĞÖŞÜ]/g, (ch) => ({ ç: 'c', ğ: 'g', ı: 'i', ö: 'o', ş: 's', ü: 'u', â: 'a', î: 'i', û: 'u', İ: 'i', Ç: 'c', Ğ: 'g', Ö: 'o', Ş: 's', Ü: 'u' }[ch] || ch))
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '');
-}
-
-const STT_HALLUCINATION_FOLDED = new Set(
-  [...STT_HALLUCINATIONS].flatMap((p) => {
-    const f = sttFold(p);
-    return [f, f.replace(/[.!]+$/, '')];
-  })
-);
-
-/* Tekrarlı junk kalıbı: "Thank you. Thank you. Thank you." / "Teşekkürler. Teşekkürler." (Hermes _HALLUCINATION_REPEAT_RE + TR) */
-const STT_REPEAT_RE = /^(?:thank you|thanks|bye|you|ok|okay|the end|tamam|harika|tesekkur|tesekkurler|ederim|izlediginiz|icin|cok|\.|\s|,|!)+$/i;
-
-/* junk ÖNEKLERİ: bu kelimelerle BAŞLAYAN transkriptler alt yazı hayaletidir
-   ("Altyazı M.K. ..." gibi) — gerçek komutlar asla bunlarla başlamaz */
-const STT_JUNK_PREFIXES = ['altyazi', 'altyazılar', 'altyazilar', 'altyazı'];
-
-function isWhisperHallucination(transcript) {
-  const cleaned = String(transcript || '').trim().toLowerCase();
-  if (!cleaned) return true;
-  if (STT_HALLUCINATIONS.has(cleaned) || STT_HALLUCINATIONS.has(cleaned.replace(/[.!]+$/, ''))) return true;
-  const folded = sttFold(cleaned);
-  if (STT_HALLUCINATION_FOLDED.has(folded) || STT_HALLUCINATION_FOLDED.has(folded.replace(/[.!]+$/, ''))) return true;
-  if (STT_REPEAT_RE.test(folded)) return true;
-  if (STT_JUNK_PREFIXES.some((p) => folded.startsWith(p))) return true;
-  return false;
-}
-
-/* STT ÖNCELİKLİ SIRASI: whisper CPU'da yavaş — final transkript (öncelik 1)
-   kuyruktaki önizleme işlerinin (0) Önüne geçer; birikse bile konuşanın
-   cevabı önce gelir. Tek seferde tek iş (pipeline güvenliği korunur). */
+/* ---------- STT ÖNCELİKLİ SIRASI: konuşanın final cevabı (öncelik 1) canlı
+   önizleme işlerinin (0) önüne geçer; birikse bile sıra bozulmaz. ---------- */
 const sttQ = [];
 let sttRunning = false;
 function enqueueSttTask(task, priority) {
@@ -1051,145 +867,82 @@ async function drainSttQ() {
 }
 
 async function transcribeAudio(buf, langOverride /* 'tr' | 'en' | 'auto' */, mimetype, priority) {
-  return enqueueSttTask(() => transcribeAudioInner(buf, langOverride, mimetype), priority);
+  return enqueueSttTask(() => transcribeAudioInner(buf, langOverride, priority), priority);
 }
 
-async function transcribeAudioInner(buf, langOverride /* 'tr' | 'en' | 'auto' */, mimetype) {
+/* öncelik → Duyu modu: 0 önizleme (ctc greedy, en hızlı) · 1 canlı final
+   (attention beam 2 — hız/doğruluk dengesi) · yok = WA sesli mesaj
+   (attention beam 5 — en doğru) */
+function sttDecodeOpts(priority) {
+  if (priority === 0) return { mode: 'ctc', beam: 1 };
+  if (priority === 1) return { mode: 'auto', beam: 2 };
+  return { mode: 'auto', beam: 5 };
+}
+
+async function transcribeAudioInner(buf, langOverride /* 'tr' | 'en' | 'auto' */, priority) {
   try {
+    let f32 = null;
     /* WAV HIZLI YOLU: eller-serbest segmentleri 16k mono WAV gelir —
        ffmpeg decode atlanır, doğrudan PCM okunur */
     if (buf.length > 44 && buf[0] === 0x52 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x46
       && buf.readUInt32LE(24) === 16000 && buf.readUInt16LE(22) === 1 && buf.readUInt16LE(34) === 16) {
       try {
         const dataLen = buf.readUInt32LE(40);
-        const f32 = new Float32Array(Math.floor(dataLen / 2));
-        for (let i = 0; i < f32.length; i++) f32[i] = buf.readInt16LE(44 + i * 2) / 32768;
-        if (f32.length) return await transcribePcm(f32, langOverride);
+        const arr = new Float32Array(Math.floor(dataLen / 2));
+        for (let i = 0; i < arr.length; i++) arr[i] = buf.readInt16LE(44 + i * 2) / 32768;
+        if (arr.length) f32 = arr;
       } catch {}
     }
-    const audio = await decodeAudioToPcm16k(buf);
-    if (!audio || !audio.length) return null;
-    if (!hasSpeechEnergy(audio)) return null;
+    if (!f32) f32 = await decodeAudioToPcm16k(buf);
+    if (!f32 || !f32.length) return null;
+    if (!hasSpeechEnergy(f32)) return null;
 
-    const lang = langOverride || settings.sttLang || 'tr';
-    const provider = sttProvider();
-    let text = '';
-
-    if (provider === 'groq' || provider === 'openai') {
-      try {
-        text = await transcribeCloud(provider, buf, mimetype, lang);
-      } catch (e) {
-        waLog('stt bulut (' + provider + ') hata: ' + String((e && e.message) || e).slice(0, 180));
-        /* yerel whisper YÜKLÜYSE sessizce devam et; yüklü değilse indirim BAŞLATMAZ */
-        if (!sttPipeline && !sttLoading) return null;
-        text = '';
-      }
-    }
-
-    if (!text) {
-      const asr = await ensureStt();
-      /* dil: arayüz diline bağlı — UI Türkçe ise Türkçe, İngilizce ise İngilizce algılar */
-      const opts = { task: 'transcribe', chunk_length_s: 30, stride_length_s: 5, return_timestamps: true };
-      if (lang === 'en') opts.language = 'english';
-      else if (lang === 'tr') opts.language = 'turkish';
-      const out = await asr(audio, opts);
-      text = String((out && out.text) || '').trim();
-    }
-
-    if (!text) return null;
-    /* katman 3: bilinen junk cümleleri elenir (her sağlayıcıda geçerli) */
-    if (isWhisperHallucination(text)) {
-      waLog('stt hallosinasyon filtrelendi: ' + text.slice(0, 60));
-      return null;
-    }
-    return text;
+    /* dil: arayüz dili ile hizalı — TR ise Türkçe, EN ise İngilizce, auto serbest */
+    const uiLang = langOverride || settings.sttLang || 'tr';
+    const lang = uiLang === 'en' ? 'en' : uiLang === 'auto' ? 'auto' : 'tr';
+    const text = String(await duyu.transcribe(f32, { lang, ...sttDecodeOpts(priority) }) || '').trim();
+    return text || null;
   } catch (e) {
     waLog('stt hata: ' + String((e && e.message) || e));
     return null;
   }
 }
 
-/* PCM zaten çözülmüşse model çağrısını doğrudan yap */
-async function transcribePcm(audio, langOverride) {
-  try {
-    if (!hasSpeechEnergy(audio)) return null;
-    const asr = await ensureStt();
-    const lang = langOverride || settings.sttLang || 'tr';
-    const opts = { task: 'transcribe', chunk_length_s: 30, stride_length_s: 5, return_timestamps: true };
-    if (lang === 'en') opts.language = 'english';
-    else if (lang === 'tr') opts.language = 'turkish';
-    const out = await asr(audio, opts);
-    const text = String((out && out.text) || '').trim();
-    if (!text) return null;
-    if (isWhisperHallucination(text)) return null;
-    return text;
-  } catch (e) {
-    waLog('stt pcm hata: ' + String((e && e.message) || e));
-    return null;
-  }
-}
-
-/* TTS sentezi: dönen değer { audio: Buffer, mime } — motor seçilebilir.
-   - edge: ücretsiz Microsoft neural (MP3)
-   - piper: tamamen yerel/offline neural (WAV; ilk kullanımda indirilir)
-   - openai: OpenAI-uyumlu /audio/speech API (MP3) */
+/* TTS sentezi: TEK motor — eMa Lightning (canberkkkkkk/ema-lightning).
+   Yerel/offline PyTorch (CPU), Türkçe. Dönen { audio: WAV Buffer, mime } —
+   WA sesli notu ffmpeg ile ogg/opus'a çevrilir, oynatıcı WAV'ı doğrudan çalar. */
 async function synthesizeSpeech(text) {
   const cfg = settings.waTts || {};
   if (!cfg.enabled) return null;
   try {
-    const engine = cfg.engine || 'edge';
-    /* EDGE TTS: ücretsiz yerel motor — baseUrl/key GEREKMEZ */
-    if (engine === 'edge') {
-      const edge = require('./agent/edgetts');
-      const audio = await edge.synthesize(String(text).slice(0, 4000), {
-        voice: cfg.edgeVoice || 'tr-TR-AhmetNeural',
-      });
-      return audio && { audio, mime: 'audio/mpeg' };
-    }
-    /* PIPER: yerel/offline — ilk kullanımda runtime + ses modeli indirilir */
-    if (engine === 'piper') {
-      return await piper.synthesize(String(text).slice(0, 4000), {
-        voice: cfg.piperVoice || piper.DEFAULT_VOICE,
-        speed: cfg.piperSpeed,
-        sentenceSilence: cfg.piperSilence,
-        noiseScale: cfg.piperNoise,
-      });
-    }
-    /* SUPERTONIC 3: yerel/offline, 31 dil — ilk kullanımda ~400MB model iner */
-    if (engine === 'supertonic') {
-      return await supertonic.synthesize(String(text).slice(0, 4000), {
-        voice: cfg.supertonicVoice || supertonic.DEFAULT_VOICE,
-        lang: cfg.supertonicLang || supertonic.DEFAULT_LANG,
-        speed: cfg.supertonicSpeed,
-        steps: cfg.supertonicSteps,
-      });
-    }
-    if (!cfg.baseUrl || !cfg.key) return null;
-    const url = String(cfg.baseUrl).replace(/\/+$/, '') + '/audio/speech';
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: 'Bearer ' + cfg.key,
-        'x-opencode-session': OPENCODE_SESSION,
-      },
-      body: JSON.stringify({
-        model: cfg.model || 'tts-1',
-        input: String(text).slice(0, 4000),
-        voice: cfg.voice || 'alloy',
-        response_format: 'mp3',
-      }),
-      signal: AbortSignal.timeout(90000),
-    });
-    if (!res.ok) {
-      waLog(`tts http ${res.status}`);
-      return null;
-    }
-    return { audio: Buffer.from(await res.arrayBuffer()), mime: 'audio/mpeg' };
+    const t = ttsCleanText(text);
+    if (!t || t.length < 2) return null;
+    const out = await ema.synthesize(t, { speed: cfg.speed, sampleRate: cfg.sampleRate });
+    return out && out.audio ? out : null;
   } catch (e) {
     waLog('tts hata: ' + String((e && e.message) || e));
     return null;
   }
+}
+
+/* TTS metin temizliği: emoji/simge ve markdown gürültüsü seslendirilmez
+   (eMa emojiyi harf harf "unicode" gibi okuyor), URL'ler sessizce atılır,
+   [metin](link) kalıbı yalnız metne indirgenir. */
+function ttsCleanText(t) {
+  let s = String(t || '');
+  s = s.replace(/```[\s\S]*?```/g, ' Kod bloğu ekranda. ');
+  s = s.replace(/\[([^\]]*)\]\([^)]*\)/g, '$1'); // [metin](link) → metin (URL'den ÖNCE)
+  s = s.replace(/https?:\/\/\S+/gi, ' ');
+  s = s.replace(/[\[\]]+/g, ' ');
+  /* BMP simge blokları: oklar, teknik, çerçeveli, geometrik, dingbat, emoji-mücevher */
+  s = s.replace(/[\u2190-\u21FF\u2300-\u23FF\u2460-\u24FF\u25A0-\u25FF\u2600-\u27BF\u2900-\u297F\u2B00-\u2BFF]/g, ' ');
+  /* astral düzlem (renkli emoji, bayraklar, ten tonu, semboller) */
+  s = s.replace(/[\uD800-\uDBFF][\uDC00-\uDFFF]/g, ' ');
+  s = s.replace(/[\uFE00-\uFE0F\u200D\u20E3]/g, ''); // varyasyon seçici + ZWJ + keycap
+  s = s.replace(/[\u00A9\u00AE\u2122]/g, ' '); // © ® ™
+  s = s.replace(/[*_`~#>]+/g, ' ');
+  s = s.replace(/\s{2,}/g, ' ').trim();
+  return s;
 }
 
 const TEXT_DOC_EXT = /\.(txt|md|markdown|csv|json|log|js|mjs|ts|py|ps1|bat|cmd|html|css|xml|yaml|yml|ini|cfg)$/i;
@@ -3844,18 +3597,23 @@ app.whenReady().then(() => {
     netCheck().catch(() => {});
     setInterval(() => { netCheck().catch(() => {}); }, NET_CHECK_MS).unref();
 
-    // STT motoru: bulut anahtarı varsa Hermes zinciri (groq/openai) devrede —
-    // yerel model o zaman HEM indirme HEM prefetch yapılmaz. Prefetch yalnız local'da.
-    if (sttProvider() === 'local') {
-      if (settings.sttPrefetch !== false) {
-        setTimeout(() => {
-          ensureStt()
-            .then(() => waLog('STT prefetch tamam: ' + sttEngineLabel()))
-            .catch((e) => waLog('STT prefetch atlandı: ' + String((e && e.message) || e)));
-        }, 10000);
-      }
-    } else {
-      waLog('STT aktif: ' + sttEngineLabel() + ' — yerel model kullanılmayacak');
+    // STT motoru: Duyu-small (yerel ONNX) — açılışta arka planda ısıtılır;
+    // model eksikse burada sessizce iner (kullanıcı bekletilmez).
+    if (settings.sttPrefetch !== false) {
+      setTimeout(() => {
+        duyu.warm()
+          .then(() => waLog('STT hazır: ' + sttEngineLabel()))
+          .catch((e) => waLog('STT prefetch atlandı: ' + String((e && e.message) || e)));
+      }, 10000);
+    }
+    // TTS motoru: eMa Lightning (yerel) — yalnız sesli yanıt AÇIKSA ısıtılır
+    // (ilk seferde ~34MB ağırlık iner; kapalıyken indirme başlatılmaz).
+    if (settings.waTts && settings.waTts.enabled) {
+      setTimeout(() => {
+        ema.warm()
+          .then(() => waLog('TTS hazır: eMa Lightning (yerel)'))
+          .catch((e) => waLog('TTS prefetch atlandı: ' + String((e && e.message) || e)));
+      }, 15000);
     }
 
     /* EMBEDDING modeli (hafıza semantik arama) — açılışta otomatik indir */
@@ -3895,6 +3653,7 @@ app.whenReady().then(() => {
       flushBrowserStorage(); // x.com/google oturumları (cookies) diske yazılsın
       try { toolsMod.disposeShellSessions(); } catch {} // kalıcı shell oturumlarını kapat
       try { require('./agent/mcp').stopAll(); } catch {} // MCP server süreçlerini kapat
+      try { if (jevMod) jevMod.backend.shutdown(); } catch {} // JevTrader köprüleri (MT5/api/wa/tg/dc)
     });
 
     if (process.argv.includes('--smoke')) {
@@ -5911,6 +5670,94 @@ function closeSplash() {
   try { if (splash) { splash.close(); splash = null; } } catch {}
 }
 
+/* ---------- JEV TRADER GÖMÜLÜ MOD ----------
+   JevTrader arayüzü Beast penceresi içinde tam ekran bir webview'da açılır;
+   arka uç (MT5 / Binance / OKX / paper / journal / entegrasyonlar) Beast ana
+   sürecinde src/jev/backend.js ile koşar. Veriler %APPDATA%\jevtrader
+   altında aynen korunur; IPC kanalları 'jev:' önekiyle kaydedilir. */
+let jevMod = null;
+
+function jevEnsure() {
+  if (!jevMod) {
+    const backend = require('./jev/backend');
+    /* backend modül yüklenirken tüm 'jev:*' IPC kanallarını kaydeder */
+    jevMod = { backend, wcId: 0, started: false };
+    log.info('jev', 'JevTrader arka ucu yüklendi');
+  }
+  return jevMod;
+}
+
+function jevFileUrl(rel) {
+  return require('url').pathToFileURL(path.join(__dirname, rel)).href;
+}
+
+ipcMain.handle('jev:info', () => ({
+  url: jevFileUrl(path.join('jev', 'renderer', 'index.html')),
+  preload: jevFileUrl(path.join('jev', 'preload.js')),
+}));
+
+ipcMain.handle('jev:start', () => {
+  const j = jevEnsure();
+  if (!j.started) {
+    try {
+      j.backend.start();
+      j.started = true;
+    } catch (e) {
+      return { ok: false, error: String((e && e.message) || e) };
+    }
+  }
+  return { ok: true };
+});
+
+ipcMain.handle('jev:attach', (_e, id) => {
+  const j = jevEnsure();
+  const wc = webContents.fromId(Number(id) || 0);
+  if (!wc) return { ok: false, error: 'webview bulunamadı' };
+  j.wcId = wc.id;
+  j.backend.setWebContents(wc);
+  wc.once('destroyed', () => {
+    try {
+      if (j.wcId === wc.id) {
+        j.backend.setWebContents(null);
+        j.wcId = 0;
+      }
+    } catch {}
+  });
+  return { ok: true };
+});
+
+ipcMain.handle('jev:detach', () => {
+  if (jevMod) {
+    try {
+      jevMod.backend.setWebContents(null);
+      jevMod.wcId = 0;
+    } catch {}
+  }
+  return { ok: true };
+});
+
+/* JevTrader modu açılıp kapanınca haber ver: mod kapalıyken MT5 köprüsü ve
+   terminali hiç çalışmaz — MT5 yalnız JevTrader içinde bağlanır */
+ipcMain.handle('jev:mode', (_e, on) => {
+  if (!jevMod) return { ok: true };
+  try {
+    jevMod.backend.setJevMode(!!on);
+  } catch {}
+  return { ok: true };
+});
+
+/* webview pencereleri: dış bağlantılar varsayılan tarayıcıda açılır */
+app.on('web-contents-created', (_ev, wc) => {
+  try {
+    if (wc.getType && wc.getType() === 'webview') {
+      wc.setWindowOpenHandler(({ url }) => {
+        if (/^https?:\/\//i.test(String(url))) shell.openExternal(String(url)).catch(() => {});
+        return { action: 'deny' };
+      });
+    }
+  } catch {}
+});
+
 function createWindow() {
   log.info('main', 'Pencere oluşturuluyor…');
   const dark = settings.theme === 'dark';
@@ -5932,6 +5779,7 @@ function createWindow() {
       nodeIntegration: false,
       sandbox: false,
       spellcheck: false,
+      webviewTag: true, /* JevTrader gömülü modu (src/jev) için */
     },
   });
 
@@ -7684,8 +7532,7 @@ async function runUpdateCommand(reply /* fn(text) */) {
   return npmUpdateNow(reply);
 }
 
-/* #STT: sohbet mikrofonu — MediaRecorder sesini (webm/opus) yerel whisper'a çevir */
-/* #STT: sohbet mikrofonu — MediaRecorder sesini (webm/opus) yerel whisper'a çevir */
+/* #STT: sohbet mikrofonu — kaydı Duyu-small'a çevirir (webm/ogg/wav) */
 ipcMain.handle('stt:transcribe', async (_e, b64, lang, priority) => {
   try {
     const buf = Buffer.from(String(b64 || '').split(',').pop() || '', 'base64');
@@ -7699,57 +7546,24 @@ ipcMain.handle('stt:transcribe', async (_e, b64, lang, priority) => {
 
 ipcMain.handle('stt:lang:get', () => settings.sttLang || 'tr');
 
-/* STT MOTORU SEÇİMİ: '' = otomatik (anahtar varsa bulut, yoksa yerel Whisper),
-   'local' = yerel Whisper, 'groq' | 'openai' = bulut */
-ipcMain.handle('stt:provider:set', (_e, p) => {
-  const v = String(p || '').trim().toLowerCase();
-  settings.sttProvider = ['local', 'groq', 'openai'].includes(v) ? v : '';
-  saveSettings();
-  return { ok: true, pref: settings.sttProvider, provider: sttProvider(), engineLabel: sttEngineLabel() };
-});
-
-/* STT DURUMU: ayarlar ekranı için — model indirildi mi/in-progress mi,
-   hangi motor, ne kadar disk */
+/* STT DURUMU: ayarlar ekranı için — TEK motor Duyu-small (yerel ONNX int8) */
 ipcMain.handle('stt:status', () => {
-  const provider = sttProvider();
-  const model = sttModelName();
-  const out = { provider, engineLabel: sttEngineLabel(), model, pref: String(settings.sttProvider || '') };
-  if (provider !== 'local') { out.state = 'cloud'; return out; }
-  const dir = path.join(APP_DIR, 'models', ...model.split('/'));
-  let files = [];
-  try {
-    files = fs.readdirSync(dir, { recursive: true, withFileTypes: true })
-      .filter((d) => d.isFile())
-      .map((d) => path.join(d.parentPath || d.path, d.name));
-  } catch {}
-  let bytes = 0;
-  let tmp = 0;
-  let onnx = 0;
-  let hasConfig = false;
-  for (const p of files) {
-    try {
-      bytes += fs.statSync(p).size;
-      if (/\.tmp/i.test(p)) tmp++;
-      else if (/\.onnx$/i.test(p)) onnx++;
-      else if (/config\.json$/i.test(p)) hasConfig = true;
-    } catch {}
-  }
-  let state;
-  if (sttPipeline) state = 'ready';
-  else if (sttLoading) state = 'loading';
-  else if (hasConfig && onnx >= 2 && tmp === 0) state = 'downloaded';
-  else if (files.length) state = 'partial';
-  else state = 'missing';
-  out.state = state;
-  out.mb = Math.round(bytes / (1024 * 1024));
-  out.onnx = onnx;
-  out.tmp = tmp;
-  return out;
+  const s = duyu.statusSync();
+  const state = duyu.readyNow() ? 'ready' : duyu.installing() ? 'loading' : s.state;
+  return {
+    provider: 'duyu',
+    engineLabel: sttEngineLabel(),
+    model: 'KaanAydinli/Duyu-small',
+    pref: 'local',
+    state,
+    mb: s.mb,
+    installed: s.installed,
+  };
 });
 
 /* istenirse modeli şimdi indir/yükle (bloklamaz — arka planda) */
 ipcMain.handle('stt:prefetch', () => {
-  ensureStt()
+  duyu.warm()
     .then(() => waLog('STT prefetch: hazır'))
     .catch((e) => waLog('STT prefetch hata: ' + String((e && e.message) || e)));
   return { ok: true, loading: true };
@@ -7793,23 +7607,16 @@ ipcMain.handle('install:status', async () => {
     return { files, bytes, tmp, onnx, hasCfg };
   };
 
-  /* 1) STT modeli */
-  if (sttProvider() !== 'local') {
-    rows.push({ id: 'stt', name: 'STT modeli — ' + sttModelName(), state: 'cloud', detail: 'bulut motoru — indirme gerekmez' });
-  } else {
-    const s = scanModel(sttModelName());
-    let state;
-    if (sttPipeline) state = 'ok';
-    else if (sttLoading) state = 'loading';
-    else if (s.hasCfg && s.onnx >= 2 && s.tmp === 0) state = 'downloaded';
-    else if (s.files.length) state = 'partial';
-    else state = 'missing';
+  /* 1) STT — Duyu-small (yerel ONNX, tek motor) */
+  {
+    const s = duyu.statusSync();
+    const state = duyu.readyNow() ? 'ok' : duyu.installing() ? 'loading' : s.installed ? 'downloaded' : (s.mb ? 'partial' : 'missing');
     rows.push({
       id: 'stt',
-      name: 'STT modeli — whisper-large-v3-turbo',
+      name: 'STT — Duyu-small (yerel, Türkçe+İngilizce)',
       state,
-      detail: sttEngineLabel(),
-      mb: Math.round(s.bytes / 1048576),
+      detail: sttEngineLabel() + ' · ~54MB',
+      mb: s.mb,
       ...(['missing', 'partial', 'loading'].includes(state) ? pctFields('stt') : {}),
     });
   }
@@ -7834,7 +7641,7 @@ ipcMain.handle('install:status', async () => {
   rows.push({ id: 'ffmpeg', name: 'ffmpeg — ses/video dönüşüm', state: ffOk ? 'ok' : 'missing', detail: ffOk ? 'kurulu' : 'npm paketi eksik' });
 
   /* 4) çalışma zamanı npm paketleri */
-  rows.push({ id: 'hf', name: 'Transformers.js — STT çalışma zamanı', state: pkgOk('@huggingface/transformers') ? 'ok' : 'missing', detail: 'npm paketi' });
+  rows.push({ id: 'hf', name: 'Transformers.js — embedding çalışma zamanı', state: pkgOk('@huggingface/transformers') ? 'ok' : 'missing', detail: 'npm paketi (mem0 embedding)' });
   rows.push({ id: 'ort', name: 'ONNX Runtime — model motoru', state: pkgOk('onnxruntime-node') ? 'ok' : 'missing', detail: 'npm paketi' });
 
   /* 5) OCR */
@@ -7868,8 +7675,18 @@ ipcMain.handle('install:status', async () => {
     rows.push({ id: 'python', name: 'Python — betikler / web arama', state: pyVer ? 'ok' : 'optional', detail: pyVer ? 'v' + pyVer : 'sistemde bulunamadı — opsiyonel' });
   }
 
-  /* 7) Edge TTS (bulut) */
-  rows.push({ id: 'edge', name: 'Edge TTS — seslendirme', state: 'cloud', detail: 'bulut — kurulum gerekmez' });
+  /* 7) TTS — eMa Lightning (yerel, tek motor) */
+  {
+    const em = ema.status();
+    const state = em.installed ? 'ok' : em.installing ? 'loading' : 'missing';
+    rows.push({
+      id: 'ema',
+      name: 'TTS — eMa Lightning (yerel/offline, Türkçe)',
+      state,
+      detail: em.installed ? 'PyTorch CPU · ' + (em.python || 'python') : 'ilk kullanımda kurulur (pip: ema-lightning, ~34MB ağırlık)',
+      ...(state === 'loading' ? pctFields('ema') : {}),
+    });
+  }
 
   return rows;
 });
@@ -12001,57 +11818,39 @@ function clampTtsNum(v, lo, hi, def) {
   return Math.max(lo, Math.min(hi, n));
 }
 
-ipcMain.handle('wa:tts:get', () => settings.waTts || {});
+/* wa:tts:get sanitize eder — renderer'a her zaman şema uyumlu değer döner.
+   Varsayılan 48 kHz: WhatsApp sesli notları zaten Opus (native 48k) —
+   yeniden örnekleme yok, daha temiz ses; eMa hızlı olduğu için bedava. */
+ipcMain.handle('wa:tts:get', () => {
+  const c = settings.waTts || {};
+  return {
+    enabled: !!c.enabled,
+    speed: clampTtsNum(c.speed, 0.5, 2, 1),
+    sampleRate: [48000, 24000, 16000, 8000].includes(Number(c.sampleRate)) ? Number(c.sampleRate) : 48000,
+    chatAutoSpeak: !!c.chatAutoSpeak,
+  };
+});
 ipcMain.handle('wa:tts:set', (_e, cfg) => {
-  const eng = String((cfg && cfg.engine) || 'edge');
-  const pv = String((cfg && cfg.piperVoice) || '').trim();
-  const sv = String((cfg && cfg.supertonicVoice) || '').trim().toUpperCase();
-  const sl = String((cfg && cfg.supertonicLang) || '').trim().toLowerCase();
   settings.waTts = {
     enabled: !!(cfg && cfg.enabled),
-    /* motor: 'edge' (ücretsiz bulut, varsayılan) | 'piper' (yerel/offline)
-       | 'supertonic' (yerel/offline, 31 dil) | 'openai' (API) */
-    engine: ['edge', 'piper', 'supertonic', 'openai'].includes(eng) ? eng : 'edge',
-    edgeVoice: String((cfg && cfg.edgeVoice) || 'tr-TR-AhmetNeural').trim(),
-    piperVoice: piper.VOICES[pv] ? pv : piper.DEFAULT_VOICE,
-    /* Piper ince ayar: hız (0.6-1.6), cümle sonu duraklama (0-1 sn), ifade (0-1.2) */
-    piperSpeed: clampTtsNum(cfg && cfg.piperSpeed, 0.6, 1.6, 1),
-    piperSilence: clampTtsNum(cfg && cfg.piperSilence, 0, 1, 0.2),
-    piperNoise: clampTtsNum(cfg && cfg.piperNoise, 0, 1.2, 0.667),
-    /* Supertonic ince ayar: ses M1-M5/F1-F5, dil kodu, hız (0.7-2), adım (5-12) */
-    supertonicVoice: supertonic.VOICES[sv] ? sv : supertonic.DEFAULT_VOICE,
-    supertonicLang: supertonic.LANGS[sl] ? sl : supertonic.DEFAULT_LANG,
-    supertonicSpeed: clampTtsNum(cfg && cfg.supertonicSpeed, 0.7, 2, supertonic.DEFAULT_SPEED),
-    supertonicSteps: Math.round(clampTtsNum(cfg && cfg.supertonicSteps, 5, 12, supertonic.DEFAULT_STEPS)),
+    /* TEK motor: eMa Lightning (canberkkkkkk/ema-lightning) — yerel/offline PyTorch, Türkçe */
+    engine: 'ema',
+    speed: clampTtsNum(cfg && cfg.speed, 0.5, 2, 1),
+    sampleRate: [48000, 24000, 16000, 8000].includes(Number(cfg && cfg.sampleRate)) ? Number(cfg.sampleRate) : 48000,
     chatAutoSpeak: !!(cfg && cfg.chatAutoSpeak),
-    baseUrl: String((cfg && cfg.baseUrl) || '').trim(),
-    key: String((cfg && cfg.key) || '').trim(),
-    model: String((cfg && cfg.model) || '').trim(),
-    voice: String((cfg && cfg.voice) || '').trim(),
   };
   saveSettings();
   return settings.waTts;
 });
 
-/* PIPER (yerel/offline TTS): durum + elle indirme (runtime + ses modeli) */
-ipcMain.handle('piper:status', (_e, voice) => {
-  try { return piper.status(String(voice || '')); } catch { return { installed: false, runtime: false, voice: false, installing: false }; }
-});
-ipcMain.handle('piper:install', async (_e, voice) => {
-  const r = await piper.install(String(voice || ''));
-  return { ...r, status: piper.status(String(voice || '')) };
+/* eMa Lightning (yerel/offline TTS): durum + elle kurulum/ısıtma */
+ipcMain.handle('ema:status', () => ema.status());
+ipcMain.handle('ema:install', async () => {
+  const r = await ema.install();
+  return { ...r, status: ema.status() };
 });
 
-/* SUPERTONIC 3 (yerel/offline TTS): durum + elle indirme (model + ses stili) */
-ipcMain.handle('supertonic:status', (_e, voice) => {
-  try { return supertonic.status(String(voice || '')); } catch { return { installed: false, model: false, voice: false, installing: false }; }
-});
-ipcMain.handle('supertonic:install', async (_e, voice) => {
-  const r = await supertonic.install(String(voice || ''));
-  return { ...r, status: supertonic.status(String(voice || '')) };
-});
-
-/* CHAT TTS: masaüstü sohbetinde ajanın son yazısını seslendirir (base64 mp3).
+/* CHAT TTS: masaüstü sohbetinde ajanın son yazısını seslendirir (base64 WAV).
    chatAutoSpeak açıkken renderer 'done' olayında bu kanalı çağırır. */
 ipcMain.handle('tts:synthesize', async (_e, text) => {
   const cfg = settings.waTts || {};
@@ -12060,16 +11859,11 @@ ipcMain.handle('tts:synthesize', async (_e, text) => {
   if (!t) return { ok: false, error: 'boş metin' };
   const out = await synthesizeSpeech(t.slice(0, 4000));
   if (!out || !out.audio) {
-    waLog('tts chat seslendirilemedi — motor: ' + (cfg.engine || 'edge'));
+    waLog('tts chat seslendirilemedi — motor: eMa Lightning');
     return { ok: false, error: 'seslendirilemedi' };
   }
-  const ses = cfg.engine === 'piper'
-    ? (cfg.piperVoice || piper.DEFAULT_VOICE)
-    : cfg.engine === 'supertonic'
-      ? (cfg.supertonicVoice || supertonic.DEFAULT_VOICE)
-      : (cfg.edgeVoice || '-');
-  waLog('tts chat ok: ' + out.audio.length + ' bayt, motor: ' + (cfg.engine || 'edge') + ', ses: ' + ses);
-  return { ok: true, audioB64: out.audio.toString('base64'), mime: out.mime || 'audio/mpeg' };
+  waLog('tts chat ok: ' + out.audio.length + ' bayt, motor: eMa Lightning (yerel)');
+  return { ok: true, audioB64: out.audio.toString('base64'), mime: out.mime || 'audio/wav' };
 });
 
 /* ---------- Telegram IPC (FEATURE 3) ---------- */

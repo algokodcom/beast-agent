@@ -1,6 +1,6 @@
 'use strict';
 
-/* Kurulum progress bus — agent modülleri (whisper / mem0 / tools) yüzde üretir,
+/* Kurulum progress bus — agent modülleri (stt / ema / mem0 / tools) yüzde üretir,
    main abone olup renderer'a 'install-progress' agent:event olarak aktarır.
    transformers.js progress_callback'i dosya bazlı geldiği için per-dosya
    loaded/total toplamından genel yüzde hesaplayan aggregator da burada. */

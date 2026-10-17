@@ -86,6 +86,8 @@ body {
   display: flex;
   flex-direction: column;
 }
+/* JevTrader tam ekran modunda sol panel görünmez */
+body.jev-mode #sidebar { display: none; }
 
 #brand {
   padding: 14px 16px 12px;
@@ -1334,6 +1336,19 @@ body.term-dragging * { cursor: row-resize !important; }
 @keyframes mic-pulse { 50% { opacity: .45; } }
 /* eller-serbest mod: dinlerken .rec (kırmızı nabız), aktif ama dinlemezken .hf (vurgu) */
 #micBtn.hf, #bcMic.hf, #stMic.hf { color: var(--accent); animation: mic-pulse 2.4s ease-in-out infinite; }
+
+#convBtn {
+  width: 32px; height: 32px;
+  border-radius: 9px;
+  border: none;
+  cursor: pointer;
+  font-size: 17px;
+  line-height: 1;
+  flex-shrink: 0;
+  background: none;
+  color: var(--muted);
+}
+#convBtn:hover { background: var(--panel); color: var(--accent); }
 
 /* Beast Code girişi: + ve mikrofon (chat composer ile aynı stil) */
 #bcAttach, #bcMic {
@@ -4400,6 +4415,21 @@ body.sandbox-mode #studioRow { display: none; }
 
 #sandboxRow { display: none; flex: 1; min-height: 0; }
 body.sandbox-mode #sandboxRow { display: flex; flex-direction: row; }
+
+/* ================= JEV TRADER GÖMÜLÜ MODU =================
+   Beast içinde tam ekran JevTrader arayüzü (webview): üst bar, sol bar ve tüm
+   Beast butonları (paralel ajanlar, DM, watchers, cron, terminal) aynen kalır;
+   orta alan JevTrader UI olur. Arka uç Beast ana sürecinde koşar (src/jev). */
+body.jev-mode #chatScroll,
+body.jev-mode #composerWrap,
+body.jev-mode #ideRow,
+body.jev-mode #studioRow,
+body.jev-mode #sandboxRow,
+body.jev-mode #mcpRow { display: none; }
+
+#jevPane { display: none; flex: 1; min-height: 0; background: var(--bg); }
+body.jev-mode #jevPane { display: flex; flex-direction: column; }
+#jevView { flex: 1; min-height: 0; width: 100%; background: #0d0d0f; }
 
 #sbPanel {
   display: flex;

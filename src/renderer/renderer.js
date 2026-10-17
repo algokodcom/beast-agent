@@ -2808,20 +2808,28 @@ async function renderTtsPane() {
         : st.installing ? 'Kuruluyor… (Python paketi + ~34MB ağırlık)'
         : 'Kurulmadı — ilk kullanımda otomatik kurulur';
       if (dot) dot.className = 'voice-dot' + (st.installed ? ' ok' : st.installing ? ' warn' : '');
-      if (btn) btn.disabled = !!st.installed;
+      if (btn) {
+        btn.disabled = !!(st.installed || st.installing);
+        btn.title = btn.disabled ? 'Zaten hazır — kurulum gerekmiyor' : '';
+      }
       return st;
     } catch { return null; }
   };
   const refreshSttStatus = async () => {
     try {
       stt = await beast.sttStatus();
-      const txt = $('#sttStatusTxt'), dot = $('#sttDot');
+      const txt = $('#sttStatusTxt'), dot = $('#sttDot'), btn = $('#sttDlBtn');
       if (txt && stt) txt.textContent = sttName() + ' · ' + (sttState[stt.state] || stt.state) + (stt.mb ? ' · ' + stt.mb + ' MB' : '');
       if (dot && stt) {
         dot.className = 'voice-dot' + (
           ['ready', 'downloaded'].includes(stt.state) ? ' ok' :
           ['loading', 'partial'].includes(stt.state) ? ' warn' : ''
         );
+      }
+      /* hazır / indirilmiş / işlemde → düğme deaktif; yalnız eksik-kısmi durumda aktif */
+      if (btn && stt) {
+        btn.disabled = ['ready', 'downloaded', 'loading'].includes(stt.state);
+        btn.title = btn.disabled ? 'Zaten hazır — indirme/gereksinim yok' : '';
       }
       return stt;
     } catch { return null; }

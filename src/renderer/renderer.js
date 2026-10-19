@@ -1243,6 +1243,97 @@ function renderLangPane() {
   });
 }
 
+/* ---------- BEAST MOBILE (Android APK köprüsü) AYAR PANELİ ----------
+   Cihaz kodu MUST: %APPDATA%\beast\device.json — uygulama güncellense
+   değişmez. Telefon APK'sı ayarlarında bu kodu girecek, chat o makinedeki
+   Beast Agent'a bağlanacak (Ayarlar → Beast Mobile). */
+async function renderMobilePane() {
+  const pane = $('#tab-mobile');
+  if (!pane) return;
+  let st;
+  try { st = await beast.mobileGetState(); } catch (e) { st = { code: '', lastError: String((e && e.message) || e), enabled: false, port: 8788, running: false, clients: [], phones: [] }; }
+  const port = Number(st.port) || 8788;
+  const ip = String(st.ip || location.hostname || 'localhost').replace('::ffff:', '');
+  const link = 'ws://' + ip + ':' + port;           /* APK / ws istemcisi için */
+  const httpLink = 'http://' + ip + ':' + port;      /* telefondan tarayıcı testi için */
+  const addrHtml =
+    `<div class="prov-row" style="flex-direction:column;align-items:flex-start;gap:4px">` +
+      `<div class="sub" style="margin:0">BİLGİSAYAR ADRESİ (telefonda buna bağlan)</div>` +
+      `<div style="display:flex;align-items:center;gap:10px;width:100%">` +
+        `<code id="bmAddr" style="font-size:16px;font-weight:800;letter-spacing:1px;flex:1;user-select:all">${escapeHtml(httpLink)}</code>` +
+        `<button class="prov-act" id="bmAddrCopy" title="Adresi kopyala"><svg viewBox="0 0 24 24" width="14" height="14" style="vertical-align:-2px" aria-hidden="true"><rect x="8.5" y="8.5" width="12" height="12" rx="2.2" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M15.5 5.5v-1A2.5 2.5 0 0 0 13 2H5.5A2.5 2.5 0 0 0 3 4.5V12a2.5 2.5 0 0 0 2.5 2.5h1" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg> kopyala</button>` +
+      `</div>` +
+      `<div class="sub" style="margin:0;text-align:left">Bu adresi kopyalayıp TELEFONUN tarayıcısına yaz — aynı Wi-Fi'daysan chat testi direkt açılır (APK'sız deneme). APK'da "PC adresi"alanına aynen bunu gir.</div>` +
+    `</div>`;
+  const clientsHtml = (st.clients || []).length
+    ? (st.clients || []).map((c) =>
+        `<div class="prov-row" style="min-height:40px"><span style="flex:1">📱 ${escapeHtml(c.name || 'Telefon')} <span class="sub">${escapeHtml(String(c.ip || '').replace('::ffff:', ''))}</span></span></div>`
+      ).join('')
+    : '<div class="sub" style="text-align:left;padding:2px 0">şu an bağlı telefon yok</div>';
+  const phonesHtml = (st.phones || []).length
+    ? (st.phones || []).map((p) =>
+        `<div class="prov-row" style="min-height:38px"><span style="flex:1">${escapeHtml(p.name || 'Telefon')} <span class="sub">${escapeHtml(p.platform || 'android')} · son: ${escapeHtml(String(p.lastSeen || '').slice(0, 10))}</span></span><button class="prov-act" data-kick="${escapeHtml(p.id || '')}">✕</button></div>`
+      ).join('')
+    : '<div class="sub" style="text-align:left;padding:2px 0">henüz telefon eşleşmesi yok</div>';
+  pane.innerHTML =
+    `<h2><svg viewBox="0 0 24 24" width="19" height="19" style="vertical-align:-4px" aria-hidden="true"><rect x="6" y="2.5" width="12" height="19" rx="2.4" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M9 5.8h6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="M11.8 18.4h0.4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M3.4 8.2c-1.1 2.4-1.1 5.2 0 7.6M20.6 8.2c1.1 2.4 1.1 5.2 0 7.6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg> Beast Mobile</h2>` +
+    `<div class="sub">Beast Agent'a Android telefondan bağlan: APK'nın Ayarlar ekranında aşağıdaki <b>cîhaz kodunu</b> gir — chat bu makinedeki Beast Agent'a bağlanır. Kod güncellemelerle DEĞİŞMEZ (diskte saklanır).</div>` +
+    `<div class="prov-card">` +
+      `<div class="prov-row" style="flex-direction:column;align-items:flex-start;gap:4px">` +
+        `<div class="sub" style="margin:0">CİHAZ KODU (tekil, kalıcı)</div>` +
+        `<div style="display:flex;align-items:center;gap:10px;width:100%">` +
+          `<code id="bmCode" style="font-size:22px;font-weight:800;letter-spacing:2px;flex:1;user-select:all">${escapeHtml(String(st.code || '—'))}</code>` +
+          `<button class="prov-act" id="bmCopy" title="Cihaz kodunu kopyala"><svg viewBox="0 0 24 24" width="14" height="14" style="vertical-align:-2px" aria-hidden="true"><rect x="8.5" y="8.5" width="12" height="12" rx="2.2" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M15.5 5.5v-1A2.5 2.5 0 0 0 13 2H5.5A2.5 2.5 0 0 0 3 4.5V12a2.5 2.5 0 0 0 2.5 2.5h1" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg> kopyala</button>` +
+          `<button class="prov-act" id="bmRegen" title="Yeni cihaz kodu üret"><svg viewBox="0 0 24 24" width="14" height="14" style="vertical-align:-2px" aria-hidden="true"><path d="M20.2 12a8.2 8.2 0 1 1-2.4-5.8" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><path d="M20.4 2.8v4.6h-4.6" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg> yeni kod</button>` +
+        `</div>` +
+        `<div class="sub" style="margin:0;text-align:left">Makine adı: ${escapeHtml(String(st.name || 'Beast Agent'))} · WS: ${escapeHtml(link)}</div>` +
+      `</div>` +
+    `</div>` +
+    `<div class="prov-card">` +
+      `<div class="prov-row" style="min-height:44px"><span style="flex:1;font-weight:700">Köprü AÇIK (Electron ile beraber, ayrı program yok)</span><input type="checkbox" id="bmOn" ${(st.enabled ? 'checked' : '')}></div>` +
+      `<div class="prov-row" style="min-height:44px"><span style="flex:1;font-weight:700">Port</span><input type="number" id="bmPort" value="${port}" min="1024" max="65535" style="width:110px"></div>` +
+      `<div class="sub" style="text-align:left;${st.running ? '' : 'color:#c33'}">durum: ${st.running ? '✅ dinleniyor (port ' + escapeHtml(String(port)) + ')' : '⛔ kapalı'}${st.lastError ? ' — ' + escapeHtml(String(st.lastError || '')).slice(0, 120) : ''}</div>` +
+      (st.enabled ? addrHtml : '') +
+    `</div>` +
+    `<div class="prov-card">` +
+      `<div style="font-weight:800;margin-bottom:4px">ŞU AN BAĞLI (${escapeHtml(String((st.clients || []).length))})</div>` + clientsHtml +
+    `</div>` +
+    `<div class="prov-card">` +
+      `<div style="font-weight:800;margin-bottom:4px">EŞLEŞEN TELEFONLAR (${escapeHtml(String((st.phones || []).length))})</div>` + phonesHtml +
+    `</div>` +
+    `<div class="sub" style="text-align:left">Test hızı: telefondaki APK'yı aç → kod gir → chat balonları masaüstündeki sohbet gibi akar (WhatsApp görünümü). Evo aynı Wi-Fi ağında olmalısın; Faz B'de tünelleme ve port açma notları gelir.</div>`;
+  $('#bmAddrCopy').addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText(httpLink); toast('Adres kopyalandı ✓'); } catch {}
+  });
+  $('#bmCopy').addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText(String(st.code || '')); toast('Kod kopyalandı ✓'); } catch {}
+  });
+  $('#bmRegen').addEventListener('click', async () => {
+    if (!confirm('Yeni cihaz kodu üretilsin? Eski telefondaki eşleşme geçersiz olacak — APK iinde yeni kod girmen gerekecek.')) return;
+    try { await beast.mobileRegenCode(); toast('Yeni kod üretildi ✓'); renderMobilePane(); } catch {}
+  });
+  $('#bmOn').addEventListener('change', async (e) => {
+    try { await beast.mobileSetEnabled(e.target.checked); toast(e.target.checked ? 'Köprü açıldı ✓' : 'Köprü kapandı'); renderMobilePane(); } catch {}
+  });
+  $('#bmPort').addEventListener('change', async (e) => {
+    const v = Number(e.target.value) || 8788;
+    try { await beast.mobileSetPort(v); toast('Port güncellendi: ' + v); renderMobilePane(); } catch {}
+  });
+  pane.querySelectorAll('[data-kick]').forEach((b) => {
+    b.addEventListener('click', async () => {
+      try { await beast.mobileKickPhone(b.dataset.kick); toast('Eşleşme silindi'); renderMobilePane(); } catch {}
+    });
+  });
+  /* listen() gecikirse (0.5-1 sn) durumun olduğu gibi kalmış görünmesin:
+     açık ama running-yok ve hata-yok durumda birkaç kez sessiz yenile */
+  if (st.enabled && !st.running && !st.lastError) {
+    pane.dataset.chkw = String(Number(pane.dataset.chkw || 0) + 1);
+    if (Number(pane.dataset.chkw) <= 3) setTimeout(renderMobilePane, 650);
+  } else {
+    pane.dataset.chkw = '0';
+  }
+}
+
 async function openSettings() {
   els.settingsOverlay.hidden = false;
   if (els.setVersion) {
@@ -1364,7 +1455,7 @@ function switchTab(name) {
   document.querySelectorAll('#setTabs .tab').forEach((b) =>
     b.classList.toggle('active', b.dataset.tab === name)
   );
-    for (const p of ['lang', 'provider', 'fallout', 'skills', 'agents', 'tts', 'install', 'email', 'integrations', 'websearch', 'typesafe', 'mcp', 'events', 'empati', 'cron', 'agenda', 'usage', 'squeeze', 'logs', 'dash', 'sec', 'update']) {
+    for (const p of ['lang', 'provider', 'fallout', 'skills', 'agents', 'tts', 'install', 'email', 'integrations', 'websearch', 'typesafe', 'mcp', 'events', 'empati', 'cron', 'agenda', 'usage', 'squeeze', 'logs', 'dash', 'sec', 'update', 'mobile']) {
     const el = $('#tab-' + p);
     if (el) el.hidden = p !== name; // guard: eksik pane tüm sekmeleri kilitlemesin
   }
@@ -1382,6 +1473,7 @@ function switchTab(name) {
   if (name === 'sec') renderSecurityPane();
   if (name === 'update') renderUpdatePane(true);
   if (name === 'agents') refreshAgentsPane();
+  if (name === 'mobile') renderMobilePane();
   if (name === 'websearch') renderWebSearchPane();
   if (name === 'typesafe') renderTypesafePane();
   if (name === 'mcp') renderMcpPane();

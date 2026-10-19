@@ -33,6 +33,9 @@ const edgetts = require('./agent/edgetts'); // TTS motor 3: Microsoft Edge — �
 const piper = require('./agent/piper'); // TTS motor 4: Piper — tamamen yerel, ~21MB, zayıf makine için
 const supertonic = require('./agent/supertonic'); // TTS motor 5: Supertonic — yerel ONNX, 31 dil
 const fsguard = require('./agent/fsguard');
+const device = require('./agent/device');
+const mobileWs = require('./agent/mobile');
+const os = require('os');
 const log = require('./agent/logger');
 const squeeze = require('./agent/squeeze');
 const chansessions = require('./agent/channelsessions');
@@ -1311,6 +1314,16 @@ function requestApproval({ sessionId, tool, args }) {
             argsPreview: approvalArgsSummary(args),
           });
         }
+      } catch {}
+      /* BEAST MOBILE: telefondaki APK'da da onay rozeti dursun */
+      try {
+        mobileWs.broadcast({
+          sessionId: String(sessionId || ''),
+          type: 'approval',
+          requestId: id,
+          tool,
+          argsPreview: approvalArgsSummary(args),
+        });
       } catch {}
       const own = waOwnerNum();
       if (wa && own) {
@@ -2686,7 +2699,183 @@ async function processWaMessage(jid, payload, senderNum, requeues = 0) {
 function emitWaBoth(ev) {
   try { if (win && !win.isDestroyed()) win.webContents.send('agent:event', ev); } catch {}
   try { if (glassWin && !glassWin.isDestroyed()) glassWin.webContents.send('agent:event', ev); } catch {}
+  /* BEAST MOBILE: telefondaki APK ekranı da aynı canlı akışı alır (GUI'lerle
+     aynı event şekli) — köprü kapalıyken sessizce yok sayılır */
+  try { mobileWs.broadcast(ev); } catch {}
 }
+
+/* ---------- BEAST MOBILE KÖPRÜSÜ (Faz A) ----------
+   settings.mobile = { enabled (default true), port (default 8788) }
+   onSend/onOpen/onNew/onInterrupt/onSessions: engine bağlama noktaları.
+   engine.inimitbirinde onPair device.json kaydını tutar. */
+/* telefona oturum geçmişi snapshot'ı — masaüstündeki sessions:open IPC ile
+   AYNI kaynaktan (engine.openSession) okur; telefon ekranındaki balonlara
+   birebir MASAÜSTÜ sohbet formatı düşer. Boyut sigortası: 2MB üstünde arkadan kes */
+function sendMobileHistory(sid, replyS) {
+  if (!replyS) return;
+  let raw = [];
+  try {
+    const snap = engine.openSession(sid);
+    raw = Array.isArray(snap && snap.messages) ? snap.messages : [];
+  } catch {}
+  const cap = (s) => String(s == null ? '' : s).slice(0, 6000);
+  const slimAtt = (a) => {
+    if (a && a.type === 'image' && typeof a.dataUrl === 'string') {
+      return a.dataUrl.length <= 260000 ? a : { type: 'image', name: a.name || 'resim' };
+    }
+    return a;
+  };
+  const slim = (content) => {
+    if (Array.isArray(content)) {
+      return content.map((p) => {
+        if (p && p.type === 'text') return { ...p, text: cap(p.text) };
+        if (p && p.type === 'image_url' && p.image_url && typeof p.image_url.url === 'string' && p.image_url.url.length > 300000) {
+          return { type: 'text', text: '[büyük görsel — masaüstünde görmen gerekir]' };
+        }
+        return p;
+      });
+    }
+    return cap(content);
+  };
+  let payload = (raw || [])
+    .filter((m) => m && (m.role === 'user' || m.role === 'assistant'))
+    .map((m) => ({ role: m.role, content: slim(m.content), attachments: Array.isArray(m.attachments) ? m.attachments.map(slimAtt) : undefined }));
+  while (payload.length > 1) {
+    let bytes = 0;
+    try { bytes = JSON.stringify({ t: 'session', messages: payload }).length; } catch { break; }
+    if (bytes < 2 * 1024 * 1024) break;
+    payload = payload.slice(20); /* en eskilerden 20 tanesini at */
+  }
+  try { replyS({ t: 'session', sid: String(sid || ''), messages: payload }); } catch {}
+}
+
+/* telefon konvertörlü sessions akışı — engine'in 'liste tazele' sinyali ({type:'sessions'},
+   İÇİ BOŞ) telefona ham gitmez: DOLDURULMUŞ liste ({t:'sessions', list, activeSid}) gider */
+function mobileSessionsList() {
+  return engine.listSessions().map((s) => ({
+    id: s.id,
+    title: String(s.title || s.lastAssistant || 'sohbet').slice(0, 60),
+    updatedAt: s.updatedAt || s.ts || null,
+    botId: s.botId || null,
+  }));
+}
+function broadcastMobileSessions() {
+  try { mobileWs.broadcast({ t: 'sessions', list: mobileSessionsList(), activeSid: desktopActiveSid || '' }); } catch {}
+}
+
+const mobileHandlers = {
+  onSend: (sid, { text, attachments }) => {
+    try {
+      queueDesktopMessage(sid, {
+        text: String(text || '').slice(0, 8000),
+        attachments: Array.isArray(attachments) && attachments.length ? attachments : undefined,
+      });
+    } catch {}
+  },
+  onOpen: (sid, replyS) => {
+    try {
+      if (!sid || !sessionFileAlive(sid)) {
+        try { sendMobileHistory(sid, replyS); } catch {} /* boş snapshot döner */
+        return;
+      }
+      desktopActiveSid = sid;
+      sendMobileHistory(sid, replyS);
+    } catch {}
+  },
+  onNew: (sendS) => {
+    try {
+      const v = createDesktopSession();
+      switchDesktopSid(v.id); /* ana + cam da yeni oturuma taşınır */
+      try { sendS({ t: 'session-switch', sessionId: v.id }); } catch {}
+      desktopEcho(v.id, '/new', 'Yeni sohbet açıldı (telefondan) — sıfırdan konuşabilirsin. Eski sohbet listede duruyor.');
+    } catch (e) {
+      desktopEcho(desktopActiveSid || '', '/new', 'Yeni sohbet açılamadı: ' + String((e && e.message) || e));
+    }
+  },
+  onInterrupt: (sid) => {
+    try { engine.interrupt(sid, 'telefon dışından durdurma'); } catch {}
+  },
+  onSessions: (sendS) => {
+    try {
+      sendS({ t: 'sessions', list: mobileSessionsList(), activeSid: desktopActiveSid || '' });
+    } catch {}
+  },
+  onPair: (meta) => {
+    try {
+      device.upsertPhone({ id: meta.did, name: meta.name, platform: meta.platform });
+    } catch {}
+  },
+};
+
+let lastMobileStartError = '';
+
+function mobileCfg() {
+  try { return settings.mobile || (settings.mobile = { enabled: true, port: 8788 }); } catch {}
+  return { enabled: true, port: 8788 };
+}
+
+/* LAN IPv4: telefondan bu PC'ye gitmek için adres (Wi-Fi/Ethernet ilk tercihi).
+   169.254.* (APIPA/kablolu yok) ve docker/wsl farazidalleri elenir. */
+function lanIp() {
+  try {
+    const ifs = os.networkInterfaces();
+    const good = [];
+    for (const name of Object.keys(ifs)) {
+      for (const it of ifs[name] || []) {
+        if (!it || it.internal || it.family !== 'IPv4') continue;
+        const ip = String(it.address || '');
+        if (!ip || ip.startsWith('169.254.') || ip.startsWith('127.')) continue;
+        /* docker/wsl/hyper-v arayüzlerini arkaya al: öncelik puani */
+        const low = name.toLowerCase();
+        let prio = 5;
+        if (/wi-fi|wlan|wl/.test(low)) prio = 1;
+        else if (/ethernet|eth/.test(low)) prio = 2;
+        if (/docker|vethernet|hyper-v|vmware|virtualbox|loopback/i.test(low)) prio = 9;
+        good.push({ ip, prio });
+      }
+    }
+    good.sort((a, b) => a.prio - b.prio);
+    return good.length ? good[0].ip : '127.0.0.1';
+  } catch { return '127.0.0.1'; }
+}
+
+/* listen() asynktir: renderer "kapalı" görmesin diye running/lastError oturasın —
+   en çok 1 sn bekler (50ms x 20). enabled=false ise hemen döner. */
+async function waitMobileSettled() {
+  for (let i = 0; i < 20; i++) {
+    if (!mobileCfg().enabled) break;
+    const st = mobileWs.status();
+    if (st.running || st.lastError) break;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  return mobileWs.status();
+}
+
+function applyMobileServer() {
+  try {
+    const cfg = mobileCfg();
+    if (cfg.enabled) {
+      const r = mobileWs.start({
+        port: Number(cfg.port) || 8788,
+        getDeviceCode: () => device.getDevice().code,
+        handlers: mobileHandlers,
+        onStatus: () => {},
+      });
+      if (r && r.ok) {
+        log.info('mobile', `WS köprüsü dinliyor: http://${lanIp()}:${Number(cfg.port) || 8788}`);
+      } else {
+        lastMobileStartError = r && r.error ? String(r.error) : 'başlatılamadı';
+        log.error('mobile', 'WS köprüsü başlatılamadı: ' + lastMobileStartError);
+      }
+    } else {
+      mobileWs.stop();
+    }
+  } catch (e) {
+    lastMobileStartError = String((e && e.message) || e);
+    log.error('mobile', 'WS köprüsü başlatılamadı: ' + lastMobileStartError);
+  }
+}
+
 
 function ensureWa() {
   if (!wa) {
@@ -3271,6 +3460,13 @@ function reloadBackend() {
       if (win && !win.isDestroyed()) win.webContents.send('agent:event', ev);
       /* CAM SOHBET relay: masaüstü glass panel canlı akışı da izler */
       try { if (glassWin && !glassWin.isDestroyed()) glassWin.webContents.send('agent:event', ev); } catch {}
+      /* BEAST MOBILE: telefondaki APK/chat EKİ DE bu canlı pompa ile izler —
+         (emitWaBoth yalnız WhatsApp kanalını taşır; masaüstü sohbet tokarak
+         ana cam ekran gibi telefona da burada düşer) */
+      try {
+        if (ev && ev.type === 'sessions') broadcastMobileSessions(); /* boş sinyal → dolu liste */
+        else mobileWs.broadcast(ev);
+      } catch {}
       /* PARALEL AJAN BİTİŞİ: running → done/error/aborted geçişinde tek toast */
       if (ev.type === 'agents' && Array.isArray(ev.jobs)) {
         for (const j of ev.jobs) {
@@ -3711,6 +3907,14 @@ app.whenReady().then(() => {
     createWindow();
     log.info('main', 'Beast Agent başlatıldı');
     createTray();
+    /* BEAST MOBILE: cihaz kodu garanti (yoksa üretilir, diskte kalıcı) +
+       WS köprüsü WhatsApp/Telegram gibi AYNI süreçte otomatik başlar —
+       ayrı program İSTİSNA GÖRULMEZ; ayar yerine Elektron açık kaldıkça canlı */
+    try {
+      device.ensureDevice();
+      applyMobileServer();
+      log.info('mobile', `cihaz kodu: ${device.deviceName()} · ${device.getDevice().code}`);
+    } catch (e) { log.error('mobile', String((e && e.message) || e)); }
     cron.init({ onFire: cronFire });
     watchers.start({ onTrigger: watcherFire });
     empatiKickoff(); // empati loop: açılış + 90 sn sonra ilk tarama, sonra cfg aralığı
@@ -6442,6 +6646,8 @@ function switchDesktopSid(newId) {
       glassWin.webContents.send('agent:event', { type: 'glass-session', sessionId: sidStr });
     }
   } catch {}
+  /* BEAST MOBILE: telefonda da aynı oturuma geç — snapshot istesin */
+  try { mobileWs.broadcast({ type: 'session-switch', sessionId: sidStr }); } catch {}
   /* tüm panelin oturum listesi de tazelensin (yeni sohbet listeye düşer) */
   try {
     if (win && !win.isDestroyed()) {
@@ -6450,6 +6656,63 @@ function switchDesktopSid(newId) {
   } catch {}
 }
 ipcMain.handle('sessions:create', () => createDesktopSession());
+/* ---------- BEAST MOBILE IPC (ayarlar paneli) ---------- */
+ipcMain.handle('mobile:getState', () => {
+  try {
+    const st = mobileWs.status();
+    return {
+      code: device.getDevice().code,
+      name: device.deviceName(),
+      enabled: !!mobileCfg().enabled,
+      port: Number(mobileCfg().port) || 8788,
+      running: !!st.running,
+      lastError: String(st.lastError || lastMobileStartError || ''),
+      ip: lanIp(),
+      clients: st.clients,
+      phones: device.listPhones(),
+    };
+  } catch (e) {
+    return { code: '', name: 'Beast Agent', enabled: false, port: 8788, running: false, lastError: String(e), ip: '127.0.0.1', clients: [], phones: [] };
+  }
+});
+ipcMain.handle('mobile:setEnabled', async (_e, on) => {
+  try {
+    const cfg = mobileCfg();
+    cfg.enabled = !!on;
+    lastMobileStartError = '';
+    saveSettings();
+    applyMobileServer();
+  } catch {}
+  await waitMobileSettled(); /* listen otursun — renderer hemen doğru durumu görsün */
+  return mobileWs.status();
+});
+ipcMain.handle('mobile:setPort', async (_e, p) => {
+  try {
+    const n = Math.max(1024, Math.min(65535, Number(p) || 8788));
+    const cfg = mobileCfg();
+    cfg.port = n;
+    lastMobileStartError = '';
+    saveSettings();
+    applyMobileServer();
+  } catch {}
+  await waitMobileSettled();
+  return mobileWs.status();
+});
+ipcMain.handle('mobile:regenCode', () => {
+  try {
+    device.regenCode();
+    /* kod değişti — ESKİ İSTEMCİLER geçersiz: aktif tüm ws soketleri kesilir */
+    try { mobileWs.stop(); applyMobileServer(); } catch {}
+  } catch {}
+  return { code: device.getDevice().code };
+});
+ipcMain.handle('mobile:setName', (_e, name) => {
+  try { device.setDeviceName(name); } catch {}
+  return { name: device.deviceName() };
+});
+ipcMain.handle('mobile:kickPhone', (_e, id) => {
+  try { device.kickPhone(id); return true; } catch { return false; }
+});
 ipcMain.handle('sessions:open', (_e, id) => engine.openSession(id));
 ipcMain.handle('sessions:delete', (_e, id) => {
   const sid = String(id || '');
@@ -6713,6 +6976,8 @@ ipcMain.handle('agent:send', (_e, { sessionId, text }) => {
         glassWin.webContents.send('agent:event', { sessionId: String(sessionId || ''), type: 'clear' });
       }
     } catch {}
+    /* BEAST MOBILE: telefondaki ekran da bu oturumu temizler */
+    try { mobileWs.broadcast({ sessionId: String(sessionId || ''), type: 'clear' }); } catch {}
     desktopEcho(sessionId, '/clear', ok ? 'Sohbet geçmişi gerçekten silindi — bu oturumda sıfırdan devam ediyorsun.' : 'Oturum bulunamadı.');
     return true;
   }

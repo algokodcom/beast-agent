@@ -10,6 +10,13 @@ contextBridge.exposeInMainWorld('beast', {
   listSessions: () => ipcRenderer.invoke('sessions:list'),
   createSession: () => ipcRenderer.invoke('sessions:create'),
   openSession: (id) => ipcRenderer.invoke('sessions:open', id),
+  /* Beast Mobile (Android APK köprüsü) — ayarlar paneli */
+  mobileGetState: () => ipcRenderer.invoke('mobile:getState'),
+  mobileSetEnabled: (on) => ipcRenderer.invoke('mobile:setEnabled', !!on),
+  mobileSetPort: (p) => ipcRenderer.invoke('mobile:setPort', p),
+  mobileRegenCode: () => ipcRenderer.invoke('mobile:regenCode'),
+  mobileSetName: (name) => ipcRenderer.invoke('mobile:setName', name),
+  mobileKickPhone: (id) => ipcRenderer.invoke('mobile:kickPhone', id),
   /* cam sohbet (masaüstü neon glass panel) */
   glassClose: () => ipcRenderer.invoke('glass:close'),
   glassDesktop: () => ipcRenderer.invoke('glass:desktop'),

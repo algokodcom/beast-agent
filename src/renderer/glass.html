@@ -434,6 +434,38 @@
       background: rgba(10, 130, 255, 0.12); color: #0765b8;
       border-color: rgba(10, 130, 250, 0.6);
     }
+    /* EK (ATAÇ) BUTONU — konuşma modunun yanında; resim/metin dosyası seçer.
+       Panodaki resim Ctrl+V ile de eklenir (glass.js'teki paste köprüsü). */
+    .gattach {
+      flex: 0 0 auto; width: 38px; height: 34px; border-radius: 10px;
+      background: var(--g-stop-bg); color: var(--g-stop-color);
+      border: 1px solid var(--g-stop-border);
+      font-size: 14px; cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      transition: transform .12s, background .15s, box-shadow .2s;
+    }
+    .gattach:hover {
+      background: var(--g-stop-hover-bg); transform: scale(1.06);
+      box-shadow: 0 0 14px rgba(0, 190, 255, 0.25);
+    }
+    /* GÖNDERİM ÖNCESİ EKLER: input üstünde çipler — tıkla × ile çıkar,
+       beast-agent ekranındaki 'chip' düzenesinin cam kopyası */
+    .g-penchips {
+      flex: 0 0 auto; display: flex; flex-wrap: wrap; gap: 5px; padding: 0 2px;
+    }
+    .g-penchips[hidden] { display: none; }
+    .g-pchip {
+      display: inline-flex; align-items: center; gap: 6px;
+      font-size: 11px; color: var(--g-chip-color);
+      background: var(--g-chip-bg);
+      border: 1px solid var(--g-chip-border);
+      border-radius: 8px; padding: 3px 9px;
+      max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      cursor: pointer;
+    }
+    .g-pchip:hover { background: var(--g-chip-hover-bg); color: var(--g-chip-hover-color); }
+    .g-pchip .px { font-size: 12px; opacity: .8; }
+    .g-pchip:hover .px { opacity: 1; }
     /* MİNİ BALON: − ile ekrandan çekilir; balona tıkla → eski boyuta dön */
     body.mini .g-head, body.mini .g-msgs, body.mini .g-foot { display: none; }
     body.mini .g-themepop { display: none; }
@@ -459,7 +491,7 @@
       background: var(--g-chip-hover-bg); color: var(--g-chip-hover-color);
       transform: scale(1.06);
     }
-    .g-miniball svg, .gvoice svg { display: block; }
+    .g-miniball svg, .gvoice svg, .gattach svg { display: block; }
   </style>
 </head>
 <body>
@@ -485,8 +517,14 @@
     <div class="g-msgs" id="gMsgs"></div>
     <div class="g-foot">
       <div class="g-slash" id="gSlash" hidden></div>
+      <div class="g-penchips" id="gChips" hidden></div>
       <div class="g-footrow">
         <textarea class="g-input" id="gInput" rows="1" placeholder="mesajınızı yazın…"></textarea>
+        <div class="gattach" id="gAttach" title="Resim / dosya ekle — panodaki resmi Ctrl+V ile de yapıştırabilirsin">
+          <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">
+            <path d="M21.44 11.05 12.25 20.24 a5.68 5.68 0 0 1 -8.03 -8.03 L15.4 1.03 a3.79 3.79 0 0 1 5.36 5.36 L11.7 15.45 a1.9 1.9 0 0 1 -2.69 -2.69 L18.2 3.57" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </div>
         <div class="gvoice" id="gVoice" title="Konuşma modu (STT + TTS)">
           <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
             <rect x="9" y="3" width="6" height="11" rx="3" fill="none" stroke="currentColor" stroke-width="1.6"/>
@@ -497,6 +535,7 @@
         <div class="gstop" id="gStop" title="Çalışanı durdur">⏹</div>
         <div class="gsend" id="gSend" title="Gönder">➤</div>
       </div>
+      <input type="file" id="gFile" multiple hidden accept="image/*,.txt,.md,.json,.csv,.log,.js,.ts,.py,.ps1,.bat,.cmd,.html,.css,.yaml,.yml,.xml,.ini">
     </div>
     <div class="g-miniball" id="gMiniBall" title="Cam sohbeti geri aç">
       <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true">

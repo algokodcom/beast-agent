@@ -101,8 +101,25 @@ function friendlyError(status, statusText, detail) {
 /* SAĞLAYICI GEÇİCİ HATASI: bazı sağlayıcılar upstream arızasını HTTP 400
    gövdesinde "server_error" olarak döner — istemci hatası değildir, tekrar
    denenmeli. Bu bayrak olmadan 400 kalıcı sayılıp model boşuna "çökmüş" olur. */
+/* GÖRSEL/MEDYA DESTEK YOK sinyali: sağlayıcı 400 gövdesinde
+   'unsupported_parameter' ya da 'Unrecognized request argument' + media/image
+   vurgusu → bu model bu isteğin parametresini TANIMIYOR (ör. messages[i].media
+   veya image_url). Geçici HATA DEĞİL — tekrar denemek aynı isteği dağlar;
+   istek medyasız yeniden kurulmalıdır (engine bunu işaretten anlar). */
+function isMediaSupportError(status, detail) {
+  if (status !== 400 && status !== 404 && status !== 422) return false;
+  const d = String(detail || '');
+  return (/unsupported[_ -]?parameter|unrecognized\s+request\s+argument/i.test(d)) &&
+    /media|image|vision|multimodal/i.test(d);
+}
+
 function isTransientDetail(status, detail) {
   if (status !== 400 && status !== 500) return false;
+  /* İSTİSNA: 'unsupported_parameter / Unrecognized request argument' istemci-
+     tarafı parametre hatasıdır — gövde 'Upstream request failed' kalıbına
+     uysa bile aynı isteği tekrarlamak boş; engine mediaBad işaretini görüp
+     isteği medyasız kurar (sürekli 400 döngüsünü kırar). */
+  if (isMediaSupportError(status, detail)) return false;
   return /"(type|code)"\s*:\s*"server_error"|Error from provider|Upstream (request failed|response was not valid JSON)|temporar/i.test(
     String(detail || '')
   );
@@ -114,6 +131,8 @@ function httpError(status, statusText, detail, headers) {
   const err = new Error(friendlyError(status, statusText, detail));
   err.status = status;
   if (isUsageLimitDetail(detail)) err.usageLimit = true;
+  /* medya/param SUPPORT hatası ayrı işaret — engine görseli düşürüp yeniden kurar */
+  if (isMediaSupportError(status, detail)) err.mediaBad = true;
   if (isTransientDetail(status, detail)) err.transient = true;
   err.retryAfterMs = parseRetryAfter(headers && (headers.get('retry-after-ms') || headers.get('retry-after')));
   return err;

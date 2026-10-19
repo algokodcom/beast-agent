@@ -27,6 +27,9 @@ const gThemePop = $('#gThemePop');
 const gStop = $('#gStop');
 const gVoice = $('#gVoice');
 const gSlash = $('#gSlash');
+const gAttach = $('#gAttach'); /* 📎 — resim/dosya ekleme butonu */
+const gChips = $('#gChips'); /* gönderi öncesi ek çipleri satırı */
+const gFile = $('#gFile'); /* gizli dosya seçici */
 
 let sessions = [];
 let sid = null;
@@ -431,6 +434,23 @@ function onEventInner(ev) {
          panel ONU açar — iki panelde de AYNI sohbet, AYNI canlı akış */
       if (ev.sessionId && ev.sessionId !== sid) openSid(ev.sessionId, true);
       break;
+    case 'clear':
+      /* /clear GERÇEK silme — cam ekranı da sıfırlanır (beast-agent ekranıyla
+         aynı davranış): canlı akış balonu kapanır, geçmiş boşalır, koşan tur
+         sürüyorsa sıradaki olaylar dupa sıfır ekrana düşer */
+      gMsgs.innerHTML = '';
+      toolChips.clear();
+      streambubble = null;
+      streamBuf = '';
+      replyAnchor = null;
+      turnHadLive = false;
+      if (!busy) {
+        setDot('ok', 'geçmiş silindi · sıfırdan yazabilirsin');
+      } else {
+        setDot('busy', 'geçmiş silindi — koşan tur bitince tam temiz');
+      }
+      try { gSess.value = sid; } catch {}
+      break;
     case 'wa-stt':
       /* ANLIK STT KÖPRÜSÜ: WA sesli mesaj geldiğinde yazıya çevirme süreci
          camda da canlı görünür ("çevriliyor…" durum satırı) */
@@ -559,7 +579,7 @@ gInput.addEventListener('keydown', caretOn);
 const G_SLASH = [
   { cmd: '/help', desc: 'tüm komutları listele' },
   { cmd: '/version', desc: 'Beast Agent sürümünü göster' },
-  { cmd: '/new', desc: 'yeni oturum aç (kod verilir)' },
+  { cmd: '/new', desc: 'yeni sohbet aç (eski sohbet listede kalır)' },
   { cmd: '/open ', desc: 'koddaki oturuma geç' },
   { cmd: '/sessions', desc: 'bu sohbetin oturumları' },
   { cmd: '/stop', desc: 'çalışan her şeyi durdur + kilitle — kilit yalnız /start ile açılır' },
@@ -670,19 +690,123 @@ gInput.addEventListener('input', () => {
   inputAutoFit();
 });
 
+/* ---------- EK SİSTEMİ (ATAÇ): resim/metin dosyası seçimi + Ctrl+V
+   yapıştırma. beast-agent ekranındaki 'attachments' düzenesinin birebir cam
+   kopyası — engine, {text, attachments} payload'ını WA/masaüstüyle aynı
+   yoldan işler: resim → vision parçası (dataUrl), metin dosyası →
+   attachments.content. Ek çipleri + resimler camda userRichBubble ile
+   zaten çiziliyor. ---------- */
+const G_TEXT_EXT = /\.(txt|md|json|csv|log|js|ts|py|ps1|bat|cmd|html|css|yaml|yml|xml|ini)$/i;
+let gPending = [];
+
+function gNudge(msg) {
+  /* camda toast yok — durum satırı kısa uyarı verir; sonra hazıra döner */
+  setDot('err', msg);
+  setTimeout(() => { if (!busy) setDot('ok', 'hazır'); }, 2400);
+}
+
+function gRenderChips() {
+  if (!gChips) return;
+  gChips.innerHTML = '';
+  gChips.hidden = gPending.length === 0;
+  gPending.forEach((a, i) => {
+    const c = document.createElement('span');
+    c.className = 'g-pchip';
+    c.title = 'Eki çıkarmak için tıkla';
+    c.appendChild(document.createTextNode((a.type === 'image' ? '\u25A3 ' : '\u2261 ') + a.name));
+    const x = document.createElement('span');
+    x.className = 'px';
+    x.textContent = '×';
+    x.addEventListener('click', () => { gPending.splice(i, 1); gRenderChips(); });
+    c.appendChild(x);
+    gChips.appendChild(c);
+  });
+}
+
+function gAddFiles(files) {
+  for (const f of files) {
+    if (!f) continue;
+    if (f.size > 8 * 1024 * 1024) { gNudge('\u{1F4E5} Çok büyük (max 8MB): ' + f.name); continue; }
+    if (f.type && String(f.type).startsWith('image/')) {
+      const r = new FileReader();
+      r.onload = () => {
+        if (gPending.length >= 6) { gNudge('En fazla 6 ek'); return; }
+        gPending.push({ type: 'image', name: f.name, dataUrl: String(r.result) });
+        gRenderChips();
+      };
+      r.readAsDataURL(f);
+    } else if (G_TEXT_EXT.test(String(f.name || ''))) {
+      f.text().then((t) => {
+        if (gPending.length >= 6) { gNudge('En fazla 6 ek'); return; }
+        gPending.push({ type: 'file', name: f.name, content: t.slice(0, 200000) });
+        gRenderChips();
+      });
+    } else {
+      gNudge('Desteklenmeyen tür: ' + f.name + ' (resim ya da metin dosyası)');
+    }
+  }
+}
+
+if (gAttach) gAttach.addEventListener('click', () => {
+  if (gFile) { gFile.value = ''; gFile.click(); }
+  caretOn(); /* dosya penceresi kapanınca imleç görünür dursun */
+});
+if (gFile) gFile.addEventListener('change', () => { gAddFiles([...gFile.files]); gFile.value = ''; });
+
+/* CTRL+V YAPIŞTIRMA: pano RESİM (ya da dosya) içeriyorken pano → ek çipi.
+   Metin yapıştırmaları AYNEN default davranışta kalır (input'a yazılır).
+   Yapıştırma olayı input'ta odaklıyken de pencerenin başka yerinde de
+   yakalanır — DOM paste event'iyle gelir, ek API çağrısı gerekmez. */
+/* panodan ek yapıştırmasının durum ışığı — art arda yapıştırmada zamanlayıcı yenilenir */
+let pasteNotifyT = 0;
+
+document.addEventListener('paste', (e) => {
+  const items = e.clipboardData && e.clipboardData.items;
+  if (!items || !items.length) return;
+  const files = [];
+  let hasAtt = false;
+  for (const it of items) {
+    if (!it || it.kind !== 'file') continue;
+    const f = it.getAsFile && it.getAsFile();
+    if (!f) continue;
+    files.push(f);
+    if (!f.type || String(f.type).startsWith('image/') || G_TEXT_EXT.test(String(f.name || ''))) hasAtt = true;
+  }
+  if (!hasAtt || !files.length) return;
+  e.preventDefault();
+  gAddFiles(files);
+  gInput.focus();
+  /* KULLANICIYA GERİ BİLDİRİM: yapıştırılan resim/dosya ek olarak alındı */
+  const pastedImg = files.every((f) => f.type && String(f.type).startsWith('image/'));
+  setDot('ok', pastedImg ? '\u25A3 resim eklendi (Ctrl+V)' : '\u2261 dosya eklendi (Ctrl+V)');
+  clearTimeout(pasteNotifyT);
+  pasteNotifyT = setTimeout(() => { if (!busy) setDot('ok', 'hazır'); }, 2000);
+});
+
 async function send() {
   const text = String(gInput.value || '').trim();
-  if (!text) return;
+  const atts = gPending.slice();
+  if (!text && !atts.length) return;
   if (!sid) { setDot('err', 'önce sohbet seç'); return; }
+  /* slash komutunda ekler anlamsız — komut her zaman düz metin gider */
+  const attsOut = (atts.length && !text.startsWith('/')) ? atts : [];
   gInput.value = '';
+  gPending = [];
+  gRenderChips();
   inputAutoFit(); /* boş kutu 34px'e iner — aynı yükseklik */
   gSlashHide(); /* / listesi açıkken gönderildi → liste kapansın */
   if (!busy) closeStaleStream(); /* önceki yarım yazı balonu temizlenir */
   setDot('busy', 'gönderildi…');
   busy = true; updateStopVisible();
   try {
-    await beast.send(sid, text.slice(0, 8000));
+    await beast.send(sid,
+      attsOut.length
+        ? { text: text.slice(0, 8000), attachments: attsOut }
+        : text.slice(0, 8000));
   } catch {
+    /* gönderilemedi → metin + ekler GERİ gelsin, kaybolmasın */
+    try { gInput.value = text; inputAutoFit(); } catch {}
+    if (atts.length) { gPending = atts; gRenderChips(); }
     setDot('err', 'gönderilemedi (motor kapalı?)');
     busy = false; updateStopVisible();
   }

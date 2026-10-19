@@ -6417,6 +6417,11 @@ function onEvent(ev) {
   }
 
   switch (ev.type) {
+    case 'session-switch':
+      /* /new: yeni oturum açıldı — ana ekran da o sohbete geçer (butondan
+         bağımsız: komutla açılan yeni sohbet de her iki panelde görünür) */
+      if (ev.sessionId) openSession(ev.sessionId).catch(() => {});
+      break;
     case 'clear':
       /* /clear gerçek silme — ekran da sıfırlanır */
       els.msgs.innerHTML = '';

@@ -2210,10 +2210,14 @@ class Engine {
           '\n[Konuşma aşağıdaki mesajlarla DEVAM EDİYOR]',
       });
     }
-    /* emniyet: sağlayıcıya GİDEN hiçbir mesajda `attachments` alanı olmasın */
+    /* emniyet: sağlayıcıya GİDEN hiçbir mesajda `attachments`/`media` alanı
+       olmasın — `media` jsonl'de denetim alanıdır; sızarsa OpenAI uyumlu
+       sağlayıcı HTTP 400 "Unrecognized request argument: messages[i].media"
+       döndürür, her turda aynı hata ölür (/clear olmadan konuşma öleşti —
+       kullanıcı 'ya yeni oturum ya /clear' diye uğraşır). */
     for (let k = 0; k < flat.length; k++) {
-      if (flat[k] && flat[k].attachments) {
-        const { attachments: _drop, ...rest } = flat[k];
+      if (flat[k] && (flat[k].attachments || flat[k].media)) {
+        const { attachments: _drA, media: _drM, ...rest } = flat[k];
         flat[k] = rest;
       }
     }
@@ -3865,7 +3869,7 @@ class Engine {
       }
       const imgish =
         !aborted &&
-        /image|vision|multimodal|no endpoints/i.test(msgStr);
+        /image|vision|multimodal|no endpoints|unsupported_?parameter|Unrecognized request argument/i.test(msgStr);
       const hasImg =
         !aborted &&
         session.messages.some((m) => Array.isArray(m.content) && m.content.some((p) => p && p.type === 'image_url'));

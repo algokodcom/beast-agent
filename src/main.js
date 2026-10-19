@@ -6409,7 +6409,9 @@ ipcMain.handle('glass:state', () => ({
 }));
 
 ipcMain.handle('sessions:list', () => engine.listSessions());
-ipcMain.handle('sessions:create', () => {
+/* DESKTOP YENİ SOHBET: masaüstü UI'daki "yeni sohbet" düğmesinin aynısı,
+   /new komutu da BUNU kullanır — bot bağlama/izin/araç seti/model kayıtsız */
+function createDesktopSession() {
   const v = engine.createSession();
   /* aktif bota bağla — masaüstü UI'ı hangi bottaysa yeni sohbet o bota açılır */
   const bid = settings.activeBotId && bots.get(settings.activeBotId) ? settings.activeBotId : 'beast';
@@ -6423,7 +6425,31 @@ ipcMain.handle('sessions:create', () => {
   }
   engine.setSessionModel(v.id, b && !b.admin ? (b.model || null) : null);
   return v;
-});
+}
+/* İKİ PANELE OTURUM DEĞİŞTİR BİLDİRİMİ: ana ekran yeni 'session-switch' olayıyla,
+   cam ekran var olan 'glass-session' olayıyla yeni oturumu açar */
+function switchDesktopSid(newId) {
+  const sidStr = String(newId || '');
+  if (!sidStr) return;
+  if (sessionFileAlive(sidStr)) desktopActiveSid = sidStr;
+  try {
+    if (win && !win.isDestroyed()) {
+      win.webContents.send('agent:event', { type: 'session-switch', sessionId: sidStr });
+    }
+  } catch {}
+  try {
+    if (glassWin && !glassWin.isDestroyed()) {
+      glassWin.webContents.send('agent:event', { type: 'glass-session', sessionId: sidStr });
+    }
+  } catch {}
+  /* tüm panelin oturum listesi de tazelensin (yeni sohbet listeye düşer) */
+  try {
+    if (win && !win.isDestroyed()) {
+      win.webContents.send('agent:event', { type: 'sessions', sessionId: sidStr });
+    }
+  } catch {}
+}
+ipcMain.handle('sessions:create', () => createDesktopSession());
 ipcMain.handle('sessions:open', (_e, id) => engine.openSession(id));
 ipcMain.handle('sessions:delete', (_e, id) => {
   const sid = String(id || '');
@@ -6660,6 +6686,19 @@ ipcMain.handle('agent:send', (_e, { sessionId, text }) => {
     );
     return true;
   }
+  if (t === '/new') {
+    /* YENİ SOHBET: masaüstü "yeni sohbet" düğmesiyle aynı akış, komuttan:
+       yeni oturum yaratılır + her iki panel (ana/cam) oraya taşınır;
+       eski sohbet listede güvenle durur — geçmiş kaybolmaz */
+    try {
+      const created = createDesktopSession();
+      switchDesktopSid(created.id);
+      desktopEcho(created.id, '/new', 'Yeni sohbet açıldı — sıfırdan konuşabilirsin. (Eski sohbet listede duruyor.)');
+    } catch (e) {
+      desktopEcho(sessionId, '/new', 'Yeni sohbet açılamadı: ' + String((e && e.message) || e));
+    }
+    return true;
+  }
   if (t === '/clear') {
     /* #25 artık GERÇEK silme: oturum dosyasındaki mesajlar + notlar silinir,
        kod/meta/todolar korunur. Ekran da temizlenir ('clear' olayı). */
@@ -6667,6 +6706,13 @@ ipcMain.handle('agent:send', (_e, { sessionId, text }) => {
     if (win && !win.isDestroyed()) {
       win.webContents.send('agent:event', { sessionId: String(sessionId || ''), type: 'clear' });
     }
+    /* CAM PANEL DE TEMİZLENİR: 'clear' olayı ana pencereyle BERABER cama da
+       gönderilmezse camdaki eski geçmiş ekranda kalıyor (hata raporu) */
+    try {
+      if (glassWin && !glassWin.isDestroyed()) {
+        glassWin.webContents.send('agent:event', { sessionId: String(sessionId || ''), type: 'clear' });
+      }
+    } catch {}
     desktopEcho(sessionId, '/clear', ok ? 'Sohbet geçmişi gerçekten silindi — bu oturumda sıfırdan devam ediyorsun.' : 'Oturum bulunamadı.');
     return true;
   }
@@ -6739,6 +6785,7 @@ function desktopSlashHelp() {
     '**Beast komutları**',
     '**/help** – bu liste',
     '**/version** – Beast Agent sürümünü göster',
+    '**/new** – yeni sohbet aç (eski sohbet listede durur; ana ekran ve cam birlikte geçer)',
     '**/restart** – uygulamayı yeniden başlat',
     '**/stop** – koşan her şeyi durdur + kilitle · **/start** – kilidi aç',
     '**/change [n]** – modelleri listele · n. modele geç',

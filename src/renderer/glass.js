@@ -26,6 +26,7 @@ const gSess = $('#gSess');
 const gThemePop = $('#gThemePop');
 const gStop = $('#gStop');
 const gVoice = $('#gVoice');
+const gSlash = $('#gSlash');
 
 let sessions = [];
 let sid = null;
@@ -56,6 +57,21 @@ function mdLite(t) {
   out = out.replace(/`([^`\n]+)`/g, '<code>$1</code>');
   out = out.replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>');
   return out;
+}
+
+/* ---------- PROAKTİF NOT GİZLEME (cam özel) ----------
+   Empati Loop bildirimleri ('🫡 *Beast proaktif:*…') masaüstü chat UI'da ve
+   seçilen kanalda (WA/TG/DC) görünür; oturum geçmişinde ajanın bağlamı için
+   durur. CAM PANELE ÇİZİLMEZ: (1) tamamı proaktif olan mesaj tamamen süzülür,
+   (2) son asistan cevabına BİRLEŞTİRİLMİŞ notun ucu sessizce kesilir. */
+const G_PROAKTIF_RE = /^\s*🫡\s*\*{1,2}\s*Beast proaktif:/;
+const G_PROAKTIF_TAIL_RE = /\n+🫡\s*\*{1,2}\s*Beast proaktif:/;
+
+function cleanProactive(t) {
+  const s = String(t || '');
+  if (G_PROAKTIF_RE.test(s)) return ''; /* bildirim balonu camda görünmez */
+  const m = s.match(G_PROAKTIF_TAIL_RE); /* birleşik: normal cevap + not ucu */
+  return m ? s.slice(0, m.index).trimEnd() : s;
 }
 
 function contentText(c) {
@@ -255,6 +271,7 @@ function ensureStream() {
 /* yarım kalan yazı balonu: hata/durdurma sonrası ya da motor sessizce
    kapandıysa kapat — eski kısmi metin yeni cevapla KARIŞMASIN */
 function closeStaleStream() {
+  if (streamTimer) { clearTimeout(streamTimer); streamTimer = 0; } /* 45ms sonraki render tur bitince patlamasın */
   if (streambubble && streambubble.isConnected) {
     if (String(streamBuf || '').trim()) streamFinalize(streamBuf);
     else {
@@ -265,6 +282,17 @@ function closeStaleStream() {
     }
   }
   replyAnchor = null;
+}
+
+/* EMNİYET TEMİZLİĞİ: tur bittiğine göre hâlâ 'streaming' sınıfı taşıyıp içinde
+   içerik olmayan boş balon kaldıysa sök — boş imleç hazırda ASLA beklemez */
+function purgeEmptyStreamBubbles() {
+  for (const b of [...gMsgs.querySelectorAll('.g-bub.streaming')]) {
+    if (!String(b.textContent || '').trim() && !b.querySelector('img')) {
+      const r = b.parentNode;
+      if (r && r.parentNode === gMsgs) r.remove();
+    }
+  }
 }
 
 /* --- ÇİFT GÖSTERİM KORUMASI: aynı metin 2 sn içinde ikinci kez gelirse
@@ -302,13 +330,20 @@ async function reconcile() {
       if (have.some((h) => h === raw ||
           (h.length > 30 && (raw.startsWith(h) || h.startsWith(raw))))) continue;
       if (m.role === 'user') userRichBubble(m); /* '[WhatsApp…' dahil — hiçbir şey gizlenmez */
-      else bubble('assistant', mdLite(raw));
+      else {
+        const ct = cleanProactive(raw); /* uzlaşmada da proaktif çizilmez */
+        if (ct) bubble('assistant', mdLite(ct));
+      }
     }
   } catch {}
   reconciling = false;
 }
 
 function streamRender() {
+  /* YARIŞ KAPISI: 45ms bekleyen render, tur ('message'/'done') bitiminden sonra
+     ateşlenirse BOŞ 'streaming' balon bırakıp hazırda yanıp sönen imleç kalıntısı
+     yapıyordu — içerik yoksa balon hiç açılmaz */
+  if (!String(streamBuf || '').trim()) return;
   const b = ensureStream();
   b.innerHTML = mdLite(streamBuf);
   b.classList.add('streaming');
@@ -324,6 +359,7 @@ function streamQueued() {
 }
 
 function streamFinalize(text) {
+  if (streamTimer) { clearTimeout(streamTimer); streamTimer = 0; } /* bekleyen boş render iptal */
   const b = ensureStream();
   b.innerHTML = mdLite(typeof text === 'string' ? text : streamBuf);
   b.classList.remove('streaming');
@@ -365,7 +401,10 @@ async function openSid(id, force) {
       const txt = contentText(m && m.content);
       if (!txt.trim()) continue;
       if (m.role === 'user') userRichBubble(m); /* WA geçmişi + görseller + ekler dahil */
-      else if (m.role === 'assistant') bubble('assistant', mdLite(txt));
+      else if (m.role === 'assistant') {
+        const ct = cleanProactive(txt); /* geçmiş yüklerken de proaktif gizli */
+        if (ct) bubble('assistant', mdLite(ct));
+      }
     }
   } catch { if (mySeq === loadSeq) bubble('assistant', '(geçmiş yüklenemedi — panele yazabilirsin)'); }
   if (mySeq === loadSeq) {
@@ -410,10 +449,13 @@ function onEventInner(ev) {
         userRichBubble(m);
         setDot(busy ? 'busy' : 'ok', busy ? 'robot yapıyor…' : 'gönderildi');
       } else {
-        renderAssistantFinal(txt);
-        /* araç çağrılı mesajsa tur SÜRÜYOR — meşgul lütfen bırakma (main gibi) */
-        const hasTools = Array.isArray(m.tool_calls) && m.tool_calls.length > 0;
-        if (!hasTools) { busy = false; updateStopVisible(); }
+        const clean = cleanProactive(txt); /* proaktif not cam penceresinden süzülür */
+        if (clean) {
+          renderAssistantFinal(clean);
+          /* araç çağrılı mesajsa tur SÜRÜYOR — meşgul lütfen bırakma (main gibi) */
+          const hasTools = Array.isArray(m.tool_calls) && m.tool_calls.length > 0;
+          if (!hasTools) { busy = false; updateStopVisible(); }
+        }
       }
       break;
     }
@@ -421,7 +463,7 @@ function onEventInner(ev) {
       /* steer'le SÜRÜKEN ara cevap: canlı akış balonu açıksa onu bitir; en
          sonda 'message' eşleniği zaten düştüyse çift koruması yakalar */
       const m = ev.message || {};
-      const txt = contentText(m.content);
+      const txt = cleanProactive(contentText(m.content)); /* proaktif süzüldü */
       if (streambubble && String(streamBuf || '').trim()) streamFinalize(streamBuf);
       else if (String(txt || '').trim()) renderAssistantFinal(txt);
       break;
@@ -453,6 +495,7 @@ function onEventInner(ev) {
     case 'done':
       busy = false; updateStopVisible();
       closeStaleStream();
+      purgeEmptyStreamBubbles(); /* boş imleç kalıntısı kapatılır */
       if (!turnHadLive) reconcile(); /* cevap canlı kaçtıysa geçmişten çek ✓ */
       turnHadLive = false;
       setDot('ok', 'hazır');
@@ -462,6 +505,7 @@ function onEventInner(ev) {
     case 'error':
       busy = false; updateStopVisible();
       closeStaleStream();
+      purgeEmptyStreamBubbles(); /* boş imleç kalıntısı kapatılır */
       turnHadLive = false;
       if (vWaitRes) { const r = vWaitRes; vWaitRes = null; try { r(''); } catch {} }
       bubble('assistant', '<b style="color:#ff8f9d">⚠ HATA:</b> ' + escHtml(ev.error || '')); // kırmızı rozet
@@ -494,13 +538,137 @@ function inputAutoFit() {
 inputAutoFit();
 
 $('#gSend').addEventListener('click', send);
+
+/* İMLEÇ SESSİZ MODU: kutu hazırda beklerken imleç yanıp sönmesin — bir tuşa
+   değince ya da yazarken görünür olur, 1.5 sn hareketsizlikte yeniden gizlenir */
+let caretTimer = 0;
+function caretOn() {
+  gInput.classList.add('caret-on');
+  if (caretTimer) clearTimeout(caretTimer);
+  caretTimer = setTimeout(() => {
+    caretTimer = 0;
+    gInput.classList.remove('caret-on');
+  }, 1500);
+}
+gInput.addEventListener('mousedown', caretOn);
+gInput.addEventListener('keydown', caretOn);
+
+/* ---------- SLASH KOMUT MENÜSÜ: "/" yazınca inbox üstünde filtreli liste
+   açılır. Komutlar agent:send'de yine işlenir (camda da çalıyordu) — bu liste
+   yalnız YARDIMCI: beast-agent ekranındaki slash menüsünün aynısı. ---------- */
+const G_SLASH = [
+  { cmd: '/help', desc: 'tüm komutları listele' },
+  { cmd: '/version', desc: 'Beast Agent sürümünü göster' },
+  { cmd: '/new', desc: 'yeni oturum aç (kod verilir)' },
+  { cmd: '/open ', desc: 'koddaki oturuma geç' },
+  { cmd: '/sessions', desc: 'bu sohbetin oturumları' },
+  { cmd: '/stop', desc: 'çalışan her şeyi durdur + kilitle — kilit yalnız /start ile açılır' },
+  { cmd: '/restart', desc: 'uygulamayı yeniden başlat' },
+  { cmd: '/change', desc: 'modelleri listele · /change 5 ile geç' },
+  { cmd: '/screenshot', desc: 'ekran görüntüsünü sohbete ekle' },
+  { cmd: '/notify', desc: 'hata maili aç/kapa · /notify on|off' },
+  { cmd: '/think ', desc: 'düşünme seviyesi · /think 0-5 (0 kapalı)' },
+  { cmd: '/clear', desc: 'oturum geçmişini GERÇEKTEN sil (kod korunur)' },
+  { cmd: '/autodel', desc: 'tüm otomatik hatırlatmaları sil · /autodel all: cron dahil hepsi' },
+  { cmd: '/deltodo', desc: 'todo listesini temizle · /deltodo all: tüm oturumlar' },
+  { cmd: '/start', desc: 'kilidi aç; yeni istekler normal işlenir' },
+  { cmd: '/rule ', desc: 'kalıcı kural ekle' },
+  { cmd: '/rules', desc: 'kalıcı kuralları listele' },
+  { cmd: '/model', desc: 'modeli göster/değiştir' },
+  { cmd: '/skills', desc: 'kurulu skill\u2019ler' },
+  { cmd: '/usage', desc: 'bugünkü kullanım' },
+  { cmd: '/backup', desc: 'veriyi zip\u2019e yedekle' },
+  { cmd: '/status', desc: 'bağlantı ve servis durumu' },
+];
+
+function gSlashHide() {
+  if (gSlash) {
+    gSlash.hidden = true;
+    gSlash.innerHTML = '';
+  }
+}
+
+/* seçili satırı işaretler + ekranda görünür kalır (↑↓ ile gezinirken) */
+function gSlashMark(items, idx) {
+  items.forEach((x, i) => x.classList.toggle('sel', i === idx));
+  const cur = items[idx];
+  if (cur && cur.scrollIntoView) { try { cur.scrollIntoView({ block: 'nearest' }); } catch {} }
+}
+
+function gSlashPick(cmd) {
+  gSlashHide();
+  gInput.value = cmd;
+  gInput.focus();
+  const L = gInput.value.length;
+  try { gInput.setSelectionRange(L, L); } catch {}
+  inputAutoFit();
+  caretOn(); /* seçim sonrası argüman yazılır — imleç o an görünsün */
+}
+
+/* input'un başında "/" varsa (tek satırsa) filtreli komut listesini göster */
+function gSlashUpdate() {
+  if (!gSlash) return;
+  const v = String(gInput.value || '');
+  if (!v.startsWith('/') || v.includes('\n')) { gSlashHide(); return; }
+  const q = v.slice(1).toLowerCase();
+  const matches = G_SLASH.filter(
+    (c) => !q || c.cmd.trim().toLowerCase().slice(1).startsWith(q) || c.desc.toLowerCase().includes(q)
+  );
+  if (!matches.length) { gSlashHide(); return; }
+  gSlash.innerHTML =
+    '<div class="gs-sub">Hazır komutlar — Enter ile seç</div>' +
+    matches.map((c, i) =>
+      '<div class="gs-item' + (i === 0 ? ' sel' : '') + '" data-cmd="' + escHtml(c.cmd) + '">' +
+      '<span class="s-cmd">' + escHtml(c.cmd.trim()) + '</span>' +
+      '<span class="s-desc">' + escHtml(c.desc) + '</span></div>'
+    ).join('');
+  gSlash.hidden = false;
+  gSlash.scrollTop = 0;
+  for (const item of gSlash.querySelectorAll('.gs-item')) {
+    item.addEventListener('click', () => gSlashPick(item.dataset.cmd));
+    item.addEventListener('mousemove', () => {
+      if (item.classList.contains('sel')) return;
+      const items = [...gSlash.querySelectorAll('.gs-item')];
+      gSlashMark(items, items.indexOf(item));
+    });
+  }
+}
+
 gInput.addEventListener('keydown', (e) => {
+  if (gSlash && !gSlash.hidden) {
+    const items = [...gSlash.querySelectorAll('.gs-item')];
+    const idx = items.findIndex((x) => x.classList.contains('sel'));
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      if (items.length) gSlashMark(items, (idx + 1) % items.length);
+      return;
+    }
+    if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (items.length) gSlashMark(items, (idx - 1 + items.length) % items.length);
+      return;
+    }
+    if (e.key === 'Enter' || e.key === 'Tab') {
+      e.preventDefault();
+      if (items.length) items[Math.max(0, idx)].click();
+      return;
+    }
+    if (e.key === 'Escape') {
+      gSlashHide();
+      return;
+    }
+  }
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault();
     send();
   }
 });
-gInput.addEventListener('input', inputAutoFit);
+
+gInput.addEventListener('input', () => {
+  caretOn(); /* yazarken imleç görünür — boşta gizli kalır */
+  gSlashUpdate();
+  inputAutoFit();
+});
 
 async function send() {
   const text = String(gInput.value || '').trim();
@@ -508,6 +676,7 @@ async function send() {
   if (!sid) { setDot('err', 'önce sohbet seç'); return; }
   gInput.value = '';
   inputAutoFit(); /* boş kutu 34px'e iner — aynı yükseklik */
+  gSlashHide(); /* / listesi açıkken gönderildi → liste kapansın */
   if (!busy) closeStaleStream(); /* önceki yarım yazı balonu temizlenir */
   setDot('busy', 'gönderildi…');
   busy = true; updateStopVisible();
@@ -742,6 +911,7 @@ async function voiceLoop() {
       if (isVoiceStop(text)) { voiceStop(); break; }
       /* duyduğun söz önce INPUT'TA görünür (kanıt), gönderince silinir */
       gInput.value = text;
+      gSlashHide(); /* konuşma metni / ile başlasa bile eski liste ekranda kalmasın */
       inputAutoFit(); /* konuşma doldur ancak kutu düzgün boyuta otursun */
       setDot('busy', '📩 ' + text.slice(0, 60));
       turnHadLive = false;
@@ -773,6 +943,7 @@ $('#gTheme').addEventListener('click', (e) => {
   e.stopPropagation();
   gThemePop.hidden = !gThemePop.hidden;
   markTheme();
+  markBrowser(); /* tarayıcı seçimi de pop her açıldığında GÜNCEL işaretlensin */
 });
 gThemePop.querySelectorAll('.g-titem[data-t]').forEach((el) => {
   el.addEventListener('click', (e) => {
@@ -798,6 +969,7 @@ gThemePop.querySelectorAll('.g-bopt').forEach((el) => {
 });
 document.addEventListener('click', () => {
   if (gThemePop && !gThemePop.hidden) gThemePop.hidden = true;
+  gSlashHide(); /* panel dışına tıklandı → komut listesi kapansın */
 });
 
 /* ---------- MİNİ BALON: − ekrandan çeker; baloncuk tıklanınca geri döner ---------- */

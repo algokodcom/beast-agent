@@ -125,12 +125,12 @@ function notifyVersionUpdate() {
     `Yenilikler: GitHub Releases · Sürüm: /version · Güncelleme: /update`;
   let sid = '';
   try { sid = reuseOrLatestSession(''); } catch {}
-  /* desktop: en güncel oturuma bilgi balonu */
+  /* desktop + cam aynı bilgi balonu — ("beast agent'ta görünüyor camda değil") sürüm duyurusu */
   try {
-    if (win && !win.isDestroyed() && sid) {
+    if (sid) {
       const mdTxt = waStyleTxt.replace(/\*/g, '**');
-      win.webContents.send('agent:event', { sessionId: sid, type: 'message', message: { role: 'assistant', content: mdTxt } });
-      win.webContents.send('agent:event', { sessionId: sid, type: 'done', usage: null });
+      emitWaBoth({ sessionId: sid, type: 'message', message: { role: 'assistant', content: mdTxt } });
+      emitWaBoth({ sessionId: sid, type: 'done', usage: null });
     }
   } catch {}
   /* kanallar: SAHİBE tek satır (kişi sohbetleri kanal oturumudur —
@@ -2679,8 +2679,10 @@ async function processWaMessage(jid, payload, senderNum, requeues = 0) {
   engine.send(sid, { text: text.slice(0, 8000), attachments }, { userAction: true });
 }
 
-/* WA/DIŞ KANAL olayını MASAÜSTÜ + CAM panele birlikte yolla:
-   "beast agent'taki gibi camda da her şey görünsün" köprüsü */
+/* Olayı MASAÜSTÜ + CAM panele birlikte yolla:
+   "beast agent'taki gibi camda da her şey görünsün" köprüsü.
+   Slash komut yankıları (desktopEcho, stop/start, restart, sürüm duyurusu)
+   da bunu kullanır — camda komut çalışsın VE cevabı görünsün */
 function emitWaBoth(ev) {
   try { if (win && !win.isDestroyed()) win.webContents.send('agent:event', ev); } catch {}
   try { if (glassWin && !glassWin.isDestroyed()) glassWin.webContents.send('agent:event', ev); } catch {}
@@ -3888,6 +3890,7 @@ function glassRememberBounds() {
         const b = glassWin.getBounds();
         settings.glass = { ...(settings.glass || {}), x: b.x, y: b.y, w: b.width, h: b.height };
         saveSettings();
+        glassAppbarEval(); /* taşınma/boyut sonrası dock durumunu yeniden değerlendir */
       } catch {}
     }, 800);
   } catch {}
@@ -3902,6 +3905,121 @@ function glassPushActiveSid() {
     }
   } catch {}
 }
+
+/* ---------- CAM DOCK (APPBAR): sağ kenara yaslanan cam İÇİN ŞERİT REZERVİ ----------
+   Windows appbar API (SHAppBarMessage) ile cam sağ kenara yaslanınca OS'a
+   "bant" olarak bildirilir: diğer pencereler MAXIMIZE olunca o şeride GİRMEZ,
+   camın YANINA büyür (fotodaki VS Code durumu). Cam kenardan çekilince rezerv
+   kaldırılır → normal tam ekran davranışına döner. Mini balonda da kapalı. ---------- */
+
+const glassAppbarPsPath = () => path.join(APP_DIR, 'glass-appbar.ps1');
+
+let glassAppbarActive = false; /* appbar şu an kurulu mu (quit senkronu için) */
+let glassAppbarTimer = 0;
+let glassAppbarHwnd = 0; /* cam penceresinin gerçek Windows HWND'si (BigInt) */
+
+/* betik bir kez APP_DIR'e (appData\beast) yazılır; her çağrı powershell -File */
+function glassAppbarScript() {
+  try {
+    const ps = [
+      "param([string]$Mode = 'remove', [long]$Hwnd = 0, [int]$Width = 0, [int]$X = 0, [int]$Y = 0)",
+      "$ErrorActionPreference = 'SilentlyContinue'",
+      "Add-Type -TypeDefinition @'",
+      "using System;",
+      "using System.Runtime.InteropServices;",
+      "public class BeastAppBar {",
+      "  [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L; public int T; public int R; public int B; }",
+      "  [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X; public int Y; }",
+      "  [StructLayout(LayoutKind.Sequential)] public struct MONITORINFO { public int cbSize; public RECT rcMonitor; public RECT rcWork; public uint dwFlags; }",
+      "  [StructLayout(LayoutKind.Sequential)] public struct APPBARDATA { public int cbSize; public IntPtr hWnd; public uint uCallbackMessage; public uint uEdge; public RECT rc; public int lParam; }",
+      "  [DllImport(\"shell32.dll\")] public static extern uint SHAppBarMessage(uint msg, ref APPBARDATA d);",
+      "  [DllImport(\"user32.dll\")] public static extern IntPtr MonitorFromPoint(POINT p, uint f);",
+      "  [DllImport(\"user32.dll\")] public static extern bool GetMonitorInfo(IntPtr hMon, ref MONITORINFO mi);",
+      "}",
+      "'@",
+      "if ($Hwnd -le 0) { return }",
+      "$cb = [System.Runtime.InteropServices.Marshal]::SizeOf([type]'BeastAppBar+APPBARDATA')",
+      "$d = New-Object 'BeastAppBar+APPBARDATA'",
+      "$d.cbSize = $cb; $d.hWnd = [IntPtr]$Hwnd",
+      "if ($Mode -eq 'remove') { [void][BeastAppBar]::SHAppBarMessage(1, [ref]$d); return }",
+      "if ($Width -le 0) { [void][BeastAppBar]::SHAppBarMessage(1, [ref]$d); return }",
+      "$pt = New-Object 'BeastAppBar+POINT'; $pt.X = $X; $pt.Y = $Y",
+      "$hMon = [BeastAppBar]::MonitorFromPoint($pt, 2)",
+      "$mi = New-Object 'BeastAppBar+MONITORINFO'",
+      "$mi.cbSize = [System.Runtime.InteropServices.Marshal]::SizeOf([type]'BeastAppBar+MONITORINFO')",
+      "[void][BeastAppBar]::GetMonitorInfo($hMon, [ref]$mi)",
+      "$d.uCallbackMessage = 0x8000; $d.uEdge = 2",
+      "$d.rc = $mi.rcMonitor",
+      "$d.rc.L = $mi.rcMonitor.R - $Width",
+      "[void][BeastAppBar]::SHAppBarMessage(0, [ref]$d)  # ABM_NEW",
+      "[void][BeastAppBar]::SHAppBarMessage(2, [ref]$d)  # ABM_QUERYPOS",
+      "[void][BeastAppBar]::SHAppBarMessage(3, [ref]$d)  # ABM_SETPOS",
+    ].join('\r\n');
+    fs.mkdirSync(APP_DIR, { recursive: true });
+    const cur = (() => { try { return fs.readFileSync(glassAppbarPsPath(), 'utf8'); } catch { return ''; } })();
+    if (cur !== ps) fs.writeFileSync(glassAppbarPsPath(), ps, 'utf8');
+    return glassAppbarPsPath();
+  } catch { return null; }
+}
+
+/* durum değerlendir: cam sağ kenara yaslıysa appbar kur; değilse kaldır */
+function glassAppbarEval() {
+  clearTimeout(glassAppbarTimer);
+  glassAppbarTimer = setTimeout(() => {
+    try {
+      if (!fs || process.platform !== 'win32') return;
+      if (!glassWin || glassWin.isDestroyed() || !glassWin.isVisible()) { glassAppbarApply('remove'); return; }
+      const b = glassWin.getBounds();
+      if (b.width < 150) { glassAppbarApply('remove'); return; } /* mini balon vs. */
+      const disp = screen.getDisplayNearestPoint({ x: b.x + b.width / 2, y: b.y + b.height / 2 });
+      const db = disp.bounds;
+      const flushRight = Math.abs((b.x + b.width) - (db.x + db.width)) <= 48;
+      const inside = b.x >= db.x - 40 && b.y >= db.y - 40 && (b.y + b.height) <= (db.y + db.height) + 40;
+      if (flushRight && inside && b.width < db.width * 0.6) {
+        glassAppbarApply('set', Math.round(b.width * disp.scaleFactor), db.x + db.width / 2, db.y + db.height / 2);
+      } else {
+        glassAppbarApply('remove');
+      }
+    } catch { glassAppbarApply('remove'); }
+  }, 350);
+}
+
+function glassAppbarApply(mode, width, hintX, hintY) {
+  const script = glassAppbarScript();
+  if (!script) return;
+  const isSet = mode === 'set' && width > 0;
+  const args = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script,
+    '-Mode', isSet ? 'set' : 'remove',
+    '-Hwnd', String(glassAppbarHwnd)];
+  if (isSet) args.push('-Width', String(width), '-X', String(Math.round(hintX)), '-Y', String(Math.round(hintY)));
+  try {
+    spawn('powershell.exe', args, { windowsHide: true, detached: true, stdio: 'ignore' }).on('close', () => {
+      glassAppbarActive = isSet;
+    });
+  } catch {}
+}
+
+/* çıkış emniyeti: appbar kuruluysa SENKRON kaldır (async spawn çıkışa yetişmez) */
+function glassAppbarQuitSync() {
+  try {
+    if (!glassAppbarActive || process.platform !== 'win32') return;
+    const script = glassAppbarScript();
+    if (!script) return;
+    const { execFileSync } = require('child_process');
+    execFileSync('powershell.exe', [
+      '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script,
+      '-Mode', 'remove', '-Hwnd', String(glassAppbarHwnd),
+    ], { windowsHide: true, timeout: 4000, stdio: 'ignore' });
+    glassAppbarActive = false;
+  } catch {}
+}
+
+/* ---------- CAM DOCK SONU ---------- */
+
+/* çıkışta rezerv düşer: cam kapalıyken diğer uygulamalar NORMAL tam ekran olur */
+app.on('before-quit', () => {
+  try { glassAppbarQuitSync(); } catch {}
+});
 
 function glassOpen(hideMain) {
   try {
@@ -3919,12 +4037,20 @@ function glassOpen(hideMain) {
           backgroundThrottling: false, /* odak dışındayken canlı akış kesilmesin */
         },
       });
-      glassWin.setAlwaysOnTop(true, 'floating');
+      /* TOPMOST SEVİYESİ: cam 'screen-saver' katmanında — topmost'un en üst
+         kademesi. Normal maximize/tam ekran pencereler (VS Code vb.) camın
+         ÜSTÜNE GELEMEZ. (Oyunların exclusive fullscreen OS modu hariç — o modda
+         Windows her şeyi kapatır, istisna.) */
+      glassWin.setAlwaysOnTop(true, 'screen-saver');
+      try {
+        /* appbar kaydı için gerçek Windows HWND'si (8 byte buffer → BigInt) */
+        glassAppbarHwnd = glassWin.getNativeWindowHandle().readBigUInt64LE(0);
+      } catch { glassAppbarHwnd = 0; }
       glassWin.loadFile(path.join(__dirname, 'renderer', 'glass.html'));
       /* NOTE: setBackgroundMaterial('acrylic') DENEMEDİ — transparent pencerede
          DWM malzemesi pencere dikdörtgenini GRİ KUTU olarak boyuyor ve panelin
          dışta kalan kenarını "gri kare" yapar. Cam görünüm tamamen CSS'te. */
-      glassWin.on('closed', () => { glassWin = null; });
+      glassWin.on('closed', () => { glassWin = null; glassAppbarHwnd = 0; glassAppbarActive = false; });
       /* taşınma/boyutlanma her koşulda yakalansın ('moved'/'resized' + 'move'/
          'resize' ikilisi) — debounce sayesinde 800ms'de bir Toplu yazım */
       glassWin.on('moved', () => glassRememberBounds());
@@ -3938,6 +4064,7 @@ function glassOpen(hideMain) {
           /* CAM AÇILIŞ SENKRONU: panel, masaüstünün AÇIK OLan sohbetini izlemeye
              başlar — cam moduna geçen kullanıcı "aynı sohbet burda da var" görür */
           try { glassPushActiveSid(); } catch {}
+          glassAppbarEval(); /* sağ kenara yaslıysa dock rezervi hemen başlasın */
           /* CAM MODU: ana pencere cam panel AYAKLANINCA gizlenir — tek pencere
              görünür, kullanıcı "uygulama cam şekline dönüştü" hisseder */
           if (hideMain && win && !win.isDestroyed() && win.isVisible()) win.hide();
@@ -3950,6 +4077,7 @@ function glassOpen(hideMain) {
       if (hideMain && win && !win.isDestroyed() && win.isVisible()) win.hide();
       if (!glassWin.isVisible()) { glassWin.show(); glassWin.focus(); }
       try { glassPushActiveSid(); } catch {} /* tekrar açılışta da senkron */
+      glassAppbarEval(); /* tekrar açılışta dock durumunu da yenile */
     }
     return true;
   } catch {
@@ -3970,6 +4098,7 @@ function glassHide() {
           saveSettings();
         } catch {}
       }
+      glassAppbarApply('remove'); /* cam gizli → dock rezervi kalkar, normal tam ekran */
     }
   } catch {}
 }
@@ -4010,6 +4139,7 @@ function glassMiniSet(on) {
       const scr = screen.getPrimaryDisplay().workArea;
       glassWin.setBounds({ x: scr.x + scr.width - 96, y: scr.y + scr.height - 96, width: 84, height: 84 });
       glassMiniOn = true;
+      glassAppbarApply('remove'); /* balon dock'a sığmaz — rezerv kalkar */
     } else {
       if (glassMiniSaved) {
         try { glassWin.setBounds(glassMiniSaved); } catch {}
@@ -4018,6 +4148,7 @@ function glassMiniSet(on) {
       glassMiniOn = false;
     }
     try { glassWin.webContents.send('glass:mini', glassMiniOn); } catch {}
+    if (!glassMiniOn) glassAppbarEval(); /* balondan çıktı → dock durumunu yenile */
     return true;
   } catch { return false; }
 }
@@ -6632,13 +6763,13 @@ function desktopSlashHelp() {
 }
 
 /* masaüstünde komut → kullanıcı+asistan balonu olarak yansıt */
+/* SLASH YANKISI — KOMUT + CEVAP: masaüstü penceresi VE cam panel aynı
+   event akışını alır ("camda komut çalışıyor ama cevabı göremiyorum" çözümü) */
 function desktopEcho(sessionId, cmd, reply) {
   const sid = String(sessionId || '');
-  if (win && !win.isDestroyed()) {
-    win.webContents.send('agent:event', { sessionId: sid, type: 'message', message: { role: 'user', content: cmd } });
-    win.webContents.send('agent:event', { sessionId: sid, type: 'message', message: { role: 'assistant', content: reply } });
-    win.webContents.send('agent:event', { sessionId: sid, type: 'done', usage: null });
-  }
+  emitWaBoth({ sessionId: sid, type: 'message', message: { role: 'user', content: cmd } });
+  emitWaBoth({ sessionId: sid, type: 'message', message: { role: 'assistant', content: reply } });
+  emitWaBoth({ sessionId: sid, type: 'done', usage: null });
 }
 
 /* /change: kayıtlı modelleri numaralı listeler; /change <n> ile o modele geçer.
@@ -6721,15 +6852,15 @@ function scheduleAppRestart(delayMs = 800) {
 }
 
 function handleRestart(sessionId) {
-  const sid = String(sessionId || '');  if (win && !win.isDestroyed()) {
-    win.webContents.send('agent:event', { sessionId: sid, type: 'message', message: { role: 'user', content: '/restart' } });
-    win.webContents.send('agent:event', {
-      sessionId: sid,
-      type: 'message',
-      message: { role: 'assistant', content: '\u21BB **Yeniden başlatılıyor…** Birkaç saniye içinde pencere geri açılacak.' },
-    });
-    win.webContents.send('agent:event', { sessionId: sid, type: 'done', usage: null });
-  }
+  const sid = String(sessionId || '');
+  /* kapanış balonu masaüstü + cam iki panel birden */
+  emitWaBoth({ sessionId: sid, type: 'message', message: { role: 'user', content: '/restart' } });
+  emitWaBoth({
+    sessionId: sid,
+    type: 'message',
+    message: { role: 'assistant', content: '\u21BB **Yeniden başlatılıyor…** Birkaç saniye içinde pencere geri açılacak.' },
+  });
+  emitWaBoth({ sessionId: sid, type: 'done', usage: null });
   scheduleAppRestart(800);
 }
 
@@ -6751,11 +6882,10 @@ function handleGlobalStopStart(sessionId, cmd) {
       ? '\u25B6 **Devam** — kilit açıldı; yeni istekler normal işlenir.'
       : 'Zaten çalışıyor — durdurulmuş bir şey yok.';
   }
-  if (win && !win.isDestroyed()) {
-    win.webContents.send('agent:event', { sessionId: sid, type: 'message', message: { role: 'user', content: cmd } });
-    win.webContents.send('agent:event', { sessionId: sid, type: 'message', message: { role: 'assistant', content: reply } });
-    win.webContents.send('agent:event', { sessionId: sid, type: 'done', usage: null });
-  }
+  /* teyit balonu masaüstü + cam iki panel birden */
+  emitWaBoth({ sessionId: sid, type: 'message', message: { role: 'user', content: cmd } });
+  emitWaBoth({ sessionId: sid, type: 'message', message: { role: 'assistant', content: reply } });
+  emitWaBoth({ sessionId: sid, type: 'done', usage: null });
 }
 
 ipcMain.handle('agent:interrupt', (_e, sessionId, reason) => {

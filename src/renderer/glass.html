@@ -18,7 +18,7 @@
       cursor: default;
 
       /* ---- TEMA: MAVİ (varsayılan) ---- */
-      --g-panel-bg: rgba(7, 14, 28, 0.74);
+      --g-panel-bg: rgba(7, 14, 28, 0.87); /* opaklık arttı — eski 0.74 arka planı fazla gösteriyordu */
       --g-panel-border: rgba(0, 205, 255, 0.55);
       --g-inset-glow1: 0 0 2px rgba(0, 229, 255, 0.6) inset;
       --g-inset-glow2: 0 0 60px rgba(0, 140, 255, 0.12) inset;
@@ -71,10 +71,10 @@
     }
     /* ---- TEMA: SİYAH — buz siyah, yazı beyaz; OUTLINE TÜM TEMALARDA MAVİ ---- */
     body[data-theme="dark"] {
-      --g-panel-bg: rgba(4, 6, 10, 0.82);
+      --g-panel-bg: rgba(4, 6, 10, 0.93); /* opaklık arttı — eski 0.82 arka planı fazla gösteriyordu */
       --g-panel-border: rgba(0, 205, 255, 0.55);
       --g-inset-glow1: 0 0 2px rgba(255, 255, 255, 0.35) inset;
-      --g-inset-glow2: 0 0 60px rgba(120, 200, 255, 0.06) inset;
+      --g-inset-glow2: 0 0 60px rgba(120, 200, 255, 0.09) inset;
       --g-line: rgba(0, 229, 255, 0.85); /* üst neon çizgi — her temada mavi */
       --g-head-border: rgba(255, 255, 255, 0.12);
       --g-head-gradient: linear-gradient(180deg, rgba(255, 255, 255, 0.06), transparent);
@@ -121,57 +121,61 @@
       --g-pop-bg: rgba(10, 12, 16, 0.97);
       --g-pop-border: rgba(255, 255, 255, 0.25);
     }
-    /* ---- TEMA: BEYAZ — buz beyazı, yazı siyah (outline mavi neon) ---- */
+    /* ---- TEMA: BEYAZ — kar beyazı buz cam, koyu yazı, mavi neon outline.
+       ESKİ %74 saydamlık karanlık masaüstünün üstünde GÜMÜŞ/GRİ bir plaka
+       gibi görünüyordu; panel artık neredeyse MAT BEYAZ, "buzlu cam" havası
+       iç parıltı + dış gölge + mavi neon çerçeveden gelir. ---- */
     body[data-theme="light"] {
-      --g-panel-bg: rgba(255, 255, 255, 0.74);
-      --g-panel-border: rgba(10, 108, 216, 0.55);
-      --g-inset-glow1: 0 0 2px rgba(10, 140, 255, 0.35) inset;
-      --g-inset-glow2: 0 0 60px rgba(10, 120, 220, 0.06) inset;
-      --g-line: rgba(10, 140, 255, 0.8);
-      --g-head-border: rgba(10, 60, 120, 0.18);
-      --g-head-gradient: linear-gradient(180deg, rgba(10, 120, 220, 0.08), transparent);
-      --g-title: #0a2a4e;
-      --g-text: #0b1c2e;
-      --g-dim: #3d6285;
-      --g-chip-bg: rgba(10, 50, 100, 0.08);
-      --g-chip-border: rgba(10, 60, 120, 0.35);
+      --g-panel-bg: rgba(251, 253, 255, 0.94);
+      --g-panel-border: rgba(10, 108, 216, 0.66);
+      --g-panel-outer: 0 24px 60px rgba(9, 36, 74, 0.22), 0 2px 10px rgba(9, 36, 74, 0.12);
+      --g-inset-glow1: 0 0 2px rgba(10, 140, 255, 0.30) inset;
+      --g-inset-glow2: 0 0 48px rgba(120, 180, 255, 0.10) inset;
+      --g-line: rgba(10, 140, 255, 0.85);
+      --g-head-border: rgba(10, 60, 120, 0.16);
+      --g-head-gradient: linear-gradient(180deg, rgba(10, 120, 220, 0.10), transparent);
+      --g-title: #08294f;
+      --g-text: #0e2135;
+      --g-dim: #47698f;
+      --g-chip-bg: rgba(10, 50, 100, 0.07);
+      --g-chip-border: rgba(10, 60, 120, 0.30);
       --g-chip-color: #0a3a6e;
-      --g-chip-hover-bg: rgba(10, 80, 180, 0.18);
+      --g-chip-hover-bg: rgba(10, 80, 180, 0.16);
       --g-chip-hover-color: #07264a;
-      --g-sess-bg: rgba(255, 255, 255, 0.8);
-      --g-sess-border: rgba(10, 60, 120, 0.35);
+      --g-sess-bg: rgba(255, 255, 255, 0.85);
+      --g-sess-border: rgba(10, 60, 120, 0.32);
       --g-sess-color: #0a2440;
       --g-opt-bg: #ffffff;
-      --g-bub-bg: rgba(10, 40, 80, 0.06);
-      --g-bub-border: rgba(10, 50, 110, 0.18);
+      --g-bub-bg: rgba(228, 240, 252, 0.65);
+      --g-bub-border: rgba(10, 55, 115, 0.15);
       --g-bub-text: #132a44;
-      --g-me-bg: rgba(10, 120, 230, 0.14);
+      --g-me-bg: rgba(10, 120, 230, 0.15);
       --g-me-border: rgba(10, 110, 220, 0.5);
       --g-me-glow: 0 0 12px rgba(10, 130, 255, 0.15);
-      --g-code-bg: rgba(10, 40, 80, 0.08);
-      --g-code-border: rgba(10, 50, 120, 0.25);
+      --g-code-bg: rgba(10, 40, 80, 0.07);
+      --g-code-border: rgba(10, 50, 120, 0.22);
       --g-code-color: #075587;
       --g-scroll: rgba(10, 60, 120, 0.3);
       --g-caret: #0a76d8;
-      --g-tool-bg: rgba(10, 40, 80, 0.05);
-      --g-tool-border: rgba(10, 50, 110, 0.16);
+      --g-tool-bg: rgba(255, 255, 255, 0.65);
+      --g-tool-border: rgba(10, 50, 110, 0.18);
       --g-tool-color: #2a567e;
-      --g-appr-bg: rgba(255, 220, 110, 0.3);
+      --g-appr-bg: rgba(255, 220, 110, 0.28);
       --g-appr-border: rgba(180, 130, 20, 0.5);
       --g-appr-text: #6b4d00;
-      --g-input-bg: rgba(255, 255, 255, 0.75);
-      --g-input-border: rgba(10, 70, 140, 0.4);
+      --g-input-bg: rgba(255, 255, 255, 0.88);
+      --g-input-border: rgba(10, 70, 140, 0.34);
       --g-input-color: #0b2233;
-      --g-send1: rgba(10, 80, 190, 0.92);
-      --g-send2: rgba(10, 170, 255, 0.92);
+      --g-send1: rgba(10, 80, 190, 0.94);
+      --g-send2: rgba(10, 170, 255, 0.94);
       --g-send-color: #fff;
-      --g-send-border: rgba(10, 150, 250, 0.55);
-      --g-stop-bg: rgba(70, 95, 125, 0.1);
+      --g-send-border: rgba(10, 150, 250, 0.6);
+      --g-stop-bg: rgba(70, 95, 125, 0.10);
       --g-stop-color: #3c5068;
-      --g-stop-border: rgba(70, 95, 125, 0.42);
-      --g-stop-hover-bg: rgba(70, 95, 125, 0.2);
-      --g-pop-bg: rgba(255, 255, 255, 0.97);
-      --g-pop-border: rgba(10, 60, 120, 0.3);
+      --g-stop-border: rgba(70, 95, 125, 0.40);
+      --g-stop-hover-bg: rgba(70, 95, 125, 0.20);
+      --g-pop-bg: rgba(255, 255, 255, 0.98);
+      --g-pop-border: rgba(10, 60, 120, 0.30);
     }
     .gpanel {
       height: 100vh;
@@ -179,7 +183,8 @@
       border-radius: 16px;
       background: var(--g-panel-bg);
       border: 2px solid var(--g-panel-border);
-      box-shadow: var(--g-inset-glow1), var(--g-inset-glow2);
+      /* dış gölge yalnız BEYAZ camda tanımlı (--g-panel-outer); mavi/siyah camda none */
+      box-shadow: var(--g-panel-outer, none), var(--g-inset-glow1), var(--g-inset-glow2);
       overflow: hidden;
       position: relative;
     }
@@ -241,6 +246,13 @@
       padding: 5px 10px; border-radius: 8px; cursor: pointer; white-space: nowrap;
     }
     .g-titem:hover, .g-titem.sel { background: var(--g-chip-hover-bg); }
+    /* SEÇİLİ SATIR BELİRGİNLİĞİ: tema VE tarayıcı satırında seçili olan dursun —
+       ✓ + iç çerçeve; hangi mod aktifse pop açıkken net görünsün */
+    .g-titem.sel {
+      color: var(--g-chip-hover-color);
+      box-shadow: 0 0 0 1px var(--g-chip-border) inset;
+    }
+    .g-titem.sel::after { content: '✓'; margin-left: auto; font-weight: 700; }
     .g-titem i {
       width: 13px; height: 13px; border-radius: 50%; flex: 0 0 auto;
       border: 1px solid rgba(128, 140, 160, 0.55);
@@ -341,6 +353,39 @@
       transition: border-color .2s, box-shadow .2s, height .12s ease-out;
     }
     .g-input:focus { border-color: var(--g-line); box-shadow: 0 0 12px rgba(0, 190, 255, 0.22); }
+    /* BOŞ KUTU İPUCU: "mesajınızı yazın…" — sadece kutu boşken SOLUK GİRİ görünür */
+    .g-input::placeholder { color: var(--g-dim); opacity: .75; }
+    /* İMLEÇ SESSİZ MODU: hazırda beklerken kutu imleci yine yanıp sönmesin —
+       JS caretOn yazma/oklama sırasında .caret-on ekler, 1.5 sn sonra kalkar */
+    .g-input { caret-color: transparent; }
+    .g-input.caret-on { caret-color: var(--g-caret); }
+    /* SLASH KOMUT MENÜSÜ — "/" yazınca inbox üstünde açılır; cam temasına
+       uyan, beast-agent ekranındaki slash menüsünün kopyası */
+    .g-slash {
+      flex: 0 0 auto;
+      max-height: 190px; overflow-y: auto;
+      background: var(--g-pop-bg);
+      border: 1px solid var(--g-pop-border);
+      border-radius: 12px;
+      padding: 4px;
+      box-shadow: 0 6px 22px rgba(0, 0, 0, 0.3);
+      scrollbar-width: thin; scrollbar-color: var(--g-scroll) transparent;
+    }
+    .g-slash[hidden] { display: none; }
+    .g-slash::-webkit-scrollbar { width: 5px; }
+    .g-slash::-webkit-scrollbar-thumb { background: var(--g-scroll); border-radius: 3px; }
+    .gs-sub {
+      font-size: 9.5px; letter-spacing: .6px; text-transform: uppercase;
+      color: var(--g-dim); padding: 4px 10px 3px;
+    }
+    .gs-item {
+      display: flex; gap: 9px; align-items: baseline;
+      padding: 5px 10px; border-radius: 8px; cursor: pointer;
+    }
+    .gs-item .s-cmd { font-weight: 700; color: var(--g-title); min-width: 84px; white-space: nowrap; }
+    .gs-item .s-desc { color: var(--g-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .gs-item:hover, .gs-item.sel { background: var(--g-chip-hover-bg); color: var(--g-chip-hover-color); }
+    .gs-item.sel .s-desc, .gs-item:hover .s-desc { color: var(--g-chip-hover-color); opacity: .8; }
     .gsend {
       flex: 0 0 auto; width: 38px; height: 34px; border-radius: 10px;
       background: linear-gradient(135deg, var(--g-send1), var(--g-send2));
@@ -439,8 +484,9 @@
     </div>
     <div class="g-msgs" id="gMsgs"></div>
     <div class="g-foot">
+      <div class="g-slash" id="gSlash" hidden></div>
       <div class="g-footrow">
-        <textarea class="g-input" id="gInput" rows="1"></textarea>
+        <textarea class="g-input" id="gInput" rows="1" placeholder="mesajınızı yazın…"></textarea>
         <div class="gvoice" id="gVoice" title="Konuşma modu (STT + TTS)">
           <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
             <rect x="9" y="3" width="6" height="11" rx="3" fill="none" stroke="currentColor" stroke-width="1.6"/>

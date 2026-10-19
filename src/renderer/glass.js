@@ -479,6 +479,20 @@ function onEventInner(ev) {
 }
 
 /* ---------- event eşleme ---------- */
+/* INBOX OTOMATİK BÜYÜME: kutu 34px'de butonlarla dimdik başlar; satır
+   eklendikçe içeriğine göre uzar, 140px tavanda kutu İÇİNDE kayma açılır */
+const G_INPUT_MIN = 34;
+const G_INPUT_MAX = 140;
+function inputAutoFit() {
+  try {
+    gInput.style.height = 'auto';
+    const h = Math.min(Math.max(gInput.scrollHeight, G_INPUT_MIN), G_INPUT_MAX);
+    gInput.style.height = h + 'px';
+    gInput.style.overflowY = gInput.scrollHeight > G_INPUT_MAX + 1 ? 'auto' : 'hidden';
+  } catch {}
+}
+inputAutoFit();
+
 $('#gSend').addEventListener('click', send);
 gInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !e.shiftKey) {
@@ -486,12 +500,14 @@ gInput.addEventListener('keydown', (e) => {
     send();
   }
 });
+gInput.addEventListener('input', inputAutoFit);
 
 async function send() {
   const text = String(gInput.value || '').trim();
   if (!text) return;
   if (!sid) { setDot('err', 'önce sohbet seç'); return; }
   gInput.value = '';
+  inputAutoFit(); /* boş kutu 34px'e iner — aynı yükseklik */
   if (!busy) closeStaleStream(); /* önceki yarım yazı balonu temizlenir */
   setDot('busy', 'gönderildi…');
   busy = true; updateStopVisible();
@@ -726,6 +742,7 @@ async function voiceLoop() {
       if (isVoiceStop(text)) { voiceStop(); break; }
       /* duyduğun söz önce INPUT'TA görünür (kanıt), gönderince silinir */
       gInput.value = text;
+      inputAutoFit(); /* konuşma doldur ancak kutu düzgün boyuta otursun */
       setDot('busy', '📩 ' + text.slice(0, 60));
       turnHadLive = false;
       try {

@@ -603,6 +603,11 @@ module.exports = {
   stats,
   setEmbedder,
   mirrorLines,
+  /* docchat (src/agent/docchat.js) yeniden kullanır — AYNI embedder modeli
+     bellekte tek kalır, ikinci model yüklenmez */
+  embed,
+  cos,
+  beastRoot,
   CAP,
   DIMS,
   SEMANTIC_SKIP,

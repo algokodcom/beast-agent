@@ -210,6 +210,12 @@ contextBridge.exposeInMainWorld('beast', {
   ttsStatus: () => ipcRenderer.invoke('tts:status'),
   ahenkStatus: () => ipcRenderer.invoke('ahenk:status'),
   ahenkInstall: () => ipcRenderer.invoke('ahenk:install'),
+  /* yeni TTS motorları: Edge / Piper / Supertonic */
+  edgeStatus: () => ipcRenderer.invoke('edge:status'),
+  piperStatus: () => ipcRenderer.invoke('piper:status'),
+  piperInstall: () => ipcRenderer.invoke('piper:install'),
+  supertonicStatus: () => ipcRenderer.invoke('supertonic:status'),
+  supertonicInstall: () => ipcRenderer.invoke('supertonic:install'),
   waGetGroups: () => ipcRenderer.invoke('wa:groups:get'),
   waSetGroups: (cfg) => ipcRenderer.invoke('wa:groups:set', cfg),
   tgGetStatus: () => ipcRenderer.invoke('tg:status:get'),

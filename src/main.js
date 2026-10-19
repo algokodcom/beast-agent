@@ -29,6 +29,9 @@ const computeruse = require('./agent/computeruse');
 const duyu = require('./agent/duyu');
 const ema = require('./agent/ema');
 const ahenk = require('./agent/ahenk'); // TTS motor 2: Ahenk Cep (ozgurguler/ahenk-cep-tr)
+const edgetts = require('./agent/edgetts'); // TTS motor 3: Microsoft Edge — ücretsiz online sinir ağı (artık takılı)
+const piper = require('./agent/piper'); // TTS motor 4: Piper — tamamen yerel, ~21MB, zayıf makine için
+const supertonic = require('./agent/supertonic'); // TTS motor 5: Supertonic — yerel ONNX, 31 dil
 const fsguard = require('./agent/fsguard');
 const log = require('./agent/logger');
 const squeeze = require('./agent/squeeze');
@@ -920,42 +923,95 @@ async function transcribeAudioInner(buf, langOverride /* 'tr' | 'en' | 'auto' */
   }
 }
 
-/* TTS motoru seçimi: 'ema' (varsayılan) ya da 'ahenk' — ikisi de yerel/offline.
-   Ahenk Cep başarısızsa eMa'ya sessizce düşülür; ses asla susmasın. */
+/* TTS motoru seçimi: 'ema' (varsayılan) · 'ahenk' · 'edge' (ücretsiz online) ·
+   'piper' (ultra hafif yerel, ~21MB) · 'supertonic' (yerel ONNX, 31 dil).
+   Beş motor da takılı: seçilmeyenler ya yedek zincirinde ya da panelde kurulumla. */
+const TTS_ENGINES = ['ema', 'ahenk', 'edge', 'piper', 'supertonic'];
 function ttsEngineName() {
-  return (settings.waTts || {}).engine === 'ahenk' ? 'ahenk' : 'ema';
+  const e = String((settings.waTts || {}).engine || '').toLowerCase();
+  return TTS_ENGINES.includes(e) ? e : 'ema';
 }
 function ttsEngineLabel() {
-  return ttsEngineName() === 'ahenk' ? 'Ahenk Cep (yerel)' : 'eMa Lightning (yerel)';
+  return {
+    ema: 'eMa Lightning (yerel)',
+    ahenk: 'Ahenk Cep (yerel)',
+    edge: 'Edge TTS (online, ücretsiz)',
+    piper: 'Piper (yerel, hafif)',
+    supertonic: 'Supertonic (yerel, 31 dil)',
+  }[ttsEngineName()] || 'eMa Lightning (yerel)';
 }
 function ttsModule() {
-  return ttsEngineName() === 'ahenk' ? ahenk : ema;
+  const m = { ema, ahenk, edge: edgetts, piper, supertonic }[ttsEngineName()];
+  return m || ema;
 }
 
-/* TTS sentezi: ÇİFT motor — eMa Lightning (canberkkkkkk/ema-lightning,
-   varsayılan, yerel/offline PyTorch) + Ahenk Cep (ozgurguler/ahenk-cep-tr,
-   ikinci seçenek, sabit 48 kHz) — Türkçe. Dönen { audio: WAV Buffer, mime } —
-   WA sesli notu ffmpeg ile ogg/opus'a çevrilir, oynatıcı WAV'ı doğrudan çalar. */
+/* ses kimliği geçerli mi? motor başına liste farklı (id uzayları kesişmez) */
+function validTtsVoice(engine, v) {
+  const s = String(v || '').trim();
+  if (!s) return false;
+  const list = engine === 'edge' ? edgetts.EDGE_VOICES
+    : engine === 'piper' ? piper.VOICES
+    : engine === 'supertonic' ? supertonic.VOICES
+    : null; // ema/ahenk: ses yok (motor modeliyle geliyor)
+  if (!list) return false;
+  if (Array.isArray(list)) return list.some((x) => x && x.id === s);
+  return !!list[s];
+}
+
+/* TTS sentezi: 5 motor — eMa Lightning + Ahenk Cep (yerel PyTorch), Edge (online,
+   ücretsiz, mp3), Piper (yerel CLI, ~22 kHz WAV), Supertonic (yerel ONNX, 31 dil).
+   "SES ASLA SUSMASIN": seçili motor tutmazsa zincir düşer — yerel motorlar
+   birbirine, sonra Edge (internet varsa). Dönen { audio: Buffer, mime } —
+   WA sesli notu ffmpeg ile ogg/opus'a çevirir, oynatıcı mp3/wav'ı doğrudan çalar. */
+function ttsVoicePrefFor(engine) {
+  return validTtsVoice(engine, (settings.waTts || {}).voice) ? String(settings.waTts.voice).trim() : undefined;
+}
+function ttsFallbackChain(engineName) {
+  /* seçili + artan yedekler: yerelden yerele, son çevrimiçi. Edge seçiliyken
+     önce yereller denenir (online kopukken ve ilk round-trip yavaşken kayıp olmasın) */
+  const sel = TTS_ENGINES.includes(engineName) ? engineName : 'ema';
+  const rest = sel === 'edge'
+    ? ['ema', 'ahenk']
+    : ['ema', 'ahenk', 'edge'];
+  return [sel, ...rest.filter((e) => e !== sel)];
+}
 async function synthesizeSpeech(text, opts = {}) {
   const cfg = settings.waTts || {};
   if (!cfg.enabled) return null;
   try {
     const t = ttsCleanText(text);
     if (!t || t.length < 2) return null;
-    let out = null;
-    if (ttsEngineName() === 'ahenk') {
-      if (!ahenk.status().pkg) {
-        waLog('ahenk kurulu değil — eMa kullanıldı');
-      } else {
-        try {
+    let lastErr = '';
+    for (const engine of ttsFallbackChain(ttsEngineName())) {
+      try {
+        let out = null;
+        const voice = ttsVoicePrefFor(engine);
+        if (engine === 'edge') {
+          /* Edge: kurulum yok, doğrudan sentez — mp3 buffer döner */
+          const buf = await edgetts.synthesize(t, { voice, rate: opts.edgeRate });
+          out = buf && buf.length ? { audio: buf, mime: 'audio/mpeg' } : null;
+        } else if (engine === 'piper') {
+          if (!piper.status().installed) throw new Error('piper kurulu değil');
+          out = await piper.synthesize(t, { voice, speed: cfg.speed, pad: opts.pad });
+        } else if (engine === 'supertonic') {
+          if (!supertonic.status().installed) throw new Error('supertonic kurulu değil');
+          out = await supertonic.synthesize(t, { voice, speed: cfg.speed, pad: opts.pad });
+        } else if (engine === 'ahenk') {
+          if (!ahenk.status().pkg) throw new Error('ahenk kurulu değil');
           out = await ahenk.synthesize(t, { speed: cfg.speed, pad: opts.pad });
-        } catch (e) {
-          waLog('ahenk hatası — eMa düştü: ' + String((e && e.message) || e));
+        } else {
+          out = await ema.synthesize(t, { speed: cfg.speed, sampleRate: cfg.sampleRate, pad: opts.pad });
         }
+        if (out && out.audio) {
+          if (lastErr) waLog('tts: seçili motor düştü, yedek ' + engine + ' devraldı (' + lastErr.split('\n')[0] + ')');
+          return out;
+        }
+      } catch (e) {
+        lastErr = String((e && e.message) || e);
+        waLog('tts ' + engine + ' hata: ' + lastErr.split('\n')[0]);
       }
     }
-    if (!out) out = await ema.synthesize(t, { speed: cfg.speed, sampleRate: cfg.sampleRate, pad: opts.pad });
-    return out && out.audio ? out : null;
+    return null;
   } catch (e) {
     waLog('tts hata: ' + String((e && e.message) || e));
     return null;
@@ -11869,17 +11925,29 @@ ipcMain.handle('wa:tts:get', () => {
   const c = settings.waTts || {};
   return {
     enabled: !!c.enabled,
-    engine: c.engine === 'ahenk' ? 'ahenk' : 'ema',
+    engine: ttsEngineName(),
     speed: clampTtsNum(c.speed, 0.5, 2, 1),
     sampleRate: [48000, 24000, 16000, 8000].includes(Number(c.sampleRate)) ? Number(c.sampleRate) : 48000,
     chatAutoSpeak: !!c.chatAutoSpeak,
+    voice: String(c.voice || ''),
+    /* motor başına ses listesi — UI'daki çevirmeli seçici için */
+    voices: {
+      edge: edgetts.EDGE_VOICES.map((v) => ({ id: v.id, name: v.name })),
+      piper: Object.entries(piper.VOICES).map(([id, v]) => ({ id, name: v.name })),
+      supertonic: Object.entries(supertonic.VOICES).map(([id, v]) => ({ id, name: v.name })),
+    },
   };
 });
 ipcMain.handle('wa:tts:set', (_e, cfg) => {
+  const c = cfg || {};
+  const eng = String(c.engine || '').toLowerCase();
   settings.waTts = {
     enabled: !!(cfg && cfg.enabled),
-    /* İKİ motor: eMa Lightning (varsayılan) + Ahenk Cep (ozgurguler/ahenk-cep-tr) — ikisi de yerel */
-    engine: cfg && cfg.engine === 'ahenk' ? 'ahenk' : 'ema',
+    /* BEŞ motor: eMa/Ahenk/Edge/Piper/Supertonic — geçersiz değerde varsayılan eMa */
+    engine: TTS_ENGINES.includes(eng) ? eng : 'ema',
+    /* ses tercihi motor uzayına göndermeden ÖNCE doğrulanır — motor değişse
+       bile eski id diğer motora taşınmaz; kullanıcı yeniden seçer */
+    voice: validTtsVoice(TTS_ENGINES.includes(eng) ? eng : 'ema', c.voice) ? String(c.voice).trim() : '',
     speed: clampTtsNum(cfg && cfg.speed, 0.5, 2, 1),
     sampleRate: [48000, 24000, 16000, 8000].includes(Number(cfg && cfg.sampleRate)) ? Number(cfg.sampleRate) : 48000,
     chatAutoSpeak: !!(cfg && cfg.chatAutoSpeak),
@@ -11900,21 +11968,58 @@ ipcMain.handle('ahenk:install', async () => {
   const r = await ahenk.install();
   return { ...r, status: ahenk.status() };
 });
-/* AKTİF TTS MOTORU durumu: seçili motor (eMa | Ahenk Cep) — ayarlar + rozetler bunu kullanır */
-ipcMain.handle('tts:status', () => {
-  const m = ttsModule();
-  return { engine: ttsEngineName(), engineLabel: ttsEngineLabel(), ...m.status() };
+/* Piper (yerel/offline TTS #4): durum + elle kurulum — seçili ses tercihiyle */
+ipcMain.handle('piper:status', () => piper.status());
+ipcMain.handle('piper:install', async () => {
+  const r = await piper.install(ttsVoicePrefFor('piper'));
+  return { ...r, status: piper.status() };
 });
-/* TTS ÖN-ISI: seçili motora göre (eMa ya da Ahenk Cep) ısıtılır — motor 15 dk
-   boşta bellekten düşüyor ve soğuk ilk sentez ~9 sn sürüyor (ölçüldü);
-   ön-ısıtma bu yüklemeyi kullanıcı konuşurken gizler */
+/* Supertonic (yerel/offline TTS #5): durum + elle kurulum */
+ipcMain.handle('supertonic:status', () => supertonic.status());
+ipcMain.handle('supertonic:install', async () => {
+  const r = await supertonic.install(ttsVoicePrefFor('supertonic'));
+  return { ...r, status: supertonic.status() };
+});
+/* Edge TTS (online #3): kurulum yok — hızlı sahte durum (UI tek şekil okur) */
+ipcMain.handle('edge:status', () => ({ ok: true, installed: true, running: true, installing: false, kind: 'online' }));
+/* AKTİF TTS MOTORU durumu: seçili motor (eMa | Ahenk | Edge | Piper | Supertonic) */
+ipcMain.handle('tts:status', () => {
+  const eng = ttsEngineName();
+  const st = eng === 'edge'
+    ? { installed: true, running: true, installing: false }
+    : { ...ttsModule().status() };
+  return { engine: eng, engineLabel: ttsEngineLabel(), ...st };
+});
+/* TTS ÖN-ISI: seçili motora göre ısıtılır — yerel motorlar 10-15 dk boşta
+   bellekten düşüyor ve soğuk ilk sentez uzuyor; ön-ısıtma bu yüklemeyi
+   kullanıcı konuşurken gizler. Piper/Supertonic: eksik dosya varsa indirir. */
 ipcMain.handle('ema:prefetch', async () => {
   if (!settings.waTts || !settings.waTts.enabled) return { ok: false, skipped: true };
-  const m = ttsModule();
-  const st = m.status();
-  if (!st.pkg) return { ok: false, error: ttsEngineName() === 'ahenk' ? 'Ahenk Cep kurulu değil' : 'eMa kurulu değil' };
-  if (ttsEngineName() === 'ahenk' && !st.weights) return { ok: false, error: 'Ahenk Cep ağırlıkları inmemiş — KUR düğmesiyle kur' };
+  const eng = ttsEngineName();
   try {
+    if (eng === 'edge') return { ok: true }; // servis motoru — ısıtma yok
+    if (eng === 'piper') {
+      const st = piper.status(ttsVoicePrefFor('piper'));
+      if (!st.runtime || !st.voice) {
+        const r = await piper.install(ttsVoicePrefFor('piper'));
+        if (!r.ok) return { ok: false, error: r.error || 'piper kurulumu başarısız' };
+      }
+      return { ok: true };
+    }
+    if (eng === 'supertonic') {
+      const st = supertonic.status(ttsVoicePrefFor('supertonic'));
+      if (!st.model || !st.voice) {
+        const r = await supertonic.install(ttsVoicePrefFor('supertonic'));
+        if (!r.ok) return { ok: false, error: r.error || 'supertonic kurulumu başarısız' };
+      }
+      return { ok: true };
+    }
+    const m = ttsModule();
+    const st = m.status();
+    if (eng === 'ahenk' && !st.pkg) return { ok: false, error: 'Ahenk Cep kurulu değil' };
+    if (eng === 'ema' && !st.pkg) return { ok: false, error: 'eMa kurulu değil' };
+    if (eng === 'ahenk' && !st.weights) return { ok: false, error: 'Ahenk Cep ağırlıkları inmemiş — KUR düğmesiyle kur' };
+    if (eng === 'ema' && !st.weights) return { ok: false, error: 'eMa ağırlıkları inmemiş — KUR düğmesiyle kur' };
     await m.warm();
     return { ok: true };
   } catch (e) {

@@ -72,6 +72,9 @@ const TOOL_LABELS = {
   event_unsubscribe: (a) => `Abonelik sil: ${a.id || ''}`,
   kb_add: (a) => `Bilgi ekle: ${String(a.title || '').slice(0, 60)}`,
   kb_search: (a) => `Bilgi ara: ${String(a.query || '').slice(0, 60)}`,
+  doc_chat: (a) => a.action === 'index'
+    ? `Belge kütüphanesi: ${String(a.path || '').slice(0, 60)} indeksleniyor`
+    : `Belge arama: ${String(a.query || '').slice(0, 60)}`,
   memory_hygiene: () => 'Hafıza temizliği',
   computer_look: () => 'Ekranı görüntülüyor',
   computer_act: (a) => `Bilgisayar kullanıyor: ${a.op || ''}${a.combo ? ' ' + a.combo : ''}`,

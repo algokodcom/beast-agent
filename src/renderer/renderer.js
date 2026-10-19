@@ -2416,10 +2416,31 @@ function ttsQueueReset() {
   if (ttsPlayResolve) { const r = ttsPlayResolve; ttsPlayResolve = null; r(); }
 }
 
+/* UZUN PARÇA ÖN BÖLÜMÜ: ttsSpeak 800 karakterde sessizce keser — uzun akış
+   parçası kelime sınırından ÖNCEDEN bölünür, hiçbir kelimenin kuyruğu kalkmaz. */
+const TTS_SENT_MAX = 700;
+function ttsSplitLong(text) {
+  const out = [];
+  let rest = String(text || '');
+  while (rest.length > TTS_SENT_MAX) {
+    let i = rest.lastIndexOf(' ', TTS_SENT_MAX);
+    if (i < 200) i = TTS_SENT_MAX; // 700'de kelime boşluğu yoksa zorla kes
+    out.push(rest.slice(0, i).trim());
+    rest = rest.slice(i).replace(/^\s+/, '');
+  }
+  if (rest.trim()) out.push(rest.trim());
+  return out;
+}
+
+const TTS_SENT_MIN = 10; // bundan kısa temiz metin tek başına okunmaz — taşınır
 function ttsEnqueueSentence(sentence) {
-  ttsQList.push(sentence);
-  const st = window.BeastHandsFree && window.BeastHandsFree.ttsState;
-  if (st) { st.total++; st.streamOpen = true; } // konuşma ilerleme: N/M sayacı
+  const s = String(sentence || '');
+  if (!s) return;
+  for (const part of (s.length > TTS_SENT_MAX ? ttsSplitLong(s) : [s])) {
+    ttsQList.push(part);
+    const st = window.BeastHandsFree && window.BeastHandsFree.ttsState;
+    if (st) { st.total++; st.streamOpen = true; } // konuşma ilerleme: N/M sayacı
+  }
   ttsKick();
 }
 
@@ -2427,23 +2448,35 @@ function ttsEnqueueSentence(sentence) {
    sentezlenir → cümleler boşluksuz arka arkaya gelir. (Eski kod sentezi
    çalma BİTİNCE başlatıyordu; her cümle arasında ~0.5-2 sn ölü boşluk
    kalıyordu — akıcılık sorununun kökü buydu.) */
-function ttsSynth() {
+function ttsSynth(retrySentence, isRetry) {
   const myGen = ttsQGen;
   if (ttsSynthBusy) return;
-  if (!ttsQList.length) { ttsPump(); return; }
-  const sentence = ttsQList.shift();
+  if (retrySentence == null && !ttsQList.length) { ttsPump(); return; }
+  const sentence = retrySentence != null ? retrySentence : ttsQList.shift();
   ttsSynthBusy = true;
   beast.ttsSpeak(sentence.slice(0, 800))
     .then((r) => {
       ttsSynthBusy = false;
       if (myGen !== ttsQGen) return;
-      if (r && r.ok && r.audioB64) ttsReady.push({ text: sentence, r });
+      if (r && r.ok && r.audioB64) {
+        ttsReady.push({ text: sentence, r });
+      } else if (!isRetry) {
+        /* GEÇİCİ HATA TEKRAR: motor kayması (servis uğraşısı, yarı kesilen
+           istek) cümleyi yutmasın — aynı cümle BİR kez daha denenir. İkinci
+           hatada bırak; bozuk cümle kuyruğu sonsuza dek blokalamasın. */
+        ttsSynth(sentence, true);
+        return;
+      }
       ttsSynth(); // kuyruktaki sonrakini başlat — oynatmayla PARALEL
       ttsPump();
     })
     .catch(() => {
       ttsSynthBusy = false;
       if (myGen !== ttsQGen) return;
+      if (!isRetry) {
+        ttsSynth(sentence, true); // catch yolu da aynı tek tekrar
+        return;
+      }
       ttsSynth();
       ttsPump();
     });
@@ -2496,8 +2529,21 @@ function ttsFeedDelta(delta) {
   ttsStreamTurn = true; // done'da tamamını tekrar seslendirmemek için işaretle
   const parts = ttsPending.split(/(?<=[.!?…])\s+|\n+/);
   if (parts.length > 1) {
-    const done = parts.slice(0, -1).map((s) => speechReadyText(s)).filter(Boolean);
+    /* KISA PARÇA TAŞIMA: "Tamam." (6 harf) gibi temizlenemeyen parçalar
+       ATILMAZ — tek başına <10 harf ise yerine taşınır, sonraki cümleyle
+       birleşir. Eski kod map+filter ile sessizce yutuyordu (kullanıcının
+       "bazı parçaları atlıyor" şikayetinin ana kökü). */
+    const done = [];
+    let carry = '';
+    for (const raw of parts.slice(0, -1)) {
+      const merged = carry ? carry + ' ' + raw : raw;
+      carry = '';
+      const cleaned = speechReadyText(merged);
+      if (cleaned) done.push(cleaned);
+      else carry = merged.slice(-600); // simge/çok kısa — sonrakine taşınır (tavan: bellek)
+    }
     ttsPending = parts[parts.length - 1] || '';
+    if (carry) ttsPending = carry + ' ' + ttsPending;
     for (const s of done) ttsEnqueueSentence(s);
     return;
   }
@@ -2505,18 +2551,32 @@ function ttsFeedDelta(delta) {
   if (!ttsQList.length && !ttsReady.length && !ttsSynthBusy && !ttsQBusy && ttsPending.length >= 120) {
     const cut = ttsSoftCut(ttsPending, 120);
     if (cut) {
-      ttsPending = cut.tail;
       const s = speechReadyText(cut.head);
-      if (s) ttsEnqueueSentence(s);
+      if (s) {
+        /* baş OK ise böl; baş temizlenemiyorsa pending SABİT kalır —
+           metnini yutma, sonraki deltalarda sınır büyüyüp yeniden denenir */
+        ttsPending = cut.tail;
+        ttsEnqueueSentence(s);
+      }
     }
   }
 }
 
 function ttsFlushTail() {
-  const rest = speechReadyText(ttsPending);
+  /* TUR SONU GEVŞETİLMİŞ KAPIT: akışta kısa parça kuralları (<10 harf) taşımaya
+     derken burada artık KUYRUK sonudur — "Tamam." gibi kısa final cümlesi DE
+     söylenir (≥2 temiz karakter). Yine de boş metin ses üretmez. */
+  const raw = String(ttsPending || '').trim();
   ttsPending = '';
-  if (rest) ttsEnqueueSentence(rest);
-  else ttsKick();
+  let rest = raw ? speechReadyText(raw) : '';
+  if (!rest && raw.length >= 2) {
+    rest = mdToSpeech(raw).slice(0, 400); // <10 harf kuralı tur sonunda uygulanmaz
+  }
+  if (rest) {
+    ttsEnqueueSentence(rest);
+  } else {
+    ttsKick();
+  }
   const st = window.BeastHandsFree && window.BeastHandsFree.ttsState;
   if (st) st.streamOpen = false; // akmak bitti — kalan kuyruk tükenince konuşma tamamlanır
 }
@@ -2748,9 +2808,16 @@ async function renderTtsPane() {
       <div class="voice-row" style="margin-top:10px">
         <span style="min-width:120px">Motor</span>
         <select id="ttsEngine" class="inp" style="max-width:340px">
-          <option value="ema">eMa Lightning — hızlı, sohbet tonu</option>
-          <option value="ahenk">Ahenk Cep — doğal Türkçe (34 MB)</option>
+          <option value="ema">eMa Lightning — hızlı, sohbet tonu (yerel)</option>
+          <option value="ahenk">Ahenk Cep — doğal Türkçe, 34 MB (yerel)</option>
+          <option value="edge">Edge TTS — ücretsiz sinir ağı, internet ister</option>
+          <option value="piper">Piper — ~21 MB, zayıf makine dostu (yerel)</option>
+          <option value="supertonic">Supertonic — 31 dil, ~400 MB (yerel ONNX)</option>
         </select>
+      </div>
+      <div class="voice-row" style="margin-top:6px" id="ttsVoiceRow" hidden>
+        <span style="min-width:120px">Ses</span>
+        <select id="ttsVoice" class="inp" style="max-width:340px"></select>
       </div>
       <div class="voice-row" style="margin-top:6px">
         <span style="min-width:120px">${_t('tts_ema_sr')}</span>
@@ -2785,31 +2852,79 @@ async function renderTtsPane() {
     if (sv) sv.textContent = Number($('#emaSpeed').value).toFixed(2) + 'x';
   };
 
-  /* ---------- motor seçimi: Ahenk Cep sabit 48 kHz çıkarır — oran seçici kilitlenir ---------- */
-  const engineName = () => (($('#ttsEngine') && $('#ttsEngine').value) === 'ahenk' ? 'ahenk' : 'ema');
+  /* ---------- motor seçimi: 5 motor — örnek hızı (SR) yalnız eMa'da anlamlı:
+     Ahenk sabit 48 kHz çıkarır; Edge mp3 24 kHz, Piper ~22 kHz, Supertonic
+     model örnekleme hızıyla çıkarır — diğerlerinde SR seçici kilitlenir. */
+  const TTS_ENGINE_SET = ['ema', 'ahenk', 'edge', 'piper', 'supertonic'];
+  const ENGINE_LABELS = {
+    ema: 'eMa Lightning',
+    ahenk: 'Ahenk Cep',
+    edge: 'Edge TTS',
+    piper: 'Piper',
+    supertonic: 'Supertonic',
+  };
+  const engineName = () => {
+    const v = $('#ttsEngine') && $('#ttsEngine').value;
+    return TTS_ENGINE_SET.includes(v) ? v : 'ema';
+  };
+  let ttsCurSavedVoice = '';
+  /* motor başına ses listesi (tts.voices — wa:tts:get doldurur) */
+  let ttsVoices = null;
+  const syncVoiceOptions = () => {
+    const eng = engineName();
+    const row = $('#ttsVoiceRow'), sel = $('#ttsVoice');
+    if (!row || !sel) return;
+    const list = (ttsVoices && ttsVoices[eng]) || [];
+    if (!list.length) { row.hidden = true; sel.innerHTML = ''; return; }
+    row.hidden = false;
+    sel.innerHTML = '<option value="">(motor varsayılanı)</option>' +
+      list.map((v) => `<option value="${v.id}">${v.name}</option>`).join('');
+    /* kayıtlı id bu motora aitse taşı; motor değişince id uzayı farklıdır → sıfırla */
+    const ok = list.some((v) => v.id === ttsCurSavedVoice);
+    sel.value = ok ? ttsCurSavedVoice : '';
+    if (!ok) ttsCurSavedVoice = '';
+  };
   const syncEngineUi = () => {
     const sr = $('#emaSr');
+    const isEma = engineName() === 'ema';
     if (sr) {
-      sr.disabled = engineName() === 'ahenk';
-      if (sr.parentElement) sr.parentElement.style.opacity = engineName() === 'ahenk' ? '0.6' : '';
+      sr.disabled = !isEma;
+      if (sr.parentElement) sr.parentElement.style.opacity = isEma ? '' : '0.6';
     }
+    syncVoiceOptions();
   };
-  const motorLabel = () => (engineName() === 'ahenk' ? 'Ahenk Cep' : 'eMa Lightning');
+  const motorLabel = () => ENGINE_LABELS[engineName()] || 'eMa Lightning';
 
-  /* ---------- durum satırları ---------- */
-  /* ---------- durum satırları (AKTİF motor: tts:status eMa | Ahenk Cep döndürür) ---------- */
+  /* ---------- durum satırları (AKTİF motor: tts:status motor şekli döndürür) ---------- */
   const refreshEngineStatus = async () => {
     try {
       const st = await beast.ttsStatus();
       const txt = $('#emaStatusTxt'), dot = $('#emaDot'), btn = $('#emaDlBtn');
       if (!st) return null;
-      if (txt) txt.textContent = st.running ? 'Hazır — yerel/offline (' + (st.engineLabel || motorLabel()) + ')'
-        : st.installed ? 'Hazır — yerel/offline (' + (st.engineLabel || motorLabel()) + ')'
-        : st.installing ? 'Kuruluyor… (Python paketi + ~34MB ağırlık)'
-        : 'Kurulmadı — ilk kullanımda otomatik kurulur';
-      if (dot) dot.className = 'voice-dot' + (st.installed ? ' ok' : st.installing ? ' warn' : '');
+      const eng = st.engine || engineName();
+      const label = st.engineLabel || motorLabel();
+      let line;
+      if (eng === 'edge') {
+        line = 'Hazır — ücretsiz online motor (internet ister, kurulum yok)';
+      } else if (eng === 'piper') {
+        line = st.installing ? 'Kuruluyor… (~21 MB runtime + ses modeli)'
+          : st.installed ? 'Hazır — yerel/offline (Piper)'
+          : 'Kurulmadı — ilk kullanımda otomatik kurulur';
+      } else if (eng === 'supertonic') {
+        line = st.installing ? 'Kuruluyor… (~400 MB ONNX model + ses stili)'
+          : st.installed ? 'Hazır — yerel/offline (Supertonic, 31 dil)'
+          : 'Kurulmadı — ilk kullanımda otomatik kurulur';
+      } else {
+        line = st.running ? 'Hazır — yerel/offline (' + label + ')'
+          : st.installed ? 'Hazır — yerel/offline (' + label + ')'
+          : st.installing ? 'Kuruluyor… (Python paketi + ~34MB ağırlık)'
+          : 'Kurulmadı — ilk kullanımda otomatik kurulur';
+      }
+      if (txt) txt.textContent = line;
+      if (dot) dot.className = 'voice-dot' + (st.installed || st.running ? ' ok' : st.installing ? ' warn' : '');
       if (btn) {
-        btn.disabled = !!(st.installed || st.installing);
+        /* Edge: kurulum gerektirmez — düğme hep kapalı */
+        btn.disabled = eng === 'edge' ? true : !!(st.installed || st.installing);
         btn.title = btn.disabled ? 'Zaten hazır — kurulum gerekmiyor' : '';
       }
       return st;
@@ -2838,12 +2953,14 @@ async function renderTtsPane() {
   /* ---------- ayarları yükle ---------- */
   try {
     const tts = await beast.waGetTts();
+    ttsVoices = (tts && tts.voices) || null;
     $('#ttsOn').checked = !!tts.enabled;
     $('#emaSpeed').value = Number.isFinite(Number(tts.speed)) ? tts.speed : 1;
     $('#emaSr').value = String([48000, 24000, 16000, 8000].includes(Number(tts.sampleRate)) ? tts.sampleRate : 48000);
     $('#ttsChatAuto').checked = !!tts.chatAutoSpeak;
+    ttsCurSavedVoice = String((tts && tts.voice) || '');
     const engSel0 = $('#ttsEngine');
-    if (engSel0) engSel0.value = (tts.engine === 'ahenk' ? 'ahenk' : 'ema');
+    if (engSel0) engSel0.value = (TTS_ENGINE_SET.includes(tts.engine) ? tts.engine : 'ema');
   } catch {}
   syncEmaLabels();
   syncEngineUi();
@@ -2855,19 +2972,37 @@ async function renderTtsPane() {
   if (emaSpeedEl) emaSpeedEl.addEventListener('input', syncEmaLabels);
   const engSelEl = $('#ttsEngine');
   if (engSelEl) engSelEl.addEventListener('change', () => { syncEngineUi(); void refreshEngineStatus(); });
+  const voiceSelEl = $('#ttsVoice');
+  if (voiceSelEl) voiceSelEl.addEventListener('change', () => { ttsCurSavedVoice = String(voiceSelEl.value || ''); });
   $('#emaDlBtn').addEventListener('click', async () => {
-    const isAhenk = engineName() === 'ahenk';
-    toast(isAhenk
-      ? 'Ahenk Cep kuruluyor… (ilk seferde trnorm git-pip kurulumu + ~34MB ağırlık indirmesi)'
-      : 'eMa Lightning kuruluyor… (ilk seferde Python paketi + ~34MB ağırlık)');
+    const eng = engineName();
+    const installHints = {
+      ema: 'eMa Lightning kuruluyor… (ilk seferde Python paketi + ~34MB ağırlık)',
+      ahenk: 'Ahenk Cep kuruluyor… (ilk seferde trnorm git-pip kurulumu + ~34MB ağırlık indirmesi)',
+      piper: 'Piper kuruluyor… (~21 MB runtime + ses modeli)',
+      supertonic: 'Supertonic kuruluyor… (~400 MB ONNX model + ses stili)',
+    };
+    const readyMsgs = {
+      ema: 'eMa Lightning hazır ✓ — artık çevrimdışı seslendirme yapılır',
+      ahenk: 'Ahenk Cep hazır ✓ — artık çevrimdışı seslendirme yapılır',
+      piper: 'Piper hazır ✓ — artık çevrimdışı seslendirme yapılır',
+      supertonic: 'Supertonic hazır ✓ — artık çok dilli seslendirme yapılır',
+    };
+    toast(installHints[eng] || installHints.ema);
+    const callByEngine = {
+      ema: () => beast.emaInstall(),
+      ahenk: () => beast.ahenkInstall(),
+      piper: () => beast.piperInstall(),
+      supertonic: () => beast.supertonicInstall(),
+    };
     const poll = setInterval(refreshEngineStatus, 4000);
-    const r = await (isAhenk ? beast.ahenkInstall() : beast.emaInstall())
+    const r = await (callByEngine[eng] || callByEngine.ema)()
       .catch((e) => ({ ok: false, error: String((e && e.message) || e) }));
     clearInterval(poll);
     await refreshEngineStatus();
     toast(r && r.ok
-      ? (isAhenk ? 'Ahenk Cep hazır ✓ — artık çevrimdışı seslendirme yapılır' : 'eMa Lightning hazır ✓ — artık çevrimdışı seslendirme yapılır')
-      : (isAhenk ? 'Ahenk Cep kurulamadı: ' : 'eMa kurulamadı: ') + ((r && r.error) || '?'));
+      ? (readyMsgs[eng] || readyMsgs.ema)
+      : (ENGINE_LABELS[eng] || 'Motor') + ' kurulamadı: ' + ((r && r.error) || '?'));
   });
   $('#sttDlBtn').addEventListener('click', async () => {
     await beast.sttPrefetchNow().catch(() => {});
@@ -2881,6 +3016,9 @@ async function renderTtsPane() {
     await beast.waSetTts({
       enabled: $('#ttsOn').checked,
       engine: engineName(),
+      voice: engineName() === 'edge' || engineName() === 'piper' || engineName() === 'supertonic'
+        ? String(($('#ttsVoice') && $('#ttsVoice').value) || ttsCurSavedVoice || '')
+        : '',
       speed: Number($('#emaSpeed').value),
       sampleRate: Number($('#emaSr').value),
       chatAutoSpeak: $('#ttsChatAuto').checked,
@@ -2893,11 +3031,8 @@ async function renderTtsPane() {
   });
   $('#ttsTest').addEventListener('click', async () => {
     /* motor + IPC + çalma zincirini uçtan uca dener — sorun neredeyse görünür */
-    const isAhenkTest = engineName() === 'ahenk';
-    const line = isAhenkTest
-      ? 'Merhaba kanka, Ahenk Cep yerel TTS testi. Ben Beast.'
-      : 'Merhaba kanka, eMa Lightning yerel TTS testi. Ben Beast.';
-    toast('TTS test ediliyor… (ilk seferde kurulum varsa uzun sürebilir)');
+    const line = 'Merhaba kanka, ' + motorLabel() + ' sesli yanıt testi. Ben Beast.';
+    toast('TTS test ediliyor… (' + motorLabel() + ' — ilk seferde kurulum varsa uzun sürebilir)');
     const r = await beast.ttsSpeak(line).catch((e) => ({ ok: false, error: String((e && e.message) || e) }));
     if (!(r && r.ok)) { toast('TTS test HATA: ' + ((r && r.error) || '?')); return; }
     try {

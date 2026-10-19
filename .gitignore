@@ -29,6 +29,9 @@ desktop.ini
 __pycache__/
 *.pyc
 
+# sürüm yedek kopyaları (robocopy hedefi — repo'ya girmez)
+yedek/
+
 # mt5_shot çalışma zamanı (kaynak ağacından koşulursa oluşur)
 src/agent/defaulttools/mt5_shot/last-args.json
 src/agent/defaulttools/mt5_shot/.shot.lock

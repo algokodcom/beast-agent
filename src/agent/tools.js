@@ -14,6 +14,7 @@ const gittools = require('./gittools');
 const repomap = require('./repomap');
 const xlsxtools = require('./xlsxtools');
 const typesafe = require('./typesafe');
+const docchat = require('./docchat'); // yerel belge kütüphanesi + küçük RAG (Alıntı RAG)
 
 const MAX_CMD_OUTPUT = 16000;
 const MAX_FILE_CHARS = 200000;
@@ -1792,11 +1793,12 @@ function readCacheDrop(abs) {
 }
 
 const definitions = [
-  /* yerleşik modül araçları: git, repo haritası, excel, TypeSafe */
+  /* yerleşik modül araçları: git, repo haritası, excel, TypeSafe, belge kütüphanesi */
   ...gittools.definitions,
   ...repomap.definitions,
   ...xlsxtools.definitions,
   ...typesafe.definitions,
+  ...docchat.definitions,
   {
     type: 'function',
     function: {
@@ -2079,12 +2081,13 @@ const definitions = [
 
 async function exec(name, args, ctx) {
   const cwd = ctx.cwd;
-  /* modül araçları: gittools / repomap / xlsxtools / typesafe — kendi handler'larında */
+  /* modül araçları: gittools / repomap / xlsxtools / typesafe / docchat — kendi handler'larında */
   const modHandler =
     gittools.handlers[name] ||
     repomap.handlers[name] ||
     xlsxtools.handlers[name] ||
-    typesafe.handlers[name];
+    typesafe.handlers[name] ||
+    docchat.handlers[name];
   if (modHandler) {
     try {
       return JSON.stringify(await modHandler(args, ctx));

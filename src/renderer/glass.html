@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta http-equiv="Content-Security-Policy"
-        content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: file:; media-src 'self' blob: file:; script-src 'self'" />
+        content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: file: https: http:; media-src 'self' blob: file:; script-src 'self'" />
   <title>Beast</title>
   <style>
     /* BEAST CAM — neon glass. Pencere TAMAMEN panele eşit; dışta gri alan yok.
@@ -285,6 +285,21 @@
       font-size: 12px; color: var(--g-code-color);
     }
     .g-bub b { color: var(--g-title); }
+    /* ZENGİN MESAJ: WA'dan gelen foto çıplak <img>, ekler küçük kart */
+    .g-wimg {
+      display: block; max-width: 230px; max-height: 230px;
+      border-radius: 10px; margin: 6px 0 2px;
+      border: 1px solid var(--g-bub-border);
+    }
+    .g-attwrap { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
+    .g-atchip {
+      display: inline-flex; align-items: center; gap: 4px;
+      font-size: 10.5px; color: var(--g-chip-color);
+      background: var(--g-chip-bg);
+      border: 1px solid var(--g-chip-border);
+      border-radius: 7px; padding: 2px 8px;
+      max-width: 250px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
     .g-bub.streaming::after {
       content: '▍'; color: var(--g-caret); animation: gblink .8s infinite;
       margin-left: 1px;

@@ -117,6 +117,52 @@ function bubble(role, html, cls, afterRow) {
   return b;
 }
 
+/* Kullanıcı mesajından METİN + gorüntülenebilir görseller (dataUrl/http) çıkar:
+   WA'dan gelen fotoğraf data: URL'iyle content'ta taşınır — camda da resim olsun */
+function userPartsOf(content, atts) {
+  const txts = [];
+  const imgs = [];
+  const imgPush = (u) => {
+    u = String(u || '');
+    if (/^(data:image\/|https?:\/\/)/i.test(u)) imgs.push(u);
+  };
+  if (Array.isArray(content)) {
+    for (const p of content) {
+      if (!p) continue;
+      if (p.type === 'text') txts.push(String(p.text || ''));
+      else if (p.type === 'image' || p.type === 'image_url') {
+        imgPush(p.type === 'image_url' ? (p.image_url && p.image_url.url) : (p.dataUrl || p.url));
+      } else if ((p.type === 'file' || p.type === 'document') && p.name) {
+        txts.push('[dosya: ' + p.name + ']');
+      } else if (typeof p === 'string') txts.push(p);
+    }
+  } else txts.push(String(content == null ? '' : content));
+  for (const a of (Array.isArray(atts) ? atts : [])) {
+    if (a && a.type === 'image') imgPush(a.dataUrl || a.url); /* ekteki resim → inline */
+  }
+  return { txt: txts.join('\n'), imgs };
+}
+
+/* USER BALONU — ZENGİN: metin (WA ses transkripti dahil) + gelen fotoğraflar
+   + ek kartları. WhatsApp/Telegram/Discord'dan gelen HER ŞEY camda görünür —
+   "beast agent'ta var, camda yok" sorunu biter. */
+function userRichBubble(m) {
+  const p = userPartsOf(m && m.content, m && m.attachments);
+  let html = p.txt.trim() ? mdLite(p.txt) : '';
+  for (const u of p.imgs) {
+    html += '<img class="g-wimg" src="' + escHtml(u) + '" alt="görsel" loading="lazy">';
+  }
+  const atts = Array.isArray(m && m.attachments) ? m.attachments : [];
+  const chips = atts
+    .filter((a) => a && (a.type === 'image' || a.type === 'file' || a.type === 'document'))
+    .map((a) =>
+      '<span class="g-atchip">' + (a.type === 'image' ? '\u25A3' : '\u2261') + ' ' +
+      escHtml(shortTxt(String(a.name || (a.type === 'image' ? 'resim' : 'dosya')), 28)) + '</span>')
+    .join('');
+  if (chips) html += '<div class="g-attwrap">' + chips + '</div>';
+  bubble('user', html || '(boş mesaj)');
+}
+
 /* balon sayısı tavanı — glass panel hafif kalsın (600) */
 function lsTrim() {
   while (gMsgs.children.length > 600) gMsgs.removeChild(gMsgs.firstChild);
@@ -251,11 +297,12 @@ async function reconcile() {
     for (const m of list.slice(-80)) {
       if (!(m.role === 'user' || m.role === 'assistant')) continue;
       const raw = contentText(m && m.content).trim();
-      if (!raw || (m.role === 'user' && raw.startsWith('['))) continue;
+      if (!raw) continue;
       /* birebir aynı VEYA birbirinin uzun ön eki (yarım akış) ise atla */
       if (have.some((h) => h === raw ||
           (h.length > 30 && (raw.startsWith(h) || h.startsWith(raw))))) continue;
-      bubble(m.role, mdLite(raw));
+      if (m.role === 'user') userRichBubble(m); /* '[WhatsApp…' dahil — hiçbir şey gizlenmez */
+      else bubble('assistant', mdLite(raw));
     }
   } catch {}
   reconciling = false;
@@ -296,8 +343,12 @@ async function loadSessions() {
   if (cur && sessions.some((s) => s.id === cur)) gSess.value = cur;
 }
 
+/* EŞZAMANLI YÜKLEME KORUMASI: main senkronu + kullanıcı seçimi aynı anda
+   açık geçmişi DOLDURMAYA çalışırsa yalnız EN YENİ istek ekrana yazılır */
+let loadSeq = 0;
 async function openSid(id, force) {
   if (!force && sid === id) return;
+  const mySeq = ++loadSeq;
   sid = String(id);
   try { localStorage.setItem('beastGlassSid', sid); } catch {}
   gMsgs.innerHTML = '';
@@ -308,16 +359,19 @@ async function openSid(id, force) {
   turnHadLive = false;
   try {
     const v = await beast.openSession(sid);
+    if (mySeq !== loadSeq) return; /* araya yeni yükleme girdi — bu sonuç bayat */
     const list = Array.isArray(v && v.messages) ? v.messages : [];
     for (const m of list.slice(-80)) {
       const txt = contentText(m && m.content);
       if (!txt.trim()) continue;
-      if ((m.role === 'user' || m.role === 'assistant')) {
-        bubble(m.role, mdLite(txt));
-      }
+      if (m.role === 'user') userRichBubble(m); /* WA geçmişi + görseller + ekler dahil */
+      else if (m.role === 'assistant') bubble('assistant', mdLite(txt));
     }
-  } catch { bubble('assistant', '(geçmiş yüklenemedi — panele yazabilirsin)'); }
-  setDot('ok', 'hazır · ' + sid.slice(0, 8));
+  } catch { if (mySeq === loadSeq) bubble('assistant', '(geçmiş yüklenemedi — panele yazabilirsin)'); }
+  if (mySeq === loadSeq) {
+    if (sessions.some((s) => s.id === sid)) { try { gSess.value = sid; } catch {} }
+    setDot('ok', 'hazır · ' + sid.slice(0, 8));
+  }
 }
 
 function onEvent(ev) {
@@ -326,27 +380,40 @@ function onEvent(ev) {
 }
 
 function onEventInner(ev) {
-  /* oturum filtresi — cama seçilen oturum düşer */
+  /* oturum filtresi — cama seçilen oturum düşer (masaüstü aktif sohbetiyle
+     SENKRON: main 'glass-session' olayı bu sid'i camda güncel tutar) */
   if (ev.sessionId && sid && ev.sessionId !== sid) return;
   switch (ev.type) {
     case 'sessions':
       loadSessions();
+      break;
+    case 'glass-session':
+      /* CAM ↔ MASAÜSTÜ SENKRONU: beast-agent ekranı hangi sohbeti açtıysa cam
+         panel ONU açar — iki panelde de AYNI sohbet, AYNI canlı akış */
+      if (ev.sessionId && ev.sessionId !== sid) openSid(ev.sessionId, true);
+      break;
+    case 'wa-stt':
+      /* ANLIK STT KÖPRÜSÜ: WA sesli mesaj geldiğinde yazıya çevirme süreci
+         camda da canlı görünür ("çevriliyor…" durum satırı) */
+      if (ev.state === 'transcribing') setDot('busy', '🎤 WhatsApp sesli mesaj yazıya çevriliyor…');
+      else if (ev.state === 'done') setDot('busy', '🎤 ses yazıya çevrildi — mesaj geldiğinde konuşmada görünür');
+      else setDot('err', '🎤 ses yazıya çevrilemedi');
       break;
     case 'message': {
       const m = ev.message || {};
       const txt = contentText(m.content);
       if (!txt.trim() && String(m.role) !== 'user') break;
       if (m.role === 'user') {
-        const t0 = txt.trim();
-        if (t0.startsWith('[')) { busy = true; updateStopVisible(); break; } /* iç hatırlatma — balon YOK */
-        /* cevap yazarken yeni mesaj geldi: akış balonuna DOKUNMA — cevap kendi
-           sorusunun altında tamamlanır; kullanıcı mesajı dipte açılır */
+        /* '[WhatsApp…' / '[sesli mesaj transkripti]…' dahil TÜM kullanıcı
+           mesajları görünüyor — beast-agent chatteriyle birebir aynı */
         turnHadLive = false; /* YENİ TUR: canlı akış haritası sıfır */
-        bubble('user', mdLite(txt));
+        userRichBubble(m);
         setDot(busy ? 'busy' : 'ok', busy ? 'robot yapıyor…' : 'gönderildi');
       } else {
         renderAssistantFinal(txt);
-        busy = false; updateStopVisible();
+        /* araç çağrılı mesajsa tur SÜRÜYOR — meşgul lütfen bırakma (main gibi) */
+        const hasTools = Array.isArray(m.tool_calls) && m.tool_calls.length > 0;
+        if (!hasTools) { busy = false; updateStopVisible(); }
       }
       break;
     }
@@ -729,6 +796,10 @@ try {
   });
 } catch {}
 
+/* Olay aboneliği EN BAŞTA: cam penceresi açıkken main'in senkron push'u
+   (glass-session) açılış beklemeden yakalanır — bota geçerli sohbet gecikmez */
+beast.onEvent(onEvent);
+
 /* ---------- init ---------- */
 (async function init() {
   /* kayıtlı tema geri yükle */
@@ -746,6 +817,5 @@ try {
   }
   updateStopVisible(); /* boşta: durdur gizli başlar */
   markBrowser(); /* kayıtlı tarayıcı seçimi işaretlensin */
-  beast.onEvent(onEvent);
   setDot('ok', 'hazır');
 })();

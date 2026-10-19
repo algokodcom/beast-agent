@@ -2604,8 +2604,19 @@ async function processWaMessage(jid, payload, senderNum, requeues = 0) {
         attachments.push({ type: 'image', dataUrl: `data:${md.mimetype};base64,${md.buf.toString('base64')}`, name: md.name });
         text += `\n[resim eki alındı]`;
       } else if (md.kind === 'audio') {
+        /* ANLIK STT KÖPRÜSÜ: sesli not yazıya çevrilmeye başlayınca/ofsunca
+           masaüstü + cam panel ANINDA bilinir — camda "STT mesajları
+           görünmüyor" yerine "🎤 çevriliyor… → transkript konuşma balonunda" */
+        const sttT0 = Date.now();
+        emitWaBoth({
+          sessionId: sid,
+          type: 'wa-stt',
+          state: 'transcribing',
+          from: isGroup ? (groupSender || 'grup üyesi') : (hit && hit.name) || '+' + (senderNum || '?'),
+        });
         /* mimetype langOverride olarak geçilemez — 3. parametre olarak medial türü gider */
         const tr = await transcribeAudio(md.buf, undefined, md.mimetype);
+        emitWaBoth({ sessionId: sid, type: 'wa-stt', state: tr ? 'done' : 'fail', ms: Date.now() - sttT0 });
         text += tr
           ? `\n[sesli mesaj transkripti]\n${tr}`
           : `\n[sesli mesaj alındı ama transkripte çevrilemedi — Entegrasyonlar'da sesli mesaj (STT) ayarı gerekli]`;
@@ -2666,6 +2677,13 @@ async function processWaMessage(jid, payload, senderNum, requeues = 0) {
     });
   }
   engine.send(sid, { text: text.slice(0, 8000), attachments }, { userAction: true });
+}
+
+/* WA/DIŞ KANAL olayını MASAÜSTÜ + CAM panele birlikte yolla:
+   "beast agent'taki gibi camda da her şey görünsün" köprüsü */
+function emitWaBoth(ev) {
+  try { if (win && !win.isDestroyed()) win.webContents.send('agent:event', ev); } catch {}
+  try { if (glassWin && !glassWin.isDestroyed()) glassWin.webContents.send('agent:event', ev); } catch {}
 }
 
 function ensureWa() {
@@ -3875,6 +3893,16 @@ function glassRememberBounds() {
   } catch {}
 }
 
+/* CAM PANELINE masaüstünün AKTİF sohbetini bildir — cam, "beast-agent'taki
+   chat"i gerçek zamanlı izler (WA sesli mesaj/transkript dahil her şey) */
+function glassPushActiveSid() {
+  try {
+    if (glassWin && !glassWin.isDestroyed() && desktopActiveSid) {
+      glassWin.webContents.send('agent:event', { type: 'glass-session', sessionId: desktopActiveSid });
+    }
+  } catch {}
+}
+
 function glassOpen(hideMain) {
   try {
     modeRemember('glass'); /* son mod = cam — sonraki açılışta cam modunda başlar */
@@ -3907,6 +3935,9 @@ function glassOpen(hideMain) {
         try {
           glassWin.show();
           glassWin.focus();
+          /* CAM AÇILIŞ SENKRONU: panel, masaüstünün AÇIK OLan sohbetini izlemeye
+             başlar — cam moduna geçen kullanıcı "aynı sohbet burda da var" görür */
+          try { glassPushActiveSid(); } catch {}
           /* CAM MODU: ana pencere cam panel AYAKLANINCA gizlenir — tek pencere
              görünür, kullanıcı "uygulama cam şekline dönüştü" hisseder */
           if (hideMain && win && !win.isDestroyed() && win.isVisible()) win.hide();
@@ -3918,6 +3949,7 @@ function glassOpen(hideMain) {
       if (glassMiniOn) glassMiniSet(false); /* mini durumdan indir, tam panel göster */
       if (hideMain && win && !win.isDestroyed() && win.isVisible()) win.hide();
       if (!glassWin.isVisible()) { glassWin.show(); glassWin.focus(); }
+      try { glassPushActiveSid(); } catch {} /* tekrar açılışta da senkron */
     }
     return true;
   } catch {
@@ -6278,6 +6310,14 @@ ipcMain.handle('sessions:active', (_e, id) => {
   }
   try {
     if (sessionFileAlive(sid)) desktopActiveSid = sid;
+  } catch {}
+  /* CAM ↔ MASAÜSTÜ SENKRONU: masaüstü UI hangi sohbeti açtıysa cam panel ONU
+     izler — cam modundaki chat "beast-agent'taki chatin" birebir aynısı olur:
+     aynı geçmiş + WA/STS dahil TÜM canlı akış aynı anda iki panelde görünür */
+  try {
+    if (glassWin && !glassWin.isDestroyed() && desktopActiveSid) {
+      glassWin.webContents.send('agent:event', { type: 'glass-session', sessionId: desktopActiveSid });
+    }
   } catch {}
   return true;
 });

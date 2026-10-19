@@ -7624,12 +7624,14 @@ async function init() {
     }
   }
 
-  /* custom pencere butonları: küçült / büyüt / kapat — main'e window:ctrl ile gider.
+  /* custom pencere butonları: (1) sol = CAM MODU düğmesi — uygulama cam
+     sohbete döner; camdaki ✕ ya da bu buton ana uygulamaya geri döndürür.
+     (2) büyüt, (3) kapat — main'e window:ctrl ile gider.
      Büyüt ikonu maximize/unmaximize olayıyla senkron (□ / ❐). */
   const winMin = $('#winMin');
   const winMax = $('#winMax');
   const winClose = $('#winClose');
-  if (winMin) winMin.addEventListener('click', () => beast.winCtrl('minimize'));
+  if (winMin) winMin.addEventListener('click', () => beast.winCtrl('glass'));
   if (winMax) winMax.addEventListener('click', () => beast.winCtrl('maximize'));
   if (winClose) winClose.addEventListener('click', () => beast.winCtrl('close'));
 

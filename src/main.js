@@ -317,6 +317,10 @@ const TG_CHATS_FILE = path.join(APP_DIR, 'tg-chats.json');
 for (const d of [APP_DIR, SESSIONS_DIR]) fs.mkdirSync(d, { recursive: true });
 
 let win = null;
+/* MASAÜSTÜ CAM SOHBET: ana uygulamanın sağ üst pencere butonlarındaki CAM
+   düğmesiyle açılan neon-glass sohbet katmanı — uygulama "cam moduna" döner
+   (ana pencere gizlidir, camdaki ✕/Return ile tekrar masaüstü moduna dönülür) */
+let glassWin = null;
 let engine = null;
 /* Paralel ajan durum takibi: bitişte BİR kez toast bildirimi (spam yok) */
 const bgNotifSeen = new Map(); // sid -> son görülen durum
@@ -1296,6 +1300,18 @@ function requestApproval({ sessionId, tool, args }) {
           argsPreview: approvalArgsSummary(args),
         });
       }
+      /* cam sohbet de onay rozetini alsın (aynı istek, aynı requestId) */
+      try {
+        if (glassWin && !glassWin.isDestroyed()) {
+          glassWin.webContents.send('agent:event', {
+            sessionId: String(sessionId || ''),
+            type: 'approval',
+            requestId: id,
+            tool,
+            argsPreview: approvalArgsSummary(args),
+          });
+        }
+      } catch {}
       const own = waOwnerNum();
       if (wa && own) {
         sendWaSafe(
@@ -3217,7 +3233,7 @@ function reloadBackend() {
     ocr: (o) => ocrRead(o),
     email: { list: emailList, read: emailRead, send: emailSend },
     browser: {
-      openUrl: (u, s, ctx) => browserNavigate(u, s, ctx),
+      openUrl: (u, s, ctx) => glassAwareNavigate(u, s, ctx),
       search: (q, s, ctx) => browserSearch(q, s, ctx),
       readText: (s) => browserRead(s),
       screenshot: (s) => browserScreenshot(s),
@@ -3233,6 +3249,8 @@ function reloadBackend() {
     },
     emit: (ev) => {
       if (win && !win.isDestroyed()) win.webContents.send('agent:event', ev);
+      /* CAM SOHBET relay: masaüstü glass panel canlı akışı da izler */
+      try { if (glassWin && !glassWin.isDestroyed()) glassWin.webContents.send('agent:event', ev); } catch {}
       /* PARALEL AJAN BİTİŞİ: running → done/error/aborted geçişinde tek toast */
       if (ev.type === 'agents' && Array.isArray(ev.jobs)) {
         for (const j of ev.jobs) {
@@ -3763,6 +3781,215 @@ app.whenReady().then(() => {
   });
 }
 
+/* ---------- MASAÜSTÜ CAM SOHBET (neon glass panel) ----------
+   Simge yanındaki İKİNCİ tray düğmesi (veya tray menüsü) tek tıkla açar/kapatır.
+   Pencere: transparan + çerçevesiz + her zaman üstte. Boyut/konum settings.glass
+   içinde hatırlanır; 'big' modu çalışma alanının %90'ını kaplar. */
+/* ---------------- CAM MODU YARDIMCILARI ---------------- */
+/* CAM MODU HARİCİ TARAYICI: cam modunda ana pencere gizli; ajanın
+   browser_open ile açtığı sayfa ekranda görülemeyeceği için AYNI adres
+   kullanıcının SİSTEM tarayıcısına da gönderilir. Ajanın içerik akışı
+   (sayfa metni okuma vs.) gömülü tarayıcıyla aynen sürer. */
+function isCamMode() {
+  try { return !!(glassWin && !glassWin.isDestroyed() && glassWin.isVisible()); } catch { return false; }
+}
+async function glassAwareNavigate(raw, signal, ctx) {
+  /* TARAYICI SEÇİMİ (cam özel): 'embedded' → yalnız panel içi;
+     'external' (varsayılan) → aynı adres sistem tarayıcısında da açılır */
+  if (isCamMode() && String((settings && settings.glassBrowser) || 'external') !== 'embedded') {
+    try {
+      const u = String(raw || '');
+      if (/^https?:\/\//i.test(u)) shell.openExternal(u); /* fire & forget */
+    } catch {}
+  }
+  return browserNavigate(raw, signal, ctx);
+}
+
+/* SON MOD HATIRLAMA: uygulama son hangi modda bırakıldıysa ('glass' | 'app')
+   sonraki açılışta aynı modda başlar. */
+function modeRemember(m) {
+  try {
+    if (settings.lastMode !== m) { settings.lastMode = m; saveSettings(); }
+  } catch {}
+}
+
+function glassBounds() {
+  try {
+    const g = settings.glass || {};
+    /* MİNİ BALON SIZINTISI KAYDININ TEMİZLİĞİ: kayıtta iki boyut da baloncuk
+       ebadındaysa (≤120) bayat/bozuk kayıttır — merkezde varsayılan boyutla aç */
+    if (Number(g.w) > 0 && Number(g.w) <= 120 && Number(g.h) > 0 && Number(g.h) <= 120) {
+      const wd = screen.getPrimaryDisplay().workArea;
+      return {
+        x: Math.round(wd.x + (wd.width - 620) / 2),
+        y: Math.round(wd.y + (wd.height - 700) / 2),
+        width: 620, height: 700,
+      };
+    }
+    /* ÇOKLU MONİTÖR: kayıtlı nokta hangi ekranın içindeyse o ekranın çalışma
+       alanına göre ölçeklanır — ikinci monitörde bıraktıysa ORAYA açılır */
+    let scr = screen.getPrimaryDisplay().workArea;
+    if (Number.isFinite(g.x) && Number.isFinite(g.y)) {
+      for (const d of screen.getAllDisplays()) {
+        const wa = d.workArea;
+        if (g.x >= wa.x - 40 && g.x < wa.x + wa.width && g.y >= wa.y - 40 && g.y < wa.y + wa.height) {
+          scr = wa;
+          break;
+        }
+      }
+    }
+    /* KULLANICININ SON BOYUT/KONUMU: settings.glass'ta saklanır — kullanıcı
+       değiştirmediği sürece cam sohbet HEP AYNI şekilde açılır. Yalnızca
+       değer ekran dışına düştüyse (monitör değişimi vb.) ekrana geri çakılır. */
+    const w = Math.max(320, Math.min(Number(g.w) || 620, scr.width - 24));
+    const h = Math.max(240, Math.min(Number(g.h) || 700, scr.height - 24));
+    const clamp = (v, lo, hi) => Math.max(lo, Math.min(v, hi));
+    const x = Number.isFinite(g.x)
+      ? clamp(g.x, scr.x - w + 160, scr.x + scr.width - 160)
+      : Math.round(scr.x + (scr.width - w) / 2);
+    const y = Number.isFinite(g.y)
+      ? clamp(g.y, scr.y, scr.y + scr.height - 160)
+      : Math.round(scr.y + (scr.height - h) / 2);
+    return { x, y, width: w, height: h };
+  } catch {
+    return { width: 620, height: 700 };
+  }
+}
+
+/* taşımada her pikselde settings.json'a yazma — 800ms sakinleşince toplu yaz */
+let glassRememberTimer = 0;
+function glassRememberBounds() {
+  try {
+    if (glassMiniOn) return; /* mini balon boyutu ASLA kalıcı yazılmaz */
+    clearTimeout(glassRememberTimer);
+    glassRememberTimer = setTimeout(() => {
+      try {
+        /* İKİNCİL EMNİYET: mini baloncuk boyutu (84×84) asla kalıcı yazılmaz —
+           mini geçiş sırasında tetiklenen olaylar sızıntı yapamaz */
+        if (glassMiniOn || !glassWin || glassWin.isDestroyed()) return;
+        const b = glassWin.getBounds();
+        settings.glass = { ...(settings.glass || {}), x: b.x, y: b.y, w: b.width, h: b.height };
+        saveSettings();
+      } catch {}
+    }, 800);
+  } catch {}
+}
+
+function glassOpen(hideMain) {
+  try {
+    modeRemember('glass'); /* son mod = cam — sonraki açılışta cam modunda başlar */
+    const b = glassBounds();
+    if (!glassWin || glassWin.isDestroyed()) {
+      glassWin = new BrowserWindow({
+        x: b.x, y: b.y, width: b.width, height: b.height,
+        frame: false, transparent: true, resizable: true, maximizable: false,
+        alwaysOnTop: true, skipTaskbar: true, hasShadow: false, show: false,
+        webPreferences: {
+          preload: path.join(__dirname, 'preload.js'),
+          contextIsolation: true, nodeIntegration: false, sandbox: false,
+          spellcheck: false,
+          backgroundThrottling: false, /* odak dışındayken canlı akış kesilmesin */
+        },
+      });
+      glassWin.setAlwaysOnTop(true, 'floating');
+      glassWin.loadFile(path.join(__dirname, 'renderer', 'glass.html'));
+      /* NOTE: setBackgroundMaterial('acrylic') DENEMEDİ — transparent pencerede
+         DWM malzemesi pencere dikdörtgenini GRİ KUTU olarak boyuyor ve panelin
+         dışta kalan kenarını "gri kare" yapar. Cam görünüm tamamen CSS'te. */
+      glassWin.on('closed', () => { glassWin = null; });
+      /* taşınma/boyutlanma her koşulda yakalansın ('moved'/'resized' + 'move'/
+         'resize' ikilisi) — debounce sayesinde 800ms'de bir Toplu yazım */
+      glassWin.on('moved', () => glassRememberBounds());
+      glassWin.on('resized', () => glassRememberBounds());
+      glassWin.on('move', () => glassRememberBounds());
+      glassWin.on('resize', () => glassRememberBounds());
+      glassWin.on('ready-to-show', () => {
+        try {
+          glassWin.show();
+          glassWin.focus();
+          /* CAM MODU: ana pencere cam panel AYAKLANINCA gizlenir — tek pencere
+             görünür, kullanıcı "uygulama cam şekline dönüştü" hisseder */
+          if (hideMain && win && !win.isDestroyed() && win.isVisible()) win.hide();
+        } catch {}
+      });
+    } else {
+      /* pencere zaten var: konum/boyut DOKUNULMAZ — kullanıcı bıraktığı yerde
+         ve boyutta açılır (hatırlama kuralı) */
+      if (glassMiniOn) glassMiniSet(false); /* mini durumdan indir, tam panel göster */
+      if (hideMain && win && !win.isDestroyed() && win.isVisible()) win.hide();
+      if (!glassWin.isVisible()) { glassWin.show(); glassWin.focus(); }
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function glassHide() {
+  try {
+    if (glassWin && !glassWin.isDestroyed() && glassWin.isVisible()) {
+      glassWin.hide();
+      /* gizlerken SON boyut/konumu ANINDA kalıcı kıl (debounce beklemeden) —
+         hemen ardından uygulama kapanırsa bile bir sonraki açılış aynı şeklide */
+      if (!glassMiniOn) {
+        try {
+          const b = glassWin.getBounds();
+          settings.glass = { ...(settings.glass || {}), x: b.x, y: b.y, w: b.width, h: b.height };
+          saveSettings();
+        } catch {}
+      }
+    }
+  } catch {}
+}
+
+/* RESİM YAPAR (cam butonu çift yönlü): cam açık → ana uygulamaya dön;
+   ana uygulama görünür → cam moduna geç */
+function glassSwitch() {
+  try {
+    const glassUp = glassWin && !glassWin.isDestroyed() && glassWin.isVisible();
+    if (glassUp) {
+      glassHide();
+      modeRemember('app'); /* son mod = uygulama */
+      showWin(); /* masaüstü Beast Agent uygulamasına dönüş */
+    } else {
+      glassOpen(true); /* uygulama → cam modu */
+    }
+  } catch {}
+}
+
+/* MİNİ BALON (cam özel): panel 84px baloncuk gibi köşeye çekilir; baloncuk
+   tıklanınca eski boyut/konum geri gelir. skipTaskbar pencere olduğu için
+   klasik görev çubuğu simgesi GÖRÜNMEZ — bu yüzden mantık baloncuktur. */
+let glassMiniOn = false;
+let glassMiniSaved = null;
+function glassMiniSet(on) {
+  try {
+    if (!glassWin || glassWin.isDestroyed()) return false;
+    if (on) {
+      if (!glassMiniOn) {
+        const b = glassWin.getBounds();
+        glassMiniSaved = { x: b.x, y: b.y, width: b.width, height: b.height };
+        /* TAM boyutu ANINDA kalıcı yaz — küçülme olayları sıza sıza geçilemez */
+        try {
+          settings.glass = { ...(settings.glass || {}), x: b.x, y: b.y, w: b.width, h: b.height };
+          saveSettings();
+        } catch {}
+      }
+      const scr = screen.getPrimaryDisplay().workArea;
+      glassWin.setBounds({ x: scr.x + scr.width - 96, y: scr.y + scr.height - 96, width: 84, height: 84 });
+      glassMiniOn = true;
+    } else {
+      if (glassMiniSaved) {
+        try { glassWin.setBounds(glassMiniSaved); } catch {}
+      }
+      glassMiniSaved = null;
+      glassMiniOn = false;
+    }
+    try { glassWin.webContents.send('glass:mini', glassMiniOn); } catch {}
+    return true;
+  } catch { return false; }
+}
+
 function createTray() {
   try {
     const icon = nativeImage.createFromPath(path.join(__dirname, '..', 'assets', 'tray.png'));
@@ -3781,6 +4008,8 @@ function createTray() {
     ]);
     tray.setContextMenu(menu);
     tray.on('double-click', () => showWin());
+    /* CAM SOHBET butonu TRAY'DE DEĞİL — ana uygulamanın sağ üst pencere
+       butonlarında (en soldaki cam düğmesi) yaşamaya geçti */
   } catch {}
 }
 
@@ -5887,6 +6116,21 @@ function createWindow() {
   win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
   win.once('ready-to-show', () => {
     closeSplash();
+    /* HER AÇILIŞTA BÜYÜTÜLMÜŞ (ulanıcının tercihi): pencere komple açılır;
+       başlangıçta gizli (startHidden) ise olduğunda da maximize kalır */
+    try { win.maximize(); } catch {}
+    /* SON MOD HATIRLAMA: uygulama CAM modunda kapatıldıysa bu kez doğrudan
+       CAM SOHBET açılır; ana pencere gizlide bekler — kullanıcı kaldığı
+       modda devam eder. Cam açılamazsa normal uygulamaya düş (emniyet). */
+    if (!startHidden && String((settings && settings.lastMode) || 'app') === 'glass') {
+      win.hide();
+      setTimeout(() => {
+        try {
+          if (!glassOpen(true)) showWin();
+        } catch { try { showWin(); } catch {} }
+      }, 350);
+      return;
+    }
     if (startHidden) win.hide();
     else {
       win.show();
@@ -5975,6 +6219,31 @@ ipcMain.handle('logs:clear', () => {
   try { log.clear(); } catch {}
   return { ok: true };
 });
+
+/* ---------- CAM SOHBET IPC: panel içi düğmeler (kapat / boyut / durum) ---------- */
+ipcMain.handle('glass:close', () => { glassHide(); modeRemember('app'); return { ok: true }; });
+ipcMain.handle('glass:desktop', () => { glassHide(); modeRemember('app'); showWin(); return { ok: true }; });
+ipcMain.handle('glass:mini', (_e, on) => { return { ok: glassMiniSet(!!on), on: glassMiniOn }; });
+
+/* CAM ÖZEL tarayıcı seçimi: 'embedded' (yalnız panel içi) | 'external' (sistem tarayıcısı da açılır) */
+ipcMain.handle('glass:browser:get', () => String(settings.glassBrowser || 'external'));
+ipcMain.handle('glass:browser:set', (_e, v) => {
+  settings.glassBrowser = v === 'embedded' ? 'embedded' : 'external';
+  saveSettings();
+  return settings.glassBrowser;
+});
+ipcMain.handle('glass:mode', (_e, big) => {
+  try {
+    settings.glass = { ...(settings.glass || {}), big: !!big };
+    saveSettings();
+  } catch {}
+  try { if (glassWin && !glassWin.isDestroyed()) glassWin.setBounds(glassBounds()); } catch {}
+  return { ok: true, big: !!(settings.glass && settings.glass.big) };
+});
+ipcMain.handle('glass:state', () => ({
+  visible: !!(glassWin && !glassWin.isDestroyed() && glassWin.isVisible()),
+  big: !!(settings.glass && settings.glass.big),
+}));
 
 ipcMain.handle('sessions:list', () => engine.listSessions());
 ipcMain.handle('sessions:create', () => {
@@ -7873,6 +8142,7 @@ ipcMain.handle('window:ctrl', (_e, action) => {
     if (action === 'minimize') win.minimize();
     else if (action === 'maximize') win.isMaximized() ? win.unmaximize() : win.maximize();
     else if (action === 'close') win.close(); /* close handler'ı tray'e gizleme kuralını işletir */
+    else if (action === 'glass') glassSwitch(); /* CAM MODU: uygulama ↔ cam sohbet dönüşümü */
     else return { ok: false };
     return { ok: true, maximized: win.isMaximized() };
   } catch {

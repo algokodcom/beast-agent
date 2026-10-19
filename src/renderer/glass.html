@@ -1,0 +1,443 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: file:; media-src 'self' blob: file:; script-src 'self'" />
+  <title>Beast</title>
+  <style>
+    /* BEAST CAM — neon glass. Pencere TAMAMEN panele eşit; dışta gri alan yok.
+       TEMA SİSTEMİ: Mavi (varsayılan) / Siyah / Beyaz — üç tema da glass+neon
+       outline kalır; metin renkleri temaya göre beyaz/siyah değişir. */
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { width: 100%; height: 100%; background: transparent; overflow: hidden; }
+    body {
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      color: var(--g-text);
+      user-select: text;
+      cursor: default;
+
+      /* ---- TEMA: MAVİ (varsayılan) ---- */
+      --g-panel-bg: rgba(7, 14, 28, 0.74);
+      --g-panel-border: rgba(0, 205, 255, 0.55);
+      --g-inset-glow1: 0 0 2px rgba(0, 229, 255, 0.6) inset;
+      --g-inset-glow2: 0 0 60px rgba(0, 140, 255, 0.12) inset;
+      --g-line: rgba(0, 229, 255, 0.85);
+      --g-head-border: rgba(110, 200, 255, 0.14);
+      --g-head-gradient: linear-gradient(180deg, rgba(0, 90, 160, 0.16), transparent);
+      --g-title: #bfeaff;
+      --g-text: #dbe7ff;
+      --g-dim: #8fb4d8;
+      --g-chip-bg: rgba(0, 40, 80, 0.5);
+      --g-chip-border: rgba(90, 190, 255, 0.28);
+      --g-chip-color: #9ed7ff;
+      --g-chip-hover-bg: rgba(0, 120, 200, 0.55);
+      --g-chip-hover-color: #fff;
+      --g-sess-bg: rgba(0, 40, 80, 0.45);
+      --g-sess-border: rgba(90, 190, 255, 0.25);
+      --g-sess-color: #cfe9ff;
+      --g-opt-bg: #0a1626;
+      --g-bub-bg: rgba(12, 26, 48, 0.55);
+      --g-bub-border: rgba(120, 190, 255, 0.16);
+      --g-bub-text: #d9e7fb;
+      --g-me-bg: rgba(0, 90, 170, 0.28);
+      --g-me-border: rgba(0, 200, 255, 0.42);
+      --g-me-glow: 0 0 12px rgba(0, 180, 255, 0.14);
+      --g-code-bg: rgba(0, 60, 110, 0.5);
+      --g-code-border: rgba(0, 190, 255, 0.22);
+      --g-code-color: #9fe8ff;
+      --g-scroll: rgba(90, 190, 255, 0.3);
+      --g-caret: #35e0ff;
+      --g-tool-bg: rgba(8, 20, 40, 0.6);
+      --g-tool-border: rgba(90, 190, 255, 0.16);
+      --g-tool-color: #9cc8ef;
+      --g-appr-bg: rgba(40, 30, 0, 0.4);
+      --g-appr-border: rgba(255, 200, 60, 0.4);
+      --g-appr-text: #ffe9a8;
+      --g-input-bg: rgba(0, 40, 80, 0.42);
+      --g-input-border: rgba(90, 190, 255, 0.3);
+      --g-input-color: #e3f2ff;
+      --g-send1: rgba(0, 110, 210, 0.85);
+      --g-send2: rgba(0, 200, 255, 0.7);
+      --g-send-color: #fff;
+      --g-send-border: rgba(0, 220, 255, 0.5);
+      /* DURDUR ARTIK GRİ (kırmızı değil) — gönderin yanında sakin blasın */
+      --g-stop-bg: rgba(150, 172, 200, 0.16);
+      --g-stop-color: #cdd9ea;
+      --g-stop-border: rgba(185, 205, 230, 0.35);
+      --g-stop-hover-bg: rgba(170, 195, 225, 0.28);
+      --g-pop-bg: rgba(10, 24, 44, 0.97);
+      --g-pop-border: rgba(90, 190, 255, 0.3);
+    }
+    /* ---- TEMA: SİYAH — buz siyah, yazı beyaz; OUTLINE TÜM TEMALARDA MAVİ ---- */
+    body[data-theme="dark"] {
+      --g-panel-bg: rgba(4, 6, 10, 0.82);
+      --g-panel-border: rgba(0, 205, 255, 0.55);
+      --g-inset-glow1: 0 0 2px rgba(255, 255, 255, 0.35) inset;
+      --g-inset-glow2: 0 0 60px rgba(120, 200, 255, 0.06) inset;
+      --g-line: rgba(0, 229, 255, 0.85); /* üst neon çizgi — her temada mavi */
+      --g-head-border: rgba(255, 255, 255, 0.12);
+      --g-head-gradient: linear-gradient(180deg, rgba(255, 255, 255, 0.06), transparent);
+      --g-title: #ffffff;
+      --g-text: #f2f6ff;
+      --g-dim: #a9b8cc;
+      --g-chip-bg: rgba(255, 255, 255, 0.08);
+      --g-chip-border: rgba(255, 255, 255, 0.22);
+      --g-chip-color: #dfe9ff;
+      --g-chip-hover-bg: rgba(255, 255, 255, 0.18);
+      --g-chip-hover-color: #fff;
+      --g-sess-bg: rgba(255, 255, 255, 0.07);
+      --g-sess-border: rgba(255, 255, 255, 0.2);
+      --g-sess-color: #e8f0ff;
+      --g-opt-bg: #060a12;
+      --g-bub-bg: rgba(255, 255, 255, 0.05);
+      --g-bub-border: rgba(255, 255, 255, 0.14);
+      --g-bub-text: #e9f0ff;
+      --g-me-bg: rgba(255, 255, 255, 0.12);
+      --g-me-border: rgba(255, 255, 255, 0.38);
+      --g-me-glow: 0 0 10px rgba(255, 255, 255, 0.1);
+      --g-code-bg: rgba(255, 255, 255, 0.08);
+      --g-code-border: rgba(255, 255, 255, 0.2);
+      --g-code-color: #bfe9ff;
+      --g-scroll: rgba(255, 255, 255, 0.25);
+      --g-caret: #ffffff;
+      --g-tool-bg: rgba(255, 255, 255, 0.05);
+      --g-tool-border: rgba(255, 255, 255, 0.14);
+      --g-tool-color: #c4d4ea;
+      --g-appr-bg: rgba(60, 45, 0, 0.5);
+      --g-appr-border: rgba(255, 200, 60, 0.4);
+      --g-appr-text: #ffe9a8;
+      --g-input-bg: rgba(255, 255, 255, 0.06);
+      --g-input-border: rgba(255, 255, 255, 0.28);
+      --g-input-color: #f2f6ff;
+      --g-send1: rgba(255, 255, 255, 0.92);
+      --g-send2: rgba(220, 240, 255, 0.92);
+      --g-send-color: #0b1524;
+      --g-send-border: rgba(255, 255, 255, 0.6);
+      --g-stop-bg: rgba(255, 255, 255, 0.08);
+      --g-stop-color: #ff9dab;
+      --g-stop-border: rgba(255, 110, 130, 0.5);
+      --g-stop-hover-bg: rgba(255, 255, 255, 0.16);
+      --g-pop-bg: rgba(10, 12, 16, 0.97);
+      --g-pop-border: rgba(255, 255, 255, 0.25);
+    }
+    /* ---- TEMA: BEYAZ — buz beyazı, yazı siyah (outline mavi neon) ---- */
+    body[data-theme="light"] {
+      --g-panel-bg: rgba(255, 255, 255, 0.74);
+      --g-panel-border: rgba(10, 108, 216, 0.55);
+      --g-inset-glow1: 0 0 2px rgba(10, 140, 255, 0.35) inset;
+      --g-inset-glow2: 0 0 60px rgba(10, 120, 220, 0.06) inset;
+      --g-line: rgba(10, 140, 255, 0.8);
+      --g-head-border: rgba(10, 60, 120, 0.18);
+      --g-head-gradient: linear-gradient(180deg, rgba(10, 120, 220, 0.08), transparent);
+      --g-title: #0a2a4e;
+      --g-text: #0b1c2e;
+      --g-dim: #3d6285;
+      --g-chip-bg: rgba(10, 50, 100, 0.08);
+      --g-chip-border: rgba(10, 60, 120, 0.35);
+      --g-chip-color: #0a3a6e;
+      --g-chip-hover-bg: rgba(10, 80, 180, 0.18);
+      --g-chip-hover-color: #07264a;
+      --g-sess-bg: rgba(255, 255, 255, 0.8);
+      --g-sess-border: rgba(10, 60, 120, 0.35);
+      --g-sess-color: #0a2440;
+      --g-opt-bg: #ffffff;
+      --g-bub-bg: rgba(10, 40, 80, 0.06);
+      --g-bub-border: rgba(10, 50, 110, 0.18);
+      --g-bub-text: #132a44;
+      --g-me-bg: rgba(10, 120, 230, 0.14);
+      --g-me-border: rgba(10, 110, 220, 0.5);
+      --g-me-glow: 0 0 12px rgba(10, 130, 255, 0.15);
+      --g-code-bg: rgba(10, 40, 80, 0.08);
+      --g-code-border: rgba(10, 50, 120, 0.25);
+      --g-code-color: #075587;
+      --g-scroll: rgba(10, 60, 120, 0.3);
+      --g-caret: #0a76d8;
+      --g-tool-bg: rgba(10, 40, 80, 0.05);
+      --g-tool-border: rgba(10, 50, 110, 0.16);
+      --g-tool-color: #2a567e;
+      --g-appr-bg: rgba(255, 220, 110, 0.3);
+      --g-appr-border: rgba(180, 130, 20, 0.5);
+      --g-appr-text: #6b4d00;
+      --g-input-bg: rgba(255, 255, 255, 0.75);
+      --g-input-border: rgba(10, 70, 140, 0.4);
+      --g-input-color: #0b2233;
+      --g-send1: rgba(10, 80, 190, 0.92);
+      --g-send2: rgba(10, 170, 255, 0.92);
+      --g-send-color: #fff;
+      --g-send-border: rgba(10, 150, 250, 0.55);
+      --g-stop-bg: rgba(70, 95, 125, 0.1);
+      --g-stop-color: #3c5068;
+      --g-stop-border: rgba(70, 95, 125, 0.42);
+      --g-stop-hover-bg: rgba(70, 95, 125, 0.2);
+      --g-pop-bg: rgba(255, 255, 255, 0.97);
+      --g-pop-border: rgba(10, 60, 120, 0.3);
+    }
+    .gpanel {
+      height: 100vh;
+      display: flex; flex-direction: column;
+      border-radius: 16px;
+      background: var(--g-panel-bg);
+      border: 2px solid var(--g-panel-border);
+      box-shadow: var(--g-inset-glow1), var(--g-inset-glow2);
+      overflow: hidden;
+      position: relative;
+    }
+    .gpanel::before {
+      /* üst kenar neon çizgi — temayla renklenir */
+      content: '';
+      position: absolute; left: 8%; right: 8%; top: 0; height: 2px;
+      background: linear-gradient(90deg, transparent, var(--g-line), transparent);
+    }
+    .g-head {
+      -webkit-app-region: drag;
+      display: flex; align-items: center; gap: 8px;
+      padding: 10px 12px 8px;
+      border-bottom: 1px solid var(--g-head-border);
+      background: var(--g-head-gradient);
+      flex: 0 0 auto;
+    }
+    .g-title { font-weight: 700; font-size: 13px; letter-spacing: .4px; color: var(--g-title); white-space: nowrap; flex: 0 0 auto; }
+    .g-dot { width: 8px; height: 8px; border-radius: 50%; background: #556; transition: background .2s; flex: 0 0 auto; }
+    .g-dot.ok { background: #25d366; box-shadow: 0 0 8px rgba(37, 211, 102, .8); }
+    .g-dot.busy { background: #ffc23d; box-shadow: 0 0 8px rgba(255, 194, 61, .8); animation: gpulse 1s infinite alternate; }
+    .g-dot.err { background: #ff5566; box-shadow: 0 0 8px rgba(255, 85, 102, .8); }
+    @keyframes gpulse { from { opacity: .55; } to { opacity: 1; } }
+    .g-dotwrap { display: flex; align-items: center; gap: 6px; min-width: 0; flex: 0 1 auto; }
+    .g-stt { font-size: 11px; color: var(--g-dim); white-space: nowrap; max-width: 140px; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+    .g-sess {
+      -webkit-app-region: no-drag;
+      max-width: 190px; min-width: 0; flex: 0 1 auto;
+      background: var(--g-sess-bg); color: var(--g-sess-color);
+      border: 1px solid var(--g-sess-border); border-radius: 8px;
+      font-size: 11px; padding: 3px 6px; outline: none;
+    }
+    .g-sess option { background: var(--g-opt-bg); color: var(--g-text); }
+    .g-knobs { margin-left: auto; display: flex; gap: 6px; -webkit-app-region: no-drag; flex: 0 0 auto; }
+    .gk {
+      -webkit-app-region: no-drag;
+      width: 26px; height: 26px; border-radius: 50%;
+      background: var(--g-chip-bg); color: var(--g-chip-color);
+      border: 1px solid var(--g-chip-border);
+      font-size: 13px; line-height: 1; display: flex; align-items: center; justify-content: center;
+      cursor: pointer; user-select: none; transition: all .15s;
+    }
+    .gk:hover { background: var(--g-chip-hover-bg); color: var(--g-chip-hover-color); box-shadow: 0 0 10px rgba(0, 190, 255, .3); }
+    .gk.on { background: var(--g-chip-hover-bg); color: var(--g-chip-hover-color); }
+    /* TEMA MENÜSÜ — ⚙'in altında açılır */
+    .g-themepop {
+      position: absolute; top: 42px; right: 12px; z-index: 60;
+      display: flex; flex-direction: column; gap: 3px; padding: 6px;
+      background: var(--g-pop-bg);
+      border: 1px solid var(--g-pop-border);
+      border-radius: 12px;
+      box-shadow: 0 6px 26px rgba(0, 0, 0, 0.35), 0 0 12px rgba(0, 180, 255, 0.12);
+      -webkit-app-region: no-drag;
+    }
+    .g-themepop[hidden] { display: none; }
+    .g-titem {
+      display: flex; align-items: center; gap: 8px;
+      font-size: 11.5px; color: var(--g-text);
+      padding: 5px 10px; border-radius: 8px; cursor: pointer; white-space: nowrap;
+    }
+    .g-titem:hover, .g-titem.sel { background: var(--g-chip-hover-bg); }
+    .g-titem i {
+      width: 13px; height: 13px; border-radius: 50%; flex: 0 0 auto;
+      border: 1px solid rgba(128, 140, 160, 0.55);
+      display: inline-block;
+    }
+    .g-titem[data-t="blue"] i { background: linear-gradient(135deg, #0b6ad8, #35e0ff); }
+    .g-titem[data-t="dark"] i { background: #050609; }
+    .g-titem[data-t="light"] i { background: #fdfdfd; }
+    /* tarayıcı seçenekleri — kare simge, mavi=panel içi / turuncu=harici */
+    .g-tsep {
+      font-size: 9.5px; letter-spacing: .8px; color: var(--g-dim);
+      text-transform: uppercase; padding: 5px 10px 1px; opacity: .85;
+    }
+    .g-titem.g-bopt i { border-radius: 4px; }
+    .g-i-emb { background: linear-gradient(135deg, #0b6ad8, #35e0ff); }
+    .g-i-ext { background: linear-gradient(135deg, #f2b23d, #ff8a5c); }
+    .g-msgs {
+      flex: 1 1 auto; overflow-y: auto; padding: 10px 12px;
+      display: flex; flex-direction: column; gap: 8px;
+      scrollbar-width: thin; scrollbar-color: var(--g-scroll) transparent;
+    }
+    .g-msgs::-webkit-scrollbar { width: 5px; }
+    .g-msgs::-webkit-scrollbar-thumb { background: var(--g-scroll); border-radius: 3px; }
+    .g-row { display: flex; flex-direction: column; align-items: flex-start; max-width: 92%; }
+    .g-row.me { align-items: flex-end; margin-left: auto; }
+    .g-bub {
+      padding: 8px 11px; font-size: 12.5px; line-height: 1.5; word-break: break-word;
+      border-radius: 14px 14px 14px 4px;
+      background: var(--g-bub-bg);
+      border: 1px solid var(--g-bub-border);
+      color: var(--g-bub-text); white-space: pre-wrap;
+    }
+    .g-row.me .g-bub {
+      border-radius: 14px 14px 4px 14px;
+      background: var(--g-me-bg);
+      border: 1px solid var(--g-me-border);
+      box-shadow: var(--g-me-glow);
+    }
+    .g-bub code {
+      background: var(--g-code-bg);
+      border: 1px solid var(--g-code-border); border-radius: 4px; padding: 0 4px;
+      font-size: 12px; color: var(--g-code-color);
+    }
+    .g-bub b { color: var(--g-title); }
+    .g-bub.streaming::after {
+      content: '▍'; color: var(--g-caret); animation: gblink .8s infinite;
+      margin-left: 1px;
+    }
+    @keyframes gblink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+    .g-tool {
+      display: inline-flex; align-items: center; gap: 6px;
+      font-size: 11px; color: var(--g-tool-color);
+      background: var(--g-tool-bg);
+      border: 1px solid var(--g-tool-border);
+      border-radius: 8px; padding: 4px 9px;
+    }
+    .g-tool.ok { color: #7bedb0; border-color: rgba(80, 240, 160, 0.3); }
+    body[data-theme="light"] .g-tool.ok { color: #0d8a44; border-color: rgba(13, 138, 68, 0.4); }
+    .g-tool.fail { color: #ff8f9d; border-color: rgba(255, 100, 120, 0.35); }
+    body[data-theme="light"] .g-tool.fail { color: #c2143c; border-color: rgba(194, 20, 60, 0.4); }
+    .g-tool.spin { animation: gpulse 1.1s infinite alternate; }
+    .g-appr {
+      display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+      font-size: 11.5px; color: var(--g-appr-text);
+      background: var(--g-appr-bg);
+      border: 1px solid var(--g-appr-border);
+      border-radius: 10px; padding: 7px 10px;
+    }
+    .g-appr .gk { width: auto; height: 22px; border-radius: 7px; padding: 0 9px; font-size: 11px; }
+    .g-foot { flex: 0 0 auto; display: flex; flex-direction: column; gap: 6px; padding: 8px 10px 10px; }
+    .g-footrow { display: flex; gap: 6px; align-items: center; }
+    .g-input {
+      flex: 1 1 auto; resize: none;
+      background: var(--g-input-bg); color: var(--g-input-color);
+      border: 1px solid var(--g-input-border); border-radius: 11px;
+      font-family: inherit; font-size: 12.5px; line-height: 1.45;
+      padding: 7px 10px; outline: none; max-height: 110px; min-height: 34px;
+      transition: border-color .2s, box-shadow .2s;
+    }
+    .g-input:focus { border-color: var(--g-line); box-shadow: 0 0 12px rgba(0, 190, 255, 0.22); }
+    .gsend {
+      flex: 0 0 auto; width: 38px; height: 34px; border-radius: 10px;
+      background: linear-gradient(135deg, var(--g-send1), var(--g-send2));
+      color: var(--g-send-color); font-size: 15px; cursor: pointer;
+      border: 1px solid var(--g-send-border);
+      box-shadow: 0 0 14px rgba(0, 180, 255, 0.28);
+      display: flex; align-items: center; justify-content: center;
+      transition: transform .12s, box-shadow .2s;
+    }
+    .gsend:hover { transform: scale(1.06); box-shadow: 0 0 20px rgba(0, 200, 255, 0.45); }
+    /* DURDUR: gönderin solunda — kırmızı cam çerçeve, çalışan turu keser */
+    .gstop {
+      flex: 0 0 auto; width: 38px; height: 34px; border-radius: 10px;
+      background: var(--g-stop-bg); color: var(--g-stop-color);
+      border: 1px solid var(--g-stop-border);
+      font-size: 14px; cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      transition: transform .12s, background .15s, box-shadow .2s;
+    }
+    .gstop:hover {
+      background: var(--g-stop-hover-bg); transform: scale(1.06);
+      box-shadow: 0 0 14px rgba(170, 195, 225, 0.28); color: var(--g-stop-color);
+    }
+    /* DURDUR GİZLİLİK: ajan boşta iken ⏹ görünmez, iş başlarken belirir */
+    .gstop.hid { display: none; }
+    /* KONUŞMA MODU — durdurun SOLUNDA; basınca STT dinler, cevabı TTS söyler */
+    .gvoice {
+      flex: 0 0 auto; width: 38px; height: 34px; border-radius: 10px;
+      background: var(--g-stop-bg); color: var(--g-stop-color);
+      border: 1px solid var(--g-stop-border);
+      font-size: 14px; cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      transition: transform .12s, background .15s, box-shadow .2s;
+    }
+    .gvoice:hover {
+      background: var(--g-stop-hover-bg); transform: scale(1.06);
+      box-shadow: 0 0 14px rgba(0, 190, 255, 0.25);
+    }
+    .gvoice.on {
+      background: rgba(0, 150, 255, 0.18); color: #9fe8ff;
+      border-color: rgba(0, 220, 255, 0.55);
+      box-shadow: 0 0 14px rgba(0, 200, 255, 0.4);
+      animation: gpulse 1.3s infinite alternate;
+    }
+    body[data-theme="light"] .gvoice.on {
+      background: rgba(10, 130, 255, 0.12); color: #0765b8;
+      border-color: rgba(10, 130, 250, 0.6);
+    }
+    /* MİNİ BALON: − ile ekrandan çekilir; balona tıkla → eski boyuta dön */
+    body.mini .g-head, body.mini .g-msgs, body.mini .g-foot { display: none; }
+    body.mini .g-themepop { display: none; }
+    body.mini .gpanel {
+      border-radius: 50%;
+      align-items: center; justify-content: center;
+    }
+    body.mini .gpanel::before { display: none; }
+    .g-miniball { display: none; }
+    /* MİNİ balon İÇ yuvarlak NÖTR: mavi neon outline YOK — dış panel çerçevesi
+       (mavi) görünür kalır; toplar renkli değil, TEK RENKLİ (currentColor) */
+    body.mini .g-miniball {
+      display: flex; flex: 0 0 auto; width: 56px; height: 56px; border-radius: 50%;
+      align-items: center; justify-content: center;
+      background: var(--g-bub-bg);
+      border: 1.5px solid var(--g-bub-border);
+      color: var(--g-bub-text);
+      cursor: pointer;
+      transition: background .15s, transform .12s;
+      -webkit-app-region: no-drag; user-select: none;
+    }
+    body.mini .g-miniball:hover {
+      background: var(--g-chip-hover-bg); color: var(--g-chip-hover-color);
+      transform: scale(1.06);
+    }
+    .g-miniball svg, .gvoice svg { display: block; }
+  </style>
+</head>
+<body>
+  <div class="gpanel" id="gpanel">
+    <div class="g-head">
+      <div class="g-title">Beast</div>
+      <div class="g-dotwrap"><div class="g-dot" id="gDot"></div><div class="g-stt" id="gStt">hazır</div></div>
+      <select class="g-sess" id="gSess" title="Sohbet seç"></select>
+      <div class="g-knobs">
+        <div class="gk" id="gTheme" title="Tasarım teması: mavi / siyah / beyaz">⚙</div>
+        <div class="gk" id="gMini" title="Ekrandan çekil (mini balon)">−</div>
+        <div class="gk" id="gClose" title="Ana uygulamaya dön (cam modundan çık)">✕</div>
+      </div>
+    </div>
+    <div class="g-themepop" id="gThemePop" hidden>
+      <div class="g-titem" data-t="blue"><i></i>Mavi cam</div>
+      <div class="g-titem" data-t="dark"><i></i>Siyah cam</div>
+      <div class="g-titem" data-t="light"><i></i>Beyaz cam</div>
+      <div class="g-tsep">Tarayıcı (cam özel)</div>
+      <div class="g-titem g-bopt" data-b="embedded"><i class="g-i-emb"></i>Gömülü tarayıcı</div>
+      <div class="g-titem g-bopt" data-b="external"><i class="g-i-ext"></i>Harici tarayıcı</div>
+    </div>
+    <div class="g-msgs" id="gMsgs"></div>
+    <div class="g-foot">
+      <div class="g-footrow">
+        <textarea class="g-input" id="gInput" rows="2" placeholder="Mesajını yaz… (Enter: gönder · Shift+Enter: satır atlama)"></textarea>
+        <div class="gvoice" id="gVoice" title="Konuşma modu (STT + TTS)">
+          <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+            <rect x="9" y="3" width="6" height="11" rx="3" fill="none" stroke="currentColor" stroke-width="1.6"/>
+            <path d="M6 11 C6 14.3 8.7 17 12 17 C15.3 17 18 14.3 18 11" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+            <path d="M12 17 V20 M9 20 H15" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+          </svg>
+        </div>
+        <div class="gstop" id="gStop" title="Çalışanı durdur">⏹</div>
+        <div class="gsend" id="gSend" title="Gönder">➤</div>
+      </div>
+    </div>
+    <div class="g-miniball" id="gMiniBall" title="Cam sohbeti geri aç">
+      <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true">
+        <path d="M12 4 C6.9 4 3 7.2 3 11.1 C3 13 3.9 14.7 5.4 16 C5.1 17.2 4.5 18.2 3.6 19.2 C5.1 18.9 6.4 18.3 7.5 17.6 C8.9 18.1 10.4 18.4 12 18.4 C17.1 18.4 21 15.2 21 11.2 C21 7.2 17.1 4 12 4 Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+      </svg>
+    </div>
+  </div>
+  <script src="glass.js"></script>
+</body>
+</html>

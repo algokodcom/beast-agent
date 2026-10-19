@@ -97,9 +97,24 @@ function status() {
   };
 }
 
+/* SON BİLDİRİM: uygulama kapalıyken de (alarm ile) yoklamak için son mesaj
+   bilgisi tutulur — /notif ucu bunu döner */
+let lastNotice = { ts: 0, title: 'Beast', body: '' };
+
 /* YAYIN: agent eventlerini tüm bağlı istemcilere gönder.
    Büyük olay gövdelerinden (uzun ek dataUrl) korunmak için 8MB tavan. */
 function broadcast(ev) {
+  /* bildirim metni güncelle (asan mesajlar) */
+  try {
+    if (ev && ev.type === 'message' && ev.message && String(ev.message.role || '') === 'assistant') {
+      const c = ev.message.content;
+      let txt = '';
+      if (typeof c === 'string') txt = c;
+      else if (Array.isArray(c)) txt = c.filter((p) => p && p.type === 'text').map((p) => String(p.text || '')).join(' ');
+      txt = String(txt || '').replace(/\s+/g, ' ').trim().slice(0, 140);
+      if (txt) lastNotice = { ts: Date.now(), title: 'Beast', body: txt };
+    }
+  } catch {}
   if (!clients.size) return;
   let payload;
   try { payload = JSON.stringify(ev); } catch { return; }
@@ -140,6 +155,39 @@ function start(opts) {
   lastError = '';
 
   httpServer = http.createServer((req, res) => {
+    /* BİLDİRİM YOKLAMA UCU: uygulama tamamen kapalıyken alarm ile buraya
+       sorulur — "since" sonrası yeni mesaj varsa bildirim metni döner.
+       Güvenlik: cihaz kodu (device.json) ile doğrulanır. */
+    const rawUrl = String((req && req.url) || '');
+    if (rawUrl.indexOf('/notif') === 0) {
+      try {
+        const q = rawUrl.split('?')[1] || '';
+        const params = {};
+        for (const kv of q.split('&')) {
+          const i = kv.indexOf('=');
+          if (i < 0) continue;
+          params[decodeURIComponent(kv.slice(0, i))] = decodeURIComponent(kv.slice(i + 1));
+        }
+        const given = String(params.code || '').toUpperCase().trim();
+        const want = String(getDeviceCode() || '').toUpperCase().trim();
+        if (!want || given !== want) {
+          res.writeHead(403, { 'content-type': 'application/json; charset=utf-8' }).end('{"ok":0}');
+          return;
+        }
+        const since = Number(params.since || 0) || 0;
+        const fresh = lastNotice.ts && lastNotice.ts > since;
+        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+        res.end(JSON.stringify({
+          ok: 1,
+          ts: lastNotice.ts,
+          title: lastNotice.title,
+          body: fresh ? lastNotice.body : '',
+        }));
+      } catch {
+        res.writeHead(500, { 'content-type': 'application/json' }).end('{"ok":0}');
+      }
+      return;
+    }
     serveStatic(req, res, wwwDir);
   });
   try {

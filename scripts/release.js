@@ -118,7 +118,7 @@ try {
      execSync treats anything other than 0 as an error — swallow the code here, stop only on real failure (>7) */
   try {
     execSync(
-      `robocopy "${ROOT}" "${dest}" /E /XD node_modules dist "beast agent web" .git yedek /NFL /NDL /NJH`,
+      `robocopy "${ROOT}" "${dest}" /E /XD node_modules dist "beast agent web" .git yedek .gradle build /NFL /NDL /NJH`,
       { cwd: ROOT, stdio: 'pipe' }
     );
   } catch (e) {

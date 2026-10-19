@@ -17,6 +17,7 @@ contextBridge.exposeInMainWorld('beast', {
   mobileRegenCode: () => ipcRenderer.invoke('mobile:regenCode'),
   mobileSetName: (name) => ipcRenderer.invoke('mobile:setName', name),
   mobileKickPhone: (id) => ipcRenderer.invoke('mobile:kickPhone', id),
+  mobileSetTunnel: (cfg) => ipcRenderer.invoke('mobile:setTunnel', cfg),
   /* cam sohbet (masaüstü neon glass panel) */
   glassClose: () => ipcRenderer.invoke('glass:close'),
   glassDesktop: () => ipcRenderer.invoke('glass:desktop'),

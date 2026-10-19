@@ -35,6 +35,7 @@ const supertonic = require('./agent/supertonic'); // TTS motor 5: Supertonic —
 const fsguard = require('./agent/fsguard');
 const device = require('./agent/device');
 const mobileWs = require('./agent/mobile');
+const mobileTunnel = require('./agent/mobileTunnel');
 const os = require('os');
 const log = require('./agent/logger');
 const squeeze = require('./agent/squeeze');
@@ -245,9 +246,13 @@ const { waToolLine } = require('./agent/watext');
 process.on('uncaughtException', (e) => { try { log.error('main', 'uncaughtException: ' + ((e && e.stack) || e)); } catch {} });
 process.on('unhandledRejection', (e) => { try { log.error('main', 'unhandledRejection: ' + ((e && e.stack) || e)); } catch {} });
 
-/* #1 Splash /health — her zaman açık uç nokta: uygulamanın ayakta olduğunu bildirir */
+/* #1 Splash /health — her zaman açık uç nokta: uygulamanın ayakta olduğunu bildirir.
+   NOT: eski default 8788 idi → MOBILE KÖPRÜ ile PM ÇAKIŞMASI yapardı (Windows iki
+   server'ın aynı portu "başarıyla" bind etmesine izin verir); ngrok agent
+   127.0.0.1'e dokununca köprüye değil HEALTH'e düşüyor, 404/3004 dönüyordu.
+   Health artık ayrı portta (healthPort ayarı verilmediyse 8789). */
 function startHealthServer() {
-  const port = Number(settings.healthPort) || 8788;
+  const port = Number(settings.healthPort) || 8789;
   const server = http.createServer((req, res) => {
     if (req.url === '/health' || req.url.startsWith('/health')) {
       res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -2766,7 +2771,9 @@ function broadcastMobileSessions() {
 const mobileHandlers = {
   onSend: (sid, { text, attachments }) => {
     try {
-      queueDesktopMessage(sid, {
+      /* SLASH KOMUTLAR: masaüstüyle AYNI yönlendirici (/help, /new, /clear,
+         /version, /model, /think ...) — ekler de korunur. */
+      handleAgentSend(sid, {
         text: String(text || '').slice(0, 8000),
         attachments: Array.isArray(attachments) && attachments.length ? attachments : undefined,
       });
@@ -2810,8 +2817,18 @@ const mobileHandlers = {
 let lastMobileStartError = '';
 
 function mobileCfg() {
-  try { return settings.mobile || (settings.mobile = { enabled: true, port: 8788 }); } catch {}
-  return { enabled: true, port: 8788 };
+  try { return settings.mobile || (settings.mobile = { enabled: true, port: 8788, tunnel: { enabled: false, authtoken: '', domain: '' } }); } catch {}
+  return { enabled: true, port: 8788, tunnel: { enabled: false, authtoken: '', domain: '' } };
+}
+
+/* mobile.tunnel alt configi: eski settings.json'larda alan yoktur → arza bakarız */
+function mobileTunnelCfg() {
+  const mc = mobileCfg();
+  try { if (!mc.tunnel || typeof mc.tunnel !== 'object') mc.tunnel = { enabled: false, authtoken: '', domain: '' }; } catch {}
+  try { mc.tunnel.enabled = !!mc.tunnel.enabled; } catch { mc.tunnel.enabled = false; }
+  try { mc.tunnel.authtoken = String(mc.tunnel.authtoken || '').trim(); } catch { mc.tunnel.authtoken = ''; }
+  try { mc.tunnel.domain = mobileTunnel.cleanDomain(mc.tunnel.domain); } catch { mc.tunnel.domain = ''; }
+  return mc.tunnel;
 }
 
 /* LAN IPv4: telefondan bu PC'ye gitmek için adres (Wi-Fi/Ethernet ilk tercihi).
@@ -2863,17 +2880,40 @@ function applyMobileServer() {
       });
       if (r && r.ok) {
         log.info('mobile', `WS köprüsü dinliyor: http://${lanIp()}:${Number(cfg.port) || 8788}`);
+        /* WS ayağa kalktıysa tüneli (istendiyse) yeniden kur — dış adres de
+           port değişince yenilenir; hata asla WS'i düşürmez */
+        setTimeout(() => { applyMobileTunnel().catch(() => {}); }, 150);
       } else {
         lastMobileStartError = r && r.error ? String(r.error) : 'başlatılamadı';
         log.error('mobile', 'WS köprüsü başlatılamadı: ' + lastMobileStartError);
       }
     } else {
       mobileWs.stop();
+      mobileTunnel.stopTunnel().catch(() => {});
     }
   } catch (e) {
     lastMobileStartError = String((e && e.message) || e);
     log.error('mobile', 'WS köprüsü başlatılamadı: ' + lastMobileStartError);
   }
+}
+
+/* ------------ INTERNET TÜNELİ (ngrok) ------------
+   WS köprüsü yaşarken mobile.tunnel.enabled açıksa dışarı dial-out açar.
+   Hata tünelde kalır — LAN köprüsü ve uygulama akışı etkilenmez. */
+async function applyMobileTunnel() {
+  const t = mobileTunnelCfg();
+  try { await mobileTunnel.stopTunnel(); } catch {}
+  if (!mobileCfg().enabled || !mobileWs.isRunning() || !t.enabled) {
+    return { ok: false, error: '' };
+  }
+  const r = await mobileTunnel.startTunnel({
+    port: Number(mobileCfg().port) || 8788,
+    authtoken: t.authtoken,
+    domain: t.domain,
+  });
+  if (r && r.ok) log.info('mobile', 'İnternet tüneli hazır: ' + r.url);
+  else if (r && r.error) log.error('mobile', 'İnternet tüneli açılamadı: ' + r.error);
+  return r;
 }
 
 
@@ -6660,6 +6700,8 @@ ipcMain.handle('sessions:create', () => createDesktopSession());
 ipcMain.handle('mobile:getState', () => {
   try {
     const st = mobileWs.status();
+    const t = mobileTunnelCfg();
+    const ts = mobileTunnel.status();
     return {
       code: device.getDevice().code,
       name: device.deviceName(),
@@ -6670,9 +6712,22 @@ ipcMain.handle('mobile:getState', () => {
       ip: lanIp(),
       clients: st.clients,
       phones: device.listPhones(),
+      tunnel: {
+        enabled: !!t.enabled,
+        domain: t.domain,
+        authtokenSet: !!t.authtoken,
+        running: !!ts.running,
+        url: ts.url,
+        wss: ts.wss,
+        error: String(ts.error || ''),
+      },
     };
   } catch (e) {
-    return { code: '', name: 'Beast Agent', enabled: false, port: 8788, running: false, lastError: String(e), ip: '127.0.0.1', clients: [], phones: [] };
+    return {
+      code: '', name: 'Beast Agent', enabled: false, port: 8788, running: false,
+      lastError: String(e), ip: '127.0.0.1', clients: [], phones: [],
+      tunnel: { enabled: false, domain: '', authtokenSet: false, running: false, url: '', wss: '', error: '' },
+    };
   }
 });
 ipcMain.handle('mobile:setEnabled', async (_e, on) => {
@@ -6705,6 +6760,31 @@ ipcMain.handle('mobile:regenCode', () => {
     try { mobileWs.stop(); applyMobileServer(); } catch {}
   } catch {}
   return { code: device.getDevice().code };
+});
+ipcMain.handle('mobile:setTunnel', async (_e, patch) => {
+  try {
+    const p = patch && typeof patch === 'object' ? patch : {};
+    const t = mobileTunnelCfg();
+    if (p.enabled !== undefined) t.enabled = !!p.enabled;
+    /* token boş/yoksa mevcut korunur: panelde sadece domain oynatınca token silinmesin */
+    const tok = p.authtoken === undefined ? '' : String(p.authtoken || '').trim();
+    if (tok) t.authtoken = tok;
+    if (p.domain !== undefined) t.domain = mobileTunnel.cleanDomain(p.domain);
+    saveSettings();
+  } catch {}
+  /* köprü kapalıyken de token/domain kaydedilir; tünel WS açılınca otomatik kurulur */
+  const r = await applyMobileTunnel();
+  const t = mobileTunnelCfg();
+  const ts = mobileTunnel.status();
+  return {
+    enabled: !!t.enabled,
+    domain: t.domain,
+    authtokenSet: !!t.authtoken,
+    running: !!ts.running,
+    url: ts.url,
+    wss: ts.wss,
+    error: String(ts.error || (r && r.error) || ''),
+  };
 });
 ipcMain.handle('mobile:setName', (_e, name) => {
   try { device.setDeviceName(name); } catch {}
@@ -6742,7 +6822,11 @@ ipcMain.handle('sessions:active', (_e, id) => {
   return true;
 });
 
-ipcMain.handle('agent:send', (_e, { sessionId, text }) => {
+/* SLASH KOMUT YÖNLENDİRİCİSİ — masaüstü IPC ve BEAST MOBILE aynı kapıdan
+   geçer. Böylece telefondan da /help, /new, /clear, /version, /model ...
+   komutları masaüstüyle BİREBİR aynı şekilde çalışır.
+   (mobileHandlers.onSend → handleAgentSend) */
+function handleAgentSend(sessionId, text) {
   const raw = text && typeof text === 'object' ? String(text.text || '') : String(text ?? '');
   const t = raw.trim();
   /* yazan sohbet = kullanıcının gördüğü sohbet: proaktif enjeksiyon hedefi */
@@ -7030,7 +7114,9 @@ ipcMain.handle('agent:send', (_e, { sessionId, text }) => {
      ama durdurulan iş/kuyruk kendiliğinden devam etmez */
   queueDesktopMessage(sessionId, text);
   return true;
-});
+}
+
+ipcMain.handle('agent:send', (_e, { sessionId, text }) => handleAgentSend(sessionId, text));
 
 /* #25 aktif oturumun notlarını düz metin döndürür (chat + WA) */
 function notesText(sessionId) {
@@ -13248,6 +13334,21 @@ async function deliverFile(sessionId, filePath, caption) {
     try {
       const job = engine.listBgJobs().find((j) => j.id === sid);
       if (job && job.parentId) sid = job.parentId; // paralel ajan → parent sohbet
+    } catch {}
+    /* BEAST MOBILE: dosyayı TELEFONA da gönder — ajanın attığı PDF/dosya
+       telefonda görünür, kaydedilir ve açılabilir. (dataUrl ile; 3MB üstü
+       sadece künye gider — WS yük sınırı) */
+    try {
+      const st = fs.statSync(abs);
+      const mime = mimeForFile(ext);
+      const ev = { sessionId: sid, type: 'file', name, mime, size: st.size, caption: caption || '', path: abs };
+      if (st.size <= 3 * 1024 * 1024) {
+        const buf = fs.readFileSync(abs);
+        ev.dataUrl = `data:${mime};base64,${buf.toString('base64')}`;
+      } else {
+        ev.tooBig = true;
+      }
+      mobileWs.broadcast(ev);
     } catch {}
     /* WhatsApp hedefi: bu oturum bir WA sohbetine bağlıysa oraya gönder.
        Birden çok sohbet aynı oturuma bağlıysa EN SON yazan kazanır. */

@@ -1395,6 +1395,14 @@ body.term-dragging * { cursor: row-resize !important; }
   gap: 5px;
   margin-top: 7px;
 }
+
+/* SESLİ MESAJ (mobilden gelen kayıt) — sohbette oynatılabilir */
+.att-audio {
+  width: 260px;
+  max-width: 100%;
+  height: 34px;
+  margin-top: 4px;
+}
 .att-chip {
   display: inline-flex;
   align-items: center;

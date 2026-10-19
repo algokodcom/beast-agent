@@ -227,6 +227,12 @@ function clamp(n, lo, hi) {
   return Math.max(lo, Math.min(hi, n));
 }
 
+/* ses kaydı süresi → 0:12 (mesaj notlarında kullanılır) */
+function fmtDur(sec) {
+  const s = Math.max(0, Math.round(Number(sec) || 0));
+  return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+}
+
 /* İnsan-okur 6 haneli oturum kodu — karıştırılan harfler (0,O,1,I,L) yok */
 const CODE_ALPHABET = '23456789ABCDEFGHJKMNPQRSTUVWXYZ';
 function sessionCode() {
@@ -2653,13 +2659,27 @@ class Engine {
       const text = String((payload && payload.text) || '').slice(0, USER_MAX);
       const atts = Array.isArray(payload && payload.attachments) ? payload.attachments : [];
       const imgs = atts.filter((a) => a.type === 'image' && a.dataUrl).slice(0, 4);
-      /* DOSYA EKLERİ İÇERİĞE GÖMÜLMEZ: mesajda `attachments` alanında taşınır —
-         chat ekranında DOSYA KARTI olarak görünür, içerik ekrana yazılmaz.
-         İçeriği yalnızca _buildPayload LLM isteğine enjekte eder. */
+      /* SESLİ MESAJ (mobil): ses kaydı ek olarak taşınır — LLM'e içerik olarak
+         GÖNDERİLMEZ (çooğu sağlayıcı ses girdisi desteklemez); ajan metin olarak
+         bildirim alır, ses dosyası medya klasörüne yazılır ve ekranda oynatılır. */
+      const audios = atts.filter((a) => a && a.type === 'audio' && a.dataUrl).slice(0, 3);
+      const audMeta = audios.map((a) => ({
+        type: 'audio',
+        name: String(a.name || 'sesli mesaj'),
+        duration: Number(a.duration || 0),
+        dataUrl: String(a.dataUrl).length <= 400000 ? String(a.dataUrl) : '',
+      }));
       const files = atts
         .filter((a) => a.type === 'file')
         .map((a) => ({ name: String(a.name || 'dosya'), content: String(a.content || '').slice(0, 20000) }));
-      const body = (text.trim() || (files.length || imgs.length ? '[dosya ekleri]' : '(ek)')).slice(0, USER_MAX);
+      const audNote = audios.length
+        ? '[Sesli mesaj: ' + audios.map((a) => fmtDur(Number(a.duration || 0))).join(', ') + ']'
+        : '';
+      let body = text.trim();
+      if (!body) body = (files.length || imgs.length) ? '[dosya ekleri]' : '';
+      if (audNote) body = body ? body + '\n\n' + audNote : audNote;
+      if (!body) body = '(ek)';
+      body = body.slice(0, USER_MAX);
       if (imgs.length) {
         const parts = [{ type: 'text', text: body }];
         for (const im of imgs) parts.push({ type: 'image_url', image_url: { url: im.dataUrl } });
@@ -2667,18 +2687,20 @@ class Engine {
       } else {
         msg = { role: 'user', content: body };
       }
-      if (imgs.length || files.length) {
+      if (imgs.length || files.length || audMeta.length) {
         /* UI dosya kartları + payload enjeksiyonu buradan beslenir:
            dosyalar İÇERİKLE birlikte `attachments`ta yaşar (görüntüler yalnız
-           ad taşır — veri content parçalarındadır). Chat ekranı yalnız ADI basar. */
+           ad taşır — veri content parçalarındadır). Chat ekranı yalnız ADI basar.
+           SESLİ MESAJ: dataUrl ekranda oynatılabilsin diye attachments'ta kalır. */
         msg.attachments = [
           ...imgs.map((im) => ({ type: 'image', name: String(im.name || 'resim') })),
           ...files,
+          ...audMeta,
         ];
         /* MEDYA KAYDI: WA/Chat UI'dan gelen fotoğraflar ve belgeler OTURUMUN
            media klasörüne yazılır (orijinal dosya güvende). msg.media jsonl'e
            düşer; prune/compaction görselleri metne indirse bile kayıp yok. */
-        const media = this._saveMedia(s.id, imgs, files);
+        const media = this._saveMedia(s.id, imgs, files, audios);
         if (media) msg.media = media;
       }
     }
@@ -2813,7 +2835,7 @@ class Engine {
      oturumun media klasörüne yazılır: <sessionsDir>/media/<sid>/zaman-metin.
      Dönen liste msg.media olarak jsonl'e yazılır — orijinal dosya hiç
      kaybolmaz (eski görsellerin metne indirilmesinden bağımsız). */
-  _saveMedia(sid, imgs, files) {
+  _saveMedia(sid, imgs, files, audios) {
     const out = [];
     try {
       const dir = path.join(this.sessionsDir, 'media', String(sid || ''));
@@ -2839,6 +2861,19 @@ class Engine {
           const file = stamp + '-' + ++i + '-' + safe(stripExt(f.name), 'dosya') + '.txt';
           fs.writeFileSync(path.join(dir, file), String(f.content || ''), 'utf8');
           out.push({ file, name: String(f.name || 'dosya'), kind: 'file' });
+        } catch {}
+      }
+      /* SESLİ MESAJ: kayıt orijinal biçimiyle (webm/mp4) media klasörüne yazılır */
+      for (const au of Array.isArray(audios) ? audios : []) {
+        const m = /^data:([^;,]+)?(;base64)?,(.*)$/.exec(String(au.dataUrl || ''));
+        if (!m) continue;
+        try {
+          const mime = String(m[1] || 'audio/webm');
+          const sub = String(mime.split('/')[1] || 'webm').split(';')[0].replace(/[^a-z0-9]/gi, '').slice(0, 5) || 'webm';
+          const buf = m[2] ? Buffer.from(m[3], 'base64') : Buffer.from(decodeURIComponent(m[3]), 'utf8');
+          const file = stamp + '-' + ++i + '-' + safe(stripExt(au.name), 'ses') + '.' + sub;
+          fs.writeFileSync(path.join(dir, file), buf);
+          out.push({ file, name: String(au.name || 'sesli mesaj'), kind: 'audio', duration: Number(au.duration || 0) });
         } catch {}
       }
     } catch {}

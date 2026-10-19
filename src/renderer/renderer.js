@@ -548,6 +548,23 @@ function addUserBubble(content, atts) {
     let named = 0;
     for (const a of list) {
       const isImg = a && a.type === 'image';
+      /* SESLİ MESAJ (mobil): oynatılabilir kayıt */
+      if (a && a.type === 'audio') {
+        if (a.dataUrl) {
+          const au = document.createElement('audio');
+          au.controls = true;
+          au.preload = 'metadata';
+          au.src = a.dataUrl;
+          au.className = 'att-audio';
+          wrap.appendChild(au);
+        } else {
+          const chip = document.createElement('span');
+          chip.className = 'att-chip';
+          chip.textContent = '\u{1F3A4} ' + String(a.name || 'sesli mesaj');
+          wrap.appendChild(chip);
+        }
+        continue;
+      }
       const chip = document.createElement('span');
       chip.className = 'att-chip' + (isImg ? ' att-img' : '');
       chip.textContent = (isImg ? '\u25A3 ' : '\u2261 ') + String((a && a.name) || (isImg ? 'resim' : 'dosya'));
@@ -1256,6 +1273,9 @@ async function renderMobilePane() {
   const ip = String(st.ip || location.hostname || 'localhost').replace('::ffff:', '');
   const link = 'ws://' + ip + ':' + port;           /* APK / ws istemcisi için */
   const httpLink = 'http://' + ip + ':' + port;      /* telefondan tarayıcı testi için */
+  const tun = st.tunnel || { enabled: false, domain: '', authtokenSet: false, running: false, url: '', wss: '', error: '' };
+  const netWss = String(tun.wss || '');
+  const netHttp = String(tun.url || '');
   const addrHtml =
     `<div class="prov-row" style="flex-direction:column;align-items:flex-start;gap:4px">` +
       `<div class="sub" style="margin:0">BİLGİSAYAR ADRESİ (telefonda buna bağlan)</div>` +
@@ -1263,21 +1283,51 @@ async function renderMobilePane() {
         `<code id="bmAddr" style="font-size:16px;font-weight:800;letter-spacing:1px;flex:1;user-select:all">${escapeHtml(httpLink)}</code>` +
         `<button class="prov-act" id="bmAddrCopy" title="Adresi kopyala"><svg viewBox="0 0 24 24" width="14" height="14" style="vertical-align:-2px" aria-hidden="true"><rect x="8.5" y="8.5" width="12" height="12" rx="2.2" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M15.5 5.5v-1A2.5 2.5 0 0 0 13 2H5.5A2.5 2.5 0 0 0 3 4.5V12a2.5 2.5 0 0 0 2.5 2.5h1" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg> kopyala</button>` +
       `</div>` +
-      `<div class="sub" style="margin:0;text-align:left">Bu adresi kopyalayıp TELEFONUN tarayıcısına yaz — aynı Wi-Fi'daysan chat testi direkt açılır (APK'sız deneme). APK'da "PC adresi"alanına aynen bunu gir.</div>` +
+      `<div class="sub" style="margin:0;text-align:left">Bu adresi kopyalayıp TELEFONUN tarayıcısına yaz — aynı Wi-Fi'daysan chat testi direkt açılır (APK'sız deneme). APK'da "PC adresi" alanına aynen bunu gir (aynı Wi-Fi için); farklı ağdaysan aşağıdaki İnternet tüneli adresini gir.</div>` +
     `</div>`;
   const clientsHtml = (st.clients || []).length
     ? (st.clients || []).map((c) =>
         `<div class="prov-row" style="min-height:40px"><span style="flex:1">📱 ${escapeHtml(c.name || 'Telefon')} <span class="sub">${escapeHtml(String(c.ip || '').replace('::ffff:', ''))}</span></span></div>`
       ).join('')
     : '<div class="sub" style="text-align:left;padding:2px 0">şu an bağlı telefon yok</div>';
+  /* İNTERNET TÜNELİ kartı: ngrok dial-out — farklı ağdan (mobil veri vb.) bağlantı */
+  const tunnelStatus = (!st.enabled && tun.enabled)
+    ? '⏸ köprü kapalı — Köprü AÇIK yapılınca otomatik kurulur'
+    : (tun.running
+        ? '✅ açık — internetten bağlanılabilir'
+        : (tun.enabled
+            ? (tun.error ? '⛔ hata: ' + escapeHtml(String(tun.error)).slice(0, 140) : '⏳ açılıyor…')
+            : 'kapalı'));
+  const netAddrHtml =
+    `<div class="prov-row" style="flex-direction:column;align-items:flex-start;gap:4px">` +
+      `<div class="sub" style="margin:0">İNTERNET ADRESİ (telefonda PC adresi alanına bunu gir)</div>` +
+      `<div style="display:flex;align-items:center;gap:10px;width:100%">` +
+        `<code id="bmNetAddr" style="font-size:15px;font-weight:800;letter-spacing:.5px;flex:1;user-select:all">${netWss ? escapeHtml(netWss) : '— (tünel kapalı)'}</code>` +
+        (netWss ? `<button class="prov-act" id="bmNetCopy" title="İnternet adresini kopyala"><svg viewBox="0 0 24 24" width="14" height="14" style="vertical-align:-2px" aria-hidden="true"><rect x="8.5" y="8.5" width="12" height="12" rx="2.2" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M15.5 5.5v-1A2.5 2.5 0 0 0 13 2H5.5A2.5 2.5 0 0 0 3 4.5V12a2.5 2.5 0 0 0 2.5 2.5h1" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg> kopyala</button>` : '') +
+      `</div>` +
+    `</div>`;
+  const tunnelCard =
+    `<div class="prov-card">` +
+      `<div class="prov-row" style="min-height:44px"><span style="flex:1;font-weight:700">İnternet tüneli (ngrok — farklı ağdan bağlan)</span><input type="checkbox" id="bmTunnelOn" ${(tun.enabled ? 'checked' : '')}></div>` +
+      `<div class="prov-row" style="flex-direction:column;align-items:flex-start;gap:4px">` +
+        `<div class="sub" style="margin:0">NGROK AUTHTOKEN${tun.authtokenSet ? ' (kayıtlı — boş bırakırsan aynen kalır)' : ''}</div>` +
+        `<input id="bmToken" type="password" autocomplete="off" spellcheck="false" placeholder="dashboard.ngrok.com → Authtoken" style="width:100%" value="">` +
+        `<div class="sub" style="margin:0">STATİK NGROK DOMAIN</div>` +
+        `<input id="bmDomain" type="text" autocomplete="off" spellcheck="false" placeholder="örn. sabit-medi-tunga.ngrok-free.app" style="width:100%" value="${escapeHtml(String(tun.domain || ''))}">` +
+        `<button class="btn ghost" id="bmTunnelSave" style="width:100%;margin-top:4px">kaydet & tüneli aç</button>` +
+        `<div class="sub" style="margin:0;text-align:left">Tek seferlik kurulum (ücretsiz): <b>dashboard.ngrok.com</b>'a kayıt ol → <b>Your Authtoken</b>'ı kopyala → <b>Cloud Edge → Domains</b>'den bir <b>statik domain</b> ayır (free plandaki domain değişmez). İkisini yukarıya yaz — masaüstü 24/7 açıkken tünel hep dışarıdan erişilebilir olur; telefonda artık aynı Wi-Fi gerekmez (mobil veri bile olur).</div>` +
+        `<div class="sub" style="margin:0;text-align:left;${tun.running ? '' : ('color:' + (tun.error ? '#c33' : '#888'))}">durum: ${tunnelStatus}</div>` +
+        (st.enabled && tun.enabled ? netAddrHtml : '') +
+      `</div>` +
+    `</div>`;
   const phonesHtml = (st.phones || []).length
     ? (st.phones || []).map((p) =>
         `<div class="prov-row" style="min-height:38px"><span style="flex:1">${escapeHtml(p.name || 'Telefon')} <span class="sub">${escapeHtml(p.platform || 'android')} · son: ${escapeHtml(String(p.lastSeen || '').slice(0, 10))}</span></span><button class="prov-act" data-kick="${escapeHtml(p.id || '')}">✕</button></div>`
       ).join('')
     : '<div class="sub" style="text-align:left;padding:2px 0">henüz telefon eşleşmesi yok</div>';
   pane.innerHTML =
-    `<h2><svg viewBox="0 0 24 24" width="19" height="19" style="vertical-align:-4px" aria-hidden="true"><rect x="6" y="2.5" width="12" height="19" rx="2.4" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M9 5.8h6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="M11.8 18.4h0.4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M3.4 8.2c-1.1 2.4-1.1 5.2 0 7.6M20.6 8.2c1.1 2.4 1.1 5.2 0 7.6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg> Beast Mobile</h2>` +
-    `<div class="sub">Beast Agent'a Android telefondan bağlan: APK'nın Ayarlar ekranında aşağıdaki <b>cîhaz kodunu</b> gir — chat bu makinedeki Beast Agent'a bağlanır. Kod güncellemelerle DEĞİŞMEZ (diskte saklanır).</div>` +
+    `<h2 data-i18n="tab_mobile">${_t('tab_mobile')}</h2>` +
+    `<div class="sub">Beast Agent'a Android telefondan bağlan: APK'nın Ayarlar ekranında aşağıdaki <b>cihaz kodunu</b> gir — chat bu makinedeki Beast Agent'a bağlanır. Kod güncellemelerle DEĞİŞMEZ (diskte saklanır).</div>` +
     `<div class="prov-card">` +
       `<div class="prov-row" style="flex-direction:column;align-items:flex-start;gap:4px">` +
         `<div class="sub" style="margin:0">CİHAZ KODU (tekil, kalıcı)</div>` +
@@ -1295,16 +1345,49 @@ async function renderMobilePane() {
       `<div class="sub" style="text-align:left;${st.running ? '' : 'color:#c33'}">durum: ${st.running ? '✅ dinleniyor (port ' + escapeHtml(String(port)) + ')' : '⛔ kapalı'}${st.lastError ? ' — ' + escapeHtml(String(st.lastError || '')).slice(0, 120) : ''}</div>` +
       (st.enabled ? addrHtml : '') +
     `</div>` +
+    (st.enabled ? tunnelCard : '') +
     `<div class="prov-card">` +
       `<div style="font-weight:800;margin-bottom:4px">ŞU AN BAĞLI (${escapeHtml(String((st.clients || []).length))})</div>` + clientsHtml +
     `</div>` +
     `<div class="prov-card">` +
       `<div style="font-weight:800;margin-bottom:4px">EŞLEŞEN TELEFONLAR (${escapeHtml(String((st.phones || []).length))})</div>` + phonesHtml +
     `</div>` +
-    `<div class="sub" style="text-align:left">Test hızı: telefondaki APK'yı aç → kod gir → chat balonları masaüstündeki sohbet gibi akar (WhatsApp görünümü). Evo aynı Wi-Fi ağında olmalısın; Faz B'de tünelleme ve port açma notları gelir.</div>`;
-  $('#bmAddrCopy').addEventListener('click', async () => {
+    `<div class="sub" style="text-align:left">Test hızı: telefondaki APK'yı aç → kod gir → chat balonları masaüstündeki sohbet gibi akar (WhatsApp görünümü). Aynı Wi-Fi'da BİLGİSAYAR ADRESİ, farklı ağda (mobil veri/uzaktan) İnternet tüneli kartındaki İNTERNET ADRESİ ile bağlanır.</div>`;
+  const addrCopyBtn = $('#bmAddrCopy');
+  if (addrCopyBtn) addrCopyBtn.addEventListener('click', async () => {
     try { await navigator.clipboard.writeText(httpLink); toast('Adres kopyalandı ✓'); } catch {}
   });
+  const netCopy = $('#bmNetCopy');
+  if (netCopy) netCopy.addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText(netWss); toast('İnternet adresi kopyalandı ✓'); } catch {}
+  });
+  const bmToken = $('#bmToken');
+  const bmDomain = $('#bmDomain');
+  const bmOn2 = $('#bmTunnelOn');
+  const bmSaveBtn = $('#bmTunnelSave');
+  const saveTunnel = async (enabled) => {
+    try {
+      if (!bmToken || !bmDomain) return;
+      const r = await beast.mobileSetTunnel({
+        enabled,
+        authtoken: bmToken.value.trim(),   /* boş = mevcut token korunur (main tarafı) */
+        domain: bmDomain.value.trim(),
+      });
+      if (r && r.error) toast('Tünel: ' + String(r.error).slice(0, 100));
+      else if (enabled) toast(r && r.running ? 'Tünel açık ✓' : 'Tünel açılıyor…');
+      else toast('Tünel kapandı');
+      renderMobilePane();
+    } catch (e) {
+      try { toast('Tünel ayarı kaydedilemedi: ' + String((e && e.message) || e).slice(0, 80)); } catch {}
+    }
+  };
+  if (bmOn2) {
+    bmOn2.addEventListener('change', async (e) => { await saveTunnel(e.target.checked); });
+  }
+  if (bmSaveBtn) {
+    /* buton sözlü olarak "kaydet & aç" demek: tünel kutucuğu boşsa bile tüneli aç */
+    bmSaveBtn.addEventListener('click', async () => { await saveTunnel(true); });
+  }
   $('#bmCopy').addEventListener('click', async () => {
     try { await navigator.clipboard.writeText(String(st.code || '')); toast('Kod kopyalandı ✓'); } catch {}
   });
@@ -1324,13 +1407,36 @@ async function renderMobilePane() {
       try { await beast.mobileKickPhone(b.dataset.kick); toast('Eşleşme silindi'); renderMobilePane(); } catch {}
     });
   });
+  /* dinleyici İNİNE yazarken/basarlamada panel kendini yenileyip tıkları bozmasın: */
+  const paneInputBusy = () => {
+    try {
+      const a = document.activeElement;
+      return !!(a && pane.contains(a) && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName));
+    } catch { return false; }
+  };
   /* listen() gecikirse (0.5-1 sn) durumun olduğu gibi kalmış görünmesin:
      açık ama running-yok ve hata-yok durumda birkaç kez sessiz yenile */
   if (st.enabled && !st.running && !st.lastError) {
-    pane.dataset.chkw = String(Number(pane.dataset.chkw || 0) + 1);
-    if (Number(pane.dataset.chkw) <= 3) setTimeout(renderMobilePane, 650);
+    if (paneInputBusy()) {
+      /* kullanıcı yazıyor — tam yenileme yerine sadece gecikerek yeniden dene */
+      setTimeout(renderMobilePane, 650);
+    } else {
+      pane.dataset.chkw = String(Number(pane.dataset.chkw || 0) + 1);
+      if (Number(pane.dataset.chkw) <= 3) setTimeout(renderMobilePane, 650);
+    }
   } else {
     pane.dataset.chkw = '0';
+  }
+  /* tünel açılışı ~1-3 sn sürer: hata yoksa aynı usulla durum takibi */
+  if (st.enabled && tun.enabled && st.running && !tun.running && !tun.error) {
+    if (paneInputBusy()) {
+      setTimeout(renderMobilePane, 1000);
+    } else {
+      pane.dataset.chkt = String(Number(pane.dataset.chkt || 0) + 1);
+      if (Number(pane.dataset.chkt) <= 8) setTimeout(renderMobilePane, 1000);
+    }
+  } else {
+    pane.dataset.chkt = '0';
   }
 }
 

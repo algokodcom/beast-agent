@@ -1,0 +1,13 @@
+{
+  "appId": "com.algokod.beastmobile",
+  "appName": "Beast Mobile",
+  "webDir": "www",
+  "server": {
+    "androidScheme": "https"
+  },
+  "plugins": {
+    "SystemBars": {
+      "style": "DARK"
+    }
+  }
+}

@@ -5,114 +5,288 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
 <title>Beast Mobile</title>
 <style>
-  :root{ --bg:#0b1520; --panel:#12212e; --panel2:#16293a; --line:#22384c; --me:#0e4d3a; --me2:#0f5c46;
-    --tx:#e8f1f8; --dim:#8ba3b8; --acc:#3fb6ff; --accent:#00cf70; }
+  :root{
+    /* güvenli alan (Capacitor SystemBars CSS olarak enjekte eder) */
+    --sat: var(--safe-area-inset-top, env(safe-area-inset-top, 0px));
+    --sab: var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px));
+    --sal: var(--safe-area-inset-left, env(safe-area-inset-left, 0px));
+    --sar: var(--safe-area-inset-right, env(safe-area-inset-right, 0px));
+    /* KOYU TEMA */
+    --bg:#0b1520; --panel:#12212e; --panel2:#16293a; --line:#22384c;
+    --me:#0e4d3a; --me2:#0f5c46; --mebd:#17493a;
+    --tx:#e8f1f8; --dim:#8ba3b8; --acc:#3fb6ff; --accent:#00cf70;
+    --hdr:#12212e; --hdrtx:#e8f1f8; --hdrdim:#8ba3b8; --hbtn:#cfe0ee;
+    --bub:#16293a; --chipbg:rgba(255,255,255,.07); --codebg:rgba(255,255,255,.09);
+    --sysbg:rgba(63,182,255,.10); --syscol:#9fd8ff; --sysline:rgba(63,182,255,.28); --errc:#ff8a8a;
+    --sheetbg:#16293a; --sheettx:#e8f1f8; --segbg:#0b1520; --segon:#00cf70; --segontx:#04240f;
+    --sheetline:#22384c; --btnfg:#04240f; --wall:#0b1520;
+    --card:#16293a; --cardline:#22384c; --rec:#ff5b5b;
+  }
+  /* AYDINLIK TEMA (WhatsApp benzeri) */
+  body[data-theme="light"]{
+    --bg:#ece5dd; --panel:#f7f5f3; --panel2:#ffffff; --line:#e3ded6;
+    --me:#d9fdd3; --me2:#c4f2bb; --mebd:#b7e3a8;
+    --tx:#111b21; --dim:#667781; --acc:#027eb5; --accent:#00a884;
+    --hdr:#075e54; --hdrtx:#ffffff; --hdrdim:rgba(255,255,255,.78); --hbtn:#ffffff;
+    --bub:#ffffff; --chipbg:#f0f2f5; --codebg:#e9edef;
+    --sysbg:#d6ecff; --syscol:#0b5c80; --sysline:#a9cdec; --errc:#b3261e;
+    --sheetbg:#ffffff; --sheettx:#111b21; --segbg:#eef1f3; --segon:#00a884; --segontx:#ffffff;
+    --sheetline:#e3ded6; --btnfg:#ffffff; --wall:#ece5dd;
+    --card:#ffffff; --cardline:#e3ded6; --rec:#e53935;
+  }
   *{ margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
   html,body{ height:100%; }
   body{ background:var(--bg); color:var(--tx); font:15px/1.45 system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;
-    display:flex; flex-direction:column; height:100dvh; overflow:hidden; }
+    display:flex; flex-direction:column; height:100dvh; min-height:100dvh; overflow:hidden;
+    transition:background .18s ease,color .18s ease; }
+  button{ font-family:inherit; }
   /* ---------- BAĞLAN EKRANI ---------- */
-  #auth{ flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:12px; padding:28px; }
-  #auth .logo{ width:64px; height:64px; border-radius:18px; background:linear-gradient(135deg,#00cf70,#3fb6ff);
-    display:flex; align-items:center; justify-content:center; font-size:34px; }
-  #auth h1{ font-size:20px; }
-  #auth .sub{ color:var(--dim); font-size:13px; text-align:center; max-width:320px; }
-  #auth input{ width:100%; max-width:340px; background:var(--panel); border:1px solid var(--line); color:var(--tx);
+  #auth{ flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:12px;
+    padding:calc(var(--sat) + 28px) 28px calc(var(--sab) + 28px); background:var(--bg); }
+  #auth .logo{ width:72px; height:72px; border-radius:20px; overflow:hidden;
+    display:flex; align-items:center; justify-content:center; background:#000; }
+  #auth .logo img{ width:100%; height:100%; object-fit:cover; display:block; }
+  #auth h1{ font-size:20px; font-weight:800; }
+  #auth .sub{ font-size:13px; color:var(--dim); text-align:center; margin-top:-6px; }
+  #auth input{ width:100%; max-width:340px; background:var(--panel2); border:1px solid var(--line); color:var(--tx);
     border-radius:12px; padding:13px 14px; font-size:16px; outline:none; }
   #auth input:focus{ border-color:var(--acc); }
   #auth button{ width:100%; max-width:340px; border:0; border-radius:12px; padding:14px; font-size:15.5px; font-weight:800;
     background:linear-gradient(135deg,#00cf70,#0aa860); color:#04240f; }
   #auth button:active{ opacity:.85; }
-  #authNote{ color:var(--dim); font-size:12px; max-width:340px; text-align:center; }
-  #authErr{ color:#ff8a8a; font-size:13px; min-height:18px; }
+  #authErr{ color:var(--errc); font-size:13px; min-height:18px; text-align:center; }
+  #auth.remember #host,#auth.remember #code{ display:none; }
+  #auth.remember #btnJoin{ display:none; }
+  .wait{ display:flex; align-items:center; gap:10px; justify-content:center; color:var(--dim); font-size:13.5px; }
+  .spin{ width:17px; height:17px; border-radius:50%; border:2px solid var(--line); border-top-color:var(--accent);
+    animation:sp .8s linear infinite; }
+  @keyframes sp{ to{ transform:rotate(360deg); } }
   /* ---------- CHAT EKRANI ---------- */
-  #app{ flex:1; display:none; flex-direction:column; min-height:0; }
-  header{ background:var(--panel); border-bottom:1px solid var(--line); display:flex; align-items:center; gap:10px;
-    padding:calc(env(safe-area-inset-top) + 10px) 14px 10px; flex:0 0 auto; }
-  header .st{ flex:1; min-width:0; }
-  header .nm{ font-weight:800; font-size:15.5px; display:flex; align-items:center; gap:7px; white-space:nowrap; }
+  #app{ flex:1; display:none; flex-direction:column; min-height:0; position:relative; }
+  header{ background:var(--hdr); color:var(--hdrtx); border-bottom:1px solid var(--line); display:flex; align-items:center; gap:8px;
+    padding:calc(var(--sat) + 10px) calc(10px + var(--sar)) 10px calc(14px + var(--sal)); flex:0 0 auto; }
+  header .st{ flex:1; min-width:0; overflow:hidden; }
+  header .nm{ font-weight:800; font-size:15.5px; display:flex; align-items:center; gap:7px; white-space:nowrap; min-width:0; }
+  header .nm .bt{ flex:0 0 auto; }
+  header .stt{ color:var(--hdrdim); font-size:12px; font-weight:600; white-space:nowrap; overflow:hidden;
+    text-overflow:ellipsis; min-width:0; flex:0 1 auto; }
   header .dot{ width:8px; height:8px; border-radius:50%; background:var(--accent); flex:0 0 auto; }
-  header .mega{ color:var(--dim); font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  #sess{ background:var(--panel2); border:1px solid var(--line); color:var(--tx); border-radius:10px;
-    max-width:140px; font-size:13px; padding:6px 8px; flex:0 0 auto; outline:none; }
-  #exit,#newsess{ background:none; border:0; color:var(--dim); font-size:20px; padding:2px 4px; }
-  #msgs{ flex:1; overflow-y:auto; padding:12px 12px 6px; display:flex; flex-direction:column; gap:8px; min-height:0; }
+  #sess{ background:rgba(255,255,255,.14); border:1px solid rgba(255,255,255,.22); color:var(--hdrtx); border-radius:10px;
+    max-width:132px; font-size:13px; padding:6px 8px; flex:0 0 auto; outline:none; }
+  #exit,#newsess,#settings{ background:none; border:0; color:var(--hbtn); padding:2px 4px; flex:0 0 auto; outline:none; }
+  #newsess{ font-size:20px; line-height:1; }
+  #settings,#exit{ display:flex; align-items:center; justify-content:center; }
+  #settings svg,#exit svg{ display:block; }
+  #msgs{ flex:1; overflow-y:auto; overflow-x:hidden; padding:12px 12px 6px; display:flex; flex-direction:column; gap:8px;
+    min-height:0; overscroll-behavior:contain; -webkit-overflow-scrolling:touch; }
   .row{ display:flex; }
   .row.me{ justify-content:flex-end; }
-  .bub{ max-width:82%; background:var(--panel2); border:1px solid var(--line); border-radius:14px 14px 14px 4px;
+  .bub{ max-width:82%; background:var(--bub); border:1px solid var(--line); border-radius:14px 14px 14px 4px;
     padding:9px 12px; font-size:15px; word-wrap:break-word; overflow-wrap:anywhere; }
-  .row.me .bub{ background:linear-gradient(160deg,var(--me),var(--me2)); border-color:#123d30; border-radius:14px 14px 4px 14px; }
+  .row.me .bub{ background:linear-gradient(160deg,var(--me),var(--me2)); border-color:var(--mebd); border-radius:14px 14px 4px 14px; }
   .bub img{ max-width:100%; border-radius:10px; display:block; margin-top:6px; }
-  .bub .fchip{ display:inline-flex; align-items:center; gap:6px; background:rgba(255,255,255,.07); border:1px solid var(--line);
+  .bub audio{ display:block; width:100%; max-width:250px; height:38px; margin-top:4px; }
+  .bub .fchip{ display:inline-flex; align-items:center; gap:6px; background:var(--chipbg); border:1px solid var(--line);
     border-radius:9px; padding:5px 9px; font-size:13px; margin:4px 6px 4px 0; }
-  .bub code{ background:rgba(255,255,255,.08); padding:1px 5px; border-radius:5px; font-size:13.5px; }
+  .bub code{ background:var(--codebg); padding:1px 5px; border-radius:5px; font-size:13.5px; }
   .bub a{ color:var(--acc); word-break:break-all; }
-  .sysb{ align-self:center; background:rgba(63,182,255,.10); color:#9fd8ff; border:1px solid rgba(63,182,255,.25);
+  .sysb{ align-self:center; background:var(--sysbg); color:var(--syscol); border:1px solid var(--sysline);
     border-radius:10px; padding:5px 11px; font-size:12.5px; max-width:90%; text-align:center; }
-  .toolchip{ display:inline-flex; align-items:center; gap:6px; font-size:11.5px; color:var(--dim);
-    background:rgba(255,255,255,.05); border:1px solid var(--line); border-radius:8px; padding:3px 8px; margin-top:3px; }
-  .typing{ color:var(--dim); font-size:12.5px; padding:2px 6px; display:none; }
+  /* ARAÇ (komut) BALONU — adı + kısa detay */
+  .toolbubble{ max-width:88%; align-self:flex-start; background:var(--chipbg); border:1px solid var(--line);
+    border-radius:10px; padding:6px 10px; font-size:12.5px; color:var(--dim); display:flex; flex-direction:column; gap:2px; }
+  .toolbubble b{ color:var(--tx); font-size:12.5px; font-weight:800; }
+  .toolbubble .tl{ color:var(--acc); font-size:11.5px; }
+  .toolbubble .td{ color:var(--dim); font-size:11.5px; word-break:break-all; }
+  /* DOSYA KARTI */
+  .filecard{ max-width:88%; align-self:flex-start; background:var(--card); border:1px solid var(--cardline);
+    border-radius:12px; padding:10px 12px; display:flex; flex-direction:column; gap:8px; }
+  .filecard .fc-top{ display:flex; gap:10px; align-items:center; }
+  .filecard .fc-ico{ width:34px; height:34px; border-radius:9px; background:var(--chipbg); display:flex;
+    align-items:center; justify-content:center; font-size:17px; flex:0 0 auto; }
+  .filecard .fc-name{ font-size:13.5px; font-weight:800; word-break:break-all; }
+  .filecard .fc-sub{ font-size:11.5px; color:var(--dim); }
+  .filecard .fc-btns{ display:flex; gap:8px; }
+  .filecard .fcbtn{ border:1px solid var(--line); background:var(--chipbg); color:var(--tx); border-radius:9px;
+    padding:7px 12px; font-size:12.5px; font-weight:700; }
+  .filecard img{ max-width:100%; border-radius:9px; display:block; margin-top:2px; }
+  .typing{ color:var(--dim); font-size:12.5px; padding:2px 6px; display:none; flex:0 0 auto; }
   .typing.on{ display:block; }
-  footer{ background:var(--panel); border-top:1px solid var(--line); padding:8px 10px calc(env(safe-area-inset-bottom) + 8px);
-    display:flex; gap:8px; align-items:flex-end; flex:0 0 auto; }
-  #input{ flex:1; background:var(--panel2); border:1px solid var(--line); color:var(--tx); border-radius:18px;
-    padding:11px 14px; font-size:15.5px; outline:none; resize:none; max-height:110px; min-height:42px; }
+  footer{ background:var(--panel); border-top:1px solid var(--line);
+    padding:8px calc(8px + var(--sar)) calc(var(--sab) + 8px) calc(8px + var(--sal));
+    display:flex; gap:6px; align-items:flex-end; flex:0 0 auto; }
+  /* min-width:0 KRİTİK: input intrinsic genişliğine (≈180px) inmesin, yoksa
+     mikrofon/gönder butonlarını ekrandan itiyor */
+  #input{ flex:1 1 0; min-width:0; background:var(--panel2); border:1px solid var(--line); color:var(--tx);
+    border-radius:18px; padding:11px 14px; font-size:15.5px; outline:none; resize:none; max-height:110px; min-height:42px; }
   #input:focus{ border-color:var(--acc); }
-  #attach{ background:var(--panel2); border:1px solid var(--line); width:44px; height:44px;
-    border-radius:50%; flex:0 0 auto; display:flex; align-items:center; justify-content:center; }
-  #send{ border:0; background:linear-gradient(135deg,#00cf70,#0aa860); color:#04240f; width:44px; height:44px;
-    border-radius:50%; font-size:19px; flex:0 0 auto; display:flex; align-items:center; justify-content:center; }
-  .attrow{ display:flex; gap:6px; flex-wrap:wrap; padding:0 2px 6px; }
+  #attach,#mic,#send{ width:42px; height:42px; border-radius:50%; flex:0 0 auto;
+    display:flex; align-items:center; justify-content:center; }
+  #attach{ background:var(--panel2); border:1px solid var(--line); color:var(--dim); }
+  #mic{ background:var(--panel2); border:1px solid var(--line); color:var(--dim); }
+  #mic.rec{ background:var(--rec); border-color:var(--rec); color:#fff; }
+  #send{ border:0; background:linear-gradient(135deg,#00cf70,#0aa860); color:#04240f; }
+  /* KAYIT ÇUBUĞU */
+  #recbar{ flex:1; display:flex; align-items:center; gap:10px; min-height:42px; }
+  #recbar[hidden]{ display:none; }
+  #recbar .rdot{ width:11px; height:11px; border-radius:50%; background:var(--rec); flex:0 0 auto; animation:pulse 1s infinite; }
+  @keyframes pulse{ 0%,100%{ opacity:1 } 50%{ opacity:.25 } }
+  #recTime{ font-weight:800; font-size:15px; font-variant-numeric:tabular-nums; }
+  #recHint{ color:var(--dim); font-size:12.5px; flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #recbar .rb{ width:38px; height:38px; border-radius:50%; border:1px solid var(--line); background:var(--panel2);
+    color:var(--tx); display:flex; align-items:center; justify-content:center; flex:0 0 auto; }
+  #recbar .rbsend{ background:linear-gradient(135deg,#00cf70,#0aa860); color:#04240f; border:0; }
+  .attrow{ display:flex; gap:6px; flex-wrap:wrap; padding:0 calc(2px + var(--sal)) 6px; flex:0 0 auto; }
   .attrow .c{ display:inline-flex; align-items:center; gap:6px; background:var(--panel2); border:1px solid var(--line);
     color:var(--tx); border-radius:9px; padding:5px 8px; font-size:12.5px; }
   .attrow .c .x{ color:var(--dim); font-weight:800; }
+  /* ---------- SLASH KOMUT MENÜSÜ ---------- */
+  #slashMenu{ flex:0 0 auto; max-height:46dvh; overflow-y:auto; overscroll-behavior:contain;
+    background:var(--panel2); border-top:1px solid var(--line); -webkit-overflow-scrolling:touch; }
+  #slashMenu[hidden]{ display:none; }
+  #slashMenu .sm-sub{ padding:8px 12px 6px; font-size:11.5px; color:var(--dim); font-weight:700; }
+  #slashMenu .sm-item{ display:flex; gap:9px; align-items:baseline; padding:9px 12px; border-top:1px solid var(--line); }
+  #slashMenu .sm-cmd{ font-weight:800; font-size:13.5px; color:var(--tx); flex:0 0 auto; min-width:74px; }
+  #slashMenu .sm-desc{ color:var(--dim); font-size:12.5px; line-height:1.35; }
+  #slashMenu .sm-item.sel{ background:var(--chipbg); }
+  /* ---------- AYARLAR SAYFASI (tam ekran) ---------- */
+  #settingsPage{ position:absolute; inset:0; z-index:40; background:var(--bg); display:flex; flex-direction:column; }
+  #settingsPage[hidden]{ display:none; }
+  #settingsPage .sph{ background:var(--hdr); color:var(--hdrtx); display:flex; align-items:center; gap:10px;
+    padding:calc(var(--sat) + 10px) calc(12px + var(--sar)) 10px calc(8px + var(--sal)); flex:0 0 auto; }
+  #settingsPage .sph .spback{ background:none; border:0; color:var(--hbtn); display:flex; align-items:center; padding:4px; }
+  #settingsPage .sph .sptitle{ font-size:17px; font-weight:800; }
+  #settingsPage .spbody{ flex:1; overflow-y:auto; padding:12px calc(12px + var(--sar)) calc(var(--sab) + 20px) calc(12px + var(--sal)); }
+  .scard{ background:var(--card); border:1px solid var(--cardline); border-radius:14px; padding:13px 14px; margin-bottom:10px; }
+  .scard .sc-t{ font-size:12px; font-weight:800; color:var(--dim); text-transform:uppercase; letter-spacing:.4px; margin-bottom:9px; }
+  .scard .sc-r{ display:flex; align-items:center; gap:12px; }
+  .scard .sc-l{ flex:1; font-size:14.5px; font-weight:700; }
+  .scard .sc-d{ font-size:12px; color:var(--dim); margin-top:3px; font-weight:400; }
+  .seg{ display:flex; background:var(--segbg); border-radius:11px; padding:3px; gap:3px; flex:0 0 auto; }
+  .seg button{ border:0; background:transparent; color:var(--sheettx); font-size:12.5px; font-weight:700;
+    padding:8px 11px; border-radius:9px; white-space:nowrap; }
+  .seg button.on{ background:var(--segon); color:var(--segontx); }
+  /* AÇ/KAPA DÜĞMESİ */
+  .switch{ width:46px; height:27px; border-radius:14px; border:0; background:var(--segbg); position:relative;
+    flex:0 0 auto; padding:0; }
+  .switch span{ position:absolute; top:3px; left:3px; width:21px; height:21px; border-radius:50%;
+    background:var(--dim); transition:left .18s ease, background .18s ease; }
+  .switch.on{ background:var(--segon); }
+  .switch.on span{ left:22px; background:#fff; }
+  /* ---------- BİLDİRİM TOAST ---------- */
+  #toast{ position:fixed; left:50%; transform:translateX(-50%); bottom:calc(var(--sab) + 78px);
+    background:var(--card); color:var(--tx); border:1px solid var(--cardline); border-radius:12px;
+    padding:10px 14px; font-size:13px; box-shadow:0 6px 20px rgba(0,0,0,.3); z-index:70; max-width:88%;
+    display:none; }
+  #toast.on{ display:block; }
   ::-webkit-scrollbar{ width:4px; } ::-webkit-scrollbar-thumb{ background:var(--line); border-radius:2px; }
 </style>
 </head>
-<body>
+<body data-theme="dark">
 
 <div id="auth">
-  <div class="logo">
-    <svg viewBox="0 0 24 24" width="34" height="34" aria-hidden="true">
-      <rect x="6" y="2.5" width="12" height="19" rx="2.4" fill="none" stroke="#04240f" stroke-width="2"/>
-      <path d="M9 5.8h6" stroke="#04240f" stroke-width="2" stroke-linecap="round"/>
-      <path d="M3.4 8.2c-1.1 2.4-1.1 5.2 0 7.6M20.6 8.2c1.1 2.4 1.1 5.2 0 7.6" fill="none" stroke="#04240f" stroke-width="1.8" stroke-linecap="round"/>
-    </svg>
-  </div>
+  <div class="logo"><img src="logo.png" alt="Beast"></div>
   <h1>Beast Mobile</h1>
-  <div class="sub">Bağlanmak için masaüstünde <b>Ayarlar → Beast Mobile</b> ekranında yazan <b>bilgisayar adresini</b> ve <b>cihaz kodunu</b> gir.</div>
-  <input id="host" placeholder="PC adresi (ör. 192.168.1.34)" inputmode="url" autocomplete="off">
+  <div class="sub">PC adresini ve eşleşme kodunu gir</div>
+  <input id="host" placeholder="PC adresi (ör. 192.168.1.34 ya da abc.ngrok-free.app)" inputmode="url" autocomplete="off">
   <input id="code" placeholder="BEAST-XXXX-XXXX" autocapitalize="characters" autocomplete="off">
   <div id="authErr"></div>
   <button id="btnJoin">Bağlan</button>
-  <div id="authNote">Telefon ile bilgisayar aynı Wi-Fi ağında olmalı.</div>
+  <div class="wait" id="authWait" style="display:none"><span class="spin"></span><span>bağlanılıyor…</span></div>
 </div>
 
 <div id="app">
   <header>
     <div class="st">
-      <div class="nm"><span class="dot" id="hdot"></span> Beast <span id="hname" style="color:var(--dim);font-weight:600;font-size:12.5px"></span></div>
-      <div class="mega" id="hmega">hazır</div>
+      <div class="nm"><span class="dot" id="hdot"></span><span class="bt">Beast</span><span class="stt" id="hstat"></span></div>
     </div>
     <select id="sess"></select>
     <button id="newsess" title="Yeni sohbet" aria-label="Yeni sohbet">＋</button>
-    <button id="exit" title="Çık">⏻</button>
+    <button id="settings" title="Ayarlar" aria-label="Ayarlar">
+      <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+        <path d="M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z" fill="currentColor"/>
+      </svg>
+    </button>
+    <button id="exit" title="Çıkış" aria-label="Çıkış">
+      <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+        <path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" fill="currentColor"/>
+      </svg>
+    </button>
   </header>
   <div id="msgs"></div>
   <div class="typing" id="typing"> Beast yazıyor…</div>
   <div id="attwrap" class="attrow" style="display:none"></div>
+  <div id="slashMenu" hidden></div>
   <footer>
+    <div id="recbar" hidden>
+      <span class="rdot"></span><span id="recTime">0:00</span><span class="recHint">kayıt ediliyor…</span>
+      <button class="rb" id="recCancel" aria-label="İptal">✕</button>
+      <button class="rb rbsend" id="recSend" aria-label="Gönder">
+        <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true"><path d="M2.01 21 23 12 2.01 3 2 10l15 2-15 2z" fill="#04240f"/></svg>
+      </button>
+    </div>
     <input id="input" placeholder=" mesaj yaz / soru sor…" enterkeyhint="send" autocomplete="off">
     <button id="attach" aria-label="Resim ekle">
-      <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M21 11l-8.2 8.2a6 6 0 0 1-8.5-8.5l8.7-8.7a4 4 0 0 1 5.7 5.7l-8.4 8.4a2 2 0 0 1-2.8-2.8l7.5-7.5" fill="none" stroke="#e8f1f8" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M21 11l-8.2 8.2a6 6 0 0 1-8.5-8.5l8.7-8.7a4 4 0 0 1 5.7 5.7l-8.4 8.4a2 2 0 0 1-2.8-2.8l7.5-7.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </button>
+    <button id="mic" aria-label="Sesli mesaj">
+      <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+        <path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3z" fill="currentColor"/>
+        <path d="M18 11a6 6 0 0 1-12 0H4a8 8 0 0 0 7 7.93V22h2v-3.07A8 8 0 0 0 20 11z" fill="currentColor"/>
+      </svg>
     </button>
     <button id="send" aria-label="Gönder">
       <svg viewBox="0 0 24 24" width="21" height="21" aria-hidden="true">
-        <path d="M3.6 11.1 20 3.4a.95.95 0 0 1 1.3 1.2l-4.6 15.5a.8.8 0 0 1-1.4.2l-3.5-4.6-5-2.3a1 1 0 0 1-.2-1.8z" fill="#04240f" transform="rotate(90 12 12)"/>
+        <path d="M2.01 21 23 12 2.01 3 2 10l15 2-15 2z" fill="#04240f"/>
       </svg>
     </button>
   </footer>
+
+  <!-- AYARLAR (tam ekran, WhatsApp tarzı) -->
+  <div id="settingsPage" hidden>
+    <div class="sph">
+      <button class="spback" id="settingsBack" aria-label="Geri">
+        <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M15.4 7.4 14 6l-6 6 6 6 1.4-1.4-4.6-4.6z" fill="currentColor"/></svg>
+      </button>
+      <div class="sptitle">Ayarlar</div>
+    </div>
+    <div class="spbody">
+      <div class="scard">
+        <div class="sc-t">Görünüm</div>
+        <div class="sc-r">
+          <div class="sc-l">Tema<div class="sc-d">Koyu · Aydınlık · Sistem (cihaz ayarı)</div></div>
+          <div class="seg" id="segTheme">
+            <button type="button" data-t="dark">Koyu</button>
+            <button type="button" data-t="light">Aydınlık</button>
+            <button type="button" data-t="system">Sistem</button>
+          </div>
+        </div>
+      </div>
+      <div class="scard">
+        <div class="sc-t">Bildirim</div>
+        <div class="sc-r">
+          <div class="sc-l">Arka planda çalış<div class="sc-d">Uygulama tamamen kapalıyken de yeni mesajı bildir</div></div>
+          <button type="button" class="switch" id="swPoll" aria-label="Arka plan bildirimi"><span></span></button>
+        </div>
+      </div>
+      <div class="scard">
+        <div class="sc-t">Bağlantı</div>
+        <div class="sc-r">
+          <div class="sc-l">Otomatik bağlan<div class="sc-d" id="scConn">—</div></div>
+          <div class="sc-d" id="scHost">—</div>
+        </div>
+      </div>
+      <div class="scard">
+        <div class="sc-t">Uygulama</div>
+        <div class="sc-r">
+          <div class="sc-l">Beast Mobile<div class="sc-d" id="scVer">sürüm —</div></div>
+        </div>
+      </div>
+    </div>
+  </div>
 </div>
+
+<div id="toast"></div>
 
 <script src="app.js"></script>
 </body>

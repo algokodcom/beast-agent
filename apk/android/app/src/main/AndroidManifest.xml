@@ -40,11 +40,12 @@
             android:enabled="true"
             android:exported="false" />
 
-        <!-- SÜREKLİ BAĞLANTI: sesli/başlıklı uyarısı olmayan ortam ikonlu ön plan servisi -->
+        <!-- SÜREKLİ BAĞLANTI + CANLI MOD: uygulama arka plandayken WebSocket
+             ve mikrofon erişimi devam eder (Android 11+ microphone FGS tipi). -->
         <service
             android:name=".KeepService"
             android:exported="false"
-            android:foregroundServiceType="dataSync" />
+            android:foregroundServiceType="dataSync|microphone" />
     </application>
 
     <!-- Permissions -->
@@ -64,6 +65,10 @@
     <!-- SÜREKLİ BAĞLANTI: arka planda WebSocket'i düşürmeyen ön plan servisi -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <!-- CANLI MOD ARKA PLAN: mikrofonlu ön plan servisi (Android 14+) -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <!-- Canlı modda ekran kapalıyken de ses döngüsü çalışsın -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
     <!-- AJAN DOSYALARI: telefona kaydedip açma -->
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" />

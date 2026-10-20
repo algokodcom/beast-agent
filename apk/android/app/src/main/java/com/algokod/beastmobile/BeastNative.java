@@ -254,17 +254,26 @@ public class BeastNative extends Plugin {
     public void keepAlive(PluginCall call) {
         boolean on = call.getBoolean("on", Boolean.TRUE);
         try {
-            Intent i = new Intent(getContext(), KeepService.class);
-            if (on) {
-                if (Build.VERSION.SDK_INT >= 26) {
-                    getContext().startForegroundService(i);
-                } else {
-                    getContext().startService(i);
-                }
-            } else {
-                getContext().stopService(i);
-            }
+            /* Canlı mod açıkken keepAlive(false) servisi durdurmasın; yalnız
+               "bağlantı isteği" bayrağını düşür. Canlı mod kapanınca servis
+               kendiliğinden durur (keepWanted=false ise). */
+            KeepService.update(getContext(), KeepService.liveActive, on);
             call.resolve(new JSObject().put("ok", true));
+        } catch (Exception e) {
+            call.resolve(new JSObject().put("ok", false).put("error", String.valueOf(e.getMessage())));
+        }
+    }
+
+    /* CANLI MOD ARKA PLAN: WebView mikrofonu arka planda da kullanabilsin diye
+       servisi microphone FGS tipine geçirir. keep, kullanıcının "sürekli
+       bağlantı" ayarıdır; canlı mod kapanınca servisin kalıp kalmayacağını belirler. */
+    @PluginMethod
+    public void setLiveMode(PluginCall call) {
+        boolean on = call.getBoolean("on", Boolean.FALSE);
+        boolean keep = call.getBoolean("keep", Boolean.TRUE);
+        try {
+            KeepService.update(getContext(), on, keep);
+            call.resolve(new JSObject().put("ok", true).put("live", on));
         } catch (Exception e) {
             call.resolve(new JSObject().put("ok", false).put("error", String.valueOf(e.getMessage())));
         }
@@ -304,11 +313,21 @@ public class BeastNative extends Plugin {
                 return;
             }
             int maxSec = Math.max(10, Math.min(300, call.getInt("maxSec", 120)));
+            boolean noise = call.getBoolean("noise", Boolean.TRUE);
             File dir = new File(getContext().getCacheDir(), "beastrec");
             if (!dir.exists()) dir.mkdirs();
             final File f = new File(dir, "kayit_" + System.currentTimeMillis() + ".m4a");
             MediaRecorder m = new MediaRecorder();
-            m.setAudioSource(MediaRecorder.AudioSource.MIC);
+            /* VOICE_COMMUNICATION: cihazın hoparlör/yankı ve gürültü engelleme
+               hattını kullanır — motor/rüzgar sesi için MIC'ten belirgin iyi.
+               Desteklenmezse MIC'e düş. */
+            try {
+                m.setAudioSource(noise
+                        ? MediaRecorder.AudioSource.VOICE_COMMUNICATION
+                        : MediaRecorder.AudioSource.MIC);
+            } catch (Exception srcErr) {
+                m.setAudioSource(MediaRecorder.AudioSource.MIC);
+            }
             m.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4);
             m.setAudioEncoder(MediaRecorder.AudioEncoder.AAC);
             m.setAudioSamplingRate(44100);

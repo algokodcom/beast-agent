@@ -182,10 +182,11 @@ function fillSettings() {
     const h = localStorage.getItem('bmHost') || '—';
     $('#scHost').textContent = h;
     $('#scConn').textContent = (joined && ws && ws.readyState === 1) ? 'bağlı ✓' : 'arka planda bağlanıyor…';
-    $('#scVer').textContent = 'sürüm 1.0 · Beast Agent ile eşleşik';
+    $('#scVer').textContent = 'sürüm 1.1 · arka plan canlı + gürültü engelleme';
   } catch {}
   paintPollSw();
   paintKeepSw();
+  paintNoiseSw();
 }
 
 /* ARKA PLAN BİLDİRİM AÇ/KAPA */
@@ -248,6 +249,54 @@ function phoneTtsSync() {
   });
   paintTtsSw();
 })();
+
+/* =================== CANLI MOD GÜRÜLTÜ ENGELLEME ===================
+   Motor/rüzgar gibi düşük frekanslı gürültüyü high-pass + low-pass ve
+   yumuşak kompresörle azaltır. Tarayıcı/Android'in kendi noiseSuppression
+   constraint'i de açık kalır; bu zincir onun üstüne filtre ekler. */
+const NOISE_KEY = 'bmNoise';
+function liveNoiseEnabled() {
+  try { return localStorage.getItem(NOISE_KEY) !== '0'; } catch { return true; }
+}
+function paintNoiseSw() {
+  try { const el = $('#swNoise'); if (el) el.classList.toggle('on', liveNoiseEnabled()); } catch {}
+}
+function applyLiveNoise() {
+  const on = liveNoiseEnabled();
+  try {
+    if (liveHp && liveCtx) liveHp.frequency.setTargetAtTime(on ? 120 : 20, liveCtx.currentTime, 0.05);
+    if (liveLp && liveCtx) liveLp.frequency.setTargetAtTime(on ? 7800 : 20000, liveCtx.currentTime, 0.05);
+    if (liveComp && liveCtx) {
+      /* kapalıyken kompresör nötr: eşik 0 dB, oran 1 */
+      liveComp.threshold.setTargetAtTime(on ? -32 : 0, liveCtx.currentTime, 0.05);
+      liveComp.ratio.setTargetAtTime(on ? 2.5 : 1, liveCtx.currentTime, 0.05);
+    }
+  } catch {}
+  try {
+    const track = liveStream && liveStream.getAudioTracks && liveStream.getAudioTracks()[0];
+    if (track && track.applyConstraints) {
+      track.applyConstraints({
+        echoCancellation: true,
+        noiseSuppression: on,
+        autoGainControl: true,
+        channelCount: 1,
+      }).catch(() => {});
+    }
+  } catch {}
+}
+(function bindNoise() {
+  const el = document.getElementById('swNoise');
+  if (!el) return;
+  el.addEventListener('click', () => {
+    const on = !liveNoiseEnabled();
+    try { localStorage.setItem(NOISE_KEY, on ? '1' : '0'); } catch {}
+    paintNoiseSw();
+    applyLiveNoise();
+    toast(on ? 'Gürültü engelleme açık — motor/rüzgar sesi azaltılır' : 'Gürültü engelleme kapalı');
+  });
+  paintNoiseSw();
+})();
+
 /* sesli cevap oynatma — sohbetin KENDİ sesi.
    Masaüstü cevabı CÜMLE PARÇALARI halinde yollar; burada kuyruğa alınır ve
    kesintisiz çalınır. İlk parça hemen gelir, kalanı çalarken sentezlenir. */
@@ -1340,13 +1389,23 @@ async function getMicStream() {
   /* 2) YEREL KAYIT ÖNCE — anında başlasın */
   if (p && typeof p.startRec === 'function') {
     try {
-      const r = await p.startRec({ maxSec: 120 });
+      const r = await p.startRec({ maxSec: 120, noise: liveNoiseEnabled() });
       if (r && r.ok) return { native: true };
     } catch {}
   }
   /* 3) masaüstü tarayıcı / plugin yok: WebView akışı */
   if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-    try { return await navigator.mediaDevices.getUserMedia({ audio: true }); } catch {}
+    try {
+      const noise = liveNoiseEnabled();
+      return await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: noise,
+          autoGainControl: true,
+          channelCount: 1,
+        },
+      });
+    } catch {}
   }
   toast('Mikrofona erişilemedi — izni ayarlardan açmayı dene');
   setMega('mikrofona erişilemedi', 'err');
@@ -1627,10 +1686,17 @@ micEl.addEventListener('pointercancel', () => {
   micDragX = -999;
   pttUp();
 });
-/* uygulama arka plana giderse yarım kayıt sızdırmasın */
+/* Uygulama arka plana gidince PTT kaydı iptal edilir; CANLI MOD İSE DEVAM EDER.
+   Mikrofonlu ön plan servisi (KeepService/microphone FGS) sayesinde Android
+   WebView'i arka planda mikrofon akışını sürdürebilir. AudioContext ara sıra
+   askıya alınırsa uyanık tut. */
 document.addEventListener('visibilitychange', () => {
+  if (liveOn) {
+    try { if (liveCtx && liveCtx.state === 'suspended') liveCtx.resume().catch(() => {}); } catch {}
+    if (!document.hidden) scroll();
+    return;
+  }
   if (!document.hidden) return;
-  if (liveOn) { stopLive('canlı mod durduruldu (arka plan)'); return; }
   if (!mediaRec && !micDown) return;
   micDown = false;
   pttPendingEnd = '';
@@ -1645,6 +1711,7 @@ $('#recSend').addEventListener('click', () => stopRec(false));
    STT → ajan → TTS yapar, ses telefona döner. Ses bitince otomatik
    dinlemeye döner. Cevap çalarken konuşursan sesi keser (barge-in). */
 let liveOn = false, liveStream = null, liveCtx = null, liveAnalyser = null, liveTD = null;
+let liveProcStream = null, liveHp = null, liveLp = null, liveComp = null;
 let liveBuf = null, liveRec = null, liveChunks = [], liveRecStart = 0;
 let liveOnsetMs = 0, liveBargeMs = 0, liveQuietSince = 0, liveBusy = false;
 let liveWatchT = 0, liveDoneT = 0, liveTtsWasOn = false, liveStarting = false;
@@ -1656,6 +1723,17 @@ function liveSetLabel(t) { try { const el = $('#liveTxt'); if (el && t) el.textC
 function liveSetMegaLive() { setMega('canlı — dinliyorum…', 'busy'); }
 function liveWatchdogClear() { clearTimeout(liveWatchT); liveWatchT = 0; }
 function liveDoneClear() { clearTimeout(liveDoneT); liveDoneT = 0; }
+/* Android mikrofonlu ön plan servisi: canlı mod arka planda da mikrofon
+   kullanabilsin. Web/browser testinde setLiveMode yoktur — sessizce atlanır. */
+function liveNativeMode(on) {
+  try {
+    const p = nativePlugin();
+    if (p && typeof p.setLiveMode === 'function') {
+      const r = p.setLiveMode({ on: !!on, keep: keepEnabled() });
+      if (r && typeof r.catch === 'function') r.catch(() => {});
+    }
+  } catch {}
+}
 /* cevap metni gelip TTS gecikirse: 12 sn içinde ses gelmezse dinlemeye dön */
 function liveOnDone() {
   if (!liveOn || !liveBusy || talkAud) return;
@@ -1718,11 +1796,33 @@ async function startLive() {
       }
     }
   } catch {}
+  /* Mikrofonlu ön plan servisini ŞİMDİ başlat: uygulama görünürken başlatmak
+     Android 14+ kuralıdır; kullanıcı başka uygulamaya geçince mikrofon devam eder. */
+  liveNativeMode(true);
+  const noiseOn = liveNoiseEnabled();
   try {
     liveStream = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 },
+      audio: {
+        echoCancellation: true,
+        noiseSuppression: noiseOn,
+        autoGainControl: true,
+        channelCount: 1,
+        sampleRate: 48000,
+      },
     });
+    try {
+      const track = liveStream.getAudioTracks && liveStream.getAudioTracks()[0];
+      if (track && track.applyConstraints) {
+        await track.applyConstraints({
+          echoCancellation: true,
+          noiseSuppression: noiseOn,
+          autoGainControl: true,
+          channelCount: 1,
+        });
+      }
+    } catch {}
   } catch {
+    liveNativeMode(false);
     if (!liveTtsWasOn) { const c2 = phoneTtsRead(); c2.on = false; phoneTtsWrite(c2); phoneTtsSync(); }
     toast('mikrofon akışı açılamadı — izni kontrol et');
     return;
@@ -1734,16 +1834,43 @@ async function startLive() {
     liveAnalyser = liveCtx.createAnalyser();
     liveAnalyser.fftSize = 1024;
     liveAnalyser.smoothingTimeConstant = 0.35;
-    src.connect(liveAnalyser);
+    /* GÜRÜLTÜ ZİNCİRİ: motor/rüzgar için high-pass, tiz hışırtı için low-pass,
+       ani gürültüyü törpüleyen yumuşak kompresör. Analyser bu temiz sinyali görür. */
+    liveHp = liveCtx.createBiquadFilter();
+    liveHp.type = 'highpass';
+    liveHp.frequency.value = noiseOn ? 120 : 20;
+    liveHp.Q.value = 0.7;
+    liveLp = liveCtx.createBiquadFilter();
+    liveLp.type = 'lowpass';
+    liveLp.frequency.value = noiseOn ? 7800 : 20000;
+    liveLp.Q.value = 0.7;
+    liveComp = liveCtx.createDynamicsCompressor();
+    liveComp.threshold.value = noiseOn ? -32 : 0;
+    liveComp.knee.value = noiseOn ? 18 : 0;
+    liveComp.ratio.value = noiseOn ? 2.5 : 1;
+    liveComp.attack.value = 0.005;
+    liveComp.release.value = 0.25;
+    const dest = liveCtx.createMediaStreamDestination();
+    liveProcStream = dest.stream;
+    src.connect(liveHp);
+    liveHp.connect(liveLp);
+    liveLp.connect(liveComp);
+    liveComp.connect(dest);
+    liveComp.connect(liveAnalyser);
     /* grafik işlensin diye sıfır kazançla çıkışa bağla — hoparlöre ses GİTMEZ */
     const zg = liveCtx.createGain();
     zg.gain.value = 0;
-    liveAnalyser.connect(zg);
+    liveComp.connect(zg);
     zg.connect(liveCtx.destination);
     liveBuf = new Float32Array(liveAnalyser.fftSize);
   } catch {
-    try { liveStream.getTracks().forEach((t) => t.stop()); } catch {}
+    liveNativeMode(false);
+    try { if (liveProcStream) liveProcStream.getTracks().forEach((t) => t.stop()); } catch {}
+    liveProcStream = null;
+    try { if (liveStream) liveStream.getTracks().forEach((t) => t.stop()); } catch {}
     liveStream = null;
+    try { if (liveCtx) liveCtx.close(); } catch {}
+    liveCtx = null; liveAnalyser = null; liveHp = null; liveLp = null; liveComp = null;
     toast('canlı mod başlatılamadı');
     return;
   }
@@ -1760,16 +1887,19 @@ function stopLive(msg) {
   if (!liveOn) return;
   talkCancel(true); /* çalan/kuyruktaki sesi kes + masaüstü akışını iptal et */
   liveOn = false;
+  liveNativeMode(false); /* mikrofonlu ön plan servisini kapat */
   liveWatchdogClear();
   liveDoneClear();
   try { clearInterval(liveTD); } catch {}
   liveTD = null;
   try { if (liveRec) { liveRec.onstop = null; if (liveRec.state !== 'inactive') liveRec.stop(); } } catch {}
   liveRec = null; liveChunks = [];
+  try { if (liveProcStream) liveProcStream.getTracks().forEach((t) => t.stop()); } catch {}
+  liveProcStream = null;
   try { if (liveStream) liveStream.getTracks().forEach((t) => t.stop()); } catch {}
   liveStream = null;
   try { if (liveCtx) liveCtx.close(); } catch {}
-  liveCtx = null; liveAnalyser = null;
+  liveCtx = null; liveAnalyser = null; liveHp = null; liveLp = null; liveComp = null;
   liveBusy = false; liveOnsetMs = 0; liveBargeMs = 0;
   liveUI(false);
   if (!liveTtsWasOn) { const c = phoneTtsRead(); c.on = false; phoneTtsWrite(c); phoneTtsSync(); }
@@ -1779,6 +1909,8 @@ function stopLive(msg) {
 }
 function liveTick() {
   if (!liveOn || !liveAnalyser) return;
+  /* Arka planda Android AudioContext'i askıya alabilir; sessizce geri aç. */
+  try { if (liveCtx && liveCtx.state === 'suspended') liveCtx.resume().catch(() => {}); } catch {}
   try { liveAnalyser.getFloatTimeDomainData(liveBuf); } catch { return; }
   let sum = 0;
   for (let i = 0; i < liveBuf.length; i++) { const v = liveBuf[i]; sum += v * v; }
@@ -1821,7 +1953,8 @@ function liveRecStartNow() {
     for (const t of types) {
       try { if (window.MediaRecorder && MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(t)) { mime = t; break; } } catch {}
     }
-    liveRec = mime ? new MediaRecorder(liveStream, { mimeType: mime }) : new MediaRecorder(liveStream);
+    const srcStream = liveProcStream || liveStream;
+    liveRec = mime ? new MediaRecorder(srcStream, { mimeType: mime }) : new MediaRecorder(srcStream);
     liveRec.ondataavailable = (e) => { if (e.data && e.data.size) liveChunks.push(e.data); };
     liveRec.onstop = liveRecDone;
     liveRec.start();
@@ -1885,6 +2018,8 @@ inputEl.addEventListener('input', () => { updateSlash(); });
 /* ÇIKIŞ: bağlan ekranını TEKRAR göstert — tel allak balak bağlantı tamamen kapatılır */
 exitEl.addEventListener('click', () => {
   quitIntent = true;
+  /* Çıkışta canlı modu kapat: mikrofon servisi ve ses akışı arkada kalmasın. */
+  if (liveOn) stopLive();
   stopHeartbeat();
   clearTimeout(reconnectT);
   closeWs();

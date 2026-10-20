@@ -202,12 +202,15 @@ public class KeepService extends Service {
 
     @Override
     public void onTaskRemoved(Intent rootIntent) {
-        /* Kullanıcı uygulamayı görevden sildiyse canlı mikrofon arkada kalmasın. */
-        liveActive = false;
-        keepWanted = false;
-        releaseWakeLock();
-        try { stopForeground(true); } catch (Exception ignored) {}
-        stopSelf();
+        /* Kullanıcı uygulamayı görevden sildiyse canlı mikrofon arkada kalmasın.
+           Canlı mod yoksa eski davranış korunur: bağlantı servisi çalışmaya devam eder. */
+        if (liveActive) {
+            liveActive = false;
+            keepWanted = false;
+            releaseWakeLock();
+            try { stopForeground(true); } catch (Exception ignored) {}
+            stopSelf();
+        }
         super.onTaskRemoved(rootIntent);
     }
 

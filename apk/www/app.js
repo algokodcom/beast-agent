@@ -1712,7 +1712,7 @@ $('#recSend').addEventListener('click', () => stopRec(false));
    dinlemeye döner. Cevap çalarken konuşursan sesi keser (barge-in). */
 let liveOn = false, liveStream = null, liveCtx = null, liveAnalyser = null, liveTD = null;
 let liveProcStream = null, liveHp = null, liveLp = null, liveComp = null;
-let liveBuf = null, liveRec = null, liveChunks = [], liveRecStart = 0;
+let liveBuf = null, liveRec = null, liveChunks = [], liveRecStart = 0, liveResumeAt = 0;
 let liveOnsetMs = 0, liveBargeMs = 0, liveQuietSince = 0, liveBusy = false;
 let liveWatchT = 0, liveDoneT = 0, liveTtsWasOn = false, liveStarting = false;
 const LIVE_RMS = 0.014;    /* konuşma eşiği (0-1 RMS) */
@@ -1875,7 +1875,7 @@ async function startLive() {
     return;
   }
   liveOn = true;
-  liveBusy = false; liveOnsetMs = 0; liveBargeMs = 0; liveQuietSince = 0;
+  liveBusy = false; liveOnsetMs = 0; liveBargeMs = 0; liveQuietSince = 0; liveResumeAt = 0;
   liveUI(true);
   liveSetLabel('dinliyorum…');
   liveSetMegaLive();
@@ -1909,8 +1909,12 @@ function stopLive(msg) {
 }
 function liveTick() {
   if (!liveOn || !liveAnalyser) return;
-  /* Arka planda Android AudioContext'i askıya alabilir; sessizce geri aç. */
-  try { if (liveCtx && liveCtx.state === 'suspended') liveCtx.resume().catch(() => {}); } catch {}
+  /* Arka planda Android AudioContext'i askıya alabilir; sessizce geri aç.
+     Saniyede onlarca resume çağrısı birikmesin diye 2 sn'de bir dene. */
+  if (liveCtx && liveCtx.state === 'suspended' && Date.now() - liveResumeAt > 2000) {
+    liveResumeAt = Date.now();
+    try { liveCtx.resume().catch(() => {}); } catch {}
+  }
   try { liveAnalyser.getFloatTimeDomainData(liveBuf); } catch { return; }
   let sum = 0;
   for (let i = 0; i < liveBuf.length; i++) { const v = liveBuf[i]; sum += v * v; }

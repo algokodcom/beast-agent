@@ -139,9 +139,12 @@ public class KeepService extends Service {
     }
 
     private void applyForeground() {
+        /* Canlı modda SADECE microphone tipi kullan: Android 15'in dataSync
+           altı saat sınırı uzun canlı oturumları kesmesin. Mikrofon FGS'i
+           process'i canlı tuttuğu için WebSocket de çalışmaya devam eder. */
         int type = ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC;
         if (liveActive && Build.VERSION.SDK_INT >= 30) {
-            type |= ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE;
+            type = ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE;
         }
         try {
             if (Build.VERSION.SDK_INT >= 29) {

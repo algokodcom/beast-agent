@@ -1325,6 +1325,27 @@ async function renderMobilePane() {
         `<div class="prov-row" style="min-height:38px"><span style="flex:1">${escapeHtml(p.name || 'Telefon')} <span class="sub">${escapeHtml(p.platform || 'android')} · son: ${escapeHtml(String(p.lastSeen || '').slice(0, 10))}</span></span><button class="prov-act" data-kick="${escapeHtml(p.id || '')}">✕</button></div>`
       ).join('')
     : '<div class="sub" style="text-align:left;padding:2px 0">henüz telefon eşleşmesi yok</div>';
+  /* CANLI KONTROL kartı: arka plandaki bekçi köprüyü + ngrok tünelini düzenli
+     aralıklarla UÇTAN UCA yoklar; koparsa elle restart beklemeden kendiliğinden
+     yeniden açar. Durum ve son onarım bilgisi burada görünür. */
+  const wd = st.watchdog || { everySec: 30, lastCheck: 0, lastFix: '', fails: 0, nextInSec: 0 };
+  const agoTxt = (tsv) => {
+    const d = Date.now() - (Number(tsv) || 0);
+    if (!tsv || d < 0) return '—';
+    if (d < 60000) return Math.round(d / 1000) + ' sn önce';
+    if (d < 3600000) return Math.round(d / 60000) + ' dk önce';
+    return Math.round(d / 3600000) + ' sa önce';
+  };
+  const wdCard =
+    `<div class="prov-card">` +
+      `<div class="prov-row" style="min-height:44px"><span style="flex:1;font-weight:700">Otomatik kontrol (köprü + internet tüneli)</span><span class="sub" style="font-weight:700">her ${escapeHtml(String(wd.everySec || 30))} sn</span></div>` +
+      `<div class="sub" style="text-align:left">Köprü ve ngrok tüneli düzenli aralıklarla uçtan uca yoklanır — koparsa yeniden başlatmana gerek kalmadan kendiliğinden açılır. PC uyanınca ayrıca hemen kontrol edilir.</div>` +
+      `<div class="sub" style="text-align:left">son kontrol: <b>${escapeHtml(agoTxt(wd.lastCheck))}</b> · ${wd.fails ? ('⛔ onarılamadı: ' + escapeHtml(String(wd.fails)) + ' kez — yeni deneme ' + escapeHtml(String(wd.nextInSec || 0)) + ' sn içinde') : '✅ sorun yok'}</div>` +
+      `<div class="sub" style="text-align:left;${wd.lastFix ? '' : 'color:#888'}">son işlem: ${escapeHtml(wd.lastFix || 'yok — henüz onarım gerekmedi')}</div>` +
+      (st.enabled
+        ? `<button class="btn ghost" id="bmRestart" style="width:100%;margin-top:6px">ŞİMDİ YENİDEN BAŞLAT (köprü + tünel)</button>`
+        : `<div class="sub" style="text-align:left">köprü kapalı — Köprü AÇIK yapılınca otomatik kontrol başlar</div>`) +
+    `</div>`;
   pane.innerHTML =
     `<h2 data-i18n="tab_mobile">${_t('tab_mobile')}</h2>` +
     `<div class="sub">Beast Agent'a Android telefondan bağlan: APK'nın Ayarlar ekranında aşağıdaki <b>cihaz kodunu</b> gir — chat bu makinedeki Beast Agent'a bağlanır. Kod güncellemelerle DEĞİŞMEZ (diskte saklanır).</div>` +
@@ -1346,6 +1367,7 @@ async function renderMobilePane() {
       (st.enabled ? addrHtml : '') +
     `</div>` +
     (st.enabled ? tunnelCard : '') +
+    wdCard +
     `<div class="prov-card">` +
       `<div style="font-weight:800;margin-bottom:4px">ŞU AN BAĞLI (${escapeHtml(String((st.clients || []).length))})</div>` + clientsHtml +
     `</div>` +
@@ -1402,6 +1424,17 @@ async function renderMobilePane() {
     const v = Number(e.target.value) || 8788;
     try { await beast.mobileSetPort(v); toast('Port güncellendi: ' + v); renderMobilePane(); } catch {}
   });
+  const bmRestart = $('#bmRestart');
+  if (bmRestart) bmRestart.addEventListener('click', async () => {
+    bmRestart.disabled = true;
+    try {
+      await beast.mobileRestart();
+      toast('Köprü + internet tüneli yeniden başlatıldı ✓');
+    } catch (e) {
+      toast('Yeniden başlatılamadı: ' + String((e && e.message) || e).slice(0, 90));
+    }
+    renderMobilePane();
+  });
   pane.querySelectorAll('[data-kick]').forEach((b) => {
     b.addEventListener('click', async () => {
       try { await beast.mobileKickPhone(b.dataset.kick); toast('Eşleşme silindi'); renderMobilePane(); } catch {}
@@ -1439,6 +1472,26 @@ async function renderMobilePane() {
     pane.dataset.chkt = '0';
   }
 }
+
+/* BEAST MOBILE paneli AÇIKKEN durum canlı izlenir: bekçinin yaptığı otomatik
+   onarımlar panele düşsün diye 10 sn'de bir sessiz yenileme. Kullanıcı bir
+   alana yazıyorsa/basılı tutuyorsa o tur atlanır (doldurulan alanlar sıfırlanmaz). */
+function mobilePaneBusy() {
+  try {
+    const pane = $('#tab-mobile');
+    const a = document.activeElement;
+    return !!(a && pane && pane.contains(a) && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName));
+  } catch { return false; }
+}
+setInterval(() => {
+  try {
+    const pane = $('#tab-mobile');
+    if (!pane || pane.hidden) return;                 /* başka sekmede: MCP maliyeti yok */
+    if (!els.settingsOverlay || els.settingsOverlay.hidden) return;
+    if (mobilePaneBusy()) return;
+    renderMobilePane().catch(() => {});
+  } catch {}
+}, 10000);
 
 async function openSettings() {
   els.settingsOverlay.hidden = false;

@@ -1,9 +1,10 @@
 'use strict';
 
-const { app, BrowserWindow, WebContentsView, webContents, ipcMain, shell, dialog, Tray, Menu, nativeImage, desktopCapturer, screen, session, net: electronNet, clipboard, Notification } = require('electron');
+const { app, BrowserWindow, WebContentsView, webContents, ipcMain, shell, dialog, Tray, Menu, nativeImage, desktopCapturer, screen, session, net: electronNet, clipboard, Notification, powerMonitor } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const http = require('http');
+const https = require('https');
 const dns = require('dns');
 const crypto = require('crypto');
 /* x-opencode-session: opencode (Zen/Go) isteklerinde beklenen oturum kimliği —
@@ -2916,6 +2917,135 @@ async function applyMobileTunnel() {
   return r;
 }
 
+/* ------------ BEAST MOBILE WATCHDOG (düzenli kontrol + otomatik onarım) ------------
+   Köprü (WS sunucu) ve ngrok tüneli bazen SESSİZCE kopar: PC uykudan uyanınca
+   listen alan port kapanmış olur, ISP/CNAT değişince ngrok agent'ı ölür, tek
+   seferlik EADDRINUSE yakalanamaz... Kullanıcı elle "yeniden başlat"a kadar
+   fark etmez. Bu bekçi düzenli aralıklarla UÇTAN UCA yoklar: /notif ucuna
+   bilerek yanlış kodla istek atılır —403/200 dönüyorsa köprü (ve üzerinden
+   geçiyorsa ngrok tüneli) gerçekten CANLI demektir. Cevap gelmezse önce tünel,
+   sonra köprü yeniden kurulur; üst üste başarısızlıkta bekleme üstel artar
+   (ngrok rate limit yemesin). Ayarlar → Beast Mobile panelinde canlı görünür. */
+const MOBILE_WATCH_MS = 30 * 1000;            /* ne sıklıkla yoklanır */
+const MOBILE_WATCH_RETRY_MS = 15 * 1000;      /* onarım sonrası kısa yerleşme payı */
+const MOBILE_WATCH_BACKOFF_MAX = 10 * 60 * 1000;
+const MOBILE_TUNNEL_PROBE_MS = 60 * 1000;     /* ngrok free: dışarı istek 60 sn'de birden fazla değil */
+let mobileWatchTimer = null;
+let mobileWatchBusy = false;
+let mobileWatchFails = 0;    /* üst üste başarısız onarım (backoff sayacı) */
+let mobileWatchNextAt = 0;   /* bu zamandan önce yeniden deneme yapılmaz */
+let mobileWatchLastCheck = 0;
+let mobileLastTunnelProbe = 0;
+let mobileWatchLastFix = ''; /* panele gösterilen son otomatik işlem notu */
+
+function mobileWatchNoteFix(note) {
+  try { mobileWatchLastFix = new Date().toLocaleTimeString('tr-TR') + ' — ' + String(note || ''); } catch { mobileWatchLastFix = String(note || ''); }
+}
+
+/* UÇTAN UCA CANLILIK YOKLAMASI: /notif ucuna BİLEREK yanlış kod gönderilir.
+   403 = köprü canlı (tunnel üzerinden geçiyorsa ngrok da dahil); 200 = cevap
+   var sayılır; 404/502/503/504/bağlantı hatası = ölü. UA/Accept gönderilmez:
+   ngrok free'ın tarayıcı-koruma ara sayfası tetiklenmesin. */
+function mobileProbeAlive(urlBase, timeoutMs) {
+  return new Promise((resolve) => {
+    let done = false;
+    const fin = (ok, note) => { if (!done) { done = true; resolve({ ok: !!ok, note: String(note || '') }); } };
+    try {
+      const u = String(urlBase || '').replace(/\/+$/, '') + '/notif?code=WATCHDOG-' + Date.now().toString(36);
+      const mod = /^http:\/\//i.test(u) ? http : https;
+      const req = mod.get(u, { timeout: timeoutMs || 6000 }, (res) => {
+        try { res.resume(); } catch {}
+        const s = Number(res.statusCode) || 0;
+        fin(s === 403 || s === 200, 'http ' + s);
+      });
+      req.on('error', (e) => fin(false, String((e && e.code) || (e && e.message) || e)));
+      req.on('timeout', () => { try { req.destroy(); } catch {} fin(false, 'timeout'); });
+    } catch (e) { fin(false, String((e && e.message) || e)); }
+  });
+}
+
+async function mobileWatchdogTick(force) {
+  if (mobileWatchBusy) return;
+  if (!force && Date.now() < mobileWatchNextAt) return;
+  const cfg = mobileCfg();
+  if (!cfg.enabled) { /* köprü kullanıcıca kapalı: kapalı olması normal */ mobileWatchFails = 0; return; }
+  mobileWatchBusy = true;
+  let restarted = false;
+  try {
+    mobileWatchLastCheck = Date.now();
+    const port = Number(cfg.port) || 8788;
+    const t = mobileTunnelCfg();
+
+    /* 1) TÜNEL: köprü ayakta olsa bile ngrok koptuysa dışarıdan erişim biter */
+    if (t.enabled) {
+      const ts = mobileTunnel.status();
+      if (!ts.running || !ts.url) {
+        const r = await applyMobileTunnel();
+        restarted = true;
+        if (r && r.ok) { mobileWatchNoteFix('internet tüneli yeniden kuruldu'); log.info('mobile', 'watchdog: internet tüneli ayakta değildi — yeniden kuruldu'); }
+      } else if (Date.now() - mobileLastTunnelProbe >= MOBILE_TUNNEL_PROBE_MS) {
+        mobileLastTunnelProbe = Date.now();
+        const p = await mobileProbeAlive(ts.url, 8000);
+        if (!p.ok) {
+          log.warn('mobile', 'watchdog: internet tüneli yanıt vermiyor (' + p.note + ') — yeniden kuruluyor');
+          const r = await applyMobileTunnel();
+          restarted = true;
+          mobileWatchNoteFix(r && r.ok ? 'internet tüneli yeniden kuruldu (' + p.note + ')' : 'internet tüneli yeniden kurulamadı (' + p.note + ')');
+        }
+      }
+    }
+
+    /* 2) KÖPRÜ: WS sunucusu gerçekten dinliyor mu (uçtan uca) */
+    const lp = await mobileProbeAlive('http://127.0.0.1:' + port, 5000);
+    if (!lp.ok || !mobileWs.isRunning()) {
+      log.warn('mobile', 'watchdog: WS köprüsü yanıt vermiyor (' + lp.note + ') — yeniden başlatılıyor');
+      applyMobileServer(); /* WS + ardından 150ms içinde tünel otomatik */
+      restarted = true;
+      mobileWatchNoteFix('köprü yeniden başlatıldı (' + lp.note + ')');
+      /* kurulum otursun diye kısa bir bekleme, ardından TÜNEL teyidi */
+      await new Promise((r) => setTimeout(r, MOBILE_WATCH_RETRY_MS));
+      if (t.enabled && !mobileTunnel.status().running) {
+        const r2 = await applyMobileTunnel();
+        if (r2 && r2.ok) mobileWatchNoteFix('köprü + internet tüneli yeniden kuruldu');
+      }
+    }
+
+    /* SON DURUM: hâlâ kapalıysa üstel backoff, sağlıksa sayaçlar sıfırlanır */
+    const stillDead = !mobileWs.isRunning() || (t.enabled && !mobileTunnel.status().running);
+    if (stillDead) {
+      mobileWatchFails = Math.min(mobileWatchFails + 1, 6);
+      const wait = Math.max(MOBILE_WATCH_RETRY_MS, Math.min(MOBILE_WATCH_BACKOFF_MAX, MOBILE_WATCH_MS * Math.pow(2, mobileWatchFails)));
+      mobileWatchNextAt = Date.now() + wait;
+      log.warn('mobile', 'watchdog: hâlâ kapalı — ' + Math.round(wait / 1000) + ' sn sonra yeniden denenecek (' + mobileWatchFails + '. deneme)');
+    } else if (restarted) {
+      /* onarım İŞE YARADI: sayaç sıfırlanır, yalnız yerleşmesi için bir tur beklenir */
+      mobileWatchFails = 0;
+      mobileWatchNextAt = Date.now() + Math.max(MOBILE_WATCH_RETRY_MS, MOBILE_WATCH_MS);
+    } else {
+      mobileWatchFails = 0;
+      mobileWatchNextAt = 0;
+    }
+  } catch (e) {
+    try { log.warn('mobile', 'watchdog: ' + String((e && e.message) || e)); } catch {}
+    mobileWatchFails = Math.min(mobileWatchFails + 1, 6);
+    mobileWatchNextAt = Date.now() + Math.min(MOBILE_WATCH_BACKOFF_MAX, MOBILE_WATCH_MS * Math.pow(2, mobileWatchFails));
+  } finally {
+    mobileWatchBusy = false;
+  }
+}
+
+function startMobileWatchdog() {
+  if (mobileWatchTimer) return;
+  mobileWatchTimer = setInterval(() => { mobileWatchdogTick().catch(() => {}); }, MOBILE_WATCH_MS);
+  try { mobileWatchTimer.unref(); } catch {}
+  /* ilk yoklama açılıştan hemen sonra: köprü/tünel geç oturmuş olabilir */
+  setTimeout(() => { mobileWatchdogTick().catch(() => {}); }, 8000);
+}
+function stopMobileWatchdog() {
+  try { if (mobileWatchTimer) clearInterval(mobileWatchTimer); } catch {}
+  mobileWatchTimer = null;
+}
+
 
 function ensureWa() {
   if (!wa) {
@@ -3955,6 +4085,15 @@ app.whenReady().then(() => {
       applyMobileServer();
       log.info('mobile', `cihaz kodu: ${device.deviceName()} · ${device.getDevice().code}`);
     } catch (e) { log.error('mobile', String((e && e.message) || e)); }
+    /* BEAST MOBILE WATCHDOG: köprü + ngrok tüneli düzenli aralıklarla yoklanır,
+       koparsa elle restart beklemeden kendiliğinden yeniden açılır */
+    startMobileWatchdog();
+    try {
+      /* en sık kopma anı uyanmadır (port el çeker, ngrok agent'ı düşer):
+         sistem uyanınca/ekran kilit çözülünce ilk yoklama hemen yapılır */
+      powerMonitor.on('resume', () => { setTimeout(() => { mobileWatchdogTick(true).catch(() => {}); }, 3000); });
+      powerMonitor.on('unlock-screen', () => { setTimeout(() => { mobileWatchdogTick().catch(() => {}); }, 5000); });
+    } catch {}
     cron.init({ onFire: cronFire });
     watchers.start({ onTrigger: watcherFire });
     empatiKickoff(); // empati loop: açılış + 90 sn sonra ilk tarama, sonra cfg aralığı
@@ -4033,6 +4172,7 @@ app.whenReady().then(() => {
     app.on('before-quit', () => {
       app.isQuitting = true;
       flushBrowserStorage(); // x.com/google oturumları (cookies) diske yazılsın
+      try { stopMobileWatchdog(); } catch {} // Beast Mobile bekçisi dur
       try { toolsMod.disposeShellSessions(); } catch {} // kalıcı shell oturumlarını kapat
       try { require('./agent/mcp').stopAll(); } catch {} // MCP server süreçlerini kapat
       try { if (jevMod) jevMod.backend.shutdown(); } catch {} // JevTrader köprüleri (MT5/api/wa/tg/dc)
@@ -6721,12 +6861,20 @@ ipcMain.handle('mobile:getState', () => {
         wss: ts.wss,
         error: String(ts.error || ''),
       },
+      watchdog: {
+        everySec: Math.round(MOBILE_WATCH_MS / 1000),
+        lastCheck: mobileWatchLastCheck,
+        lastFix: String(mobileWatchLastFix || ''),
+        fails: Number(mobileWatchFails) || 0,
+        nextInSec: Math.max(0, Math.round((mobileWatchNextAt - Date.now()) / 1000)),
+      },
     };
   } catch (e) {
     return {
       code: '', name: 'Beast Agent', enabled: false, port: 8788, running: false,
       lastError: String(e), ip: '127.0.0.1', clients: [], phones: [],
       tunnel: { enabled: false, domain: '', authtokenSet: false, running: false, url: '', wss: '', error: '' },
+      watchdog: { everySec: 30, lastCheck: 0, lastFix: '', fails: 0, nextInSec: 0 },
     };
   }
 });
@@ -6789,6 +6937,25 @@ ipcMain.handle('mobile:setTunnel', async (_e, patch) => {
 ipcMain.handle('mobile:setName', (_e, name) => {
   try { device.setDeviceName(name); } catch {}
   return { name: device.deviceName() };
+});
+/* elle yeniden başlatma (paneldeki buton): köprü + ngrok tüneli baştan kurulur,
+   bekçi de aynı yolu kullanır — elle/onomatik fark etmez, tek yol */
+ipcMain.handle('mobile:restart', async () => {
+  try {
+    lastMobileStartError = '';
+    applyMobileServer(); /* WS + ardından 150ms içinde applyMobileTunnel */
+    mobileWatchNoteFix('elle yeniden başlatıldı');
+  } catch (e) { lastMobileStartError = String((e && e.message) || e); }
+  await waitMobileSettled();
+  /* ngrok dial-out ~1-3 sn sürer: tünel de otursun diye kısa bekleme */
+  for (let i = 0; i < 30; i++) {
+    const t = mobileTunnelCfg();
+    if (!t.enabled || !mobileCfg().enabled || mobileTunnel.status().running || mobileTunnel.status().error) break;
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  /* bekçinin eski backoff'u taze onarımın önüne geçmesin */
+  mobileWatchNextAt = 0;
+  return mobileWs.status();
 });
 ipcMain.handle('mobile:kickPhone', (_e, id) => {
   try { device.kickPhone(id); return true; } catch { return false; }

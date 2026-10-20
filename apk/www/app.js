@@ -199,6 +199,69 @@ swPoll.addEventListener('click', () => {
   toast(on ? 'Arka plan bildirimi açık' : 'Arka plan bildirimi kapalı');
 });
 
+/* =================== ELLER SERBEST SES (TTS) — TELEFONA ÖZEL ===================
+   Kullanıcı buradan motoru seçer; masaüstü sohbet bitince cevabı BU ayarda
+   seslendirip telefona yollar. Masaüstü WhatsApp TTS'İNDEN HİÇ ETKİLENMEZ —
+   orası kendi ayarını kullanır, burası kendi ayarını. */
+const TTS_KEY = 'bmTts';
+const TTS_ENGINES = { ema: 'eMa', ahenk: 'Ahenk' };
+function phoneTtsRead() {
+  let c = { on: false, engine: 'ema' };
+  try { c = Object.assign(c, JSON.parse(localStorage.getItem(TTS_KEY) || '{}')); } catch {}
+  if (!TTS_ENGINES[String(c.engine || '')]) c.engine = 'ema';
+  return c;
+}
+function phoneTtsWrite(c) { try { localStorage.setItem(TTS_KEY, JSON.stringify({ on: !!c.on, engine: String(c.engine || 'ema') })); } catch {} }
+function paintTtsSw() {
+  const c = phoneTtsRead();
+  try { const el = $('#swTts'); if (el) el.classList.toggle('on', !!c.on); } catch {}
+  try {
+    const seg = $('#segTts');
+    if (seg) seg.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.e === c.engine));
+  } catch {}
+}
+function phoneTtsSync() {
+  const c = phoneTtsRead();
+  paintTtsSw();
+  try { if (ws && ws.readyState === 1) ws.send(JSON.stringify({ t: 'tts-cfg', enabled: !!c.on, engine: TTS_ENGINES[c.engine] ? c.engine : 'ema' })); } catch {}
+  talkArm();
+}
+(function bindTts() {
+  const sw = document.getElementById('swTts');
+  if (sw) sw.addEventListener('click', () => {
+    const c = phoneTtsRead();
+    c.on = !c.on;
+    phoneTtsWrite(c);
+    phoneTtsSync();
+    toast(c.on ? 'Seslendirme açık — ' + (TTS_ENGINES[c.engine] || 'eMa') : 'Seslendirme kapalı');
+  });
+  const seg = document.getElementById('segTts');
+  if (seg) seg.addEventListener('click', (e) => {
+    const b = e.target && e.target.closest ? e.target.closest('button') : null;
+    if (!b || !TTS_ENGINES[b.dataset.e]) return;
+    const c = phoneTtsRead();
+    c.engine = b.dataset.e;
+    phoneTtsWrite(c);
+    phoneTtsSync();
+    if (c.on) toast('Ses motoru: ' + (TTS_ENGINES[c.engine] || 'eMa'));
+  });
+  paintTtsSw();
+})();
+/* sesli cevap oynatma — sohbetin KENDİ sesi; sıradaki konuşurken öncekini kes */
+let talkAud = null;
+function talkPlay(url) {
+  try {
+    if (talkAud) { try { talkAud.pause(); } catch {} talkAud = null; }
+    const a = new Audio(url);
+    talkAud = a;
+    setMega('🔊 sesli cevap çalıyor…', 'busy');
+    const finP = () => { if (talkAud === a) { talkAud = null; setMega('hazır'); } };
+    a.onended = finP;
+    a.onerror = finP;
+    a.play().catch(finP);
+  } catch {}
+}
+
 /* =================== BİLDİRİM / TOAST =================== */
 let toastT = 0;
 function toast(txt) {
@@ -543,11 +606,13 @@ function curSid(list, m) {
    (engine.deleteSession). WhatsApp/Telegram/Discord'a bağlı sohbetler ikon
    taşır — W / T / D rozetli; yerli sohbetler B rozetli. */
 let lastSess = [];
+const TRASH_SVG = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14M10 11v6M14 11v6"/></svg>';
 function chanIcon(s) {
   const c = String((s && s.chan) || '');
   if (c === 'wa') return { cls: 'wa', ch: 'W', title: (s && s.chanLabel) || 'WhatsApp bağlı' };
   if (c === 'tg') return { cls: 'tg', ch: 'T', title: (s && s.chanLabel) || 'Telegram bağlı' };
   if (c === 'dc') return { cls: 'dc', ch: 'D', title: (s && s.chanLabel) || 'Discord bağlı' };
+  if (c === 'bm') return { cls: 'bm', ch: 'M', title: (s && s.chanLabel) || 'Beast Mobile (telefon)' };
   return { cls: 'lo', ch: 'B', title: 'bilgisayar sohbeti' };
 }
 function updSessTitle(curId, list) {
@@ -566,7 +631,7 @@ function renderSessSheet(curSel) {
       '<div class="chan ' + ic.cls + '">' + escHtml(ic.ch) + '</div>' +
       '<div class="b"><div class="t">' + escHtml(String(s.title || s.id).slice(0, 64)) + '</div>' +
       '<div class="d">' + escHtml((s.id === curSel ? 'açık · ' : '') + ic.title) + '</div></div>' +
-      '<button class="del" data-del="' + escHtml(s.id) + '" aria-label="Sil">🗑</button>' +
+      '<button class="del" data-del="' + escHtml(s.id) + '" aria-label="Sil">' + TRASH_SVG + '</button>' +
       '</div>';
   });
   sessListEl.innerHTML = rows.join('') ||
@@ -793,6 +858,7 @@ function handle(m) {
       flushOutbox();
       syncPoll();
       syncKeep();
+      phoneTtsSync(); /* telefonun ses motoru seçimini masaüstüne bildir */
       openSession(sid);
       break;
     case 'auth-bad':
@@ -835,6 +901,11 @@ function handle(m) {
     }
     case 'session-switch':
       openSession(m.sessionId || '');
+      break;
+    case 'phone-tts':
+      /* ELLER SERBEST: masaüstü cevabı telefonun SEÇTİĞİ motorla seslendirdi —
+         yalnız bunu açık tutan telefonda çalar, masaüstü TTS'iyle ilişiği yok */
+      if (String(m.sessionId || '') === sid && m.dataUrl) talkPlay(String(m.dataUrl));
       break;
     case 'message': {
       if (String(m.sessionId || '') !== sid) break;
@@ -1010,6 +1081,16 @@ function openSession(id) {
     }, 4000);
   }
   try { if (ws && ws.readyState === 1) ws.send(JSON.stringify({ t: 'open', sid: sid })); } catch {}
+  talkArm(); /* seslendirme açıksa bu oturumu masaüstüne yeniden işaretle */
+}
+
+/* ELLER SERBEST BİLDİRİM: "Cevabı seslendir" açıkken açık oturum her
+   turda masaüstü tarafında seslendirme penceresinde kalsın (15 dk faaliyet) */
+function talkArm() {
+  try {
+    const on = !!phoneTtsRead().on;
+    if (ws && ws.readyState === 1 && sid) ws.send(JSON.stringify({ t: 'talk', sid, on }));
+  } catch {}
 }
 
 function handleSessionSnapshot(m) {
@@ -1114,19 +1195,19 @@ function recUI(on) {
   inputEl.readOnly = on;
   try { $('#attach').style.display = on ? 'none' : ''; } catch {}
   try { $('#send').style.display = on ? 'none' : ''; } catch {}
-  micEl.style.display = on ? 'none' : '';
+  /* PTT: mikrofon görünür KALIR — parmak altında; bırakınca gönderir */
   micEl.classList.toggle('rec', on);
   const hint = $('#recHint');
-  if (hint) hint.style.display = on ? 'none' : '';
+  if (hint) hint.style.display = 'none';
   if (on) $('#recTime').textContent = '0:00';
 }
 
-/* Mikrofon akışı (iki katmanlı — 'mikrofona erişilemiyor' hatası artık geçmiyor):
-   1) ANDROID İZNİ ÖNCE: yerel istem (RECORD_AUDIO) istenir — onaylıysa anında
-      döner, değilse sistem diyalogu açılır. WebView'in getUserMedia izni bu
-      sayede sorunsuz verilir (Capacitor WebChromeClient onayı izne bağlıdır).
-   2) WebView akışı olmazsa → ANDROID KENDİ KAYDINA GİRER: native MediaRecorder
-      (AAC/m4a) — mikrofon WebView'e hiç muhtaç değil. */
+/* Mikrofon açılışı — PTT HIZI KRİTİK:
+   1) ANDROID İZNİ: yerel istem (RECORD_AUDIO) istenir — onaylıysa anında döner.
+   2) YEREL KAYIT DOĞRUDAN: WebView getUserMedia turu YOK — parmak kalkmadan
+      kayıt başlar (AAC/m4a, native MediaRecorder). Eskiden önce WebView akışı
+      deneniyordu; izin köprüsü gecikince ilk basış boşa gidiyordu.
+   3) WebView akışı yalnız masaüstü tarayıcıda / plugin yoksa yedek. */
 async function getMicStream() {
   const p = nativePlugin();
   /* 1) Android iznini garanti et */
@@ -1147,29 +1228,48 @@ async function getMicStream() {
       }
     } catch {}
   }
-  if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-    try { return await navigator.mediaDevices.getUserMedia({ audio: true }); } catch {}
-  }
-  /* 2) yerel kayıt rezervi */
+  /* 2) YEREL KAYIT ÖNCE — anında başlasın */
   if (p && typeof p.startRec === 'function') {
     try {
       const r = await p.startRec({ maxSec: 120 });
       if (r && r.ok) return { native: true };
     } catch {}
   }
+  /* 3) masaüstü tarayıcı / plugin yok: WebView akışı */
+  if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+    try { return await navigator.mediaDevices.getUserMedia({ audio: true }); } catch {}
+  }
   toast('Mikrofona erişilemedi — izni ayarlardan açmayı dene');
   setMega('mikrofona erişilemedi', 'err');
   return null;
 }
 
+/* PTT: kullanıcı akış çözülmeden BIRAKTIYSA kararı burada uygula */
+function pttPendingApply() {
+  if (!pttPendingEnd) return false;
+  const act = pttPendingEnd;
+  pttPendingEnd = '';
+  if (act === 'cancel') { stopRec(true); return true; }
+  if (act === 'short') { stopRec(true); toast('çok kısa — basılı tutarak konuş'); return true; }
+  /* 'slow': açılış bırakmadan sonra tamamlandı — konuşma kaçtı; yanlış
+     "çok kısa" yerine dürüst uyarı */
+  stopRec(true);
+  toast('mikrofon geç açıldı — tekrar basılı tut');
+  return true;
+}
+
+let micOpening = false; /* tek uçuş: izin/açılış sürerken ikinci toggleRec yok */
 async function toggleRec() {
   if (mediaRec) { stopRec(false); return; }
-  const stream = await getMicStream();
-  if (!stream) return;
-  recChunks = [];
-  recCancel = false;
-  recStartTs = Date.now();
-  if (stream.native) {
+  if (micOpening) return;
+  micOpening = true;
+  try {
+    const stream = await getMicStream();
+    if (!stream) return;
+    recChunks = [];
+    recCancel = false;
+    recStartTs = Date.now();
+    if (stream.native) {
     /* YEREL KAYIT: Android MediaRecorder çalışıyor — WebView ile iş yok */
     recMode = 'native';
     mediaRec = { native: true, state: 'recording' };
@@ -1181,9 +1281,11 @@ async function toggleRec() {
     }, 250);
     recUI(true);
     setMega('ses kaydediliyor…', 'busy');
+    if (pttPendingApply()) return;
     return;
   }
   recMode = 'web';
+  recStream = stream;
   const types = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus'];
   let mime = '';
   for (const t of types) {
@@ -1205,6 +1307,10 @@ async function toggleRec() {
   }, 250);
   recUI(true);
   setMega('ses kaydediliyor…', 'busy');
+  if (pttPendingApply()) return;
+  } finally {
+    micOpening = false;
+  }
 }
 
 function stopRec(cancel) {
@@ -1355,7 +1461,70 @@ btnJoin.addEventListener('click', manualConnect);
 codeEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') manualConnect(); });
 hostEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') manualConnect(); });
 sendEl.addEventListener('click', () => { sendMessage(); });
-micEl.addEventListener('click', () => { toggleRec(); });
+
+/* ---------- BASKILI KONUŞMA (PTT, WhatsApp tarzı) ----------
+   parmak BASTIĞINDA kayıt başlar; BIRAKINCA otomatik GÖNDERilir.
+   Çok kısa dokunuş (<600ms) → iptal + uyarı.
+   Sola sürükleyip bırakma → kayıt SİLİNİR (WhatsApp'taki gibi). */
+let micDown = false, micDownAt = 0, micDownX = 0, micDragX = 0, pttPendingEnd = '';
+function pttDragVisual(dragging) {
+  micEl.classList.toggle('delstate', !!dragging);
+  const hint = $('#recHint');
+  if (hint) {
+    hint.style.display = dragging ? '' : 'none';
+    hint.textContent = '⬄ bırak — kayıt silinir';
+  }
+}
+micEl.addEventListener('pointerdown', (e) => {
+  if (e.pointerType === 'mouse' && e.button !== 0) return;
+  e.preventDefault();
+  try { micEl.setPointerCapture(e.pointerId); } catch {}
+  if (micDown) return;
+  micDown = true;
+  micDownAt = Date.now();
+  micDownX = e.clientX;
+  micDragX = 0;
+  pttPendingEnd = '';
+  if (!mediaRec) toggleRec(); /* açılış tek uçuşlu — toggleRec kendi kilitler */
+  pttDragVisual(false);
+});
+micEl.addEventListener('pointermove', (e) => {
+  if (!micDown) return;
+  micDragX = e.clientX - micDownX;
+  pttDragVisual(micDragX < -70);
+});
+function pttUp() {
+  if (!micDown) return;
+  micDown = false;
+  pttDragVisual(false);
+  const held = Date.now() - (micDownAt || Date.now());
+  if (!mediaRec) {
+    /* KAYIT henüz başlamadı (izin/açılış turu sürüyor) — karar SÜREYE göre:
+       kısa dokunuş → iptal; uzun basış → açılış gecikti (toggleRec sonunda ele alınır) */
+    pttPendingEnd = micDragX < -70 ? 'cancel' : (held < 600 ? 'short' : 'slow');
+    return;
+  }
+  if (micDragX < -70) stopRec(true); /* sola sürükle → sil */
+  else if (held < 600) { stopRec(true); toast('çok kısa — basılı tutarak konuş'); }
+  else stopRec(false); /* bırak → otomatik GÖNDER */
+}
+/* parmak butonun dışında kalkarsa da yakala (pointer capture kaybolursa) */
+window.addEventListener('pointerup', () => { pttUp(); }, true);
+micEl.addEventListener('pointerup', () => { pttUp(); });
+micEl.addEventListener('pointercancel', () => {
+  /* sistem dokunuşu iptal etti (klavye/dialog) — GÖNDERME, kaydı sil */
+  if (!micDown) return;
+  micDragX = -999;
+  pttUp();
+});
+/* uygulama arka plana giderse yarım kayıt sızdırmasın */
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) return;
+  if (!mediaRec && !micDown) return;
+  micDown = false;
+  pttPendingEnd = '';
+  if (mediaRec) stopRec(true);
+});
 $('#recCancel').addEventListener('click', () => stopRec(true));
 $('#recSend').addEventListener('click', () => stopRec(false));
 
@@ -1467,10 +1636,16 @@ syncSystemBars();
 hostEl.value = localStorage.getItem('bmHost') || '';
 codeEl.value = localStorage.getItem('bmCode') || '';
 
-/* bildirim izni (Android 13+) — bir kez iste */
+/* bildirim izni (Android 13+) - bir kez iste */
 try {
   const p = nativePlugin();
   if (p && typeof p.requestNotify === 'function') setTimeout(() => { try { p.requestNotify(); } catch {} }, 1200);
+} catch {}
+/* MİKROFON İZNİ ÖN ISITMA: ilk PTT basışı izin diyalogunda beklemesin —
+   izin bir kez burada istenir; sonraki basışlar anında kayda girer */
+try {
+  const p = nativePlugin();
+  if (p && typeof p.requestMic === 'function') setTimeout(() => { try { Promise.resolve(p.requestMic()).catch(() => {}); } catch {} }, 2200);
 } catch {}
 
 /* KAYITLI BİLGİLERLE DİREKT SON OTURUM: login ekranı HİÇ gösterilmez.

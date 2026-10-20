@@ -102,9 +102,9 @@
   .ssrow .t{ font-weight:700; font-size:14px; color:var(--tx); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .ssrow .d{ font-size:11.5px; color:var(--dim); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .ssrow .del{ flex:0 0 auto; width:36px; height:36px; border-radius:10px; border:1px solid var(--line);
-    background:var(--panel2); color:#ff6b6b; font-size:14px; display:flex; align-items:center; justify-content:center; cursor:pointer; }
-  .ssrow .del:active{ background:#ff6b6b; color:#fff; }
-  .ssfoot{ padding:7px 14px 9px; font-size:11px; color:var(--dim); border-top:1px solid var(--line); flex:0 0 auto; }
+    background:var(--panel2); color:var(--dim); display:flex; align-items:center; justify-content:center; cursor:pointer; }
+  .ssrow .del:active{ background:#ff6b6b; border-color:#ff6b6b; color:#fff; }
+  .ssrow .chan.bm{ background:#5a6d80; }
   #exit,#newsess,#settings{ background:none; border:0; color:var(--hbtn); padding:2px 4px; flex:0 0 auto; outline:none; }
   #newsess{ font-size:20px; line-height:1; }
   #settings,#exit{ display:flex; align-items:center; justify-content:center; }
@@ -155,8 +155,10 @@
   #attach,#mic,#send{ width:42px; height:42px; border-radius:50%; flex:0 0 auto;
     display:flex; align-items:center; justify-content:center; }
   #attach{ background:var(--panel2); border:1px solid var(--line); color:var(--dim); }
-  #mic{ background:var(--panel2); border:1px solid var(--line); color:var(--dim); }
+  #mic{ background:var(--panel2); border:1px solid var(--line); color:var(--dim);
+    touch-action:none; -webkit-user-select:none; user-select:none; -webkit-tap-highlight-color:transparent; }
   #mic.rec{ background:var(--rec); border-color:var(--rec); color:#fff; }
+  #mic.delstate{ color:#ff6b6b; transform:translateX(-3px); }
   #send{ border:0; background:linear-gradient(135deg,#00cf70,#0aa860); color:#04240f; }
   /* KAYIT ÇUBUĞU */
   #recbar{ flex:1; display:flex; align-items:center; gap:10px; min-height:42px; }
@@ -306,6 +308,20 @@
         </div>
       </div>
       <div class="scard">
+        <div class="sc-t">Eller serbest ses</div>
+        <div class="sc-r">
+          <div class="sc-l">Cevabı seslendir<div class="sc-d">Sohbet bitince cevap telefonda sesli okunur — bilgisayar/WhatsApp ayarından bağımsız</div></div>
+          <button type="button" class="switch" id="swTts" aria-label="Seslendirme"><span></span></button>
+        </div>
+        <div class="sc-r" style="margin-top:10px">
+          <div class="sc-l">Ses motoru<div class="sc-d">eMa · Ahenk (yerel) — masaüstünde kurulu motor kullanılır</div></div>
+          <div class="seg" id="segTts">
+            <button type="button" data-e="ema">eMa</button>
+            <button type="button" data-e="ahenk">Ahenk</button>
+          </div>
+        </div>
+      </div>
+      <div class="scard">
         <div class="sc-t">Hesap</div>
         <div class="sc-r">
           <div class="sc-l">Adres<div class="sc-d" id="scHost">—</div></div>
@@ -330,7 +346,6 @@
   <div class="sspanel">
     <div class="ssh"><span>Sohbetler</span><button id="sessClose" aria-label="Kapat">✕</button></div>
     <div id="sessList"></div>
-    <div class="ssfoot">🗑 silince bilgisayarındaki oturum da kalıcı silinir · W WhatsApp · T Telegram · D Discord</div>
   </div>
 </div>
 

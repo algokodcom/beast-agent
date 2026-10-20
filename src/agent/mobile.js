@@ -76,6 +76,8 @@ let handlers = {
   onInterrupt: null,
   onSessions: null,
   onDelete: null, /* telefondan oturum silme — bilgisayarla entegre */
+  onTalk: null, /* eller-serbest mod bayrağı — telefon konuşma döngüsünü açar/kapatır */
+  onTtsCfg: null, /* telefondan TTS motor seçimi */
   onPair: null,
 };
 
@@ -281,6 +283,17 @@ function start(opts) {
           /* 2. arg sendS: masaüstü o sokete {t:'session-del', ok} yollar;
              silinen oturum tüm istemcilere broadcast sessions ile düşer */
           if (handlers.onDelete) { handlers.onDelete(String(m.sid || ''), sendS); }
+          return;
+        }
+        if (t === 'talk') {
+          /* telefon eller-serbest modu açıyor/kapıyor — o oturum 'talk'
+             penceresine girer; tur bittiğinde telefon sesli cevap alır */
+          if (handlers.onTalk) { handlers.onTalk(String(m.sid || ''), !!m.on); }
+          return;
+        }
+        if (t === 'tts-cfg') {
+          /* telefona ÖZEL TTS ayarı (masaüstü WA TTS'inden bağımsız) */
+          if (handlers.onTtsCfg) { handlers.onTtsCfg(m); }
           return;
         }
         if (t === 'interrupt') {

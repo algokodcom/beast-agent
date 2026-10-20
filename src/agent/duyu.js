@@ -191,6 +191,9 @@ function spawnProc() {
     });
     proc = child;
     readline.createInterface({ input: child.stdout }).on('line', onLine);
+    /* stdin EPIPE: motor ölmüşken yazılırsa Node 'error' olayı fırlatır ve
+       TÜM uygulamayı düşürür — yut, pending işleri exit zaten reddediyor */
+    child.stdin.on('error', () => {});
     child.stderr.on('data', (c) => {
       const t = String(c).trim();
       if (!t) return;
@@ -298,7 +301,8 @@ function fixTranscript(text) {
 
 /* ---------- dış API ---------- */
 
-/* transc. transcribe(Float32Array 16kHz, { lang: 'tr'|'en'|'mix'|'auto', mode: 'auto'|'ctc', beam: n }) */
+/* transc. transcribe(Float32Array 16kHz, { lang: 'tr'|'en'|'mix'|'auto', mode: 'auto'|'ctc', beam: n, timeoutMs })
+   timeoutMs: uzun parçalarda worker zaman aşımını parça süresine göre büyütmek için */
 async function transcribe(pcm, opts = {}) {
   if (!pcm || !pcm.length) throw new Error('boş ses');
   const b64 = Buffer.from(pcm.buffer, pcm.byteOffset, pcm.byteLength).toString('base64');
@@ -308,7 +312,7 @@ async function transcribe(pcm, opts = {}) {
     lang: opts.lang || 'mix',
     mode: opts.mode || 'auto',
     beam: opts.beam || 0,
-  });
+  }, opts.timeoutMs);
   return fixTranscript(String(r.text || ''));
 }
 

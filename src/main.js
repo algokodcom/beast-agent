@@ -814,44 +814,66 @@ const installPctState = {}; // id -> { pct, loaded, total, ts }
 }
 
 /* ogg/opus/mp3 → mono 16kHz Float32 PCM (ffmpeg ile) */
+/* Ses çöz: önce stdin pipe (hızlı); moov-sonda m4a gibi pipe'ta
+   çözülemeyen dosyalarda GEÇİCİ DOSYA yolu (ffmpeg seek edebilir).
+   ffmpeg 'error' olayları ve stdin EPIPE yutulur — süreç düşmez. */
 function decodeAudioToPcm16k(buf) {
-  return new Promise((resolve, reject) => {
+  const { resolveFfmpegPath } = require('./agent/ffmpegpath');
+  const ffmpegPath = resolveFfmpegPath();
+  if (!ffmpegPath) return Promise.reject(new Error('ffmpeg bulunamadı (ffmpeg-static eksik + PATH te yok)'));
+  const { spawn } = require('child_process');
+  const runFfmpeg = (input, outPcm) => new Promise((res, rej) => {
+    let p;
     try {
-      const { resolveFfmpegPath } = require('./agent/ffmpegpath');
-      const ffmpegPath = resolveFfmpegPath();
-      if (!ffmpegPath) return reject(new Error('ffmpeg bulunamadı (ffmpeg-static eksik + PATH te yok)'));
-      if (!ffmpegPath) return reject(new Error('ffmpeg bulunamadı'));
-      const { spawn } = require('child_process');
-      const p = spawn(ffmpegPath, ['-hide_banner', '-loglevel', 'error', '-i', 'pipe:0', '-f', 's16le', '-ar', '16000', '-ac', '1', 'pipe:1']);
-      const chunks = [];
-      let err = '';
-      let done = false;
-      /* 60 sn tavan: asılı ffmpeg, STT öncelikli sırasını sonsuza kadar
-         kilitler — asıl sağırlık sebeplerinden biri bu olabilir */
-      const killTimer = setTimeout(() => {
-        if (done) return;
-        try { p.kill(); } catch {}
-        reject(new Error('ffmpeg zaman aşımı'));
-      }, 60000);
-      p.stdout.on('data', (c) => chunks.push(c));
-      p.stderr.on('data', (c) => { err += c.toString(); });
-      p.on('error', (e) => { if (!done) { done = true; clearTimeout(killTimer); reject(e); } });
-      p.on('close', (code) => {
-        if (done) return;
-        done = true;
-        clearTimeout(killTimer);
-        if (code !== 0) return reject(new Error('ffmpeg ' + code + ': ' + err.slice(0, 200)));
-        const pcm = Buffer.concat(chunks);
-        const f32 = new Float32Array(Math.floor(pcm.length / 2));
-        for (let i = 0; i < f32.length; i++) f32[i] = pcm.readInt16LE(i * 2) / 32768;
-        resolve(f32);
-      });
-      p.stdin.write(buf);
-      p.stdin.end();
-    } catch (e) {
-      reject(e);
+      p = spawn(ffmpegPath, ['-hide_banner', '-loglevel', 'error', '-i', input, '-f', 's16le', '-ar', '16000', '-ac', '1', 'pipe:1']);
+    } catch (e) { return rej(e); }
+    const chunks = [];
+    let err = '';
+    let done = false;
+    /* 120 sn tavan: asılı ffmpeg, STT öncelikli sırasını sonsuza kadar kilitlemesin */
+    const killTimer = setTimeout(() => {
+      if (done) return;
+      done = true;
+      try { p.kill(); } catch {}
+      rej(new Error('ffmpeg zaman aşımı'));
+    }, 120000);
+    p.stdout.on('data', (c) => chunks.push(c));
+    p.stderr.on('data', (c) => { err += c.toString(); });
+    p.on('error', (e) => { if (!done) { done = true; clearTimeout(killTimer); rej(e); } });
+    p.stdin.on('error', () => {}); /* EPIPE: ffmpeg erken kapandı — yut */
+    p.on('close', (code) => {
+      if (done) return;
+      done = true;
+      clearTimeout(killTimer);
+      const pcm = Buffer.concat(chunks);
+      if (code !== 0 && !pcm.length) return rej(new Error('ffmpeg ' + code + ': ' + err.slice(0, 200)));
+      const f32 = new Float32Array(Math.floor(pcm.length / 2));
+      for (let i = 0; i < f32.length; i++) f32[i] = pcm.readInt16LE(i * 2) / 32768;
+      res(f32);
+    });
+    try { p.stdin.write(outPcm); p.stdin.end(); } catch (e) {
+      try { p.kill(); } catch {}
+      if (!done) { done = true; clearTimeout(killTimer); rej(e); }
     }
   });
+  return (async () => {
+    try {
+      const f = await runFfmpeg('pipe:0', buf);
+      if (f && f.length) return f;
+    } catch {}
+    /* PIPE ÇÖZEMEDİ (moov-sonda m4a: "partial file") → dosyadan dene */
+    const dir = path.join(os.tmpdir(), 'beast-stt');
+    try { fs.mkdirSync(dir, { recursive: true }); } catch {}
+    const tmp = path.join(dir, 'in_' + Date.now() + '_' + Math.random().toString(36).slice(2) + '.bin');
+    fs.writeFileSync(tmp, buf);
+    try {
+      const f2 = await runFfmpeg(tmp, Buffer.alloc(0));
+      if (f2 && f2.length) return f2;
+      throw new Error('ses çözülemedi (boş PCM)');
+    } finally {
+      try { fs.unlinkSync(tmp); } catch {}
+    }
+  })();
 }
 
 /* Enerji kapısı (Silero VAD muadili): konuşma enerjisi yoksa model HİÇ
@@ -930,12 +952,103 @@ async function transcribeAudioInner(buf, langOverride /* 'tr' | 'en' | 'auto' */
     /* dil: arayüz dili ile hizalı — TR ise Türkçe, EN ise İngilizce, auto serbest */
     const uiLang = langOverride || settings.sttLang || 'tr';
     const lang = uiLang === 'en' ? 'en' : uiLang === 'auto' ? 'auto' : 'tr';
-    const text = String(await duyu.transcribe(f32, { lang, ...sttDecodeOpts(priority) }) || '').trim();
+    const topts = { lang, ...sttDecodeOpts(priority) };
+
+    /* SÜRE LİMİTİ YOK — SESSİZ NOKTADAN BÖL: model ~30 sn üstünde güvenilir
+       değil; tek istekte uzun ses 120 sn worker timeout'una takılıyordu.
+       Sabit 9 sn kesim ise kelimeleri ortadan bölüyordu. Çözüm: ~24 sn'lik
+       pencereler; kesim her sınırın ±4 sn içindeki EN SESSİZ noktadan
+       (cümle/kelime arası) seçilir, parçalar sırayla çevrilip birleştirilir. */
+    const SR = 16000;
+    const PART_S = 24;
+    const LIMIT_S = 28;
+    const MAX_PARTS = 80; /* ~32 dk tavan — sonsuz kayıtta runaway olmasın */
+    /* uzun seste hız: beam 5 → 2 (kalite farkı küçük, süre belirgin düşer) */
+    if (f32.length > 30 * SR && topts.beam > 2) topts.beam = 2;
+    const parts = splitSpeechWindows(f32, SR, PART_S, LIMIT_S, MAX_PARTS);
+    const texts = [];
+    for (let pi = 0; pi < parts.length; pi++) {
+      const part = parts[pi];
+      const sec = part.length / SR;
+      /* worker timeout: parça süresiyle ölçekle — uzun parça inference'ı
+         yarıda kesilmesin (eski sabit 120 sn 90+ sn seste patlıyordu) */
+      const timeoutMs = Math.max(120000, Math.round(sec) * 12000);
+      try {
+        const t = String(await duyu.transcribe(part, { ...topts, timeoutMs }) || '').trim();
+        if (t) texts.push(t);
+      } catch (e) {
+        waLog('stt parça ' + (pi + 1) + '/' + parts.length + ' hata (' + sec.toFixed(0) + ' sn): ' + String((e && e.message) || e));
+      }
+    }
+    const text = joinTranscriptParts(texts);
     return text || null;
   } catch (e) {
     waLog('stt hata: ' + String((e && e.message) || e));
     return null;
   }
+}
+
+/* Uzun sesi SESSİZ NOKTALARDAN ~24 sn'lik pencerelere böl (model ≤30 sn
+   utterance'lerde en iyi çalışır; sabit kesim kelimeyi ortadan böler, cümle
+   arası kesim bölmez). Her 20 ms'lik karede RMS hesaplanır; kesim hedefin
+   ±4 sn içindeki en düşük enerjili noktaya konur. */
+function splitSpeechWindows(f32, sr, maxS, limitS, maxParts) {
+  const n = f32.length;
+  const limit = limitS * sr;
+  const cap = Math.max(1, maxParts || 80);
+  if (n <= limit) return [f32];
+  const frame = Math.max(1, Math.round(sr / 50)); /* 20 ms */
+  const nf = Math.ceil(n / frame);
+  const rms = new Float32Array(nf);
+  for (let i = 0; i < nf; i++) {
+    const start = i * frame;
+    const end = Math.min(start + frame, n);
+    let sum = 0;
+    for (let j = start; j < end; j++) sum += f32[j] * f32[j];
+    rms[i] = Math.sqrt(sum / Math.max(1, end - start));
+  }
+  const out = [];
+  let start = 0;
+  while (n - start > limit && out.length < cap - 1) {
+    const target = start + maxS * sr;
+    const lo = Math.max(start + sr, target - 4 * sr);
+    const hi = Math.min(n - sr, target + 4 * sr);
+    let cut = target;
+    if (hi > lo) {
+      let best = Infinity;
+      const i0 = Math.floor(lo / frame);
+      const i1 = Math.min(nf, Math.ceil(hi / frame));
+      for (let i = i0; i < i1; i++) {
+        if (rms[i] < best) { best = rms[i]; cut = i * frame; }
+      }
+    }
+    if (cut <= start) cut = Math.min(start + limit, n);
+    out.push(f32.subarray(start, cut));
+    start = cut;
+  }
+  out.push(f32.subarray(start));
+  return out;
+}
+
+/* parça transkriptlerini birleştir: bitişik parçaların başı/sonu tekrar
+   edebiliyordu — en fazla 3 kelimelik tekrarı teke düşür */
+function joinTranscriptParts(parts) {
+  const out = [];
+  for (const p of parts) {
+    const cur = String(p || '').trim();
+    if (!cur) continue;
+    if (out.length) {
+      const prev = out[out.length - 1].split(/\s+/);
+      const curt = cur.split(/\s+/);
+      let k = 0;
+      const maxK = Math.min(3, prev.length, curt.length);
+      while (k < maxK && prev[prev.length - 1 - k].toLowerCase() === curt[k].toLowerCase()) k++;
+      out.push(k ? curt.slice(k).join(' ') : cur);
+    } else {
+      out.push(cur);
+    }
+  }
+  return out.join(' ').replace(/\s{2,}/g, ' ').trim();
 }
 
 /* TTS motoru seçimi: 'ema' (varsayılan) · 'ahenk' · 'edge' (ücretsiz online) ·
@@ -977,9 +1090,13 @@ function validTtsVoice(engine, v) {
    ücretsiz, mp3), Piper (yerel CLI, ~22 kHz WAV), Supertonic (yerel ONNX, 31 dil).
    "SES ASLA SUSMASIN": seçili motor tutmazsa zincir düşer — yerel motorlar
    birbirine, sonra Edge (internet varsa). Dönen { audio: Buffer, mime } —
-   WA sesli notu ffmpeg ile ogg/opus'a çevirir, oynatıcı mp3/wav'ı doğrudan çalar. */
-function ttsVoicePrefFor(engine) {
-  return validTtsVoice(engine, (settings.waTts || {}).voice) ? String(settings.waTts.voice).trim() : undefined;
+   WA sesli notu ffmpeg ile ogg/opus'a çevirir, oynatıcı mp3/wav'ı doğrudan çalar.
+   cfgOverride: BEAST MOBILE kendi TTS ayarını ayrı tutar (settings.mobileTts) —
+   masaüstü WA TTS'i kapalıyken bile telefonda seslendirme şart DEĞİL; opts.force
+   ile enabled kapısı bypass. */
+function ttsVoicePrefFor(engine, cfg) {
+  const c = cfg || settings.waTts || {};
+  return validTtsVoice(engine, c.voice) ? String(c.voice).trim() : undefined;
 }
 function ttsFallbackChain(engineName) {
   /* seçili + artan yedekler: yerelden yerele, son çevrimiçi. Edge seçiliyken
@@ -990,17 +1107,17 @@ function ttsFallbackChain(engineName) {
     : ['ema', 'ahenk', 'edge'];
   return [sel, ...rest.filter((e) => e !== sel)];
 }
-async function synthesizeSpeech(text, opts = {}) {
-  const cfg = settings.waTts || {};
-  if (!cfg.enabled) return null;
+async function synthesizeSpeech(text, opts = {}, cfgOverride = null) {
+  const cfg = cfgOverride || settings.waTts || {};
+  if (!cfg.enabled && !opts.force) return null;
   try {
     const t = ttsCleanText(text);
     if (!t || t.length < 2) return null;
     let lastErr = '';
-    for (const engine of ttsFallbackChain(ttsEngineName())) {
+    for (const engine of ttsFallbackChain(String(cfg.engine || '') || ttsEngineName())) {
       try {
         let out = null;
-        const voice = ttsVoicePrefFor(engine);
+        const voice = ttsVoicePrefFor(engine, cfg);
         if (engine === 'edge') {
           /* Edge: kurulum yok, doğrudan sentez — mp3 buffer döner */
           const buf = await edgetts.synthesize(t, { voice, rate: opts.edgeRate });
@@ -2786,10 +2903,93 @@ function mobileChannelMap() {
   return m;
 }
 
+/* BEAST MOBILE — ELLER SERBEST TTS + İZLER
+   1) Telefon 'talk' modunu açtığında bu oturumu işaret eder — tur bitince
+      SON asistan metni, TELEFONUN KENDİ TTS AYARIYLA (settings.mobileTts —
+      masaüstü WA TTS'İNDEN BAĞMSIZ) seslendirilip telefona OGG/AAC dataUrl
+      olarak gelir.
+   2) Telefonun dokunduğu oturumlar 'bm' rozetiyle listelenir — WhatsApp/
+      Telegram/Discord rozetleriyle AYNI düzende (M) görünür. */
+let phoneSessionMarks = new Map(); /* sid → son telefon dokunuşu (ts) */
+function touchPhoneSession(sid) {
+  try { phoneSessionMarks.set(String(sid || ''), Date.now()); } catch {}
+}
+/* telefonda SEÇİLEBİLİR ses motorları — sadece yerel eMa + Ahenk */
+const MOBILE_TTS_ENGINES = ['ema', 'ahenk'];
+function mobileTtsCfg() {
+  let c = settings.mobileTts || (settings.mobileTts = {});
+  if (!c || typeof c !== 'object') c = settings.mobileTts = {};
+  try { c.enabled = !!c.enabled; } catch {}
+  try { c.engine = MOBILE_TTS_ENGINES.includes(String(c.engine || '')) ? String(c.engine) : 'ema'; } catch {}
+  try {
+    const sp = Number(c.speed);
+    c.speed = Number.isFinite(sp) && sp >= 0.5 && sp <= 2 ? sp : 1;
+  } catch {}
+  try { c.voice = String(c.voice || '').trim(); } catch {}
+  return c;
+}
+function mobileTalkActive(sid) {
+  try {
+    const t = phoneSessionMarks.get(String(sid || '')) || 0;
+    return !!(t && Date.now() - t < 15 * 60000); /* 15 dk faaliyet penceresi */
+  } catch { return false; }
+}
+
+/* TELEFONA GİDECEK SES: seçili motorla sentez → mp3/aac zaten küçük;
+   WAV/OGG çıkışlı motorları AAC/ADTS'e sıkıştır (telefonda hem küçük hem
+   uyumlu; 48 kbps mono 24 kHz) */
+function ffmpegToAacBuf(inBuf) {
+  return new Promise((resolve) => {
+    try {
+      const waMod = require('./agent/whatsapp');
+      const ff = String(waMod && waMod.getFfmpegPath ? waMod.getFfmpegPath() : '') || '';
+      if (!ff) return resolve(null);
+      const dir = path.join(os.tmpdir(), 'beast-mobile-tts');
+      try { fs.mkdirSync(dir, { recursive: true }); } catch {}
+      const srcAbs = path.join(dir, 'in_' + Date.now() + '.in');
+      fs.writeFileSync(srcAbs, inBuf);
+      const p2 = spawn(ff, ['-hide_banner', '-loglevel', 'error', '-y', '-i', srcAbs, '-c:a', 'aac', '-b:a', '48k', '-ar', '24000', '-ac', '1', '-f', 'adts', 'pipe:1']);
+      const chunks2 = [];
+      let done2 = false;
+      p2.stdout.on('data', (c) => chunks2.push(c));
+      p2.on('error', () => { if (!done2) { done2 = true; resolve(null); } });
+      p2.on('close', (code2) => {
+        if (done2) return;
+        done2 = true;
+        try { fs.unlinkSync(srcAbs); } catch {}
+        const buf2 = Buffer.concat(chunks2);
+        resolve(code2 === 0 && buf2 && buf2.length ? buf2 : null);
+      });
+      p2.stdin.on('error', () => {});
+    } catch {
+      resolve(null);
+    }
+  });
+}
+async function phoneTtsAudio(txt) {
+  try {
+    const out = await synthesizeSpeech(txt, { force: true, pad: 0.05 }, (() => {
+      const c = { ...mobileTtsCfg() };
+      c.enabled = true; /* telefon AÇIK istiyor — force zaten bunu bypass eder */
+      return c;
+    })());
+    if (!out || !out.audio) return null;
+    const mime = String(out.mime || '');
+    if (mime === 'audio/mpeg' || mime === 'audio/aac' || mime === 'audio/mp4') return out;
+    const aac = await ffmpegToAacBuf(out.audio);
+    return aac ? { audio: aac, mime: 'audio/aac' } : out;
+  } catch { return null; }
+}
+
 function mobileSessionsList() {
   const ch = mobileChannelMap();
   return engine.listSessions().map((s) => {
-    const c = ch.get(String(s.id)) || {};
+    let c = ch.get(String(s.id)) || {};
+    /* TELEFONUN DOKUNDUĞU oturum: kanal rozeti yoksa 'M' (Beast Mobile) —
+       24 saat içinde telefon açma/gönderme yaptıysa işaretlenir */
+    if (!c.chan && (Date.now() - (phoneSessionMarks.get(String(s.id)) || 0) < 24 * 3600000)) {
+      c = { chan: 'bm', label: 'Beast Mobile (telefon)' };
+    }
     return {
       id: s.id,
       title: String(s.title || s.lastAssistant || 'sohbet').slice(0, 60),
@@ -2810,6 +3010,7 @@ const mobileHandlers = {
      AYNI kuralla gider ("[sesli mesaj transkripti]"). Yoksa ajan yalnız
      "[Sesli mesaj: 0:05]" notu görür ve ne dediğini anlayamaz. */
   onSend: async (sid, { text, attachments }) => {
+    touchPhoneSession(sid); /* telefonun dokunduğu oturum — M rozeti + talk penceresi */
     let finalText = String(text || '');
     try {
       const atts = Array.isArray(attachments) ? attachments : [];
@@ -2845,6 +3046,7 @@ const mobileHandlers = {
   },
   onOpen: (sid, replyS) => {
     try {
+      touchPhoneSession(sid);
       if (!sid || !sessionFileAlive(sid)) {
         try { sendMobileHistory(sid, replyS); } catch {} /* boş snapshot döner */
         return;
@@ -2892,6 +3094,32 @@ const mobileHandlers = {
     } catch (e) {
       try { replyS({ t: 'session-del', sid: String(sid || ''), ok: false, why: String((e && e.message) || e) }); } catch {}
     }
+  },
+  /* ELLER SERBEST MOD: telefon konuşma döngüsünü açtığında/kapattığında
+     oturumu 15 dk'lık faaliyet penceresiyle işaretler — tur 'done' olunca
+     son cevap telefona sesli gönderilir (buradaki modele göre) */
+  onTalk: (sid, on) => {
+    try {
+      touchPhoneSession(sid);
+      const id = String(sid || '');
+      if (on) phoneSessionMarks.set(id, Date.now());
+      else phoneSessionMarks.delete(id);
+    } catch {}
+  },
+  /* TELEFONUN KENDİ TTS AYARI: masaüstü WA TTS'inden TAM BAĞIMSIZ —
+     ayrı motor/şarlaj saklanır (settings.mobileTts), telefona anında devreye girer */
+  onTtsCfg: (cfg) => {
+    try {
+      const c = mobileTtsCfg();
+      if (cfg && typeof cfg === 'object') {
+        c.enabled = !!cfg.enabled;
+        if (MOBILE_TTS_ENGINES.includes(String(cfg.engine || ''))) c.engine = String(cfg.engine);
+        const sp = Number(cfg.speed);
+        if (Number.isFinite(sp) && sp >= 0.5 && sp <= 2) c.speed = sp;
+        if (typeof cfg.voice === 'string') c.voice = cfg.voice.slice(0, 200);
+        try { saveSettings(); } catch {}
+      }
+    } catch {}
   },
   onPair: (meta) => {
     try {
@@ -3857,6 +4085,32 @@ function reloadBackend() {
             }
           })();
         }
+      }
+      /* BEAST MOBILE ELLER-SERBEST TTS: telefon bu oturumu talk modunda tutuyor
+         (15 dk faaliyet penceresi) ise son asistan metni TELEFONUN KENDİ TTS
+         motoruyla seslendirilir ve telefona dataUrl olarak gider — masaüstü
+         WA TTS'inden TAMAMEN bağımsız, diğer istemciye yansımaz */
+      if ((ev.type === 'done' || ev.type === 'error') && !cjob && mobileWs && mobileTalkActive(ev.sessionId)) {
+        (async () => {
+          try {
+            const sidT = String(ev.sessionId || '');
+            if (!sidT || !mobileTalkActive(sidT)) return;
+            const sM = engine.openSession(sidT);
+            if (!sM) return;
+            const lastA2 = [...(sM.messages || [])].reverse().find((m) => m && m.role === 'assistant' && m.content);
+            const ptxt = String(typeof (lastA2 && lastA2.content) === 'string' ? lastA2.content : '').trim();
+            if (!ptxt || ptxt.length > 6000) return;
+            const ph = await phoneTtsAudio(ptxt);
+            if (!ph || !ph.audio || !ph.audio.length) return;
+            if (ph.audio.length > 6 * 1024 * 1024) return; /* WS yük tavanı */
+            mobileWs.broadcast({
+              sessionId: sidT,
+              type: 'phone-tts',
+              mime: String(ph.mime || ''),
+              dataUrl: 'data:' + String(ph.mime || '') + ';base64,' + ph.audio.toString('base64'),
+            });
+          } catch {}
+        })();
       }
       /* OPENCODE STEER ARA CEVABI: koşan tur sırasında gelen mesajın cevabı.
          'done' YOK (tur steer'le sürüyor) — bu yüzden done akışı YAZMAZ.

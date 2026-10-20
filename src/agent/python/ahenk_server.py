@@ -107,7 +107,15 @@ def main():
             if op == "exit":
                 break
             if op == "warm":
-                print(json.dumps({"id": rid, "ok": True, "warm": True}), flush=True)
+                # İlk gerçek sentezde model/çözücü yolları ısınsın — kısa bir
+                # sentezi burada yapıp at (soğuk ilk ses gecikmesini öde).
+                wt = time.perf_counter()
+                try:
+                    tts.say("Merhaba.", style="neutral", speed=1.0, seed=0)
+                except Exception as e:
+                    log("warm sentez hatasi: %r" % e)
+                print(json.dumps({"id": rid, "ok": True, "warm": True,
+                                  "ms": round((time.perf_counter() - wt) * 1000)}), flush=True)
                 continue
 
             text = str(req.get("text") or "").strip()

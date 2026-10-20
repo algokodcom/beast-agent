@@ -33,6 +33,7 @@ const ahenk = require('./agent/ahenk'); // TTS motor 2: Ahenk Cep (ozgurguler/ah
 const edgetts = require('./agent/edgetts'); // TTS motor 3: Microsoft Edge — ücretsiz online sinir ağı (artık takılı)
 const piper = require('./agent/piper'); // TTS motor 4: Piper — tamamen yerel, ~21MB, zayıf makine için
 const supertonic = require('./agent/supertonic'); // TTS motor 5: Supertonic — yerel ONNX, 31 dil
+const ttsstream = require('./agent/ttsstream'); // telefon TTS akışı — cevabı cümlelere böl
 const fsguard = require('./agent/fsguard');
 const device = require('./agent/device');
 const mobileWs = require('./agent/mobile');
@@ -2949,19 +2950,22 @@ function mobileTalkActive(sid) {
 }
 
 /* TELEFONA GİDECEK SES: seçili motorla sentez → mp3/aac zaten küçük;
-   WAV/OGG çıkışlı motorları AAC/ADTS'e sıkıştır (telefonda hem küçük hem
-   uyumlu; 48 kbps mono 24 kHz) */
+   WAV/OGG çıkışlı motorları AAC'ye sıkıştır (fragmented MP4 — Android
+   WebView'de ADTS'e göre daha güvenli; 48 kbps mono 24 kHz) */
 function ffmpegToAacBuf(inBuf) {
   return new Promise((resolve) => {
     try {
-      const waMod = require('./agent/whatsapp');
-      const ff = String(waMod && waMod.getFfmpegPath ? waMod.getFfmpegPath() : '') || '';
+      /* ffmpeg yolunu MERKEZİ çözücüden al: whatsapp.js getFfmpegPath'i export
+         etmiyordu → burada hep '' dönüyor ve AAC dönüşümü sessizce atlanıyor,
+         telefona 15-20 kat büyük WAV gidiyordu. */
+      const { resolveFfmpegPath } = require('./agent/ffmpegpath');
+      const ff = String(resolveFfmpegPath() || '');
       if (!ff) return resolve(null);
       const dir = path.join(os.tmpdir(), 'beast-mobile-tts');
       try { fs.mkdirSync(dir, { recursive: true }); } catch {}
       const srcAbs = path.join(dir, 'in_' + Date.now() + '.in');
       fs.writeFileSync(srcAbs, inBuf);
-      const p2 = spawn(ff, ['-hide_banner', '-loglevel', 'error', '-y', '-i', srcAbs, '-c:a', 'aac', '-b:a', '48k', '-ar', '24000', '-ac', '1', '-f', 'adts', 'pipe:1']);
+      const p2 = spawn(ff, ['-hide_banner', '-loglevel', 'error', '-y', '-i', srcAbs, '-c:a', 'aac', '-b:a', '48k', '-ar', '24000', '-ac', '1', '-f', 'mp4', '-movflags', 'frag_keyframe+empty_moov', 'pipe:1']);
       const chunks2 = [];
       let done2 = false;
       p2.stdout.on('data', (c) => chunks2.push(c));
@@ -2981,17 +2985,150 @@ function ffmpegToAacBuf(inBuf) {
 }
 async function phoneTtsAudio(txt) {
   try {
+    const tSynth = Date.now();
     const out = await synthesizeSpeech(txt, { force: true, pad: 0.05 }, (() => {
       const c = { ...mobileTtsCfg() };
       c.enabled = true; /* telefon AÇIK istiyor — force zaten bunu bypass eder */
       return c;
     })());
+    const synthMs = Date.now() - tSynth;
     if (!out || !out.audio) return null;
     const mime = String(out.mime || '');
-    if (mime === 'audio/mpeg' || mime === 'audio/aac' || mime === 'audio/mp4') return out;
+    if (mime === 'audio/mpeg' || mime === 'audio/aac' || mime === 'audio/mp4') {
+      return { ...out, synthMs, convMs: 0 };
+    }
+    const tConv = Date.now();
     const aac = await ffmpegToAacBuf(out.audio);
-    return aac ? { audio: aac, mime: 'audio/aac' } : out;
+    const convMs = Date.now() - tConv;
+    return aac
+      ? { ...out, audio: aac, mime: 'audio/mp4', synthMs, convMs }
+      : { ...out, synthMs, convMs };
   } catch { return null; }
+}
+
+/* TELEFON TTS ÖN-ISI: eMa/Ahenk 15 dk boşta bellekten düşüyor; ilk sentez
+   soğukken ~10 sn model yükleme bekliyor. Telefon TTS'i açılınca / mesaj
+   gönderilince / canlı mod başlayınca motoru arka planda ısıt — kullanıcı
+   cevabı beklerken yükleme bitsin. */
+let mobileTtsWarmP = null;
+function mobileTtsWarm(force) {
+  try {
+    const c = mobileTtsCfg();
+    if (!c.enabled) return;
+    /* SEÇİLİ MOTOR + YEDEK: Ahenk seçili ama kurulu değilse eMa'yı ısıt —
+       synthesizeSpeech zaten Ahenk'ten eMa'ya düşüyor, ısıtma da aynı
+       zinciri izlemeli (yoksa yedek motor soğuk kalıyordu). */
+    const order = c.engine === 'ahenk' ? [ahenk, ema] : [ema, ahenk];
+    let m = null;
+    let st = null;
+    for (const cand of order) {
+      try {
+        const s = cand.status();
+        if (s && s.installed) { m = cand; st = s; break; }
+      } catch {}
+    }
+    if (!m || !st) return;
+    if (st.running && !force) return;
+    if (mobileTtsWarmP) return;
+    const t0 = Date.now();
+    const wasRunning = !!st.running;
+    mobileTtsWarmP = Promise.resolve()
+      .then(() => m.warm())
+      .then(() => {
+        try {
+          log.info('mobile', 'tts ısıtma tamam: ' + (Date.now() - t0) + ' ms'
+            + ' (' + (m === ema ? 'ema' : 'ahenk') + (wasRunning ? ', sıcak tutma' : ', soğuk başlangıç') + ')');
+        } catch {}
+      })
+      .catch((e) => { try { waLog('telefon tts ısıtma: ' + String((e && e.message) || e)); } catch {} })
+      .finally(() => { mobileTtsWarmP = null; });
+  } catch {}
+}
+/* SICAK TUTMA: eMa/Ahenk 15 dk boşta bellekten düşüyor; telefon TTS'i son
+   30 dk içinde kullanıldıysa 2 dk'da bir çok kısa sentez yaparak motoru
+   hazır tut (maliyet ~0.3 sn / 2 dk) — sonraki cevap soğuk başlamasın. */
+function mobileTtsHeartbeat() {
+  try {
+    if (!mobileTtsCfg().enabled) return;
+    if (phoneTtsJobs.size) return; /* aktif akışın arasına girme */
+    let last = 0;
+    for (const t of phoneTalkMarks.values()) if (t > last) last = t;
+    if (!last || Date.now() - last > 30 * 60000) return;
+    mobileTtsWarm(true);
+  } catch {}
+}
+
+/* AKTİF TELEFON TTS AKIŞLARI: her tur kendi token'ını alır; yeni tur,
+   kullanıcı mesajı veya telefondan 'tts-stop' eski akışı iptal eder —
+   gecikmiş parçalar yeni cevabın üstüne binmez. */
+const phoneTtsJobs = new Map(); /* sid → token */
+function phoneTtsCancel(sid) {
+  try { phoneTtsJobs.delete(String(sid || '')); } catch {}
+}
+
+/* Cevabı cümle parçaları halinde sentezleyip telefona sırayla yolla.
+   İlk parça kısa tutulur (hızlı ilk ses); telefon kuyruğa alıp kesintisiz
+   çalar, biz de kalan parçaları o sırada sentezleriz. */
+async function phoneTtsStream(sid, text) {
+  const id = String(sid || '');
+  if (!id || !mobileWs) return;
+  const chunks = ttsstream.chunks(ttsCleanText(String(text || '')));
+  if (!chunks.length) return;
+  const token = { ts: Date.now() };
+  phoneTtsJobs.set(id, token);
+  const t0 = Date.now();
+  let seq = 0;
+  let firstMs = 0;
+  let firstInfo = null;
+  let lastSent = false;
+  try {
+    for (let i = 0; i < chunks.length; i++) {
+      if (phoneTtsJobs.get(id) !== token) return; /* yeni tur / iptal */
+      if (!mobileTalkActive(id)) break;          /* seslendirme kapandı */
+      const ph = await phoneTtsAudio(chunks[i]);
+      if (phoneTtsJobs.get(id) !== token) return; /* bekleme sırasında iptal */
+      if (!ph || !ph.audio || !ph.audio.length) continue;
+      if (ph.audio.length > 6 * 1024 * 1024) continue; /* WS yük tavanı */
+      const mime = String(ph.mime || 'audio/aac');
+      const last = i === chunks.length - 1;
+      try {
+        mobileWs.broadcast({
+          sessionId: id,
+          type: 'phone-tts',
+          seq,
+          last,
+          mime,
+          dataUrl: 'data:' + mime + ';base64,' + ph.audio.toString('base64'),
+        });
+      } catch {}
+      if (!firstMs) {
+        firstMs = Date.now() - t0;
+        firstInfo = {
+          chars: chunks[i].length,
+          synth: ph.synthMs || 0,   /* synthesizeSpeech duvar süresi */
+          motor: ph.ms || 0,        /* Python'un saf sentez süresi */
+          conv: ph.convMs || 0,     /* ffmpeg AAC dönüşümü */
+          dur: ph.dur || 0,         /* ses süresi (sn) */
+        };
+      }
+      seq++;
+      lastSent = last;
+    }
+    /* son parça sentezlenemeden bittiyse telefona "akış bitti" sinyali —
+       canlı moddaki ses kilidi beklemesin */
+    if (seq > 0 && !lastSent) {
+      try { mobileWs.broadcast({ sessionId: id, type: 'phone-tts-end', seq }); } catch {}
+    }
+    try {
+      const d = firstInfo
+        ? ' (sentez ' + firstInfo.synth + ' ms, motor ' + firstInfo.motor + ' ms, dönüşüm '
+          + firstInfo.conv + ' ms, ses ' + firstInfo.dur + ' sn, metin ' + firstInfo.chars + ' kr)'
+        : '';
+      waLog('phone-tts: ' + seq + '/' + chunks.length + ' parça, ilk ses ' + firstMs + ' ms' + d);
+    } catch {}
+  } finally {
+    if (phoneTtsJobs.get(id) === token) phoneTtsJobs.delete(id);
+  }
 }
 
 function mobileSessionsList() {
@@ -3025,6 +3162,8 @@ const mobileHandlers = {
   onSend: async (sid, { text, attachments, live }) => {
     touchPhoneSession(sid); /* telefonun dokunduğu oturum — M rozeti */
     touchPhoneTalk(sid);    /* seslendirme AÇIKSA pencereyi tazele (kapalıysa dokunma) */
+    phoneTtsCancel(sid);    /* yeni mesaj → önceki cevabın ses akışını kes */
+    mobileTtsWarm();        /* cevap üretilirken motoru ısıt (soğuk başlangıcı gizle) */
     let finalText = String(text || '');
     try {
       const atts = Array.isArray(attachments) ? attachments : [];
@@ -3074,6 +3213,7 @@ const mobileHandlers = {
   onOpen: (sid, replyS) => {
     try {
       touchPhoneSession(sid);
+      if (mobileTtsCfg().enabled) mobileTtsWarm(); /* seslendirme açık → motor hazır olsun */
       if (!sid || !sessionFileAlive(sid)) {
         try { sendMobileHistory(sid, replyS); } catch {} /* boş snapshot döner */
         return;
@@ -3129,8 +3269,10 @@ const mobileHandlers = {
     try {
       touchPhoneSession(sid); /* M rozeti için dokunuş kaydı ayrı kalır */
       const id = String(sid || '');
-      if (on && mobileTtsCfg().enabled) phoneTalkMarks.set(id, Date.now());
-      else phoneTalkMarks.delete(id);
+      if (on && mobileTtsCfg().enabled) {
+        phoneTalkMarks.set(id, Date.now());
+        mobileTtsWarm(); /* canlı mod / eller serbest başladı → motoru ısıt */
+      } else phoneTalkMarks.delete(id);
     } catch {}
   },
   /* TELEFONUN KENDİ TTS AYARI: masaüstü WA TTS'inden TAM BAĞIMSIZ —
@@ -3145,8 +3287,14 @@ const mobileHandlers = {
         if (Number.isFinite(sp) && sp >= 0.5 && sp <= 2) c.speed = sp;
         if (typeof cfg.voice === 'string') c.voice = cfg.voice.slice(0, 200);
         try { saveSettings(); } catch {}
+        if (c.enabled) mobileTtsWarm();
+        else { for (const k of [...phoneTtsJobs.keys()]) phoneTtsCancel(k); }
       }
     } catch {}
+  },
+  /* telefondan "sesi kes" (barge-in / yeni mesaj): akan parçaları durdur */
+  onTtsStop: (sid) => {
+    try { phoneTtsCancel(sid); } catch {}
   },
   onPair: (meta) => {
     try {
@@ -4116,7 +4264,9 @@ function reloadBackend() {
       /* BEAST MOBILE ELLER-SERBEST TTS: telefon bu oturumu talk modunda tutuyor
          (15 dk faaliyet penceresi) ise son asistan metni TELEFONUN KENDİ TTS
          motoruyla seslendirilir ve telefona dataUrl olarak gider — masaüstü
-         WA TTS'inden TAMAMEN bağımsız, diğer istemciye yansımaz */
+         WA TTS'inden TAMAMEN bağımsız, diğer istemciye yansımaz.
+         AKIŞ: cevap cümlelere bölünür; ilk parça hemen, kalanı telefonda
+         çalarken sentezlenir. Telefon parçaları kuyruğa alıp kesintisiz çalar. */
       if ((ev.type === 'done' || ev.type === 'error') && !cjob && mobileWs && mobileTalkActive(ev.sessionId)) {
         (async () => {
           try {
@@ -4127,15 +4277,7 @@ function reloadBackend() {
             const lastA2 = [...(sM.messages || [])].reverse().find((m) => m && m.role === 'assistant' && m.content);
             const ptxt = String(typeof (lastA2 && lastA2.content) === 'string' ? lastA2.content : '').trim();
             if (!ptxt || ptxt.length > 6000) return;
-            const ph = await phoneTtsAudio(ptxt);
-            if (!ph || !ph.audio || !ph.audio.length) return;
-            if (ph.audio.length > 6 * 1024 * 1024) return; /* WS yük tavanı */
-            mobileWs.broadcast({
-              sessionId: sidT,
-              type: 'phone-tts',
-              mime: String(ph.mime || ''),
-              dataUrl: 'data:' + String(ph.mime || '') + ';base64,' + ph.audio.toString('base64'),
-            });
+            await phoneTtsStream(sidT, ptxt);
           } catch {}
         })();
       }
@@ -4503,6 +4645,10 @@ app.whenReady().then(() => {
           .catch((e) => waLog('TTS prefetch atlandı: ' + String((e && e.message) || e)));
       } catch {}
     }, 15000);
+    /* TELEFON TTS SICAK TUTMA: telefon seslendirmesi son 30 dk içinde
+       kullanıldıysa 2 dk'da bir kısa sentez — motor 15 dk boşta düşmeden
+       hazır kalsın, sonraki cevap soğuk başlamasın. */
+    setInterval(() => { try { mobileTtsHeartbeat(); } catch {} }, 120000).unref();
 
     /* EMBEDDING modeli (hafıza semantik arama) — açılışta otomatik indir */
     setTimeout(() => {

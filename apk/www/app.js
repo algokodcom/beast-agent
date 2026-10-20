@@ -223,6 +223,7 @@ function paintTtsSw() {
 function phoneTtsSync() {
   const c = phoneTtsRead();
   paintTtsSw();
+  if (!c.on && talkActive()) talkCancel(true); /* seslendirme kapatıldı → akan sesi kes */
   try { if (ws && ws.readyState === 1) ws.send(JSON.stringify({ t: 'tts-cfg', enabled: !!c.on, engine: TTS_ENGINES[c.engine] ? c.engine : 'ema' })); } catch {}
   talkArm();
 }
@@ -247,26 +248,111 @@ function phoneTtsSync() {
   });
   paintTtsSw();
 })();
-/* sesli cevap oynatma — sohbetin KENDİ sesi; sıradaki konuşurken öncekini kes */
+/* sesli cevap oynatma — sohbetin KENDİ sesi.
+   Masaüstü cevabı CÜMLE PARÇALARI halinde yollar; burada kuyruğa alınır ve
+   kesintisiz çalınır. İlk parça hemen gelir, kalanı çalarken sentezlenir. */
 let talkAud = null;
-function talkPlay(url) {
+let talkQ = [];            /* [{ url, last }] — bekleyen ses parçaları */
+let talkLast = false;      /* akışın son parçası geldi mi */
+let talkStarted = false;   /* akışın ilk parçası geldi mi (12 sn TTS fallback'i için) */
+let talkIgnoreOld = false; /* barge-in sonrası eski akışın gecikmiş parçalarını yoksay */
+
+function talkActive() { return !!(talkAud || talkQ.length); }
+function talkStopRemote() {
+  try { if (ws && ws.readyState === 1 && sid) ws.send(JSON.stringify({ t: 'tts-stop', sid })); } catch {}
+}
+function talkStopAudio() {
+  if (!talkAud) return;
+  const a = talkAud;
+  talkAud = null;
+  try { a.onended = null; a.onerror = null; } catch {}
+  try { a.pause(); } catch {}
+}
+/* canlı modda cevap bitti → otomatik dinlemeye dön */
+function talkLiveListen() {
+  if (!liveOn) return;
+  liveBusy = false;
+  liveWatchdogClear();
+  liveSetLabel('dinliyorum…');
+  liveOnsetMs = 0; liveBargeMs = 0; liveQuietSince = 0;
+  liveSetMegaLive();
+}
+function talkDone() {
+  talkQ = []; talkLast = false; talkStarted = false;
+  setMega('hazır');
+  talkLiveListen();
+}
+/* sesi kes: barge-in / yeni mesaj / canlı mod kapanışı */
+function talkCancel(remote) {
+  talkIgnoreOld = true;
+  talkQ = []; talkLast = false; talkStarted = false;
+  talkStopAudio();
+  if (remote) talkStopRemote();
+  talkLiveListen();
+}
+function talkPump() {
+  if (talkAud) return; /* şu an bir parça çalıyor */
+  if (!talkQ.length) {
+    if (talkLast) talkDone(); /* son parça da bitti → dinlemeye dön */
+    return;
+  }
+  const item = talkQ.shift();
   try {
-    if (talkAud) { try { talkAud.pause(); } catch {} talkAud = null; }
-    /* CANLI MOD: cevap gelirken yarım kalmış kayıt varsa at (cevap öncelikli) */
-    try { if (liveOn) { liveDoneClear(); if (liveRec) { liveRec.onstop = null; try { liveRec.stop(); } catch {} liveRec = null; } liveChunks = []; liveOnsetMs = 0; liveBargeMs = 0; liveQuietSince = 0; } } catch {}
-    const a = new Audio(url);
+    const a = new Audio(item.url);
     talkAud = a;
     liveSetLabel('konuşuyor…');
     setMega('🔊 sesli cevap çalıyor…', 'busy');
-    const finP = () => {
-      if (talkAud === a) { talkAud = null; setMega('hazır'); }
-      /* CANLI MOD: cevap bitti → otomatik dinlemeye dön */
-      if (liveOn) { liveBusy = false; liveWatchdogClear(); liveSetLabel('dinliyorum…'); liveOnsetMs = 0; liveBargeMs = 0; liveQuietSince = 0; liveSetMegaLive(); }
+    const fin = () => {
+      if (talkAud !== a) return; /* barge-in ile kesildi */
+      talkAud = null;
+      talkPump(); /* kuyrukta parça varsa hemen devam */
     };
-    a.onended = finP;
-    a.onerror = finP;
-    a.play().catch(finP);
+    a.onended = fin;
+    a.onerror = fin;
+    a.play().catch(fin);
+  } catch { talkPump(); }
+}
+/* canlı moda hazırlık: cevap çalarken yarım kalmış kaydı at (cevap öncelikli) */
+function talkLivePrepare() {
+  try {
+    if (!liveOn) return;
+    liveDoneClear();
+    if (liveRec) { liveRec.onstop = null; try { liveRec.stop(); } catch {} liveRec = null; }
+    liveChunks = [];
+    liveOnsetMs = 0; liveBargeMs = 0; liveQuietSince = 0;
   } catch {}
+}
+/* tek parça / eski masaüstü sürümüyle uyum */
+function talkPlay(url) {
+  talkIgnoreOld = false;
+  talkQ = []; talkLast = false; talkStarted = false;
+  talkStopAudio();
+  talkLivePrepare();
+  talkStarted = true;
+  talkQ.push({ url: String(url), last: true });
+  talkPump();
+}
+/* akış parçası: seq 0 = yeni tur (eski kuyruğu temizle) */
+function talkChunk(seq, url, last) {
+  seq = Number(seq) || 0;
+  if (seq === 0) {
+    talkIgnoreOld = false;
+    talkQ = []; talkLast = false; talkStarted = false;
+    talkStopAudio();
+    talkLivePrepare();
+  } else if (talkIgnoreOld) {
+    return; /* iptal edilen eski akışın gecikmiş parçası */
+  }
+  talkStarted = true;
+  talkQ.push({ url: String(url), last: !!last });
+  if (last) talkLast = true;
+  talkPump();
+}
+/* akış bitti: kuyruk/çalan parça bitince dinlemeye dön */
+function talkStreamEnd() {
+  if (talkIgnoreOld) return;
+  talkLast = true;
+  talkPump();
 }
 
 /* =================== BİLDİRİM / TOAST =================== */
@@ -911,11 +997,19 @@ function handle(m) {
       break;
     case 'phone-tts':
       /* ELLER SERBEST: masaüstü cevabı telefonun SEÇTİĞİ motorla seslendirdi —
-         yalnız bunu açık tutan telefonda çalar, masaüstü TTS'iyle ilişiği yok */
+         yalnız bunu açık tutan telefonda çalar, masaüstü TTS'iyle ilişiği yok.
+         AKIŞ: seq 0 ilk parça; last son parça; telefon kuyruğa alıp çalar. */
       if (String(m.sessionId || '') !== sid || !m.dataUrl) break;
       /* ÇİFT KİLİT: ayar kapalıysa (ve canlı mod değilse) gelen sesi ÇALMA */
       if (!phoneTtsRead().on && !liveOn) break;
-      talkPlay(String(m.dataUrl));
+      if (m.seq != null) talkChunk(m.seq, String(m.dataUrl), !!m.last);
+      else talkPlay(String(m.dataUrl));
+      break;
+    case 'phone-tts-end':
+      /* sentez yarıda kaldı ama parçalar çaldı — kilit beklemesin */
+      if (String(m.sessionId || '') !== sid) break;
+      if (!phoneTtsRead().on && !liveOn) break;
+      talkStreamEnd();
       break;
     case 'message': {
       if (String(m.sessionId || '') !== sid) break;
@@ -1071,6 +1165,8 @@ function chatRender() {
 function openSession(id) {
   const next = String(id || '');
   if (!next) return;
+  const prev = String(sid || '');
+  if (prev && prev !== next) talkCancel(true); /* eski oturumun sesi/akışı bitsin */
   sid = next;
   localStorage.setItem('bmSid', sid);
   updSessTitle(sid, lastSess);
@@ -1160,6 +1256,7 @@ function sendMessage() {
   const atts = pending.slice();
   if (!text && !atts.length) return;
   if (!sid) { setMega('oturum açılıyor — bekley…', 'err'); return; }
+  if (talkActive()) talkCancel(true); /* yeni mesaj → eski cevabın sesi kesilsin */
   const isCmd = text.startsWith('/');
   const payload = { t: 'send', sid, text };
   if (atts.length && !isCmd) payload.attachments = atts;
@@ -1405,6 +1502,7 @@ function blobToDataUrl(blob) {
 
 function sendAudio(dataUrl, name, duration, live) {
   if (!sid || !dataUrl) { setMega('oturum açılıyor — bekley…', 'err'); return; }
+  if (talkActive()) talkCancel(true); /* yeni sesli mesaj → eski cevabın sesi kesilsin */
   const payload = {
     t: 'send', sid, text: '', live: !!live,
     attachments: [{ type: 'audio', name, duration, dataUrl }],
@@ -1561,9 +1659,12 @@ function liveDoneClear() { clearTimeout(liveDoneT); liveDoneT = 0; }
 /* cevap metni gelip TTS gecikirse: 12 sn içinde ses gelmezse dinlemeye dön */
 function liveOnDone() {
   if (!liveOn || !liveBusy || talkAud) return;
+  /* akış BAŞLADIYSA 12 sn fallback'i devreye girmesin; parçalar arasındaki
+     kısa sentez boşluğunda liveBusy yanlışlıkla sıfırlanmasın */
+  if (talkStarted) return;
   liveDoneClear();
   liveDoneT = setTimeout(() => {
-    if (liveOn && liveBusy && !talkAud) {
+    if (liveOn && liveBusy && !talkAud && !talkStarted) {
       liveBusy = false;
       liveSetLabel('dinliyorum…');
       liveSetMegaLive();
@@ -1657,6 +1758,7 @@ async function startLive() {
 }
 function stopLive(msg) {
   if (!liveOn) return;
+  talkCancel(true); /* çalan/kuyruktaki sesi kes + masaüstü akışını iptal et */
   liveOn = false;
   liveWatchdogClear();
   liveDoneClear();
@@ -1664,7 +1766,6 @@ function stopLive(msg) {
   liveTD = null;
   try { if (liveRec) { liveRec.onstop = null; if (liveRec.state !== 'inactive') liveRec.stop(); } } catch {}
   liveRec = null; liveChunks = [];
-  try { if (talkAud) { talkAud.pause(); talkAud = null; } } catch {}
   try { if (liveStream) liveStream.getTracks().forEach((t) => t.stop()); } catch {}
   liveStream = null;
   try { if (liveCtx) liveCtx.close(); } catch {}
@@ -1689,13 +1790,9 @@ function liveTick() {
     if (rms > Math.max(0.05, LIVE_RMS * 3)) {
       liveBargeMs += 80;
       if (liveBargeMs >= 400) {
-        try { talkAud.pause(); } catch {}
-        talkAud = null;
-        liveBusy = false;
+        /* sesi + kuyruğu kes, masaüstüne de "akan sesi bırak" de */
+        talkCancel(true);
         liveBargeMs = 0;
-        liveWatchdogClear();
-        liveSetLabel('dinliyorum…');
-        liveSetMegaLive();
       }
     } else liveBargeMs = 0;
     return;

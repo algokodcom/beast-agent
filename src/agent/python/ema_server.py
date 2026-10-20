@@ -97,7 +97,16 @@ def main():
             if op == "exit":
                 break
             if op == "warm":
-                print(json.dumps({"id": rid, "ok": True, "warm": True}), flush=True)
+                # SADECE model yükleme yetmiyor: ilk GERÇEK sentezde torch/çekirdek
+                # yolları ve ses çözücü ilk kez ısınıyor (soğuk ilk ses ~8-11 sn).
+                # Kısa bir sentezi burada yapıp atarak ilk cevabın gecikmesini öde.
+                wt = time.perf_counter()
+                try:
+                    tts.say("Merhaba.", sample_rate=48000, speed=1.0, seed=0)
+                except Exception as e:
+                    log("warm sentez hatasi: %r" % e)
+                print(json.dumps({"id": rid, "ok": True, "warm": True,
+                                  "ms": round((time.perf_counter() - wt) * 1000)}), flush=True)
                 continue
 
             text = str(req.get("text") or "").strip()
@@ -136,15 +145,13 @@ def main():
                     pad_head, pad_tail = v, max(0.02, v * 0.4)
                 except Exception:
                     pass
+            # TEK kez dolgu: önceden burada ikinci bir 0.30/0.12 sn sessizlik
+            # daha ekleniyordu (Ahenk'te tek); her TTS parçasına 350 ms ölü
+            # başlangıç bindiriyordu — akış halinde parçalar arası boşluk olur.
             pcm = np.concatenate([
                 np.zeros(int(pad_head * sr), dtype=np.float32),
                 pcm,
                 np.zeros(int(pad_tail * sr), dtype=np.float32),
-            ])
-            pcm = np.concatenate([
-                np.zeros(int(0.30 * sr), dtype=np.float32),
-                pcm,
-                np.zeros(int(0.12 * sr), dtype=np.float32),
             ])
             dt = time.perf_counter() - t0
             print(

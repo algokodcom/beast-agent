@@ -217,7 +217,9 @@ async function synthesize(text, opts = {}) {
     });
     const audio = Buffer.from(String(r.wav_b64 || ''), 'base64');
     if (!audio.length) throw new Error('ses üretilemedi');
-    return { audio, mime: 'audio/wav' };
+    /* ms: Python'un sentez süresi (köprü/taşıma hariç), dur: ses süresi.
+       Telefon TTS gecikme teşhisi bu iki alanı kullanır. */
+    return { audio, mime: 'audio/wav', ms: Number(r.ms) || 0, dur: Number(r.dur) || 0 };
   });
 }
 

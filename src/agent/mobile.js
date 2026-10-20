@@ -78,6 +78,7 @@ let handlers = {
   onDelete: null, /* telefondan oturum silme — bilgisayarla entegre */
   onTalk: null, /* eller-serbest mod bayrağı — telefon konuşma döngüsünü açar/kapatır */
   onTtsCfg: null, /* telefondan TTS motor seçimi */
+  onTtsStop: null, /* telefondan ses akışını kes (barge-in / yeni mesaj) */
   onPair: null,
 };
 
@@ -295,6 +296,11 @@ function start(opts) {
         if (t === 'tts-cfg') {
           /* telefona ÖZEL TTS ayarı (masaüstü WA TTS'inden bağımsız) */
           if (handlers.onTtsCfg) { handlers.onTtsCfg(m); }
+          return;
+        }
+        if (t === 'tts-stop') {
+          /* canlı modda barge-in / yeni mesaj: masaüstü akan sesi bıraksın */
+          if (handlers.onTtsStop) { handlers.onTtsStop(String(m.sid || '')); }
           return;
         }
         if (t === 'interrupt') {

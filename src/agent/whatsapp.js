@@ -41,7 +41,16 @@ const TRACK_CAP = 500;
 let _ffmpegPath = null;
 function getFfmpegPath() {
   if (_ffmpegPath !== null) return _ffmpegPath;
-  try { _ffmpegPath = require('ffmpeg-static') || ''; } catch { _ffmpegPath = ''; }
+  /* ZENGİN ZİNCİR: ffmpeg-static binary'si inmemiş olabilir — sistem
+     PATH'teki ffmpeg'e düş (whatsapp/mobil STT ve TTS ses dönüşümü işe
+    devam etsin). src/agent/ffmpegpath.js aynı zinciri tüm modüllerde kullanır. */
+  try {
+    const fp = require('./ffmpegpath');
+    _ffmpegPath = String((fp && fp.resolveFfmpegPath && fp.resolveFfmpegPath()) || '');
+  } catch { _ffmpegPath = ''; }
+  if (!_ffmpegPath) {
+    try { const p = String(require('ffmpeg-static') || ''); _ffmpegPath = p; } catch { _ffmpegPath = ''; }
+  }
   return _ffmpegPath;
 }
 

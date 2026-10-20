@@ -1880,7 +1880,12 @@ class Engine {
           ? 'ÇALIŞMA MODU: BUILD 🛠 — son montaj planını SOHBETTEKİ bağlamdan al ve UYGULA: ffmpeg işlerini çalıştır, çıktıları doğrula. Yeni plan açma; en fazla 1 cümlelik yön gösterimi + uygulama.'
           : 'ÇALIŞMA MODU: OTOMATİK ⚡ — önce 2-4 satırlık mini plan (todo_write), sonra hemen uygula + doğrula.';
     let ffPath = '';
-    try { ffPath = String(require('ffmpeg-static') || ''); } catch {}
+    try {
+      const fp = require('./ffmpegpath');
+      ffPath = String((fp && fp.resolveFfmpegPath && fp.resolveFfmpegPath()) || '');
+    } catch {
+      try { ffPath = String(require('ffmpeg-static') || ''); } catch {}
+    }
     let ffprobeHint = '';
     if (ffPath) {
       const ffDir = path.dirname(ffPath);
@@ -2886,7 +2891,8 @@ class Engine {
      birikir, bot yalnız mention gelince konuşur. Ardışık bağlam
      mesajları işaret önekli tek user mesajında birleşir (bazı sağlayıcılar
      art arda user mesajını reddettiği için). */
-  observe(sessionId, text) {
+  observe(sessionId, text, opts = {}) {
+    const silent = !!(opts && opts.silent);
     const s = this._load(String(sessionId));
     if (!s) return false;
     const body = String(text || '').slice(0, USER_MAX);
@@ -2907,8 +2913,10 @@ class Engine {
         this._append(s, msg);
       } catch {}
     }
-    this.emit({ type: 'observe', sessionId: s.id });
-    this.emit({ type: 'sessions' });
+    if (!silent) {
+      this.emit({ type: 'observe', sessionId: s.id });
+      this.emit({ type: 'sessions' });
+    }
     return true;
   }
 
@@ -2919,13 +2927,16 @@ class Engine {
      sohbet aynı oturumda kopmadan devam eder. Son mesaj araçsız bir
      asistan mesajıysa metin ona BİRLEŞTİRİLİR — katı sağlayıcılarda
      art arda asistan mesajı gitmez. */
-  injectAssistant(sessionId, text) {
+  injectAssistant(sessionId, text, opts = {}) {
+    const silent = !!(opts && opts.silent);
+    const forceNew = !!(opts && opts.forceNew);
     const s = this._load(String(sessionId));
     if (!s) return false;
     const body = String(text || '').slice(0, USER_MAX);
     if (!body.trim()) return false;
     const lastMsg = s.messages[s.messages.length - 1];
     if (
+      !forceNew &&
       lastMsg &&
       lastMsg.role === 'assistant' &&
       typeof lastMsg.content === 'string' &&
@@ -2935,17 +2946,24 @@ class Engine {
       this._rewriteLastMsg(s.id, lastMsg.content, null, 'assistant');
       /* UI'ya bildir: birleştirme yeni bubble basmaz — son asistan balonu
          güncellenir (yoksa proaktif not ekranda hiç görünmezdi) */
-      this.emit({ type: 'message-merge', sessionId: s.id, message: lastMsg });
-      this.emit({ type: 'sessions' });
+      if (!silent) this.emit({ type: 'message-merge', sessionId: s.id, message: lastMsg });
+      if (!silent) this.emit({ type: 'sessions' });
       return true;
     }
     const msg = { role: 'assistant', content: body };
+    if (Array.isArray(opts && opts.attachments) && opts.attachments.length) {
+      /* DOSYA/PRİZ KAYITLARI: ajanın gonderdiği dosya PDF/kart oturuma KALICı
+         yazılır — mobil/desktop yeniden açılışta kart kaybolmaz */
+      msg.attachments = opts.attachments.slice(0, 8);
+    }
     s.messages.push(msg);
     try {
       this._append(s, msg);
     } catch {}
-    this.emit({ type: 'message', sessionId: s.id, message: msg });
-    this.emit({ type: 'sessions' });
+    if (!silent) {
+      this.emit({ type: 'message', sessionId: s.id, message: msg });
+      this.emit({ type: 'sessions' });
+    }
     return true;
   }
 

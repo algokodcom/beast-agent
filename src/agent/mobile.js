@@ -75,6 +75,7 @@ let handlers = {
   onNew: null,
   onInterrupt: null,
   onSessions: null,
+  onDelete: null, /* telefondan oturum silme — bilgisayarla entegre */
   onPair: null,
 };
 
@@ -97,9 +98,22 @@ function status() {
   };
 }
 
-/* SON BİLDİRİM: uygulama kapalıyken de (alarm ile) yoklamak için son mesaj
-   bilgisi tutulur — /notif ucu bunu döner */
-let lastNotice = { ts: 0, title: 'Beast', body: '' };
+/* SON BİLDİRİMLER: uygulama kapalıyken alarm ile yoklanır — "since"ten beri
+   YENİ OLAN BÜTÜN mesajlar döner (WhatsApp gibi; yalnız son mesaj değil).
+   Her kayda benzersiz nid verilir: telefonda bildirimler birbirini EZMEZ. */
+let lastNotices = []; /* {ts, nid, title, body} */
+let noticeSeq = 0;
+function pushNotice(title, body) {
+  try {
+    lastNotices.push({
+      ts: Date.now(),
+      nid: 4711 + ((noticeSeq++) % 200),
+      title: String(title || 'Beast'),
+      body: String(body || '').slice(0, 300),
+    });
+    if (lastNotices.length > 20) lastNotices = lastNotices.slice(-20);
+  } catch {}
+}
 
 /* YAYIN: agent eventlerini tüm bağlı istemcilere gönder.
    Büyük olay gövdelerinden (uzun ek dataUrl) korunmak için 8MB tavan. */
@@ -112,7 +126,7 @@ function broadcast(ev) {
       if (typeof c === 'string') txt = c;
       else if (Array.isArray(c)) txt = c.filter((p) => p && p.type === 'text').map((p) => String(p.text || '')).join(' ');
       txt = String(txt || '').replace(/\s+/g, ' ').trim().slice(0, 140);
-      if (txt) lastNotice = { ts: Date.now(), title: 'Beast', body: txt };
+      if (txt) pushNotice('Beast', txt);
     }
   } catch {}
   if (!clients.size) return;
@@ -175,13 +189,17 @@ function start(opts) {
           return;
         }
         const since = Number(params.since || 0) || 0;
-        const fresh = lastNotice.ts && lastNotice.ts > since;
+        /* SINCE'TEN BERİ BÜTÜN YENİ MESAJLAR — tek tek, birbirini ezmeden
+           bildirilmek üzere nid'li liste olarak döner */
+        const items = lastNotices.filter((n) => n.ts > since);
+        const last = lastNotices.length ? lastNotices[lastNotices.length - 1] : null;
         res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
         res.end(JSON.stringify({
           ok: 1,
-          ts: lastNotice.ts,
-          title: lastNotice.title,
-          body: fresh ? lastNotice.body : '',
+          ts: last ? last.ts : since,
+          title: last ? last.title : 'Beast',
+          body: items.length ? (last ? last.body : '') : '',
+          items,
         }));
       } catch {
         res.writeHead(500, { 'content-type': 'application/json' }).end('{"ok":0}');
@@ -257,6 +275,12 @@ function start(opts) {
         }
         if (t === 'new') {
           if (handlers.onNew) { handlers.onNew(sendS); }
+          return;
+        }
+        if (t === 'del') {
+          /* 2. arg sendS: masaüstü o sokete {t:'session-del', ok} yollar;
+             silinen oturum tüm istemcilere broadcast sessions ile düşer */
+          if (handlers.onDelete) { handlers.onDelete(String(m.sid || ''), sendS); }
           return;
         }
         if (t === 'interrupt') {

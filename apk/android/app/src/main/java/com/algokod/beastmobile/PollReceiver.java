@@ -45,9 +45,27 @@ public class PollReceiver extends BroadcastReceiver {
                         JSONObject o = new JSONObject(resp);
                         long ts = o.optLong("ts", since);
                         sp.edit().putLong("since", ts).apply();
-                        String body = o.optString("body", "");
-                        if (body != null && !body.isEmpty()) {
-                            BeastNative.postNotification(context, o.optString("title", "Beast"), body);
+                        /* YENİ MESAJLAR LİSTESİ: since'ten beri kaçırılan HER mesaj
+                           ayrı bildirim olarak basılır (nid'ler çakışmaz —
+                           birbirini ezmez) — WhatsApp gibi eksiksiz */
+                        org.json.JSONArray items = o.optJSONArray("items");
+                        if (items != null && items.length() > 0) {
+                            for (int i = 0; i < items.length(); i++) {
+                                JSONObject it = items.getJSONObject(i);
+                                String b = it.optString("body", "");
+                                if (b == null || b.isEmpty()) continue;
+                                BeastNative.postNotification(
+                                    context,
+                                    it.optString("title", "Beast"),
+                                    b,
+                                    it.optInt("nid", 4711 + i)
+                                );
+                            }
+                        } else {
+                            String body = o.optString("body", "");
+                            if (body != null && !body.isEmpty()) {
+                                BeastNative.postNotification(context, o.optString("title", "Beast"), body);
+                            }
                         }
                     } catch (Exception ignored) {
                         /* bozuk yanıt — sessizce geç */

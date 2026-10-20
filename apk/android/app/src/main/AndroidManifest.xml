@@ -39,6 +39,12 @@
             android:name=".PollReceiver"
             android:enabled="true"
             android:exported="false" />
+
+        <!-- SÜREKLİ BAĞLANTI: sesli/başlıklı uyarısı olmayan ortam ikonlu ön plan servisi -->
+        <service
+            android:name=".KeepService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
     </application>
 
     <!-- Permissions -->
@@ -53,6 +59,9 @@
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
     <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- SÜREKLİ BAĞLANTI: arka planda WebSocket'i düşürmeyen ön plan servisi -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <!-- AJAN DOSYALARI: telefona kaydedip açma -->
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" />

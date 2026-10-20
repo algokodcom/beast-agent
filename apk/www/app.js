@@ -10,6 +10,7 @@ const hostEl = $('#host'), codeEl = $('#code'), errEl = $('#authErr'), btnJoin =
 const authWait = $('#authWait');
 const msgsEl = $('#msgs'), inputEl = $('#input'), sendEl = $('#send'), micEl = $('#mic');
 const sessEl = $('#sess'), hdot = $('#hdot'), hstat = $('#hstat');
+const sessTitleEl = $('#sessTitle'), sessSheet = $('#sessSheet'), sessListEl = $('#sessList');
 const typingEl = $('#typing'), attwrapEl = $('#attwrap');
 const exitEl = $('#exit'), slashEl = $('#slashMenu');
 const setPage = $('#settingsPage'), setBack = $('#settingsBack'), segTheme = $('#segTheme');
@@ -27,6 +28,40 @@ let lastFin = ''; /* son dondurulmuş/token-akışı metni — final 'message' e
 let pending = []; /* ek çipleri: {type:'image'|'file', name, dataUrl|content} */
 let selfEcho = 0; /* kendi gönderdiğimiz mesajın echo'su — bildirim yapılmasın */
 let settingsOpen = false;
+
+/* UYGULAMA GÖRÜNÜRLÜĞÜ: bildirim bastırma için iki sinyal birlikte kullanılır
+   (document.hidden + Capacitor appStateChange — biri aksarsa diğeri tutar) */
+let appActive = true;
+try {
+  const AppP = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.App;
+  if (AppP && typeof AppP.addListener === 'function') {
+    AppP.addListener('appStateChange', (s) => {
+      try {
+        appActive = !!(s && s.isActive);
+        if (appActive) scroll();
+      } catch {}
+    });
+  }
+  if (document.hidden) appActive = false;
+} catch {}
+function appInForeground() {
+  try { return !document.hidden && appActive; } catch { return true; }
+}
+
+/* ---------- SÜREKLİ BAĞLANTI (arka planda kopamayan WS) ---------- */
+let quitIntent = false; /* kullanıcı Çıkış'a bastı → bağlan ekranı yalnız o anda gösterilir */
+let reconnectT = null;
+let retryCount = 0;
+let pingT = null;
+let lastPong = 0;
+let outbox = []; /* bağlantı kesikken gönderilen mesajlar — bağlanınca sırayla gider */
+let keepAliveOn = true; /* Android ön plan servisi: arka planda bağlantı canlı kalsın */
+const KEEP_KEY = 'bmKeep';
+
+/* ---------- SOHBET ÖNBELLEĞİ (WhatsApp gibi kalıcı gösterim) ---------- */
+let chatArr = [];
+let cacheDirty = false;
+let cacheSuspend = false; /* önbellekten basarken tekrar kaydetme (çift kayıt olmasın) */
 
 /* =================== TEMA (koyu / aydınlık / sistem) =================== */
 const THEME_KEY = 'bmTheme';
@@ -95,8 +130,34 @@ function syncPoll() {
   const url = pollUrl();
   const code = localStorage.getItem('bmCode') || '';
   if (!url || !code) return;
-  try { p.setPoll({ url, code, everySec: 60 }); } catch {}
+  try { p.setPoll({ url, code, everySec: 20 }); } catch {} /* bildirim ANONDA gelsin: 20 sn yoklama */
 }
+
+/* ---------- SÜREKLİ BAĞLANTI: Android ön plan servisi ----------
+   WhatsApp gibi: uygulama arka planda iken WebSocket bağlantısı düşürülmez
+   (sessiz küçük ikon bağlantıyı canlı tutar). */
+function keepEnabled() { try { return localStorage.getItem(KEEP_KEY) !== '0'; } catch { return true; } }
+function syncKeep() {
+  keepAliveOn = keepEnabled();
+  const p = nativePlugin();
+  if (!p || typeof p.keepAlive !== 'function') return;
+  try {
+    if (keepAliveOn && joined) p.keepAlive({ on: true });
+    else p.keepAlive({ on: false });
+  } catch {}
+}
+function paintKeepSw() { try { const el = $('#swKeep'); if (el) el.classList.toggle('on', keepEnabled()); } catch {} }
+(function bindKeepSw() {
+  const el = document.getElementById('swKeep');
+  if (!el) return;
+  el.addEventListener('click', () => {
+    const on = !keepEnabled();
+    try { localStorage.setItem(KEEP_KEY, on ? '1' : '0'); } catch {}
+    paintKeepSw();
+    syncKeep();
+    toast(on ? 'Sürekli bağlantı açık — arka planda bağlı kalır' : 'Sürekli bağlantı kapalı');
+  });
+})();
 
 /* =================== AYARLAR SAYFASI (tam ekran) =================== */
 function openSettings() {
@@ -120,10 +181,11 @@ function fillSettings() {
   try {
     const h = localStorage.getItem('bmHost') || '—';
     $('#scHost').textContent = h;
-    $('#scConn').textContent = joined ? 'bağlı ✓' : 'bağlı değil';
+    $('#scConn').textContent = (joined && ws && ws.readyState === 1) ? 'bağlı ✓' : 'arka planda bağlanıyor…';
     $('#scVer').textContent = 'sürüm 1.0 · Beast Agent ile eşleşik';
   } catch {}
   paintPollSw();
+  paintKeepSw();
 }
 
 /* ARKA PLAN BİLDİRİM AÇ/KAPA */
@@ -149,6 +211,9 @@ function toast(txt) {
 }
 
 async function notifyIncoming(title, body) {
+  /* UYGULAMAYI GÖRÜYORSAK BİLDİRİM YOK: ekrandaki chat açıkken sistem
+     bildirimi gelmesin (WhatsApp davranışı — görünen sohbette zaten mesaj var) */
+  try { if (appInForeground()) return; } catch {}
   try { if (navigator.vibrate) navigator.vibrate([40, 60, 40]); } catch {}
   const p = nativePlugin();
   if (p && typeof p.notify === 'function') {
@@ -285,7 +350,7 @@ function scroll() {
   } catch {}
 }
 
-function bubble(role, html) {
+function bubbleRaw(role, html) {
   const row = document.createElement('div');
   row.className = 'row' + (role === 'me' ? ' me' : '');
   const b = document.createElement('div');
@@ -297,12 +362,18 @@ function bubble(role, html) {
   scroll();
   return b;
 }
+function bubble(role, html) {
+  const b = bubbleRaw(role, html);
+  cacheRec({ r: role === 'me' ? 'me' : 'as', h: html || '&nbsp;' });
+  return b;
+}
 
 function sysNote(txt) {
   const s = document.createElement('div');
   s.className = 'sysb';
   s.textContent = txt;
   msgsEl.appendChild(s);
+  cacheRec({ r: 'sys', t: String(txt || '') });
   scroll();
 }
 
@@ -339,18 +410,19 @@ function toolCallsOf(msg) {
   return out;
 }
 
-function toolChip(name, args) {
+function toolDetailOf(args) {
+  try {
+    const a = args || {};
+    const t = a.command || a.path || a.file_path || a.filePath || a.url || a.pattern || a.query || a.name || a.title;
+    return t ? String(t).slice(0, 80) : '';
+  } catch { return ''; }
+}
+function toolChipRow(name, detail) {
   const n = String(name || 'araç');
   const row = document.createElement('div');
   row.className = 'row';
   const b = document.createElement('div');
   b.className = 'toolbubble';
-  let detail = '';
-  try {
-    const a = args || {};
-    const t = a.command || a.path || a.file_path || a.filePath || a.url || a.pattern || a.query || a.name || a.title;
-    if (t) detail = String(t).slice(0, 80);
-  } catch {}
   b.innerHTML = '<b>⚙ ' + escHtml(n) + '</b>'
     + (TOOL_TR[n] ? '<span class="tl">' + escHtml(TOOL_TR[n]) + '</span>' : '')
     + (detail ? '<span class="td">' + escHtml(detail) + '</span>' : '');
@@ -359,10 +431,17 @@ function toolChip(name, args) {
   if (streamEl && streamEl.parentElement) msgsEl.insertBefore(row, streamEl.parentElement);
   else msgsEl.appendChild(row);
   scroll();
+  return row;
+}
+function toolChip(name, args) {
+  const detail = toolDetailOf(args);
+  toolChipRow(name, detail);
+  cacheRec({ r: 'tool', n: String(name || 'araç'), d: detail });
 }
 
 /* ---------- DOSYA KARTI (ajan dosya gönderimi) ---------- */
 function fileCard(ev) {
+  ev = ev || {};
   const name = String(ev.name || 'dosya');
   const mime = String(ev.mime || '');
   const isImg = mime.indexOf('image/') === 0;
@@ -392,6 +471,16 @@ function fileCard(ev) {
   b.appendChild(btns);
   row.appendChild(b);
   msgsEl.appendChild(row);
+  /* ÖNBELLEK: büyük dosyaların içeriği HARİÇ (ad/bayıt kaydıyla) saklanır */
+  cacheRec({
+    r: 'file',
+    f: {
+      name, mime,
+      size: Number(ev.size) || 0,
+      caption: String(ev.caption || ''),
+      dataUrl: (!isImg || !ev.dataUrl || ev.dataUrl.length <= 160000) ? String(ev.dataUrl || '') : '',
+    },
+  });
   scroll();
 }
 
@@ -447,6 +536,70 @@ function curSid(list, m) {
   if (m && m.activeSid) return m.activeSid;
   const first = (list && list[0] && list[0].id) || '';
   return first;
+}
+
+/* ---------- SOHBET SEÇİCİ SHEET (telefondan seç + SİL) ---------- */
+/* Masaüstüyle ENTEGRE: 🗑 basınca bilgisayardaki oturum da KALICI silinir
+   (engine.deleteSession). WhatsApp/Telegram/Discord'a bağlı sohbetler ikon
+   taşır — W / T / D rozetli; yerli sohbetler B rozetli. */
+let lastSess = [];
+function chanIcon(s) {
+  const c = String((s && s.chan) || '');
+  if (c === 'wa') return { cls: 'wa', ch: 'W', title: (s && s.chanLabel) || 'WhatsApp bağlı' };
+  if (c === 'tg') return { cls: 'tg', ch: 'T', title: (s && s.chanLabel) || 'Telegram bağlı' };
+  if (c === 'dc') return { cls: 'dc', ch: 'D', title: (s && s.chanLabel) || 'Discord bağlı' };
+  return { cls: 'lo', ch: 'B', title: 'bilgisayar sohbeti' };
+}
+function updSessTitle(curId, list) {
+  try {
+    const it = (list || []).find((s) => s && s.id === curId) || {};
+    const label = String(it.chan === 'wa' ? 'W · ' : it.chan === 'tg' ? 'T · ' : it.chan === 'dc' ? 'D · ' : '') +
+      String(it.title || curId || 'sohbet');
+    if (sessTitleEl) sessTitleEl.textContent = label.slice(0, 24);
+  } catch {}
+}
+function renderSessSheet(curSel) {
+  if (!sessListEl) return;
+  const rows = lastSess.map((s) => {
+    const ic = chanIcon(s);
+    return '<div class="ssrow' + (s.id === curSel ? ' cur' : '') + '" data-open="' + escHtml(s.id) + '">' +
+      '<div class="chan ' + ic.cls + '">' + escHtml(ic.ch) + '</div>' +
+      '<div class="b"><div class="t">' + escHtml(String(s.title || s.id).slice(0, 64)) + '</div>' +
+      '<div class="d">' + escHtml((s.id === curSel ? 'açık · ' : '') + ic.title) + '</div></div>' +
+      '<button class="del" data-del="' + escHtml(s.id) + '" aria-label="Sil">🗑</button>' +
+      '</div>';
+  });
+  sessListEl.innerHTML = rows.join('') ||
+    '<div class="ssrow"><div class="b"><div class="t">hiç sohbet yok</div><div class="d">"＋" ile yenisi açılır</div></div></div>';
+}
+function openSessSheet() {
+  try {
+    renderSessSheet(sid);
+    /* DROPDOWN KONUMU: her açılışta başlığın TAM ALTINA hizala (safe-area/
+       klavye durumuna göre header yüksekliği oynar) */
+    const panel = sessSheet.querySelector('.sspanel');
+    if (panel) {
+      const hdr = document.getElementsByTagName('header')[0];
+      const top = (hdr ? hdr.getBoundingClientRect().bottom : 0) + 6;
+      panel.style.top = Math.max(top, 40) + 'px';
+    }
+    sessSheet.hidden = false;
+    /* taze liste: silme sırasında bilgisayar tarafı güncel olsun */
+    try { if (wsReady()) ws.send(JSON.stringify({ t: 'sessions' })); else queueSend({ t: 'sessions' }); } catch {}
+  } catch {}
+}
+function confirmAndDel(ssid) {
+  const id = String(ssid || '');
+  if (!id) return;
+  const it = lastSess.find((s) => s && s.id === id) || {};
+  const ic = chanIcon(it);
+  let what = 'Bu sohbet telefonda ve BİLGİSAYARDA KALICI olarak silinsin mi?';
+  if (ic.cls !== 'lo') what += ' (' + ic.title + ')';
+  if (!window.confirm(what)) return;
+  try {
+    if (wsReady()) ws.send(JSON.stringify({ t: 'del', sid: id }));
+    else { toast('bağlanınca silinecek'); queueSend({ t: 'del', sid: id }); }
+  } catch { toast('bağlantı yok — silinemedi'); }
 }
 
 /* content (string ya da parça dizisi) → HTML */
@@ -527,6 +680,12 @@ function parseTarget(raw) {
 
 function connect() {
   closeWs();
+  stopHeartbeat();
+  clearTimeout(reconnectT);
+  reconnectT = null;
+  /* Çıkış yoluyla bağlan ekranındaysak kendiliğinden bağlanmayız —
+     denenmeye devam etmemesi için sessizce çıkılır (bağlan butonu tekrar açar) */
+  if (quitIntent) return;
   errEl.textContent = '';
   joined = false;
   const rawHost = String(hostEl.value || '').trim();
@@ -537,8 +696,8 @@ function connect() {
   const code = cm ? cm[0] : '';
   if (!code) { errEl.textContent = 'Kod biçimi: BEAST-XXXX-XXXX'; showAuth(); return; }
   saveCreds();
-  setMega('bağlanılıyor…', 'busy');
-  try { ws = new WebSocket(mode + '://' + host + ':' + port); } catch { showAuth('bağlantı kurulamadı'); return; }
+  setMega(retryCount ? ('bağlanılıyor… · ' + (retryCount + 1) + '. deneme') : 'bağlanılıyor…', 'busy');
+  try { ws = new WebSocket(mode + '://' + host + ':' + port); } catch { scheduleReconnect(); return; }
   let did = localStorage.getItem('bmDid');
   if (!did) { did = 'bm-' + Math.random().toString(36).slice(2, 10); localStorage.setItem('bmDid', did); }
   ws.onopen = () => {
@@ -548,22 +707,76 @@ function connect() {
   };
   ws.onmessage = (e) => { try { handle(JSON.parse(e.data)); } catch {} };
   ws.onclose = () => {
+    /* ARKA PLANDA SÜREKLİ BAĞLI KAL: BAĞLAN EKRANINA GERİ DÜŞME
+       — sadece o an görünen yerde durumu yaz, sessizce yeniden bağlan */
+    ws = null;
+    stopHeartbeat();
     busy = false; typingEl.classList.remove('on');
-    if (appEl.style.display !== 'flex') {
-      showAuth(errEl.textContent || 'bağlantı kurulamadı — adres/kod kontrol et');
-      return;
+    if (quitIntent || authEl.style.display === 'flex') return;
+    if (joined || retryCount > 0 || appEl.style.display === 'flex') {
+      setMega('bağlantı koptu — otomatik yeniden bağlanılıyor…', 'err');
     }
-    if (joined) {
-      setMega('bağlantı koptu — tekrar bağlanılıyor…', 'err');
-      setTimeout(() => { try { connect(); } catch {} }, 2500);
-    } else {
-      showAuth(errEl.textContent || 'bağlantı kurulamadı — adres/kod kontrol et');
-    }
+    scheduleReconnect();
   };
   ws.onerror = () => {};
 }
 
+/* yeniden bağlanma: artan gecikme (0.8s → en çok 12s), sonsuza kadar dener */
+function scheduleReconnect() {
+  if (quitIntent || authEl.style.display === 'flex') return;
+  if (reconnectT) return;
+  retryCount++;
+  const d = Math.min(12000, Math.round(800 * Math.pow(1.6, Math.min(6, retryCount))));
+  reconnectT = setTimeout(() => {
+    reconnectT = null;
+    connect();
+  }, d);
+}
+
+/* ---------- KALP ATIŞI: kopukluğu KENDİMİZ anlayalım ----------
+   25 sn'de bir ping; 70 sn pong yoksa soket canlı görünse bile KAPATILIR →
+   onclose akçı yeniden bağlanır (mesajların sessizce yitip geçmediği emin olur) */
+function startHeartbeat() {
+  stopHeartbeat();
+  lastPong = Date.now();
+  pingT = setInterval(() => {
+    if (!ws || ws.readyState !== 1) return;
+    try { ws.send(JSON.stringify({ t: 'ping' })); } catch {}
+    if (Date.now() - lastPong > 70000) {
+      try { ws.close(); } catch {}
+      try { if (ws) ws.onclose = null; } catch {}
+      ws = null;
+      stopHeartbeat();
+      if (joined || appEl.style.display === 'flex') setMega('bağlantı hafif — yenileniyor…', 'err');
+      scheduleReconnect();
+    }
+  }, 25000);
+}
+function stopHeartbeat() {
+  if (pingT) { clearInterval(pingT); pingT = null; }
+}
+function wsDead() {
+  try { return !ws || ws.readyState !== 1 || !joined || (lastPong && Date.now() - lastPong > 60000); } catch { return true; }
+}
+
 function closeWs() { try { if (ws) { ws.onclose = null; ws.close(); } } catch {} ws = null; }
+
+/* ---------- GÖNDERİM KUYRUĞU: kopuklukta yazılan mesaj KAYBOLMAZ ----------
+   Bağlantı yok ya da soket bayat (pong gelmiyor) ise mesaj kuyruğa düşer;
+   bağlantı duyulduğunda sırayla gider — kullanıcının yazdığı yerde durur. */
+function wsStale() { try { return lastPong > 0 && (Date.now() - lastPong > 65000); } catch { return false; } }
+function wsReady() { try { return !!(ws && ws.readyState === 1 && joined && !wsStale()); } catch { return false; } }
+function queueSend(obj) {
+  outbox.push(obj);
+  try { if (outbox.length > 12) outbox.shift(); } catch {}
+  setMega('bağlantı yenileniyor — mesajın kuyrukta, bağlanınca gider', 'err');
+}
+function flushOutbox() {
+  while (outbox.length && ws && ws.readyState === 1) {
+    const o = outbox.shift();
+    try { ws.send(JSON.stringify(o)); if (o && o.t === 'send') selfEcho++; } catch { break; }
+  }
+}
 
 /* ---------- agent event akışı ---------- */
 function handle(m) {
@@ -571,14 +784,21 @@ function handle(m) {
   switch (t) {
     case 'auth-ok':
       joined = true;
+      retryCount = 0;
       authEl.style.display = 'none';
       appEl.style.display = 'flex';
       setMega('bağlandı ✓');
       scroll();
+      startHeartbeat();
+      flushOutbox();
       syncPoll();
+      syncKeep();
       openSession(sid);
       break;
     case 'auth-bad':
+      quitIntent = true; /* kod yanlış — sonsuza kadar deneme yapma, ekran açılsın */
+      clearTimeout(reconnectT);
+      stopHeartbeat();
       errEl.textContent = m.why || 'kod yanlış';
       setMega('kod reddedildi', 'err');
       showAuth();
@@ -586,13 +806,31 @@ function handle(m) {
     case 'sessions': {
       const list = Array.isArray(m.list) ? m.list : null;
       if (!list) break;
-      sessEl.innerHTML = list.map((s) =>
-        '<option value="' + escHtml(s.id) + '"' + (s.id === curSid(list, m) ? ' selected' : '') + '>' +
-        escHtml(String(s.title || s.id).slice(0, 26)) + '</option>').join('');
+      lastSess = list; /* seçici sheet'in kaynağı — telefondan sil + ikonlar */
       const cur = curSid(list, m);
+      updSessTitle(cur, list);
+      renderSessSheet(cur);
       if (cur && cur !== sid) openSession(cur);
-      else if (cur === sid) { try { sessEl.value = sid; } catch {} }
-      else if (!msgsEl.children.length) sysNote('masaüstünde hiç sohbet yok — "＋" ile (sağ üst) yeni sohbet aç; yazarak da başlayabilirsin');
+      else if (!cur && !msgsEl.children.length) sysNote('bilgisayarda hiç sohbet kalmadı — "＋" ile (sağ üst) yeni sohbet aç; yazarak da başlayabilirsin');
+      break;
+    }
+    case 'session-del': {
+      const dSid = String(m.sid || '');
+      if (m.ok) {
+        toast('sohbet silindi ✓ — bilgisayarından da kaldırıldı');
+        try { sessSheet.hidden = true; } catch {}
+        if (dSid === sid) {
+          /* O AN AÇIK olanı sildik: ekranı temizle; 'sessions' yayınında
+             en güncel diğer sohbe te otomatik geçilir */
+          msgsEl.innerHTML = '';
+          streamEl = null; streamBuf = ''; lastFin = '';
+          chatArr = []; chatFlush();
+          sysNote('bu sohbet silindi — en güncel sohbete geçiliyor…');
+          setMega('sohbet silindi', '');
+        }
+      } else {
+        toast('silinemedi: ' + String(m.why || 'hata'));
+      }
       break;
     }
     case 'session-switch':
@@ -667,6 +905,8 @@ function handle(m) {
         msgsEl.innerHTML = '';
         streamEl = null; streamBuf = '';
         lastFin = '';
+        chatArr = []; cacheDirty = false;
+        try { localStorage.removeItem('bmChat:' + sid); } catch {}
         setMega('geçmiş silindi · sıfırdan yazabilirsin');
       }
       break;
@@ -674,6 +914,7 @@ function handle(m) {
       handleSessionSnapshot(m);
       break;
     case 'pong':
+      lastPong = Date.now();
       break;
     default:
       break;
@@ -683,8 +924,11 @@ function handle(m) {
 function closeStream(keepAlive) {
   if (streamEl) {
     if (streamBuf.trim()) {
-      streamEl.innerHTML = mdLite(streamBuf);
+      const html = mdLite(streamBuf);
+      streamEl.innerHTML = html;
       lastFin = streamBuf.trim();
+      /* AKIŞ DONAR → ÖNBELLEK: canlı token akışı bitince sohbete kaydedilir */
+      if (!cacheSuspend) cacheRec({ r: 'as', h: html });
     } else {
       /* BOS AKIS BALONU: her zaman silinir — aksi halde ekranda bos baloncuk kalir */
       try { streamEl.parentElement.remove(); } catch {}
@@ -692,49 +936,129 @@ function closeStream(keepAlive) {
   }
   streamEl = null; streamBuf = '';
   if (!keepAlive) typingEl.classList.remove('on');
+  if (cacheDirty) chatFlush();
   scroll();
 }
 
 /* ---------- komut gönderimleri ---------- */
+/* ---------- SOHBET ÖNBELLEĞİ (WhatsApp gibi kalıcı gösterim) ----------
+   KAYIT: her balon/araç satırı bir kayıttır — {r:'me'|'as'|'tool'|'sys'|'file', ...}.
+   Önbellekte bizzat üretilmiş HTML saklanır (bize ait içerik); boyut ~1MB'i
+   geçerse arkadan (en eskilerden) kırpılır. */
+function chatLoad(s) {
+  try { const v = JSON.parse(localStorage.getItem('bmChat:' + s) || '[]'); return Array.isArray(v) ? v : []; } catch { return []; }
+}
+function chatFlush() {
+  if (!sid || !cacheDirty) return;
+  cacheDirty = false;
+  let keep = chatArr;
+  try {
+    while (keep.length > 4) {
+      const bytes = JSON.stringify(keep).length;
+      if (bytes < 950000) break;
+      keep = keep.slice(20); /* arkadan 20 kayıt at (en eski) */
+    }
+    if (keep.length > 160) keep = keep.slice(-160);
+    localStorage.setItem('bmChat:' + sid, JSON.stringify(keep));
+  } catch {}
+}
+function cacheRec(rec) {
+  if (cacheSuspend || !sid) return;
+  chatArr.push(rec);
+  cacheDirty = true;
+  if (chatArr.length > 200) { chatArr = chatArr.slice(-200); }
+}
+function cacheBegin() { chatArr = []; cacheDirty = true; }
+function cacheEnd() { chatFlush(); }
+/* önbellekteki kayıtları ekrana bas: app açılışında / oturuma geri dönüşte */
+function chatRender() {
+  cacheSuspend = true;
+  try {
+    msgsEl.innerHTML = '';
+    for (const rec of chatArr) {
+      try {
+        if (rec.r === 'me' || rec.r === 'as') bubbleRaw(rec.r === 'me' ? 'me' : 'assistant', rec.h);
+        else if (rec.r === 'tool') toolChipRow(rec.n, rec.d || '');
+        else if (rec.r === 'file') fileCard(rec.f || {});
+        else if (rec.r === 'sys') sysNote(rec.t || '');
+      } catch {}
+    }
+  } finally { cacheSuspend = false; }
+}
+
 function openSession(id) {
   const next = String(id || '');
   if (!next) return;
   sid = next;
   localStorage.setItem('bmSid', sid);
-  try { sessEl.value = sid; } catch {}
+  updSessTitle(sid, lastSess);
   msgsEl.innerHTML = '';
   streamEl = null; streamBuf = '';
   lastFin = '';
-  setMega('geçmiş yükleniyor…', 'busy');
+  /* ÖNBELLEK İLE AÇ: sohbetten çıkıp geri girişte / app açılışında geçmiş
+     ANINDA ekranda — masaüstü snapshotı gelince tazelenecek */
+  chatArr = chatLoad(next);
+  cacheDirty = false;
+  chatRender();
+  setMega(chatArr.length ? 'hazır' : 'geçmiş yükleniyor…', chatArr.length ? '' : 'busy');
   clearTimeout(snapT);
-  snapT = setTimeout(() => {
-    if (streamEl || msgsEl.children.length) return;
-    sysNote('geçmiş yüklenemedi — masaüstü uygulaması güncel sürüm olsun (yeni sürümde otomatik)');
-    setMega('geçmiş yok — yine de yazabilirsin');
-  }, 4000);
+  if (!chatArr.length) {
+    snapT = setTimeout(() => {
+      if (streamEl || msgsEl.children.length) return;
+      sysNote('geçmiş yüklenemedi — masaüstü uygulaması güncel sürüm olsun (yeni sürümde otomatik)');
+      setMega('geçmiş yok — yine de yazabilirsin');
+    }, 4000);
+  }
   try { if (ws && ws.readyState === 1) ws.send(JSON.stringify({ t: 'open', sid: sid })); } catch {}
 }
 
 function handleSessionSnapshot(m) {
   clearTimeout(snapT);
   if (String(m.sid || '') !== sid) return;
+  /* ESKİ MASAÜSTÜ KALKANI: sunucu snapshot'ı tool_calls/dosya kaydı
+     TAŞIMIYORSA (eski sürüm) canlı ekrandaki SON araç balonları + dosya
+     kartları silinmesin — önbelleğin sonundakiler sona geri eklenir */
+  const oldArr = chatArr.slice();
+  const list = Array.isArray(m.messages) ? m.messages.slice(-80) : [];
+  let serverHasExtras = false;
+  for (const msg of list) {
+    if (!serverHasExtras && toolCallsOf(msg).length) serverHasExtras = true;
+    if (!serverHasExtras && (Array.isArray(msg.attachments) ? msg.attachments : []).some((a) => a && a.type === 'file')) serverHasExtras = true;
+    if (serverHasExtras) break;
+  }
   msgsEl.innerHTML = '';
   streamEl = null; streamBuf = '';
   lastFin = '';
-  const list = Array.isArray(m.messages) ? m.messages.slice(-80) : [];
+  cacheBegin(); /* önbellek tazele: sunucu snapshotlarına birebir ayarlı */
   for (const msg of list) {
     const role = String(msg.role || 'assistant');
     /* GEÇMİŞTEKİ ARAÇ KAYITLARI: tool_calls -> araç balonu (isim + detay).
        tool_calls olmayan canlı akışta 'tool-start' eventi zaten basıyor. */
     for (const tc of toolCallsOf(msg)) toolChip(tc.name, tc.args);
+    const files = (Array.isArray(msg.attachments) ? msg.attachments : []).filter((a) => a && a.type === 'file');
     const txt = contentText(msg.content);
+    if (files.length && /^📄/.test(txt)) {
+      /* KALICI DOSYA KARTI: künye balonu yerine gerçek kart yeniden basılır —
+         PDF/dosya WhatsApp gibi sohbette KALIR */
+      for (const f of files) fileCard({ name: f.name, mime: f.mime || '', size: Number(f.size) || 0, caption: f.caption || '' });
+      continue;
+    }
     const hasAtt = Array.isArray(msg.attachments) && msg.attachments.length > 0;
     if (!txt && !hasAtt) continue; /* boş baloncuk basma */
     const html = renderContent(msg.content || '', msg.attachments);
     if (role === 'user') { bubble('me', html); }
     else { bubble('assistant', html); }
   }
+  if (!serverHasExtras) {
+    for (let i = oldArr.length - 1; i >= 0; i--) {
+      const rec = oldArr[i];
+      if (!rec) continue;
+      if (rec.r === 'me' || rec.r === 'as') break;
+      if (rec.r === 'tool' || rec.r === 'file') cacheRec(rec);
+    }
+  }
   if (!list.length) sysNote('bu sohbette henüz mesaj yok — yazabilirsin');
+  cacheEnd();
   setMega('hazır');
   scroll();
 }
@@ -743,12 +1067,19 @@ function sendMessage() {
   const text = String(inputEl.value || '').trim();
   const atts = pending.slice();
   if (!text && !atts.length) return;
-  if (!sid || !ws || ws.readyState !== 1) { setMega('bağlantı yok — bekley…', 'err'); return; }
-  if (text.startsWith('/')) {
-    ws.send(JSON.stringify({ t: 'send', sid, text }));
-  } else {
-    ws.send(JSON.stringify({ t: 'send', sid, text, attachments: atts.length ? atts : undefined }));
+  if (!sid) { setMega('oturum açılıyor — bekley…', 'err'); return; }
+  const isCmd = text.startsWith('/');
+  const payload = { t: 'send', sid, text };
+  if (atts.length && !isCmd) payload.attachments = atts;
+  /* KOPUKLUK SIGORTASI: bağlantı yok ya da soket bayat ise mesaj KUYRUĞA
+     düşer — KAYBOLMAZ; bağlantı gelince kendiliğinden gider (yazdığın yerde
+     durur, WhatsApp'taki 'gönderiliyor' gibi) */
+  if (!wsReady()) {
+    queueSend(payload);
+    toast(isCmd ? 'bağlantı bekleniyor — komut kuyrukta' : 'bağlantı bekleniyor — mesaj kuyrukta');
+    return;
   }
+  try { ws.send(JSON.stringify(payload)); } catch { queueSend(payload); return; }
   selfEcho++;
   inputEl.value = '';
   pending = [];
@@ -767,19 +1098,92 @@ function keepKeyboard() {
 
 /* ---------- SESLİ MESAJ (kayıt) ---------- */
 let mediaRec = null, recChunks = [], recTimer = null, recStartTs = 0, recStream = null, recCancel = false;
+let recMode = 'web'; /* 'web' = WebView getUserMedia, 'native' = Android MediaRecorder */
+let micSettingsTold = false; /* izin kalıcı kapalıysa ayar ekranına yönlendirme bir kez */
 
 function recUI(on) {
   const bar = $('#recbar');
-  if (bar) bar.hidden = !on;
-  inputEl.style.display = on ? 'none' : '';
+  if (bar) {
+    bar.hidden = !on;
+    /* KAYIT SIRASINDA gönder tuşları EN SAĞDA: recbar'ı sona al, içini sıkıştır */
+    bar.style.flex = on ? '0 0 auto' : '';
+    bar.style.order = on ? '2' : '';
+  }
+  /* KLAVYE KAPANMASIN: kutu yerinde kalır, yalnız yazma kilitli
+     (eskiden input display:none yapılıyordu → klavye kapanıyordu) */
+  inputEl.readOnly = on;
+  try { $('#attach').style.display = on ? 'none' : ''; } catch {}
+  try { $('#send').style.display = on ? 'none' : ''; } catch {}
+  micEl.style.display = on ? 'none' : '';
   micEl.classList.toggle('rec', on);
+  const hint = $('#recHint');
+  if (hint) hint.style.display = on ? 'none' : '';
   if (on) $('#recTime').textContent = '0:00';
+}
+
+/* Mikrofon akışı (iki katmanlı — 'mikrofona erişilemiyor' hatası artık geçmiyor):
+   1) ANDROID İZNİ ÖNCE: yerel istem (RECORD_AUDIO) istenir — onaylıysa anında
+      döner, değilse sistem diyalogu açılır. WebView'in getUserMedia izni bu
+      sayede sorunsuz verilir (Capacitor WebChromeClient onayı izne bağlıdır).
+   2) WebView akışı olmazsa → ANDROID KENDİ KAYDINA GİRER: native MediaRecorder
+      (AAC/m4a) — mikrofon WebView'e hiç muhtaç değil. */
+async function getMicStream() {
+  const p = nativePlugin();
+  /* 1) Android iznini garanti et */
+  if (p && typeof p.requestMic === 'function') {
+    try {
+      const r = await Promise.race([
+        p.requestMic(),
+        new Promise((res) => setTimeout(() => res(null), 12000)), /* diyalog takılırsa da geçme */
+      ]);
+      if (r && r.granted === false) {
+        toast('Mikrofon izni kapalı — ayarlardan aç: Uygulamalar → Beast Mobile → İzinler');
+        setMega('mikrofon izni yok — ayarlardan aç', 'err');
+        if (!micSettingsTold && typeof p.openAppSettings === 'function') {
+          micSettingsTold = true;
+          try { await p.openAppSettings(); } catch {}
+        }
+        return null;
+      }
+    } catch {}
+  }
+  if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+    try { return await navigator.mediaDevices.getUserMedia({ audio: true }); } catch {}
+  }
+  /* 2) yerel kayıt rezervi */
+  if (p && typeof p.startRec === 'function') {
+    try {
+      const r = await p.startRec({ maxSec: 120 });
+      if (r && r.ok) return { native: true };
+    } catch {}
+  }
+  toast('Mikrofona erişilemedi — izni ayarlardan açmayı dene');
+  setMega('mikrofona erişilemedi', 'err');
+  return null;
 }
 
 async function toggleRec() {
   if (mediaRec) { stopRec(false); return; }
   const stream = await getMicStream();
   if (!stream) return;
+  recChunks = [];
+  recCancel = false;
+  recStartTs = Date.now();
+  if (stream.native) {
+    /* YEREL KAYIT: Android MediaRecorder çalışıyor — WebView ile iş yok */
+    recMode = 'native';
+    mediaRec = { native: true, state: 'recording' };
+    recTimer = setInterval(() => {
+      const s = Math.floor((Date.now() - recStartTs) / 1000);
+      const t = $('#recTime');
+      if (t) t.textContent = fmtDur(s);
+      if (s >= 118) stopRec(false);
+    }, 250);
+    recUI(true);
+    setMega('ses kaydediliyor…', 'busy');
+    return;
+  }
+  recMode = 'web';
   const types = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus'];
   let mime = '';
   for (const t of types) {
@@ -790,70 +1194,65 @@ async function toggleRec() {
   } catch (e) {
     try { mediaRec = new MediaRecorder(stream); } catch (e2) { toast('Kayıt başlatılamadı'); return; }
   }
-  recChunks = [];
-  recCancel = false;
   mediaRec.ondataavailable = (e) => { if (e.data && e.data.size) recChunks.push(e.data); };
   mediaRec.onstop = onRecStopped;
   try { mediaRec.start(); } catch (e) { toast('Kayıt başlatılamadı'); return; }
-  recStartTs = Date.now();
   recTimer = setInterval(() => {
     const s = Math.floor((Date.now() - recStartTs) / 1000);
     const t = $('#recTime');
     if (t) t.textContent = fmtDur(s);
-    if (s >= 120) stopRec(false);
+    if (s >= 118) stopRec(false);
   }, 250);
   recUI(true);
   setMega('ses kaydediliyor…', 'busy');
 }
 
-/* Mikrofon akışı:
-   1) Doğrudan getUserMedia — Capacitor'ın WebChromeClient'ı RECORD_AUDIO
-      iznini kendi dialoguyla ister ve onaylar (en sorunsuz yol).
-   2) Reddedilirse native izin isteyip TEKRAR dene (kısa timeout'lu —
-      callback gelmezse takılmasın). */
-async function getMicStream() {
-  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-    toast('Tarayıcı mikrofonu engelliyor (güvenli bağlantı gerekli)');
-    setMega('mikrofon kullanılamıyor', 'err');
-    return null;
-  }
-  try {
-    return await navigator.mediaDevices.getUserMedia({ audio: true });
-  } catch (e) {
-    /* 2. deneme: native izin iste */
-    const p = nativePlugin();
-    if (p && typeof p.requestMic === 'function') {
-      try {
-        const r = await Promise.race([
-          p.requestMic(),
-          new Promise((res) => setTimeout(() => res(null), 8000)),
-        ]);
-        if (r && r.granted === false) {
-          toast('Mikrofon izni verilmedi');
-          setMega('mikrofon izni yok', 'err');
-          return null;
-        }
-        return await navigator.mediaDevices.getUserMedia({ audio: true });
-      } catch (e2) {
-        toast('Mikrofona erişilemedi');
-        setMega('mikrofona erişilemedi', 'err');
-        return null;
-      }
-    }
-    toast('Mikrofona erişilemedi');
-    setMega('mikrofona erişilemedi', 'err');
-    return null;
-  }
-}
-
 function stopRec(cancel) {
   recCancel = !!cancel;
+  if (recMode === 'native' && mediaRec) {
+    /* native kayıt: durdurma sonucu stopRec() native metodundan gelir */
+    mediaRec = null;
+    clearInterval(recTimer); recTimer = null;
+    recUI(false);
+    nativeRecordFinish();
+    return;
+  }
   const r = mediaRec;
   if (r && r.state !== 'inactive') {
     try { r.stop(); } catch {}
   } else {
     clearInterval(recTimer); recTimer = null;
     recUI(false);
+  }
+}
+
+/* YEREL KAYIT BİTİŞİ: dosya Android'e yazılır, base64 dataUrl döner → sohbete ek */
+async function nativeRecordFinish() {
+  const p = nativePlugin();
+  if (!p || typeof p.stopRec !== 'function') { setMega('hazır'); return; }
+  try {
+    if (recCancel) {
+      try { await p.cancelRec(); } catch {}
+      setMega('hazır');
+      return;
+    }
+    const r = await Promise.race([
+      p.stopRec(),
+      new Promise((res) => setTimeout(() => res(null), 10000)),
+    ]);
+    if (!r || !r.ok || !r.dataUrl) {
+      toast('Kayıt alınamadı' + (r && r.error ? ': ' + r.error : ''));
+      setMega('hazır');
+      return;
+    }
+    const dur = Math.round((Date.now() - recStartTs) / 1000);
+    const mime = String(r.mime || 'audio/mp4');
+    const ext = mime.indexOf('mp4') >= 0 ? 'm4a' : (mime.indexOf('ogg') >= 0 ? 'ogg' : 'webm');
+    sendAudio(String(r.dataUrl), 'sesli mesaj.' + ext, dur);
+  } catch (e) {
+    try { await p.cancelRec(); } catch {}
+    toast('Kayıt gönderilemedi');
+    setMega('hazır');
   }
 }
 
@@ -887,11 +1286,17 @@ function blobToDataUrl(blob) {
 }
 
 function sendAudio(dataUrl, name, duration) {
-  if (!sid || !ws || ws.readyState !== 1) { setMega('bağlantı yok — bekley…', 'err'); return; }
-  ws.send(JSON.stringify({
+  if (!sid || !dataUrl) { setMega('oturum açılıyor — bekley…', 'err'); return; }
+  const payload = {
     t: 'send', sid, text: '',
     attachments: [{ type: 'audio', name, duration, dataUrl }],
-  }));
+  };
+  if (!wsReady()) {
+    queueSend(payload);
+    toast('bağlantı bekleniyor — ses kaydı kuyrukta');
+    return;
+  }
+  try { ws.send(JSON.stringify(payload)); } catch { queueSend(payload); return; }
   selfEcho++;
   setMega('sesli mesaj gönderildi', 'busy');
   keepKeyboard();
@@ -941,9 +1346,14 @@ function attachImage() {
 }
 
 /* ---------- başlatma ---------- */
-btnJoin.addEventListener('click', connect);
-codeEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') connect(); });
-hostEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') connect(); });
+function manualConnect() {
+  quitIntent = false; /* kullanıcı kendisi Bağlan'a bastı → arka plan otomatik moda geri döner */
+  retryCount = 0;
+  connect();
+}
+btnJoin.addEventListener('click', manualConnect);
+codeEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') manualConnect(); });
+hostEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') manualConnect(); });
 sendEl.addEventListener('click', () => { sendMessage(); });
 micEl.addEventListener('click', () => { toggleRec(); });
 $('#recCancel').addEventListener('click', () => stopRec(true));
@@ -970,14 +1380,38 @@ inputEl.addEventListener('input', () => { updateSlash(); });
   el.addEventListener('mousedown', (e) => e.preventDefault());
 });
 
+/* ÇIKIŞ: bağlan ekranını TEKRAR göstert — tel allak balak bağlantı tamamen kapatılır */
 exitEl.addEventListener('click', () => {
+  quitIntent = true;
+  stopHeartbeat();
+  clearTimeout(reconnectT);
   closeWs();
+  joined = false;
+  try {
+    const p = nativePlugin();
+    if (p && typeof p.keepAlive === 'function') p.keepAlive({ on: false });
+  } catch {}
+  try { chatFlush(); } catch {}
   showAuth();
-  sysNote('bağlantıyı kapattın');
 });
-function sysNoteInternal() { sysNote('bağlantıyı kapattın'); }
 
-sessEl.addEventListener('change', () => openSession(sessEl.value));
+/* SOHBET SEÇİCİ: üstteki buton sheet'i açar — seç / sil (bilgisayarla entegre) */
+sessEl.addEventListener('click', () => { openSessSheet(); });
+sessEl.addEventListener('mousedown', (e) => e.preventDefault()); /* klavye kapanmasın */
+if (sessSheet) {
+  const back = sessSheet.querySelector('.ssb');
+  if (back) back.addEventListener('click', () => { sessSheet.hidden = true; });
+  const closeBtn = sessSheet.querySelector('#sessClose');
+  if (closeBtn) closeBtn.addEventListener('click', () => { sessSheet.hidden = true; });
+  if (sessListEl) {
+    sessListEl.addEventListener('click', (ev) => {
+      const delBtn = ev.target && ev.target.closest ? ev.target.closest('[data-del]') : null;
+      if (delBtn) { ev.stopPropagation(); confirmAndDel(delBtn.getAttribute('data-del') || ''); return; }
+      const row = ev.target && ev.target.closest ? ev.target.closest('[data-open]') : null;
+      if (row) { sessSheet.hidden = true; openSession(row.getAttribute('data-open') || ''); }
+    });
+  }
+}
 
 /* "＋" (sağ üst): masaüstünde yeni oturum açar */
 $('#newsess').addEventListener('click', () => {
@@ -1003,7 +1437,28 @@ window.addEventListener('orientationchange', () => { setTimeout(scroll, 250); })
 if (window.visualViewport && typeof window.visualViewport.addEventListener === 'function') {
   window.visualViewport.addEventListener('resize', () => { scroll(); });
 }
-document.addEventListener('visibilitychange', () => { if (!document.hidden) scroll(); });
+/* UYGULAMA ÖN PLANA GELDİĞİ OTURUM: koptu/bayat soket varsa ANINDA sessiz
+   değnetlimi bağlan — kullanıcı "mesajım gitmedi" dedirtmez */
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) return;
+  scroll();
+  if (quitIntent || authEl.style.display === 'flex') return;
+  try { if (!localStorage.getItem('bmCode') || !localStorage.getItem('bmHost')) return; } catch { return; }
+  const dead = !ws || ws.readyState !== 1 || (lastPong && Date.now() - lastPong > 45000);
+  if (dead) {
+    clearTimeout(reconnectT);
+    reconnectT = null;
+    closeWs();
+    setMega('bağlantı yenileniyor…', 'busy');
+    setTimeout(() => { try { connect(); } catch {} }, 120);
+  } else {
+    flushOutbox();
+    syncKeep();
+  }
+  chatFlush();
+});
+/* önbellek kuykurtucu: ekranı kuran kayıtlar 4 sn de bir diske yazılır */
+setInterval(() => { try { if (cacheDirty && sid) chatFlush(); } catch {} }, 4000);
 
 /* ---------- ilk yükleme ---------- */
 applyTheme(currentThemePref(), false);
@@ -1018,10 +1473,19 @@ try {
   if (p && typeof p.requestNotify === 'function') setTimeout(() => { try { p.requestNotify(); } catch {} }, 1200);
 } catch {}
 
-/* KAYITLI BİLGİLERLE DİREKT SON OTRUM: login ekranı hiç gösterilmez */
+/* KAYITLI BİLGİLERLE DİREKT SON OTURUM: login ekranı HİÇ gösterilmez.
+   Bağlantı arka planda kurulur — kopukluk olsa bile chat + önbellek ekranda
+   kalır, başlıkta durum görünür; "bağlan ekranı yalnız Çıkış'ta" kuralı. */
 if (localStorage.getItem('bmHost') && localStorage.getItem('bmCode')) {
   authEl.style.display = 'none';
   appEl.style.display = 'flex';
   setMega('bağlanılıyor…', 'busy');
+  try {
+    sid = localStorage.getItem('bmSid') || '';
+    if (sid) { chatArr = chatLoad(sid); cacheDirty = false; chatRender(); }
+  } catch {}
+  paintKeepSw();
   setTimeout(() => { try { connect(); } catch {} }, 80);
+} else {
+  paintKeepSw();
 }

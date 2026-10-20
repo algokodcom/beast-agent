@@ -11,6 +11,7 @@ import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.media.MediaRecorder;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Environment;
@@ -89,6 +90,10 @@ public class BeastNative extends Plugin {
 
     /* Sistem bildirimi (statik: plugin ve alarm alıcısı aynı yolu kullanır) */
     public static void postNotification(Context ctx, String title, String body) {
+        postNotification(ctx, title, body, NOTIF_ID);
+    }
+
+    public static void postNotification(Context ctx, String title, String body, int id) {
         try {
             NotificationManager nm = (NotificationManager) ctx.getSystemService(Context.NOTIFICATION_SERVICE);
             if (nm == null) return;
@@ -117,7 +122,7 @@ public class BeastNative extends Plugin {
                 );
                 b.setContentIntent(pi);
             }
-            nm.notify(NOTIF_ID, b.build());
+            nm.notify(id <= 0 ? NOTIF_ID : id, b.build());
         } catch (Exception ignored) {
             /* bildirim gönderilemezse sessizce geç */
         }
@@ -179,7 +184,7 @@ public class BeastNative extends Plugin {
             sp.edit()
                     .putString("url", url)
                     .putString("code", code)
-                    .putLong("every", Math.max(30L, everySec) * 1000L)
+                    .putLong("every", Math.max(15L, everySec) * 1000L)
                     .apply();
             scheduleAlarm(getContext());
             call.resolve(new JSObject().put("ok", true));
@@ -232,6 +237,171 @@ public class BeastNative extends Plugin {
             }
         } catch (Exception ignored) {
             /* titreşim yoksa sorun değil */
+        }
+    }
+
+    /* ---------------- SÜREKLİ BAĞLANTI (ön plan servisi) ---------------- */
+
+    /* WhatsApp gibi: uygulama arka plandayken WebSocket düşmesin —
+       sessiz ortam ikonlu ön plan servisi bağlantıyı canlı tutar */
+    @PluginMethod
+    public void keepAlive(PluginCall call) {
+        boolean on = call.getBoolean("on", Boolean.TRUE);
+        try {
+            Intent i = new Intent(getContext(), KeepService.class);
+            if (on) {
+                if (Build.VERSION.SDK_INT >= 26) {
+                    getContext().startForegroundService(i);
+                } else {
+                    getContext().startService(i);
+                }
+            } else {
+                getContext().stopService(i);
+            }
+            call.resolve(new JSObject().put("ok", true));
+        } catch (Exception e) {
+            call.resolve(new JSObject().put("ok", false).put("error", String.valueOf(e.getMessage())));
+        }
+    }
+
+    /* ---------------- YEREL SES KAYDI (WebView mikrotu rezervi) ---------------- */
+    /* 'mikrofona erişilemiyor' hatası WebView izninden gelirse ANDROID KENDİ
+       kaydına girer: MediaRecorder (AAC/m4a) — izin seçilmez sonuç dataUrl döner */
+
+    private MediaRecorder rec = null;
+    private String recPath = null;
+    private long recTs = 0;
+
+    @PluginMethod
+    public void startRec(PluginCall call) {
+        if (getPermissionState("mic") != PermissionState.GRANTED) {
+            requestPermissionForAlias("mic", call, "micRecCallback");
+            return;
+        }
+        startRecNow(call);
+    }
+
+    @PermissionCallback
+    private void micRecCallback(PluginCall call) {
+        if (getPermissionState("mic") != PermissionState.GRANTED) {
+            call.resolve(new JSObject().put("ok", false).put("error", "mikrofon izni yok"));
+            return;
+        }
+        startRecNow(call);
+    }
+
+    @SuppressWarnings("deprecation")
+    private void startRecNow(PluginCall call) {
+        try {
+            if (rec != null) {
+                call.resolve(new JSObject().put("ok", false).put("error", "zaten kayıt açık"));
+                return;
+            }
+            int maxSec = Math.max(10, Math.min(300, call.getInt("maxSec", 120)));
+            File dir = new File(getContext().getCacheDir(), "beastrec");
+            if (!dir.exists()) dir.mkdirs();
+            final File f = new File(dir, "kayit_" + System.currentTimeMillis() + ".m4a");
+            MediaRecorder m = new MediaRecorder();
+            m.setAudioSource(MediaRecorder.AudioSource.MIC);
+            m.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4);
+            m.setAudioEncoder(MediaRecorder.AudioEncoder.AAC);
+            m.setAudioSamplingRate(44100);
+            m.setAudioEncodingBitRate(64000);
+            m.setAudioChannels(1);
+            m.setMaxDuration(maxSec * 1000);
+            m.setOutputFile(f.getAbsolutePath());
+            m.prepare();
+            m.start();
+            rec = m;
+            recPath = f.getAbsolutePath();
+            recTs = System.currentTimeMillis();
+            call.resolve(new JSObject().put("ok", true).put("path", recPath));
+        } catch (Exception e) {
+            rec = null;
+            recPath = null;
+            call.resolve(new JSObject().put("ok", false).put("error", String.valueOf(e.getMessage())));
+        }
+    }
+
+    @PluginMethod
+    public void stopRec(PluginCall call) {
+        try {
+            if (rec == null || recPath == null) {
+                call.resolve(new JSObject().put("ok", false).put("error", "kayıt yok"));
+                return;
+            }
+            try { rec.stop(); } catch (Exception ignored) { /* kısa kayıtta stop hata verebilir */ }
+            try { rec.release(); } catch (Exception ignored) {}
+            rec = null;
+            File f = new File(recPath);
+            if (!f.exists() || f.length() < 256) {
+                try { f.delete(); } catch (Exception ignored) {}
+                recPath = null;
+                call.resolve(new JSObject().put("ok", false).put("error", "kayıt boş"));
+                return;
+            }
+            byte[] bytes = readFileBytes(f);
+            String b64 = Base64.encodeToString(bytes, Base64.NO_WRAP);
+            long dur = Math.max(1, (System.currentTimeMillis() - recTs) / 1000);
+            try { f.delete(); } catch (Exception ignored) {}
+            recPath = null;
+            JSObject r = new JSObject();
+            r.put("ok", true);
+            r.put("mime", "audio/mp4");
+            r.put("duration", dur);
+            r.put("size", bytes.length);
+            r.put("dataUrl", "data:audio/mp4;base64," + b64);
+            call.resolve(r);
+        } catch (Exception e) {
+            rec = null;
+            recPath = null;
+            call.resolve(new JSObject().put("ok", false).put("error", String.valueOf(e.getMessage())));
+        }
+    }
+
+    @PluginMethod
+    public void cancelRec(PluginCall call) {
+        try {
+            if (rec != null) {
+                try { rec.stop(); } catch (Exception ignored) {}
+                try { rec.release(); } catch (Exception ignored) {}
+                rec = null;
+            }
+            if (recPath != null) {
+                try { new File(recPath).delete(); } catch (Exception ignored) {}
+                recPath = null;
+            }
+        } catch (Exception ignored) {
+        }
+        recPath = null;
+        call.resolve(new JSObject().put("ok", true));
+    }
+
+    private static byte[] readFileBytes(File f) throws Exception {
+        java.io.FileInputStream is = new java.io.FileInputStream(f);
+        try {
+            java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+            byte[] buf = new byte[16384];
+            int n;
+            while ((n = is.read(buf)) > 0) out.write(buf, 0, n);
+            return out.toByteArray();
+        } finally {
+            try { is.close(); } catch (Exception ignored) {}
+        }
+    }
+
+    /* ---------------- AYARLARI AÇ (izin rehberi) ---------------- */
+
+    @PluginMethod
+    public void openAppSettings(PluginCall call) {
+        try {
+            Intent i = new Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                    Uri.fromParts("package", getContext().getPackageName(), null));
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            getContext().startActivity(i);
+            call.resolve(new JSObject().put("ok", true));
+        } catch (Exception e) {
+            call.resolve(new JSObject().put("ok", false).put("error", String.valueOf(e.getMessage())));
         }
     }
 

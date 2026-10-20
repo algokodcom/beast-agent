@@ -817,7 +817,9 @@ const installPctState = {}; // id -> { pct, loaded, total, ts }
 function decodeAudioToPcm16k(buf) {
   return new Promise((resolve, reject) => {
     try {
-      const ffmpegPath = require('ffmpeg-static');
+      const { resolveFfmpegPath } = require('./agent/ffmpegpath');
+      const ffmpegPath = resolveFfmpegPath();
+      if (!ffmpegPath) return reject(new Error('ffmpeg bulunamadı (ffmpeg-static eksik + PATH te yok)'));
       if (!ffmpegPath) return reject(new Error('ffmpeg bulunamadı'));
       const { spawn } = require('child_process');
       const p = spawn(ffmpegPath, ['-hide_banner', '-loglevel', 'error', '-i', 'pipe:0', '-f', 's16le', '-ar', '16000', '-ac', '1', 'pipe:1']);
@@ -2743,9 +2745,24 @@ function sendMobileHistory(sid, replyS) {
     }
     return cap(content);
   };
+  /* ARAÇ İŞLEMLERİ DE GİTSİN: snapshot tool_calls'ı TAŞISIN — telefondan
+     sohbete tekrar girişte web/read/ocr... işlerinin balonları WhatsApp gibi
+     kaybolmasın (canlı akıştaki tool-start balonlarıyla aynı görüntü). */
   let payload = (raw || [])
     .filter((m) => m && (m.role === 'user' || m.role === 'assistant'))
-    .map((m) => ({ role: m.role, content: slim(m.content), attachments: Array.isArray(m.attachments) ? m.attachments.map(slimAtt) : undefined }));
+    .map((m) => {
+      const row = { role: m.role, content: slim(m.content), attachments: Array.isArray(m.attachments) ? m.attachments.map(slimAtt) : undefined };
+      if (Array.isArray(m.tool_calls) && m.tool_calls.length) {
+        row.tool_calls = m.tool_calls.slice(0, 12).map((tc) => {
+          const fn = (tc && tc.function) || {};
+          const name = String(fn.name || (tc && tc.name) || 'arac').slice(0, 40);
+          let args = typeof fn.arguments === 'string' ? fn.arguments : (fn.arguments ? JSON.stringify(fn.arguments) : '');
+          if (args.length > 500) args = args.slice(0, 500) + '…';
+          return { id: String((tc && tc.id) || '').slice(0, 64), function: { name, arguments: args } };
+        });
+      }
+      return row;
+    });
   while (payload.length > 1) {
     let bytes = 0;
     try { bytes = JSON.stringify({ t: 'session', messages: payload }).length; } catch { break; }
@@ -2757,25 +2774,71 @@ function sendMobileHistory(sid, replyS) {
 
 /* telefon konvertörlü sessions akışı — engine'in 'liste tazele' sinyali ({type:'sessions'},
    İÇİ BOŞ) telefona ham gitmez: DOLDURULMUŞ liste ({t:'sessions', list, activeSid}) gider */
+/* KANAL HARİTASI (Beast Mobile): oturum id → WhatsApp/Telegram/Discord
+   bağlantısı. Telefondaki sohbet seçicide oturum başlığının yanında kanal
+   ikonu + etiketi görünür — o sohbetin WhatsApp'a mı Telegram'a mı bağlı
+   olduğu anlaşılır. */
+function mobileChannelMap() {
+  const m = new Map();
+  try { for (const [key, sid] of waChats) { if (sid && !m.has(String(sid))) m.set(String(sid), { chan: 'wa', label: waChatLabelFor(key) }); } } catch {}
+  try { for (const [key, sid] of tgChats) { if (sid && !m.has(String(sid))) m.set(String(sid), { chan: 'tg', label: tgChatLabelFor(key) }); } } catch {}
+  try { for (const [key, sid] of dcChats) { if (sid && !m.has(String(sid))) m.set(String(sid), { chan: 'dc', label: dcChatLabelFor(key) }); } } catch {}
+  return m;
+}
+
 function mobileSessionsList() {
-  return engine.listSessions().map((s) => ({
-    id: s.id,
-    title: String(s.title || s.lastAssistant || 'sohbet').slice(0, 60),
-    updatedAt: s.updatedAt || s.ts || null,
-    botId: s.botId || null,
-  }));
+  const ch = mobileChannelMap();
+  return engine.listSessions().map((s) => {
+    const c = ch.get(String(s.id)) || {};
+    return {
+      id: s.id,
+      title: String(s.title || s.lastAssistant || 'sohbet').slice(0, 60),
+      updatedAt: s.updatedAt || s.ts || null,
+      botId: s.botId || null,
+      chan: c.chan || '',
+      chanLabel: c.label ? String(c.label).slice(0, 60) : '',
+    };
+  });
 }
 function broadcastMobileSessions() {
   try { mobileWs.broadcast({ t: 'sessions', list: mobileSessionsList(), activeSid: desktopActiveSid || '' }); } catch {}
 }
 
 const mobileHandlers = {
-  onSend: (sid, { text, attachments }) => {
+  /* TELEFON SESLİ MESAJI → STT: WhatsApp'takiyle AYNI transkript köprüsü —
+     ses dosyası Duyu whisper'la yazıya çevrilir, metin aja nın prompt'una
+     AYNI kuralla gider ("[sesli mesaj transkripti]"). Yoksa ajan yalnız
+     "[Sesli mesaj: 0:05]" notu görür ve ne dediğini anlayamaz. */
+  onSend: async (sid, { text, attachments }) => {
+    let finalText = String(text || '');
+    try {
+      const atts = Array.isArray(attachments) ? attachments : [];
+      const auds = atts.filter((a) => a && a.type === 'audio' && typeof a.dataUrl === 'string' && a.dataUrl.startsWith('data:'));
+      const extra = [];
+      for (const a of auds.slice(0, 3)) {
+        try {
+          const dm = String(a.dataUrl).match(/^data:([^;,]+)(?:;base64)?,([\s\S]*)$/);
+          if (!dm || !dm[2]) { extra.push('[sesli mesaj okunamadı]'); continue; }
+          const buf = Buffer.from(dm[2], 'base64');
+          const s2 = String(sid || '');
+          const sttT0 = Date.now();
+          try { emitWaBoth({ sessionId: s2, type: 'wa-stt', state: 'transcribing', from: 'telefon' }); } catch {}
+          const tr = await transcribeAudio(buf, undefined, dm[1] || 'audio/mp4');
+          try { emitWaBoth({ sessionId: s2, type: 'wa-stt', state: tr ? 'done' : 'fail', ms: Date.now() - sttT0 }); } catch {}
+          extra.push(tr
+            ? '[sesli mesaj transkripti]\n' + tr
+            : '[sesli mesaj alındı ama transkripte çevrilemedi — masaüstünde STT modeli kurulu olmalı]');
+        } catch (e) {
+          extra.push('[sesli mesaj transkripti alınamadı: ' + String((e && e.message) || e) + ']');
+        }
+      }
+      if (extra.length) finalText = (finalText ? finalText + '\n\n' : '') + extra.join('\n\n');
+    } catch {}
     try {
       /* SLASH KOMUTLAR: masaüstüyle AYNI yönlendirici (/help, /new, /clear,
          /version, /model, /think ...) — ekler de korunur. */
       handleAgentSend(sid, {
-        text: String(text || '').slice(0, 8000),
+        text: finalText.slice(0, 8000),
         attachments: Array.isArray(attachments) && attachments.length ? attachments : undefined,
       });
     } catch {}
@@ -2807,6 +2870,28 @@ const mobileHandlers = {
     try {
       sendS({ t: 'sessions', list: mobileSessionsList(), activeSid: desktopActiveSid || '' });
     } catch {}
+  },
+  /* TELEFONDAN SİLME: chat seçicideki 🗑 → telefon bilgisayardaki oturumu da
+     GERÇEKTEN siler (entegre). Çalışan tur varsa iptal edilir, masaüstü
+     listesi de tazelenir; kanal (WA/TG/DC) eşlemesi ölü oturumda otomatik
+     düşer — o numara/grup yeniden yazınca TAZE sohbet açılır. */
+  onDelete: (sid, replyS) => {
+    try {
+      const id = String(sid || '');
+      let ok = false;
+      if (id && sessionFileAlive(id)) {
+        try { engine.deleteSession(id); ok = true; } catch (e) { log.warn('mobile', 'oturum silinemedi: ' + String((e && e.message) || e)); }
+      } else if (id) {
+        /* dosyası zaten yok — hayalet kayıtları sil, tamam say */
+        engine.deleteSession(id);
+        ok = true;
+      }
+      if (String(desktopActiveSid || '') === id) desktopActiveSid = '';
+      if (ok) broadcastMobileSessions();
+      try { replyS({ t: 'session-del', sid: id, ok }); } catch {}
+    } catch (e) {
+      try { replyS({ t: 'session-del', sid: String(sid || ''), ok: false, why: String((e && e.message) || e) }); } catch {}
+    }
   },
   onPair: (meta) => {
     try {
@@ -3666,6 +3751,7 @@ function reloadBackend() {
       try { empatiRememberFromEvent(ev); } catch {} /* empati hafızası: sohbet → kayıt + ilgi öğrenme */
       empatiFlushInjectsOnDone(ev); /* tur ortasında kuyruğa düşen proaktif bildirimleri iş bitince geçmişe bas */
       flushDesktopOnDone(ev); /* biriken desktop mesajlarını sıraya bas */
+      flushFileRecordsOnDone(ev); /* ajanın gonderdiği dosyaların KALICI kart kayıtları */
       bcFlushOnDone(ev); /* Beast Code kuyruğunu iş bitiminde boşalt */
       stFlushOnDone(ev); /* Beast Studio kuyruğunu iş bitiminde boşalt */
       sbFlushOnDone(ev); /* Sandbox kuyruğunu iş bitiminde boşalt */
@@ -7335,6 +7421,15 @@ function desktopEcho(sessionId, cmd, reply) {
   emitWaBoth({ sessionId: sid, type: 'message', message: { role: 'user', content: cmd } });
   emitWaBoth({ sessionId: sid, type: 'message', message: { role: 'assistant', content: reply } });
   emitWaBoth({ sessionId: sid, type: 'done', usage: null });
+  /* KALICI KAYIT: komut + cevap oturuma sessiz yazılır — telefondan/masadan
+     sohbete tekrar girince komut konuşmaları WhatsApp gibi SİLİNMEZ
+     (broadcast yukarıda yalnız canlı ekranlar içindir; emit etmeden kaydolur) */
+  try {
+    if (sid && sessionFileAlive(sid)) {
+      engine.observe(sid, String(cmd || ''), { silent: true });
+      engine.injectAssistant(sid, String(reply || ''), { silent: true });
+    }
+  } catch {}
 }
 
 /* /change: kayıtlı modelleri numaralı listeler; /change <n> ile o modele geçer.
@@ -7545,6 +7640,47 @@ async function flushDesktop(sessionId) {
 
 /* agent işi bitince biriken masaüstü mesajlarını göndere bastır.
    'error' bitişinde de boşaltılır — sıradaki mesaj boşa gitmesin. */
+/* TELEFON/AJAN DOSYA KAYITLARI: tur DURURKEN oturuma yazmayalım — LLM tool
+   zinciri bozulabilir. Kayıtlar kuyrukta bekler, tur 'done'/'error' olunca
+   sessizce inject edilir (sohbet yeniden açıldığında kart WhatsApp gibi durur) */
+const pendingFileRecords = new Map();
+function queueFileRecord(sid, rec) {
+  const key = String(sid || '');
+  if (!key || !rec) return;
+  try {
+    const arr = pendingFileRecords.get(key) || [];
+    arr.push(rec);
+    pendingFileRecords.set(key, arr);
+  } catch {}
+}
+function flushFileRecordsOnDone(ev) {
+  try {
+    if (!ev || (ev.type !== 'done' && ev.type !== 'error') || !ev.sessionId) return;
+    const sid = String(ev.sessionId);
+    /* paralel ajan işlerinin kayıtları da PARENT sohbete yazılır */
+    const keys = [sid];
+    try {
+      for (const j of engine.listBgJobs()) {
+        if (j && j.parentId && String(j.parentId) === sid && pendingFileRecords.has(String(j.id))) keys.push(String(j.id));
+      }
+    } catch {}
+    for (const key of keys) {
+      const arr = pendingFileRecords.get(key);
+      if (!arr || !arr.length) { pendingFileRecords.delete(key); continue; }
+      pendingFileRecords.delete(key);
+      for (const r of arr) {
+        try {
+          engine.injectAssistant(sid, String(r.text || ''), {
+            silent: true,
+            forceNew: true,
+            attachments: Array.isArray(r.attachments) ? r.attachments : undefined,
+          });
+        } catch {}
+      }
+    }
+  } catch {}
+}
+
 function flushDesktopOnDone(ev) {
   if (ev && (ev.type === 'done' || ev.type === 'error') && ev.sessionId) {
     const q = desktopQueue.get(String(ev.sessionId));
@@ -8739,10 +8875,16 @@ ipcMain.handle('install:status', async () => {
     });
   }
 
-  /* 3) ffmpeg */
+  /* 3) ffmpeg — ffmpeg-static eksikse sistem PATH fallback (ffmpegpath.js) */
   let ffOk = false;
-  try { const p = require('ffmpeg-static'); ffOk = !!p && fs.existsSync(p); } catch {}
-  rows.push({ id: 'ffmpeg', name: 'ffmpeg — ses/video dönüşüm', state: ffOk ? 'ok' : 'missing', detail: ffOk ? 'kurulu' : 'npm paketi eksik' });
+  let ffNote = '';
+  try {
+    const fp = require('./agent/ffmpegpath');
+    const st = fp.ffmpegStatus();
+    ffOk = !!st.found;
+    ffNote = ffOk ? (st.staticOk ? 'kurulu' : 'sistem ffmpeg kullanılıyor — kurulu') : 'bulunamadı (PATH te de yok)';
+  } catch {}
+  rows.push({ id: 'ffmpeg', name: 'ffmpeg — ses/video dönüşüm', state: ffOk ? 'ok' : 'missing', detail: ffNote || 'npm paketi eksik' });
 
   /* 4) çalışma zamanı npm paketleri */
   rows.push({ id: 'hf', name: 'Transformers.js — embedding çalışma zamanı', state: pkgOk('@huggingface/transformers') ? 'ok' : 'missing', detail: 'npm paketi (mem0 embedding)' });
@@ -13516,6 +13658,17 @@ async function deliverFile(sessionId, filePath, caption) {
         ev.tooBig = true;
       }
       mobileWs.broadcast(ev);
+    } catch {}
+    /* KALICI KAYIT: dosya künyesi kuyrukta bekler; tur 'done' olunca oturuma
+       sessiz yazılır (tur ortasında inject LLM tool zincirini bozar) —
+       sohbete yeniden girince dosya kartı WhatsApp gibi KAYBOLMAZ */
+    try {
+      if (sid && sessionFileAlive(sid)) {
+        queueFileRecord(sid, {
+          text: '📄 ' + name + (caption ? ' — ' + caption : ''),
+          attachments: [{ type: 'file', name, mime: mimeForFile(ext), size: (fs.statSync(abs) || {}).size || 0, caption: caption || '' }],
+        });
+      }
     } catch {}
     /* WhatsApp hedefi: bu oturum bir WA sohbetine bağlıysa oraya gönder.
        Birden çok sohbet aynı oturuma bağlıysa EN SON yazan kazanır. */

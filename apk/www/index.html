@@ -72,7 +72,39 @@
     text-overflow:ellipsis; min-width:0; flex:0 1 auto; }
   header .dot{ width:8px; height:8px; border-radius:50%; background:var(--accent); flex:0 0 auto; }
   #sess{ background:rgba(255,255,255,.14); border:1px solid rgba(255,255,255,.22); color:var(--hdrtx); border-radius:10px;
-    max-width:132px; font-size:13px; padding:6px 8px; flex:0 0 auto; outline:none; }
+    max-width:158px; font-size:12.5px; padding:6px 9px; flex:0 0 auto; outline:none; display:flex; align-items:center; gap:5px; font-weight:800; }
+  #sess .stx{ max-width:112px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #sess .car{ opacity:.75; font-size:9px; flex:0 0 auto; }
+  /* SOHBET SEÇİCİ DROPDOWN: üstteki picker'ın ALTINDAN açılır — seç + SİL
+     (bilgisayarla entegre). KRİTİK: [hidden] kuralı OLMADAN display:flex
+     hidden'a üstün gelir → panel hiç kapanmazdı! */
+  #sessSheet{ position:fixed; inset:0; z-index:95; }
+  #sessSheet[hidden]{ display:none !important; }
+  #sessSheet .ssb{ position:absolute; inset:0; background:rgba(0,0,0,.35); }
+  #sessSheet .sspanel{ position:absolute; left:8px; right:8px; top:70px; max-height:72%; background:var(--bg);
+    border:1px solid var(--line); border-radius:14px; display:flex; flex-direction:column; overflow:hidden;
+    box-shadow:0 12px 36px rgba(0,0,0,.45); animation:dropdown .16s ease; }
+  @keyframes dropdown{ from{ transform:translateY(-10px); opacity:.35; } to{ transform:none; opacity:1; } }
+  #sessSheet .ssh{ display:flex; align-items:center; justify-content:space-between; padding:12px 14px 8px; font-weight:800; font-size:14.5px; color:var(--tx); flex:0 0 auto; }
+  #sessSheet .ssh button{ background:none; border:0; color:#ff6b6b; font-size:14px; cursor:pointer; padding:4px 7px; border-radius:9px; }
+  #sessSheet .ssh button:active{ background:rgba(255,107,107,.15); }
+  #sessList{ overflow-y:auto; padding:0 6px 4px; -webkit-overflow-scrolling:touch; flex:1 1 auto; min-height:0; }
+  .ssrow{ display:flex; align-items:center; gap:10px; padding:10px 10px; border-radius:12px; cursor:pointer; }
+  .ssrow:active{ background:var(--panel2); }
+  .ssrow.cur{ background:var(--panel2); }
+  .ssrow .chan{ width:38px; height:38px; border-radius:12px; flex:0 0 auto; display:flex; align-items:center; justify-content:center;
+    font-weight:800; font-size:15px; color:#fff; background:var(--panel2); }
+  .ssrow .chan.wa{ background:#075e54; }
+  .ssrow .chan.tg{ background:#229ED9; }
+  .ssrow .chan.dc{ background:#5865F2; }
+  .ssrow .chan.lo{ background:#3a4a5a; }
+  .ssrow .b{ flex:1; min-width:0; }
+  .ssrow .t{ font-weight:700; font-size:14px; color:var(--tx); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .ssrow .d{ font-size:11.5px; color:var(--dim); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .ssrow .del{ flex:0 0 auto; width:36px; height:36px; border-radius:10px; border:1px solid var(--line);
+    background:var(--panel2); color:#ff6b6b; font-size:14px; display:flex; align-items:center; justify-content:center; cursor:pointer; }
+  .ssrow .del:active{ background:#ff6b6b; color:#fff; }
+  .ssfoot{ padding:7px 14px 9px; font-size:11px; color:var(--dim); border-top:1px solid var(--line); flex:0 0 auto; }
   #exit,#newsess,#settings{ background:none; border:0; color:var(--hbtn); padding:2px 4px; flex:0 0 auto; outline:none; }
   #newsess{ font-size:20px; line-height:1; }
   #settings,#exit{ display:flex; align-items:center; justify-content:center; }
@@ -200,7 +232,7 @@
     <div class="st">
       <div class="nm"><span class="dot" id="hdot"></span><span class="bt">Beast</span><span class="stt" id="hstat"></span></div>
     </div>
-    <select id="sess"></select>
+    <button id="sess" title="Sohbetler: seç / sil"><span class="stx" id="sessTitle">sohbet</span><span class="car">▾</span></button>
     <button id="newsess" title="Yeni sohbet" aria-label="Yeni sohbet">＋</button>
     <button id="settings" title="Ayarlar" aria-label="Ayarlar">
       <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
@@ -219,7 +251,7 @@
   <div id="slashMenu" hidden></div>
   <footer>
     <div id="recbar" hidden>
-      <span class="rdot"></span><span id="recTime">0:00</span><span class="recHint">kayıt ediliyor…</span>
+      <span class="rdot"></span><span id="recTime">0:00</span><span id="recHint">kayıt ediliyor…</span>
       <button class="rb" id="recCancel" aria-label="İptal">✕</button>
       <button class="rb rbsend" id="recSend" aria-label="Gönder">
         <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true"><path d="M2.01 21 23 12 2.01 3 2 10l15 2-15 2z" fill="#04240f"/></svg>
@@ -263,17 +295,23 @@
         </div>
       </div>
       <div class="scard">
-        <div class="sc-t">Bildirim</div>
+        <div class="sc-t">Bağlantı</div>
         <div class="sc-r">
+          <div class="sc-l">Sürekli bağlantı<div class="sc-d">Arka planda bağlı kal — mesaj kaçırma (sessiz küçük ikon)</div></div>
+          <button type="button" class="switch on" id="swKeep" aria-label="Sürekli bağlantı"><span></span></button>
+        </div>
+        <div class="sc-r" style="margin-top:10px">
           <div class="sc-l">Arka planda çalış<div class="sc-d">Uygulama tamamen kapalıyken de yeni mesajı bildir</div></div>
           <button type="button" class="switch" id="swPoll" aria-label="Arka plan bildirimi"><span></span></button>
         </div>
       </div>
       <div class="scard">
-        <div class="sc-t">Bağlantı</div>
+        <div class="sc-t">Hesap</div>
         <div class="sc-r">
+          <div class="sc-l">Adres<div class="sc-d" id="scHost">—</div></div>
+        </div>
+        <div class="sc-r" style="margin-top:8px">
           <div class="sc-l">Otomatik bağlan<div class="sc-d" id="scConn">—</div></div>
-          <div class="sc-d" id="scHost">—</div>
         </div>
       </div>
       <div class="scard">
@@ -283,6 +321,16 @@
         </div>
       </div>
     </div>
+  </div>
+</div>
+
+<!-- SOHBET SEÇİCİ SHEET: listede kanal ikonları + 🗑 sil (bilgisayarla entegre) -->
+<div id="sessSheet" hidden>
+  <div class="ssb"></div>
+  <div class="sspanel">
+    <div class="ssh"><span>Sohbetler</span><button id="sessClose" aria-label="Kapat">✕</button></div>
+    <div id="sessList"></div>
+    <div class="ssfoot">🗑 silince bilgisayarındaki oturum da kalıcı silinir · W WhatsApp · T Telegram · D Discord</div>
   </div>
 </div>
 

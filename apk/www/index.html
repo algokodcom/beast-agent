@@ -152,9 +152,12 @@
   #input{ flex:1 1 0; min-width:0; background:var(--panel2); border:1px solid var(--line); color:var(--tx);
     border-radius:18px; padding:11px 14px; font-size:15.5px; outline:none; resize:none; max-height:110px; min-height:42px; }
   #input:focus{ border-color:var(--acc); }
-  #attach,#mic,#send{ width:42px; height:42px; border-radius:50%; flex:0 0 auto;
+  #attach,#mic,#send,#live{ width:42px; height:42px; border-radius:50%; flex:0 0 auto;
     display:flex; align-items:center; justify-content:center; }
   #attach{ background:var(--panel2); border:1px solid var(--line); color:var(--dim); }
+  #live{ background:var(--panel2); border:1px solid var(--line); color:var(--dim); }
+  #live.on{ background:linear-gradient(135deg,#00cf70,#0aa860); border:0; color:#04240f;
+    box-shadow:0 0 0 3px rgba(0,207,112,.22); }
   #mic{ background:var(--panel2); border:1px solid var(--line); color:var(--dim);
     touch-action:none; -webkit-user-select:none; user-select:none; -webkit-tap-highlight-color:transparent; }
   #mic.rec{ background:var(--rec); border-color:var(--rec); color:#fff; }
@@ -170,6 +173,15 @@
   #recbar .rb{ width:38px; height:38px; border-radius:50%; border:1px solid var(--line); background:var(--panel2);
     color:var(--tx); display:flex; align-items:center; justify-content:center; flex:0 0 auto; }
   #recbar .rbsend{ background:linear-gradient(135deg,#00cf70,#0aa860); color:#04240f; border:0; }
+  /* CANLI KONUŞMA ÇUBUĞU (eller serbest) */
+  #livebar{ flex:1; display:flex; align-items:center; gap:10px; min-height:42px; }
+  #livebar[hidden]{ display:none; }
+  #livebar .ldot{ width:11px; height:11px; border-radius:50%; background:var(--accent); flex:0 0 auto;
+    animation:pulse 1.1s infinite; }
+  #liveTxt{ font-weight:700; font-size:14px; color:var(--tx); flex:1; min-width:0;
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #livebar .rb{ width:38px; height:38px; border-radius:50%; border:1px solid var(--line); background:var(--panel2);
+    color:var(--tx); display:flex; align-items:center; justify-content:center; flex:0 0 auto; }
   .attrow{ display:flex; gap:6px; flex-wrap:wrap; padding:0 calc(2px + var(--sal)) 6px; flex:0 0 auto; }
   .attrow .c{ display:inline-flex; align-items:center; gap:6px; background:var(--panel2); border:1px solid var(--line);
     color:var(--tx); border-radius:9px; padding:5px 8px; font-size:12.5px; }
@@ -259,7 +271,19 @@
         <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true"><path d="M2.01 21 23 12 2.01 3 2 10l15 2-15 2z" fill="#04240f"/></svg>
       </button>
     </div>
+    <div id="livebar" hidden>
+      <span class="ldot"></span><span id="liveTxt">dinliyorum…</span>
+      <button class="rb" id="liveStop" aria-label="Canlı modu bitir">✕</button>
+    </div>
     <input id="input" placeholder=" mesaj yaz / soru sor…" enterkeyhint="send" autocomplete="off">
+    <button id="live" aria-label="Canlı konuşma" title="Canlı konuşma (eller serbest)">
+      <svg viewBox="0 0 24 24" width="21" height="21" aria-hidden="true">
+        <path d="M4 14a8 8 0 0 1 16 0" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/>
+        <rect x="2.6" y="13" width="4.6" height="7.4" rx="1.9" fill="currentColor"/>
+        <rect x="16.8" y="13" width="4.6" height="7.4" rx="1.9" fill="currentColor"/>
+        <path d="M12 21.4v-2.2" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+      </svg>
+    </button>
     <button id="attach" aria-label="Resim ekle">
       <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M21 11l-8.2 8.2a6 6 0 0 1-8.5-8.5l8.7-8.7a4 4 0 0 1 5.7 5.7l-8.4 8.4a2 2 0 0 1-2.8-2.8l7.5-7.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
     </button>

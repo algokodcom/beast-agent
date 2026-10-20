@@ -53,6 +53,11 @@ public class BeastNative extends Plugin {
     private static final String CHANNEL_ID = "beast_messages";
     private static final int NOTIF_ID = 4711;
 
+    /* UYGULAMA ÖN PLANDA MI? MainActivity.onResume/onPause günceller.
+       Ön plandayken HİÇBİR sistem bildirimi basılmaz (ne JS ne alarm yolu);
+       arka planda/uygulama kapalıyken bildirimler normal çalışır. */
+    public static volatile boolean appVisible = false;
+
     /* ---------------- izinler ---------------- */
 
     @PluginMethod
@@ -95,6 +100,7 @@ public class BeastNative extends Plugin {
 
     public static void postNotification(Context ctx, String title, String body, int id) {
         try {
+            if (appVisible) return; /* uygulama içindeyken bildirim YOK */
             NotificationManager nm = (NotificationManager) ctx.getSystemService(Context.NOTIFICATION_SERVICE);
             if (nm == null) return;
             Notification.Builder b;

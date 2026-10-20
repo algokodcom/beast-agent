@@ -252,10 +252,17 @@ let talkAud = null;
 function talkPlay(url) {
   try {
     if (talkAud) { try { talkAud.pause(); } catch {} talkAud = null; }
+    /* CANLI MOD: cevap gelirken yarım kalmış kayıt varsa at (cevap öncelikli) */
+    try { if (liveOn) { liveDoneClear(); if (liveRec) { liveRec.onstop = null; try { liveRec.stop(); } catch {} liveRec = null; } liveChunks = []; liveOnsetMs = 0; liveBargeMs = 0; liveQuietSince = 0; } } catch {}
     const a = new Audio(url);
     talkAud = a;
+    liveSetLabel('konuşuyor…');
     setMega('🔊 sesli cevap çalıyor…', 'busy');
-    const finP = () => { if (talkAud === a) { talkAud = null; setMega('hazır'); } };
+    const finP = () => {
+      if (talkAud === a) { talkAud = null; setMega('hazır'); }
+      /* CANLI MOD: cevap bitti → otomatik dinlemeye dön */
+      if (liveOn) { liveBusy = false; liveWatchdogClear(); liveSetLabel('dinliyorum…'); liveOnsetMs = 0; liveBargeMs = 0; liveQuietSince = 0; liveSetMegaLive(); }
+    };
     a.onended = finP;
     a.onerror = finP;
     a.play().catch(finP);
@@ -905,7 +912,10 @@ function handle(m) {
     case 'phone-tts':
       /* ELLER SERBEST: masaüstü cevabı telefonun SEÇTİĞİ motorla seslendirdi —
          yalnız bunu açık tutan telefonda çalar, masaüstü TTS'iyle ilişiği yok */
-      if (String(m.sessionId || '') === sid && m.dataUrl) talkPlay(String(m.dataUrl));
+      if (String(m.sessionId || '') !== sid || !m.dataUrl) break;
+      /* ÇİFT KİLİT: ayar kapalıysa (ve canlı mod değilse) gelen sesi ÇALMA */
+      if (!phoneTtsRead().on && !liveOn) break;
+      talkPlay(String(m.dataUrl));
       break;
     case 'message': {
       if (String(m.sessionId || '') !== sid) break;
@@ -965,6 +975,7 @@ function handle(m) {
       closeStream(false);
       busy = false; typingEl.classList.remove('on');
       setMega('hazır');
+      liveOnDone(); /* canlı mod: TTS gecikirse dinlemeye dön */
       break;
     case 'error':
       closeStream(false);
@@ -1195,6 +1206,7 @@ function recUI(on) {
   inputEl.readOnly = on;
   try { $('#attach').style.display = on ? 'none' : ''; } catch {}
   try { $('#send').style.display = on ? 'none' : ''; } catch {}
+  try { $('#live').style.display = on ? 'none' : ''; } catch {}
   /* PTT: mikrofon görünür KALIR — parmak altında; bırakınca gönderir */
   micEl.classList.toggle('rec', on);
   const hint = $('#recHint');
@@ -1391,10 +1403,10 @@ function blobToDataUrl(blob) {
   });
 }
 
-function sendAudio(dataUrl, name, duration) {
+function sendAudio(dataUrl, name, duration, live) {
   if (!sid || !dataUrl) { setMega('oturum açılıyor — bekley…', 'err'); return; }
   const payload = {
-    t: 'send', sid, text: '',
+    t: 'send', sid, text: '', live: !!live,
     attachments: [{ type: 'audio', name, duration, dataUrl }],
   };
   if (!wsReady()) {
@@ -1404,8 +1416,8 @@ function sendAudio(dataUrl, name, duration) {
   }
   try { ws.send(JSON.stringify(payload)); } catch { queueSend(payload); return; }
   selfEcho++;
-  setMega('sesli mesaj gönderildi', 'busy');
-  keepKeyboard();
+  setMega(live ? 'canlı — gönderildi' : 'sesli mesaj gönderildi', 'busy');
+  if (live) { liveSetLabel('düşünüyor…'); } else keepKeyboard();
   scroll();
 }
 
@@ -1520,6 +1532,7 @@ micEl.addEventListener('pointercancel', () => {
 /* uygulama arka plana giderse yarım kayıt sızdırmasın */
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden) return;
+  if (liveOn) { stopLive('canlı mod durduruldu (arka plan)'); return; }
   if (!mediaRec && !micDown) return;
   micDown = false;
   pttPendingEnd = '';
@@ -1527,6 +1540,229 @@ document.addEventListener('visibilitychange', () => {
 });
 $('#recCancel').addEventListener('click', () => stopRec(true));
 $('#recSend').addEventListener('click', () => stopRec(false));
+
+/* =================== CANLI KONUŞMA (ELLER SERBEST) ===================
+   Telefon mikrofonu sürekli dinler (Web Audio VAD). Konuşma başlayınca
+   kaydeder; ~0.9 sn sessizlikte parçayı masaüstüne yollar. Masaüstü
+   STT → ajan → TTS yapar, ses telefona döner. Ses bitince otomatik
+   dinlemeye döner. Cevap çalarken konuşursan sesi keser (barge-in). */
+let liveOn = false, liveStream = null, liveCtx = null, liveAnalyser = null, liveTD = null;
+let liveBuf = null, liveRec = null, liveChunks = [], liveRecStart = 0;
+let liveOnsetMs = 0, liveBargeMs = 0, liveQuietSince = 0, liveBusy = false;
+let liveWatchT = 0, liveDoneT = 0, liveTtsWasOn = false, liveStarting = false;
+const LIVE_RMS = 0.014;    /* konuşma eşiği (0-1 RMS) */
+const LIVE_SIL_MS = 900;   /* bu kadar sessizlik → parçayı gönder */
+const LIVE_MIN_MS = 420;   /* daha kısa blipleri yolla değil */
+const LIVE_MAX_MS = 20000; /* uzun konuşmayı 20 sn'de böl */
+function liveSetLabel(t) { try { const el = $('#liveTxt'); if (el && t) el.textContent = t; } catch {} }
+function liveSetMegaLive() { setMega('canlı — dinliyorum…', 'busy'); }
+function liveWatchdogClear() { clearTimeout(liveWatchT); liveWatchT = 0; }
+function liveDoneClear() { clearTimeout(liveDoneT); liveDoneT = 0; }
+/* cevap metni gelip TTS gecikirse: 12 sn içinde ses gelmezse dinlemeye dön */
+function liveOnDone() {
+  if (!liveOn || !liveBusy || talkAud) return;
+  liveDoneClear();
+  liveDoneT = setTimeout(() => {
+    if (liveOn && liveBusy && !talkAud) {
+      liveBusy = false;
+      liveSetLabel('dinliyorum…');
+      liveSetMegaLive();
+    }
+  }, 12000);
+}
+/* cevap hiç gelmezse 60 sn sonra kilidi aç */
+function liveWatchdog() {
+  liveWatchdogClear();
+  liveWatchT = setTimeout(() => {
+    if (!liveOn) return;
+    if (liveBusy && !talkAud) {
+      liveBusy = false;
+      liveSetLabel('dinliyorum…');
+      liveSetMegaLive();
+    }
+  }, 60000);
+}
+function liveUI(on) {
+  try { $('#live').classList.toggle('on', !!on); } catch {}
+  try { $('#livebar').hidden = !on; } catch {}
+  try { $('#input').style.display = on ? 'none' : ''; } catch {}
+  try { $('#attach').style.display = on ? 'none' : ''; } catch {}
+  try { $('#send').style.display = on ? 'none' : ''; } catch {}
+  try { $('#mic').style.display = on ? 'none' : ''; } catch {}
+  if (on) { try { inputEl.blur(); } catch {} }
+}
+async function startLive() {
+  if (liveOn || liveStarting) return;
+  liveStarting = true;
+  try {
+  if (!wsReady()) { toast('bağlantı yok — canlı mod için masaüstüne bağlan'); return; }
+  if (!sid) { toast('önce bir sohbet aç'); return; }
+  if (!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia)) {
+    toast('bu cihazda canlı mikrofon akışı yok'); return;
+  }
+  if (mediaRec) stopRec(true);
+  /* seslendirme kapalıysa canlı mod için aç (çıkışta geri kapatılır) */
+  const c = phoneTtsRead();
+  liveTtsWasOn = !!c.on;
+  if (!c.on) { c.on = true; phoneTtsWrite(c); phoneTtsSync(); } else talkArm();
+  /* Android izni önce yerel köprüden al — WebView turunda diyalog beklemesin */
+  try {
+    const p = nativePlugin();
+    if (p && typeof p.requestMic === 'function') {
+      const r = await Promise.race([p.requestMic(), new Promise((res) => setTimeout(() => res(null), 12000))]);
+      if (r && r.granted === false) {
+        if (!liveTtsWasOn) { const c2 = phoneTtsRead(); c2.on = false; phoneTtsWrite(c2); phoneTtsSync(); }
+        toast('mikrofon izni kapalı — ayarlardan aç');
+        return;
+      }
+    }
+  } catch {}
+  try {
+    liveStream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 },
+    });
+  } catch {
+    if (!liveTtsWasOn) { const c2 = phoneTtsRead(); c2.on = false; phoneTtsWrite(c2); phoneTtsSync(); }
+    toast('mikrofon akışı açılamadı — izni kontrol et');
+    return;
+  }
+  try {
+    liveCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (liveCtx.state === 'suspended') { try { await liveCtx.resume(); } catch {} }
+    const src = liveCtx.createMediaStreamSource(liveStream);
+    liveAnalyser = liveCtx.createAnalyser();
+    liveAnalyser.fftSize = 1024;
+    liveAnalyser.smoothingTimeConstant = 0.35;
+    src.connect(liveAnalyser);
+    /* grafik işlensin diye sıfır kazançla çıkışa bağla — hoparlöre ses GİTMEZ */
+    const zg = liveCtx.createGain();
+    zg.gain.value = 0;
+    liveAnalyser.connect(zg);
+    zg.connect(liveCtx.destination);
+    liveBuf = new Float32Array(liveAnalyser.fftSize);
+  } catch {
+    try { liveStream.getTracks().forEach((t) => t.stop()); } catch {}
+    liveStream = null;
+    toast('canlı mod başlatılamadı');
+    return;
+  }
+  liveOn = true;
+  liveBusy = false; liveOnsetMs = 0; liveBargeMs = 0; liveQuietSince = 0;
+  liveUI(true);
+  liveSetLabel('dinliyorum…');
+  liveSetMegaLive();
+  liveTD = setInterval(liveTick, 80);
+  toast('canlı mod açık — konuş, cevap sesli gelsin');
+  } finally { liveStarting = false; }
+}
+function stopLive(msg) {
+  if (!liveOn) return;
+  liveOn = false;
+  liveWatchdogClear();
+  liveDoneClear();
+  try { clearInterval(liveTD); } catch {}
+  liveTD = null;
+  try { if (liveRec) { liveRec.onstop = null; if (liveRec.state !== 'inactive') liveRec.stop(); } } catch {}
+  liveRec = null; liveChunks = [];
+  try { if (talkAud) { talkAud.pause(); talkAud = null; } } catch {}
+  try { if (liveStream) liveStream.getTracks().forEach((t) => t.stop()); } catch {}
+  liveStream = null;
+  try { if (liveCtx) liveCtx.close(); } catch {}
+  liveCtx = null; liveAnalyser = null;
+  liveBusy = false; liveOnsetMs = 0; liveBargeMs = 0;
+  liveUI(false);
+  if (!liveTtsWasOn) { const c = phoneTtsRead(); c.on = false; phoneTtsWrite(c); phoneTtsSync(); }
+  else talkArm();
+  setMega('hazır');
+  if (msg) toast(msg);
+}
+function liveTick() {
+  if (!liveOn || !liveAnalyser) return;
+  try { liveAnalyser.getFloatTimeDomainData(liveBuf); } catch { return; }
+  let sum = 0;
+  for (let i = 0; i < liveBuf.length; i++) { const v = liveBuf[i]; sum += v * v; }
+  const rms = Math.sqrt(sum / liveBuf.length);
+  const loud = rms > LIVE_RMS;
+  /* BARGE-IN: cevap sesi çalarken kullanıcı konuşursa sesi kes.
+     Eşik yüksek: hoparlörden sızan kendi sesi (AEC artığı) tetiklemesin. */
+  if (talkAud && !talkAud.paused) {
+    if (rms > Math.max(0.05, LIVE_RMS * 3)) {
+      liveBargeMs += 80;
+      if (liveBargeMs >= 400) {
+        try { talkAud.pause(); } catch {}
+        talkAud = null;
+        liveBusy = false;
+        liveBargeMs = 0;
+        liveWatchdogClear();
+        liveSetLabel('dinliyorum…');
+        liveSetMegaLive();
+      }
+    } else liveBargeMs = 0;
+    return;
+  }
+  liveBargeMs = 0;
+  if (liveBusy) return;
+  if (loud) {
+    liveQuietSince = 0;
+    liveOnsetMs += 80;
+    if (!liveRec && liveOnsetMs >= 160) liveRecStartNow();
+  } else {
+    liveOnsetMs = 0;
+    if (liveRec) {
+      if (!liveQuietSince) liveQuietSince = Date.now();
+      else if (Date.now() - liveQuietSince >= LIVE_SIL_MS) liveRecStopNow();
+    }
+  }
+  if (liveRec && Date.now() - liveRecStart >= LIVE_MAX_MS) liveRecStopNow();
+}
+function liveRecStartNow() {
+  if (!liveStream || liveRec) return;
+  liveChunks = [];
+  try {
+    const types = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus'];
+    let mime = '';
+    for (const t of types) {
+      try { if (window.MediaRecorder && MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(t)) { mime = t; break; } } catch {}
+    }
+    liveRec = mime ? new MediaRecorder(liveStream, { mimeType: mime }) : new MediaRecorder(liveStream);
+    liveRec.ondataavailable = (e) => { if (e.data && e.data.size) liveChunks.push(e.data); };
+    liveRec.onstop = liveRecDone;
+    liveRec.start();
+    liveRecStart = Date.now();
+    liveQuietSince = 0;
+  } catch { liveRec = null; }
+}
+function liveRecStopNow() {
+  const r = liveRec;
+  if (!r) return;
+  liveRec = null;
+  liveBusy = true; /* işlenene kadar yeni kayıt başlamasın */
+  liveSetLabel('işleniyor…');
+  try {
+    if (r.state !== 'inactive') r.stop();
+    else liveRecDone({ target: r });
+  } catch { liveBusy = false; if (liveOn) liveSetLabel('dinliyorum…'); }
+}
+async function liveRecDone(ev) {
+  const rec = ev && ev.target ? ev.target : null;
+  const dur = Date.now() - liveRecStart;
+  const chunks = liveChunks;
+  liveChunks = [];
+  liveOnsetMs = 0; liveQuietSince = 0;
+  const mt = String((rec && rec.mimeType) || (chunks[0] && chunks[0].type) || 'audio/webm');
+  if (dur < LIVE_MIN_MS || !chunks.length) { liveBusy = false; if (liveOn) liveSetLabel('dinliyorum…'); return; }
+  let blob = null;
+  try { blob = new Blob(chunks, { type: mt }); } catch {}
+  if (!blob || !blob.size) { liveBusy = false; if (liveOn) liveSetLabel('dinliyorum…'); return; }
+  const dataUrl = await blobToDataUrl(blob);
+  if (!liveOn) return;
+  if (!dataUrl) { liveBusy = false; liveSetLabel('dinliyorum…'); return; }
+  const ext = mt.indexOf('mp4') >= 0 ? 'm4a' : (mt.indexOf('ogg') >= 0 ? 'ogg' : 'webm');
+  liveWatchdog();
+  sendAudio(dataUrl, 'sesli mesaj.' + ext, Math.max(1, Math.round(dur / 1000)), true);
+}
+$('#live').addEventListener('click', () => { if (liveOn) stopLive('canlı mod kapandı'); else startLive(); });
+$('#liveStop').addEventListener('click', () => stopLive('canlı mod kapandı'));
 
 inputEl.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') { hideSlash(); return; }
@@ -1543,7 +1779,7 @@ inputEl.addEventListener('keydown', (e) => {
 inputEl.addEventListener('input', () => { updateSlash(); });
 
 /* butonlar odağı input'tan çekmesin → klavye kapanmaz */
-['send', 'attach', 'mic', 'newsess', 'settings', 'exit', 'recCancel', 'recSend'].forEach((id) => {
+['send', 'attach', 'mic', 'live', 'newsess', 'settings', 'exit', 'recCancel', 'recSend', 'liveStop'].forEach((id) => {
   const el = document.getElementById(id);
   if (!el) return;
   el.addEventListener('mousedown', (e) => e.preventDefault());

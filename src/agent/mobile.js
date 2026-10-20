@@ -266,6 +266,7 @@ function start(opts) {
             handlers.onSend(String(m.sid || ''), {
               text: String(m.text || ''),
               attachments: Array.isArray(m.attachments) ? m.attachments : [],
+              live: !!m.live, /* canlı konuşma parçası → hızlı STT önceliği */
             });
           }
           return;

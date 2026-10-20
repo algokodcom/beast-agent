@@ -2850,12 +2850,19 @@ class Engine {
       const stripExt = (n) => String(n || '').replace(/\.[a-z0-9]{1,5}$/i, '');
       let i = 0;
       for (const im of imgs) {
-        const m = /^data:([^;,]+)?(;base64)?,(.*)$/.exec(String(im.dataUrl || ''));
-        if (!m) continue;
+        /* dataUrl: `;codecs=...` gibi PARAMETRELİ tipler de kabul edilir
+           (canlı ses webm/opus dataUrl'i eski regex'te eşleşmiyordu) */
+        const sIm = String(im.dataUrl || '');
+        const ciIm = sIm.indexOf(',');
+        const headIm = ciIm > 5 ? sIm.slice(0, ciIm) : '';
+        const mi = headIm.match(/^data:([^;,]+)/i);
+        if (!mi) continue;
         try {
-          const mime = String(m[1] || 'image/png');
+          const mime = String(mi[1] || 'image/png');
           const ext = (mime.split('/')[1] || 'png').replace(/[^a-z0-9]/gi, '').slice(0, 5) || 'png';
-          const buf = m[2] ? Buffer.from(m[3], 'base64') : Buffer.from(decodeURIComponent(m[3]), 'utf8');
+          const isB64 = /;base64$/i.test(headIm);
+          const body = sIm.slice(ciIm + 1);
+          const buf = isB64 ? Buffer.from(body, 'base64') : Buffer.from(decodeURIComponent(body), 'utf8');
           const file = stamp + '-' + ++i + '-' + safe(stripExt(im.name), 'resim') + '.' + ext;
           fs.writeFileSync(path.join(dir, file), buf);
           out.push({ file, name: String(im.name || 'resim'), kind: 'image' });
@@ -2870,12 +2877,17 @@ class Engine {
       }
       /* SESLİ MESAJ: kayıt orijinal biçimiyle (webm/mp4) media klasörüne yazılır */
       for (const au of Array.isArray(audios) ? audios : []) {
-        const m = /^data:([^;,]+)?(;base64)?,(.*)$/.exec(String(au.dataUrl || ''));
-        if (!m) continue;
+        const sAu = String(au.dataUrl || '');
+        const ciAu = sAu.indexOf(',');
+        const headAu = ciAu > 5 ? sAu.slice(0, ciAu) : '';
+        const ma = headAu.match(/^data:([^;,]+)/i);
+        if (!ma) continue;
         try {
-          const mime = String(m[1] || 'audio/webm');
+          const mime = String(ma[1] || 'audio/webm');
           const sub = String(mime.split('/')[1] || 'webm').split(';')[0].replace(/[^a-z0-9]/gi, '').slice(0, 5) || 'webm';
-          const buf = m[2] ? Buffer.from(m[3], 'base64') : Buffer.from(decodeURIComponent(m[3]), 'utf8');
+          const isB64 = /;base64$/i.test(headAu);
+          const body = sAu.slice(ciAu + 1);
+          const buf = isB64 ? Buffer.from(body, 'base64') : Buffer.from(decodeURIComponent(body), 'utf8');
           const file = stamp + '-' + ++i + '-' + safe(stripExt(au.name), 'ses') + '.' + sub;
           fs.writeFileSync(path.join(dir, file), buf);
           out.push({ file, name: String(au.name || 'sesli mesaj'), kind: 'audio', duration: Number(au.duration || 0) });

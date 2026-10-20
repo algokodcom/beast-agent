@@ -2910,9 +2910,21 @@ function mobileChannelMap() {
       olarak gelir.
    2) Telefonun dokunduğu oturumlar 'bm' rozetiyle listelenir — WhatsApp/
       Telegram/Discord rozetleriyle AYNI düzende (M) görünür. */
-let phoneSessionMarks = new Map(); /* sid → son telefon dokunuşu (ts) */
+let phoneSessionMarks = new Map(); /* sid → son telefon dokunuşu (ts) — M rozeti */
+/* SESLENDİRME AYRI HARİTA: telefonun "Cevabı seslendir" açıkken işaretlediği
+   oturumlar. Bir metin/ses mesajı göndermek bu işareti KENDİLİĞİNDEN açmaz —
+   ayar kapalıyken cevaplar seslendirilmesin (eski hata: onSend her seferinde
+   aktivite penceresini tazeliyordu ve her cevap sesli gidiyordu). */
+let phoneTalkMarks = new Map(); /* sid → son seslendirme faaliyeti (ts) */
 function touchPhoneSession(sid) {
   try { phoneSessionMarks.set(String(sid || ''), Date.now()); } catch {}
+}
+/* yalnız ZATEN seslendirme modunda işaretli oturumun penceresini tazele */
+function touchPhoneTalk(sid) {
+  try {
+    const id = String(sid || '');
+    if (mobileTtsCfg().enabled && phoneTalkMarks.has(id)) phoneTalkMarks.set(id, Date.now());
+  } catch {}
 }
 /* telefonda SEÇİLEBİLİR ses motorları — sadece yerel eMa + Ahenk */
 const MOBILE_TTS_ENGINES = ['ema', 'ahenk'];
@@ -2930,7 +2942,8 @@ function mobileTtsCfg() {
 }
 function mobileTalkActive(sid) {
   try {
-    const t = phoneSessionMarks.get(String(sid || '')) || 0;
+    if (!mobileTtsCfg().enabled) return false; /* ayar kapalı → seslendirme YOK */
+    const t = phoneTalkMarks.get(String(sid || '')) || 0;
     return !!(t && Date.now() - t < 15 * 60000); /* 15 dk faaliyet penceresi */
   } catch { return false; }
 }
@@ -3009,8 +3022,9 @@ const mobileHandlers = {
      ses dosyası Duyu whisper'la yazıya çevrilir, metin aja nın prompt'una
      AYNI kuralla gider ("[sesli mesaj transkripti]"). Yoksa ajan yalnız
      "[Sesli mesaj: 0:05]" notu görür ve ne dediğini anlayamaz. */
-  onSend: async (sid, { text, attachments }) => {
-    touchPhoneSession(sid); /* telefonun dokunduğu oturum — M rozeti + talk penceresi */
+  onSend: async (sid, { text, attachments, live }) => {
+    touchPhoneSession(sid); /* telefonun dokunduğu oturum — M rozeti */
+    touchPhoneTalk(sid);    /* seslendirme AÇIKSA pencereyi tazele (kapalıysa dokunma) */
     let finalText = String(text || '');
     try {
       const atts = Array.isArray(attachments) ? attachments : [];
@@ -3018,13 +3032,26 @@ const mobileHandlers = {
       const extra = [];
       for (const a of auds.slice(0, 3)) {
         try {
-          const dm = String(a.dataUrl).match(/^data:([^;,]+)(?:;base64)?,([\s\S]*)$/);
-          if (!dm || !dm[2]) { extra.push('[sesli mesaj okunamadı]'); continue; }
-          const buf = Buffer.from(dm[2], 'base64');
+          /* dataUrl ayrıştırma: `data:audio/webm;codecs=opus;base64,...` gibi
+             PARAMETRELİ tipleri de kabul et (eski regex `;codecs`te takılıp
+             "sesli mesaj okunamadı" diyordu — canlı modun sesi hep böyle). */
+          const sData = String(a.dataUrl);
+          const ci = sData.indexOf(',');
+          const head = ci > 5 ? sData.slice(0, ci) : '';
+          const mm = head.match(/^data:([^;,]+)/i);
+          const mimeA = (mm && mm[1]) || 'audio/mp4';
+          const isB64 = /;base64$/i.test(head);
+          if (ci < 6 || (!isB64 && !/^data:audio\//i.test(head))) {
+            extra.push('[sesli mesaj okunamadı]');
+            continue;
+          }
+          const buf = Buffer.from(sData.slice(ci + 1), isB64 ? 'base64' : 'utf8');
+          if (!buf || !buf.length) { extra.push('[sesli mesaj okunamadı]'); continue; }
           const s2 = String(sid || '');
           const sttT0 = Date.now();
           try { emitWaBoth({ sessionId: s2, type: 'wa-stt', state: 'transcribing', from: 'telefon' }); } catch {}
-          const tr = await transcribeAudio(buf, undefined, dm[1] || 'audio/mp4');
+          /* canlı konuşma parçaları: kısa gecikme için hızlı mod (beam 2) */
+          const tr = await transcribeAudio(buf, undefined, mimeA, live ? 1 : undefined);
           try { emitWaBoth({ sessionId: s2, type: 'wa-stt', state: tr ? 'done' : 'fail', ms: Date.now() - sttT0 }); } catch {}
           extra.push(tr
             ? '[sesli mesaj transkripti]\n' + tr
@@ -3100,10 +3127,10 @@ const mobileHandlers = {
      son cevap telefona sesli gönderilir (buradaki modele göre) */
   onTalk: (sid, on) => {
     try {
-      touchPhoneSession(sid);
+      touchPhoneSession(sid); /* M rozeti için dokunuş kaydı ayrı kalır */
       const id = String(sid || '');
-      if (on) phoneSessionMarks.set(id, Date.now());
-      else phoneSessionMarks.delete(id);
+      if (on && mobileTtsCfg().enabled) phoneTalkMarks.set(id, Date.now());
+      else phoneTalkMarks.delete(id);
     } catch {}
   },
   /* TELEFONUN KENDİ TTS AYARI: masaüstü WA TTS'inden TAM BAĞIMSIZ —

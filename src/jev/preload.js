@@ -7,6 +7,7 @@ contextBridge.exposeInMainWorld('jev', {
   builtinProviders: () => ipcRenderer.invoke('jev:builtinProviders'),
   setProviders: (list) => ipcRenderer.invoke('jev:providers:set', list),
   setModel: (sel) => ipcRenderer.invoke('jev:model:set', sel),
+  setThinkLevel: (v) => ipcRenderer.invoke('jev:think:set', v),
   fetchModels: (payload) => ipcRenderer.invoke('jev:models:fetch', payload),
   skillsGet: () => ipcRenderer.invoke('jev:skills:get'),
   skillsSet: (list) => ipcRenderer.invoke('jev:skills:set', list),

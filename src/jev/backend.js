@@ -111,6 +111,11 @@ function normAllowList(list, key) {
   return out.slice(0, 200);
 }
 
+/* düşünme (reasoning) seviyesi: 0 kapalı … 5 max — Beast Agent ile aynı */
+function clampThink(v) {
+  return Math.min(5, Math.max(0, Math.round(Number(v) || 0)));
+}
+
 function parseSettingsText(text) {
   const parsed = JSON.parse(text);
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('bozuk yapi');
@@ -123,6 +128,8 @@ function parseSettingsText(text) {
     if (!Array.isArray(p.models)) p.models = [];
   }
   if (!parsed.activeModel || typeof parsed.activeModel !== 'object') parsed.activeModel = null;
+  /* düşünme (reasoning) seviyesi: 0 kapalı … 5 max */
+  parsed.thinkLevel = clampThink(parsed.thinkLevel);
   if (!parsed.typesafe || typeof parsed.typesafe !== 'object') {
     parsed.typesafe = { apiKey: '', model: 'jev-latest', enabled: true };
   }
@@ -982,6 +989,29 @@ jipc.handle('typesafe:analyze', (e, p) => typesafeAnalyze(p && p.state, (p && p.
 /* ---------- chat: aktif provider uzerinden OpenAI-uyumlu /chat/completions ---------- */
 const activeChats = new Map(); // requestId -> AbortController
 
+/* Düşünme (reasoning) seviyeleri — Beast Agent ile aynı gerçek API değerleri.
+   0 parametre göndermez; 1-5 reasoning_effort olarak gider. Model seviyeyi
+   reddederse bir alt seviye denenir, parametreyi hiç desteklemiyorsa bırakılır
+   ve bu model için oturum boyunca bir daha gönderilmez. */
+const THINK_EFFORTS = [null, 'low', 'medium', 'high', 'xhigh', 'max'];
+const EFFORT_LOWER = { max: 'xhigh', xhigh: 'high', high: 'medium', medium: 'low', low: null };
+const REASON_PARAM_RE = /invalid request param|invalid_param|unsupported|not supported|unknown (param|field|argument)|unrecognized|unexpected/i;
+const reasoningOff = new Set();
+const reasoningFailed = new Map(); // modelKey -> reddedilen seviyeler
+
+function thinkModelKey(am) {
+  return String((am && am.providerId) || '') + '::' + String((am && am.model) || '');
+}
+
+function thinkEffortFor(key) {
+  let eff = THINK_EFFORTS[clampThink(settings.thinkLevel)] || null;
+  if (!eff || reasoningOff.has(key)) return null;
+  const failed = reasoningFailed.get(key);
+  let guard = 0;
+  while (eff && failed && failed.has(eff) && guard++ < 5) eff = EFFORT_LOWER[eff] || null;
+  return eff;
+}
+
 function findProvider(id) {
   return (settings.providers || []).find((p) => p.id === id) || null;
 }
@@ -1044,14 +1074,42 @@ async function chatComplete(payload, sender) {
       'User-Agent': USER_AGENT,
     };
     if (isOpenCode(base)) Object.assign(headers, openCodeHeaders(base, payload.sessionId));
-    const res = await fetch(base + '/chat/completions', {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({ model: am.model, messages, stream: true }),
-      signal: ctrl.signal,
-    });
-    if (!res.ok) {
-      return { ok: false, error: res.status + ': ' + String(await res.text()).slice(0, 300) };
+    /* düşünme seviyesi: reasoning_effort gönder; model reddederse kademeli
+       olarak düşür (max → xhigh → high → medium → low), desteklemiyorsa bırak */
+    const key = thinkModelKey(am);
+    let effort = thinkEffortFor(key);
+    let res = null;
+    for (let attempt = 0; ; attempt++) {
+      const body = { model: am.model, messages, stream: true };
+      if (effort) body.reasoning_effort = effort;
+      res = await fetch(base + '/chat/completions', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(body),
+        signal: ctrl.signal,
+      });
+      if (res.ok) break;
+      const errText = String(await res.text()).slice(0, 300);
+      if (!effort || attempt >= 5 || (res.status !== 400 && res.status !== 422)) {
+        return { ok: false, error: res.status + ': ' + errText };
+      }
+      const reasonHint = /reason|effort|thinking/i.test(errText);
+      const generic = REASON_PARAM_RE.test(errText);
+      const valueQuoted = errText.includes("'" + effort + "'") || errText.includes('"' + effort + '"');
+      if (!reasonHint && !generic && !valueQuoted) {
+        return { ok: false, error: res.status + ': ' + errText };
+      }
+      const lower = EFFORT_LOWER[effort] || null;
+      if (lower && (valueQuoted || (generic && !reasonHint))) {
+        /* seviye reddedildi → bir alt seviyeyi dene */
+        if (!reasoningFailed.has(key)) reasoningFailed.set(key, new Set());
+        reasoningFailed.get(key).add(effort);
+        effort = lower;
+      } else {
+        /* parametre hiç desteklenmiyor → bu modelde bir daha gönderme */
+        reasoningOff.add(key);
+        effort = null;
+      }
     }
     const ctype = String(res.headers.get('content-type') || '');
     /* akış (SSE): parçalar geldikçe renderer'a gönderilir */
@@ -1113,6 +1171,7 @@ jipc.handle('app:version', () => ({ version: codeVersion.version, build: codeVer
 jipc.handle('settings:get', () => ({
   providers: settings.providers || [],
   activeModel: settings.activeModel || null,
+  thinkLevel: clampThink(settings.thinkLevel),
 }));
 
 jipc.handle('builtinProviders', () => BUILTIN_PROVIDERS);
@@ -1149,6 +1208,13 @@ jipc.handle('model:set', (e, sel) => {
   settings.activeModel = { providerId, model };
   saveSettings();
   return { ok: true, activeModel: settings.activeModel };
+});
+
+/* düşünme seviyesi: 0 kapalı … 5 max — tüm sohbet isteklerine uygulanır */
+jipc.handle('think:set', (e, v) => {
+  settings.thinkLevel = clampThink(v);
+  saveSettings();
+  return { ok: true, thinkLevel: settings.thinkLevel };
 });
 
 jipc.handle('skills:get', () => ({ ok: true, skills }));

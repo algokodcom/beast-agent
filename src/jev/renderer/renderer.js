@@ -59,7 +59,16 @@ document.addEventListener('click', (e) => {
 }, true);
 
 /* ---------- durum ---------- */
-let state = { providers: [], activeModel: null };
+let state = { providers: [], activeModel: null, thinkLevel: 0 };
+/* düşünme (reasoning) seviyeleri — Beast Agent ile aynı gerçek API değerleri */
+const THINK_LEVELS = [
+  { v: 0, label: 'Kapalı', desc: 'param gönderilmez' },
+  { v: 1, label: 'Low', desc: 'reasoning_effort: low' },
+  { v: 2, label: 'Medium', desc: 'reasoning_effort: medium' },
+  { v: 3, label: 'High', desc: 'reasoning_effort: high' },
+  { v: 4, label: 'X-High', desc: 'reasoning_effort: xhigh' },
+  { v: 5, label: 'Max', desc: 'reasoning_effort: max' },
+];
 let sessions = [];            // {id, title, messages:[{role, content}]}
 let activeSid = '';
 let pendingChatId = '';       // aktif istek id
@@ -547,6 +556,12 @@ function msgEl(role, content, isError, t) {
 function applyState() {
   const am = state.activeModel;
   $('#modelBtnLabel').textContent = am ? am.model : 'Model seç';
+  const lv = THINK_LEVELS[Number(state.thinkLevel) || 0] || THINK_LEVELS[0];
+  const thinkBtn = $('#thinkBtn');
+  if (thinkBtn) {
+    $('#thinkBtnLabel').textContent = lv.label;
+    thinkBtn.title = 'Düşünme (reasoning) seviyesi: ' + lv.label + ' — ' + lv.desc;
+  }
 }
 
 function effectiveModelSel() {
@@ -608,6 +623,35 @@ function renderModelMenu(filter) {
         toast('Model: ' + r.label);
       }
       $('#modelMenu').hidden = true;
+    });
+    list.appendChild(btn);
+  }
+}
+
+/* ---------- düşünme (reasoning) seviyesi dropdown ---------- */
+function renderThinkMenu() {
+  const list = $('#thinkList');
+  if (!list) return;
+  const cur = Number.isFinite(Number(state.thinkLevel)) ? Number(state.thinkLevel) : 0;
+  list.innerHTML = '';
+  for (const lv of THINK_LEVELS) {
+    const btn = document.createElement('button');
+    btn.className = 'dd-item' + (cur === lv.v ? ' active' : '');
+    btn.title = lv.label + ' — ' + lv.desc;
+    btn.innerHTML =
+      '<span class="think-lv">' +
+      '<span class="tv">' + lv.v + '</span>' +
+      '<span class="tl">' + escapeHtml(lv.label) + '</span>' +
+      '<span class="td">' + escapeHtml(lv.desc) + '</span>' +
+      '</span>';
+    btn.addEventListener('click', async () => {
+      const res = await jev.setThinkLevel(lv.v).catch(() => null);
+      if (res && res.ok) {
+        state.thinkLevel = Number(res.thinkLevel) || 0;
+        applyState();
+        toast('Düşünme seviyesi: ' + lv.label);
+      }
+      $('#thinkMenu').hidden = true;
     });
     list.appendChild(btn);
   }
@@ -16734,6 +16778,7 @@ async function init() {
   /* model dropdown */
   $('#modelBtn').addEventListener('click', () => {
     const menu = $('#modelMenu');
+    $('#thinkMenu').hidden = true;
     menu.hidden = !menu.hidden;
     if (!menu.hidden) {
       $('#modelFilter').value = '';
@@ -16742,12 +16787,25 @@ async function init() {
     }
   });
   $('#modelFilter').addEventListener('input', (e) => renderModelMenu(e.target.value));
+  /* düşünme seviyesi dropdown */
+  $('#thinkBtn').addEventListener('click', () => {
+    const menu = $('#thinkMenu');
+    const willOpen = menu.hidden;
+    $('#modelMenu').hidden = true;
+    if (willOpen) {
+      renderThinkMenu();
+      menu.hidden = false;
+    } else {
+      menu.hidden = true;
+    }
+  });
   $('#modelRefreshBtn').addEventListener('click', (e) => {
     e.stopPropagation(); /* menü açıksa kapanmasın */
     refreshModelList().catch(() => {});
   });
   document.addEventListener('click', (e) => {
     if (!$('#modelDD').contains(e.target)) $('#modelMenu').hidden = true;
+    if (!$('#thinkDD').contains(e.target)) $('#thinkMenu').hidden = true;
   });
 
   /* ayarlar */

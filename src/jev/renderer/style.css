@@ -1322,6 +1322,26 @@ body.mt5-busy .mt5-act { pointer-events: none; opacity: 0.55; }
 .dd { position: relative; }
 .dd-btn { display: inline-flex; align-items: center; gap: 6px; max-width: 260px; }
 #modelDD { display: flex; align-items: center; gap: 2px; }
+#thinkDD { display: flex; align-items: center; }
+.think-btn { gap: 6px; }
+.think-btn svg { flex: none; }
+#thinkBtnLabel { white-space: nowrap; font-size: 12px; }
+.think-menu { width: 280px; }
+.think-menu .dd-list { overflow-x: hidden; }
+.think-menu .dd-item { overflow: hidden; }
+.think-lv { display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0; }
+.think-lv .tv { width: 14px; color: var(--muted); font-family: Consolas, monospace; font-size: 11px; flex: none; }
+.think-lv .tl { font-weight: 700; font-size: 12.5px; flex: none; }
+.think-lv .td {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 10.5px;
+  font-family: Consolas, monospace;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
 .model-refresh { padding: 5px; border-radius: 6px; line-height: 0; }
 .model-refresh svg { display: block; }
 .model-refresh.spin svg { animation: modelSpin 0.9s linear infinite; }

@@ -613,6 +613,69 @@ function renderModelMenu(filter) {
   }
 }
 
+/* picker'ın yanındaki ⟳: her sağlayıcının /models ucundan güncel listeyi
+   yeniden çeker. Elle eklenmiş/kayıtlı modeller korunur, yeni gelenler eklenir. */
+let modelRefreshBusy = false;
+
+async function refreshModelList() {
+  if (modelRefreshBusy) return;
+  const provs = (state.providers || []).filter((p) => p && p.baseUrl);
+  if (!provs.length) {
+    toast('Provider yok — Ayarlar → Provider sekmesinden ekle');
+    return;
+  }
+  modelRefreshBusy = true;
+  const btn = $('#modelRefreshBtn');
+  if (btn) {
+    btn.disabled = true;
+    btn.classList.add('spin');
+    btn.title = 'Güncel modeller çekiliyor…';
+  }
+  try {
+    const results = await Promise.all(provs.map(async (p) => {
+      const r = await jev.fetchModels({ baseUrl: p.baseUrl, key: p.key || '' }).catch(() => null);
+      return { p, r };
+    }));
+    let added = 0;
+    let okCount = 0;
+    let firstErr = '';
+    for (const { p, r } of results) {
+      if (!r || !r.ok) {
+        if (!firstErr) firstErr = (r && r.error) || 'yanıt yok';
+        continue;
+      }
+      okCount++;
+      const set = new Set((p.models || []).map(String));
+      for (const m of r.models || []) {
+        const v = String(m || '').trim();
+        if (v && !set.has(v)) { set.add(v); added++; }
+      }
+      p.models = [...set].sort((a, b) => a.localeCompare(b));
+    }
+    if (!okCount) {
+      toast('Model listesi alınamadı — ' + (firstErr || 'bilinmeyen hata'));
+      return;
+    }
+    await jev.setProviders(state.providers).catch(() => null);
+    state = await jev.getSettings().catch(() => state);
+    applyState();
+    if (!$('#modelMenu').hidden) renderModelMenu($('#modelFilter').value || '');
+    const failN = provs.length - okCount;
+    toast(
+      (added ? added + ' yeni model eklendi' : 'Modeller güncel') +
+      ' · ' + okCount + '/' + provs.length + ' sağlayıcı' +
+      (failN ? ' · ' + failN + ' sağlayıcıya ulaşılamadı' : '')
+    );
+  } finally {
+    modelRefreshBusy = false;
+    if (btn) {
+      btn.disabled = false;
+      btn.classList.remove('spin');
+      btn.title = 'Güncel modelleri sağlayıcılardan yeniden çek';
+    }
+  }
+}
+
 /* ---------- chat ---------- */
 function setBusy(b) {
   $('#sendBtn').hidden = b;
@@ -16679,6 +16742,10 @@ async function init() {
     }
   });
   $('#modelFilter').addEventListener('input', (e) => renderModelMenu(e.target.value));
+  $('#modelRefreshBtn').addEventListener('click', (e) => {
+    e.stopPropagation(); /* menü açıksa kapanmasın */
+    refreshModelList().catch(() => {});
+  });
   document.addEventListener('click', (e) => {
     if (!$('#modelDD').contains(e.target)) $('#modelMenu').hidden = true;
   });

@@ -7065,6 +7065,10 @@ function closeSplash() {
    sürecinde src/jev/backend.js ile koşar. Veriler %APPDATA%\jevtrader
    altında aynen korunur; IPC kanalları 'jev:' önekiyle kaydedilir. */
 let jevMod = null;
+/* JevTrader modu sinyali arka uç HENÜZ yüklenmeden gelebilir (renderer önce
+   jev:mode, hemen ardından jev:start çağırır). İsteği kaybetmemek için son
+   durum saklanır ve arka uç oluşturulunca uygulanır. */
+let jevModeWanted = false;
 
 function jevEnsure() {
   if (!jevMod) {
@@ -7072,6 +7076,9 @@ function jevEnsure() {
     /* backend modül yüklenirken tüm 'jev:*' IPC kanallarını kaydeder */
     jevMod = { backend, wcId: 0, started: false };
     log.info('jev', 'JevTrader arka ucu yüklendi');
+    if (jevModeWanted) {
+      try { jevMod.backend.setJevMode(true); } catch {}
+    }
   }
   return jevMod;
 }
@@ -7128,6 +7135,7 @@ ipcMain.handle('jev:detach', () => {
 /* JevTrader modu açılıp kapanınca haber ver: mod kapalıyken MT5 köprüsü ve
    terminali hiç çalışmaz — MT5 yalnız JevTrader içinde bağlanır */
 ipcMain.handle('jev:mode', (_e, on) => {
+  jevModeWanted = !!on;
   if (!jevMod) return { ok: true };
   try {
     jevMod.backend.setJevMode(!!on);

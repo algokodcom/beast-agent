@@ -1321,6 +1321,12 @@ body.mt5-busy .mt5-act { pointer-events: none; opacity: 0.55; }
 /* dropdown */
 .dd { position: relative; }
 .dd-btn { display: inline-flex; align-items: center; gap: 6px; max-width: 260px; }
+#modelDD { display: flex; align-items: center; gap: 2px; }
+.model-refresh { padding: 5px; border-radius: 6px; line-height: 0; }
+.model-refresh svg { display: block; }
+.model-refresh.spin svg { animation: modelSpin 0.9s linear infinite; }
+.model-refresh[disabled] { opacity: 0.6; cursor: default; }
+@keyframes modelSpin { to { transform: rotate(360deg); } }
 #modelBtnLabel { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dd-menu {
   position: absolute;

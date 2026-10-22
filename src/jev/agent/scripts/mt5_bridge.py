@@ -9,10 +9,12 @@ Baglanti olaylarini event satirlari ile bildirir ({event: 'bridge', ...}).
 
 Gereksinim: pip install MetaTrader5  (yalnizca Windows + MT5 terminal kurulu)
 """
+import os
 import sys
 import json
 import time
 import argparse
+import subprocess
 
 try:
     import MetaTrader5 as mt5
@@ -55,19 +57,90 @@ def iattr(obj, name, default=0):
 TERMINAL_PATH = ""
 INIT_TRIED = False
 ALLOW_LAUNCH = True
+_CONNECTED = False
+_PROC_CACHE = (0.0, False)
+
+
+def _last_error_text():
+    try:
+        return str(mt5.last_error())
+    except Exception:
+        return ""
+
+
+def terminal_process_running():
+    """MT5 terminal SURECI calisiyor mu? (initialize() cagirmadan tespit)
+
+    terminal_info() yalniz initialize() sonrasi dolu oldugu icin, terminalin
+    acik olup olmadigini anlamanin tek yolu surec listesidir. Boylece
+    --no-launch modunda da ACIK terminale yalnizca baglanilir; kapaliysa
+    terminal kendiliginden acilmaz.
+    """
+    global _PROC_CACHE
+    if os.name != "nt":
+        return False
+    now = time.time()
+    ts, val = _PROC_CACHE
+    if now - ts < 2.0 and not val:
+        # yalnizca OLUMSUZ sonucu kisa sure onbellekle: terminal kapaliyken
+        # saniyede bir tasklist calismasin. Pozitif sonucu onbellekleme —
+        # terminal az once kapatildiysa initialize() onu yeniden acmasin.
+        return False
+    names = set()
+    if TERMINAL_PATH:
+        b = os.path.basename(TERMINAL_PATH).strip().lower()
+        if b:
+            names.add(b)
+    names.update(("terminal64.exe", "terminal.exe"))
+    found = False
+    try:
+        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+        raw = subprocess.check_output(
+            ["tasklist", "/FO", "CSV", "/NH"],
+            stdin=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+            creationflags=flags,
+        )
+        low = raw.decode("utf-8", "ignore").lower()
+        found = any(('"' + n + '"') in low for n in names)
+    except Exception:
+        found = False
+    _PROC_CACHE = (now, found)
+    return found
+
+
+def _notify_connected():
+    """Baglanti SONRADAN kurulduysa (terminal elle acildi) JS tarafina haber
+    ver: durum noktasi ve hesap bilgisi kendiliginden guncellensin."""
+    global _CONNECTED
+    if _CONNECTED:
+        return
+    _CONNECTED = True
+    try:
+        acc = d(mt5.account_info())
+        term = d(mt5.terminal_info())
+    except Exception:
+        acc = term = None
+    out({"event": "bridge", "connected": True, "error": "", "account": acc, "terminal": term})
 
 
 def try_connect():
-    """(ok, error) — terminal zaten acikse baglanir, degilse ve ALLOW_LAUNCH
+    """(ok, error) — terminal zaten aciksa baglanir, degilse ve ALLOW_LAUNCH
     kapaliysa terminali BASLATMAZ (arka planda istemeden MT5 acilmaz)."""
+    global _CONNECTED
     if mt5 is None:
         return False, "MetaTrader5 python paketi kurulu degil (pip install MetaTrader5)"
     try:
         if mt5.terminal_info() is not None:
+            _CONNECTED = True
             return True, ""
     except Exception:
         pass
-    if not ALLOW_LAUNCH:
+    # --no-launch: terminal SURECI zaten calisiyorsa initialize() yalnizca
+    # mevcut terminale baglanir (yeni terminal acmaz) — denemek guvenli.
+    if not ALLOW_LAUNCH and not terminal_process_running():
+        _CONNECTED = False
         return False, "MT5 terminali kapali (terminali elle ac)"
     try:
         if TERMINAL_PATH:
@@ -75,13 +148,16 @@ def try_connect():
         else:
             ok = bool(mt5.initialize())
     except Exception as e:
+        _CONNECTED = False
         return False, str(e)
     if ok:
+        _CONNECTED = True
         return True, ""
-    try:
-        return False, str(mt5.last_error())
-    except Exception:
-        return False, "MT5 terminaline baglanilamadi"
+    _CONNECTED = False
+    err = _last_error_text()
+    if terminal_process_running():
+        return False, "MT5 terminali acik ama baglanilamadi" + ((": " + err) if err else "")
+    return False, err or "MT5 terminaline baglanilamadi"
 
 
 def ensure_init():
@@ -90,29 +166,35 @@ def ensure_init():
         return False
     try:
         if mt5.terminal_info() is not None:
+            _notify_connected()
             return True
     except Exception:
         pass
-    if not ALLOW_LAUNCH:
+    # --no-launch iken terminal kapaliysa hic denemeden cik; surec aciksa
+    # initialize() yalnizca baglanir, terminali acmaz.
+    if not ALLOW_LAUNCH and not terminal_process_running():
         return False
     INIT_TRIED = True
-    if TERMINAL_PATH:
-        return bool(mt5.initialize(path=TERMINAL_PATH))
-    return bool(mt5.initialize())
+    try:
+        if TERMINAL_PATH:
+            ok = bool(mt5.initialize(path=TERMINAL_PATH))
+        else:
+            ok = bool(mt5.initialize())
+    except Exception:
+        ok = False
+    if ok:
+        _notify_connected()
+    return ok
 
 
 def need():
     if mt5 is None:
         raise RuntimeError("MetaTrader5 python paketi kurulu degil (pip install MetaTrader5)")
     if not ensure_init():
-        if not ALLOW_LAUNCH:
+        err = _last_error_text()
+        if not ALLOW_LAUNCH and not terminal_process_running():
             raise RuntimeError("MT5 terminali kapali")
-        last = ""
-        try:
-            last = str(mt5.last_error())
-        except Exception:
-            pass
-        raise RuntimeError("MT5 terminaline baglanilamadi (terminal acik mi?) " + last)
+        raise RuntimeError("MT5 terminaline baglanilamadi" + (" " + err if err else " (terminal acik mi?)"))
 
 
 # ---------------- sembol cozumleme ----------------

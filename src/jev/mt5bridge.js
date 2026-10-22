@@ -106,6 +106,9 @@ class MT5Bridge extends EventEmitter {
     this._buf = '';
     proc.stdout.setEncoding('utf8');
     proc.stdout.on('data', (chunk) => {
+      /* eski (yeniden başlatmada öldürülen) süreçten kalan çıktı yeni köprüyü
+         ezmesin */
+      if (this.proc !== proc) return;
       this._buf += chunk;
       let i;
       while ((i = this._buf.indexOf('\n')) >= 0) {
@@ -116,10 +119,12 @@ class MT5Bridge extends EventEmitter {
     });
     proc.stderr.setEncoding('utf8');
     proc.stderr.on('data', (c) => {
+      if (this.proc !== proc) return;
       const t = String(c).trim();
       if (t) this.emit('log', { level: 'error', line: t.slice(0, 400) });
     });
     proc.on('error', (e) => {
+      if (this.proc !== proc) return;
       this._lastError = `Python (${exe}) bulunamadı/başlatılamadı: ` + String((e && e.message) || e);
       this.emit('log', { level: 'error', line: this._lastError });
       try { this._failAll(this._lastError); } catch {}
@@ -127,7 +132,10 @@ class MT5Bridge extends EventEmitter {
       this._nextCandidateOrRetry();
     });
     proc.on('exit', (code) => {
-      if (this.proc === proc) this.proc = null;
+      /* yeniden başlatmada öldürülen eski sürecin 'exit' olayı yeni sürecin
+         durumunu (terminal/hesap/pending) SIFIRLAMAMALI */
+      if (this.proc !== proc) return;
+      this.proc = null;
       this._terminal = null;
       this._account = null;
       try { this._failAll('MT5 köprüsü kapandı (kod ' + code + ')'); } catch {}

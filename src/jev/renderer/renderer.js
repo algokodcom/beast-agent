@@ -4127,15 +4127,15 @@ function isScalpOrder(d) {
 function scalpPromptBlock() {
   const m = scalpMode();
   if (m === 'off') {
-    return '\n\n[İŞLEM TARZI] SWING (scalp KAPALI): Yalnız swing işlemleri. Dar stoplu scalp yasak; "scalp":true işareti yok sayılır ve emir swing ölçeğine genişletilir.';
+    return '\n\n[İŞLEM TARZI] SWING (scalp KAPALI): Yalnız swing işlemleri. Dar stoplu scalp yasak; "scalp":true işareti yok sayılır; uygulama SL/TP seviyelerini değiştirmez.';
   }
   if (m === 'some') {
     return '\n\n[İŞLEM TARZI] SWING + ARA SIRA SCALP: Varsayılan swing; ancak fırsat gerçekten netse ara sıra scalp yapabilirsin. ' +
-      'Scalp kuralları: emri "scalp":true ile işaretle · günde en fazla 1-2 scalp · risk en fazla %0,5 (uygulama üst sınırı zorlar) · SL en az 0,35×ATR14(H4) (uygulama otomatik genişletir) · TP 0,8–1,5R ve hızlı kapat. ' +
+      'Scalp kuralları: emri "scalp":true ile işaretle · günde en fazla 1-2 scalp · risk en fazla %0,5 (uygulama üst sınırı zorlar) · SL ~0,35×ATR14(H4) · TP 0,8–1,5R ve hızlı kapat. ' +
       'A/A+ swing fırsatı varsa scalp değil onu tercih et; scalp swing setup\'ını gölgelemesin.';
   }
   return '\n\n[İŞLEM TARZI] SWING + SCALP SERBEST: Fırsat buldukça scalp serbest. ' +
-    'Scalp emirlerini "scalp":true ile işaretle · risk en fazla %0,5 (uygulama zorlar) · SL en az 0,35×ATR14(H4) · TP 0,8–1,5R. ' +
+    'Scalp emirlerini "scalp":true ile işaretle · risk en fazla %0,5 (uygulama zorlar) · SL ~0,35×ATR14(H4) · TP 0,8–1,5R. ' +
     'Ana tarz yine swing\'dir: scalpler günlük toplam riski ve işlem sayısını şişirmesin.';
 }
 
@@ -9192,6 +9192,20 @@ function currentSpreadPts() {
   return rates.length ? Math.round(Number(rates[rates.length - 1].spread) || 0) : 0;
 }
 
+/* market emirde lot/EV için canlı orta fiyat: MT5 tick → grafik son kapanış */
+async function liveMidPrice(symbol) {
+  const sym = String(symbol || '').toUpperCase();
+  if (exName === 'mt5' && sym) {
+    const t = await jev.mt5Ticks({ symbol: sym }).catch(() => null);
+    const tk = t && t.ok && t.data ? t.data.tick : null;
+    const bid = tk ? Number(tk.bid) || 0 : 0;
+    const ask = tk ? Number(tk.ask) || 0 : 0;
+    if (bid > 0 && ask > 0) return (bid + ask) / 2;
+  }
+  const rates = chartState.rates || [];
+  return rates.length ? Number(rates[rates.length - 1].close) || 0 : 0;
+}
+
 function openRrDialog(plan) {
   rrPlanId = plan ? plan.id : '';
   const free = !plan || !(Number(plan.rr) > 0);
@@ -9473,21 +9487,7 @@ async function enterTradeNow(plan) {
       savePlans();
       drawChart();
     }
-    /* SWING KORUMA: plan seviyeleri dar kaldıysa H4 ATR tabanına genişlet (lot küçülür) */
-    const sw = await swingExpandLevels({
-      side: plan.side === 'long' ? 'buy' : 'sell',
-      symbol: plan.symbol, sl: plan.sl, tp: plan.tp,
-      entry: plan.follow ? 0 : plan.entry,
-    }).catch(() => null);
-    if (sw) {
-      plan.sl = sw.sl;
-      plan.tp = sw.tp;
-      savePlans();
-      drawChart();
-      const fD = (v) => nf(v, v < 1 ? 5 : 2);
-      jevLogAdd('SWING KORUMA · plan ' + plan.symbol + ' dar SL genişletildi: ' + fD(sw.risk) + ' → ' + fD(sw.minRisk) + ' (ATR14 H4 × ' + SWING_ATR_MULT + ')', 'info');
-      toast('Plan swing ölçeğine genişletildi: SL ' + fD(sw.sl) + ' · TP ' + fD(sw.tp));
-    }
+    /* Plan seviyeleri kullanıcının belirlediği gibi kalır; SL/TP mesafesine dokunulmaz. */
     const lot = await computePlanLot(plan);
     if (!(lot > 0)) {
       toast('Hacim hesaplanamadı — bakiye/sembol bilgisi yok');
@@ -9682,19 +9682,7 @@ async function submitOrder() {
   mt5Begin();
   try {
     $('#orderMsg').textContent = 'Gönderiliyor…';
-    /* SWING KORUMA: dar plan seviyeleri H4 ATR tabanına genişletilir (lot kullanıcı girdisi, risk düşer) */
-    const sw = await swingExpandLevels({
-      side: plan.side === 'long' ? 'buy' : 'sell',
-      symbol: plan.symbol, sl: plan.sl, tp: plan.tp, entry: plan.entry,
-    }).catch(() => null);
-    if (sw) {
-      plan.sl = sw.sl;
-      plan.tp = sw.tp;
-      savePlans();
-      drawChart();
-      const fD = (v) => nf(v, v < 1 ? 5 : 2);
-      jevLogAdd('SWING KORUMA · plan ' + plan.symbol + ' dar SL genişletildi: ' + fD(sw.risk) + ' → ' + fD(sw.minRisk) + ' (ATR14 H4 × ' + SWING_ATR_MULT + ')', 'info');
-    }
+    /* Plan seviyeleri kullanıcının belirlediği gibi kalır; SL/TP mesafesine dokunulmaz. */
     const res = await jev.mt5Market({
       symbol: plan.symbol,
       side: plan.side === 'long' ? 'buy' : 'sell',
@@ -12307,11 +12295,11 @@ const JEV_SYSTEM_PROMPT = [
   'R8) RİSK + RAPOR: GÜN ÖZETİ\'ne ve [PERFORMANS HAFIZASI] bloğuna göre riski <<AUTO {"risk":...}>> ile ayarla (seri kayıpta düşür, isabet başabaşın altındaysa RR\'i büyüt ya da o setup tipini bırak). Yanıtı 1-2 cümlede tut: seçili iki TF\'in yönü + kilit seviyeler + uyguladığın aksiyonlar (çizim/alarm/tool/emir/SLTP).',
   'R9) SWING TARZI (ZORUNLU — uygulamanın varsayılan işlem tarzıdır): Kısa vadeli/sıkı stoplu scalp işlemleri YASAK; hedef günler süren hareketlerdir.',
   '· YÖN/YAPI: H4 ve D1. Giriş: H1 (tercih) — M15 yalnız tetik teyidi, M5 ve altı karar için kullanılmaz.',
-  '· SL: son belirgin swing high/low\'un ÖTESİNE + ATR tamponu. Mesafe EN AZ 1,25 × ATR14(H4) olmalı. Bu tabandan dar stop gerektiren setup\'ı AÇMA ("işlem yok" de); uygulama ayrıca dar SL\'yi otomatik olarak bu tabana genişletir (SL+TP orantılı büyür, lot risk %\'si korunarak küçülür) — bilerek dar stop gönderme.',
+  '· SL: son belirgin swing high/low\'un ÖTESİNE + ATR tamponu. Tercihen mesafe ~1,25 × ATR14(H4) olsun; uygulama SL/TP seviyelerini değiştirmez — gönderdiğin stop aynen kullanılır.',
   '· TP: en az 2R, tercihen 2,5–4R (EV modu B: düşük isabet + büyük R); hedef H4/D1 yapı seviyesine oturmalı, yakın gürültü seviyesine değil.',
   '· SIKLIK: A/A+ swing setup yoksa hiç işlem açma; sembol başına günde en fazla 1 yeni işlem. M15/M5 gürültüsüne emir kovalamak yasak.',
   '· YÖNETİM: pozisyon saatler/günler taşınır. Kâr 1R\'ye ulaşana kadar kısmi kâr alma ve SL oynatma. İlk kısmi kâr ≥1,5–2R\'de; trailing startR ≥1, distR ≥0,75–1R ile geniş tut, kalanı trend bitene kadar koştur. Zararda tek müdahale H4/D1 yapısı gerçekten bozulursa tamamen kapatmak.',
-  '· İSTİSNA — SCALP (yalnız dinamik [İŞLEM TARZI] bloğu izin veriyorsa): ara sıra kısa vadeli scalp yapabilirsin; emri "scalp":true ile işaretle. Scalp: risk ≤ %0,5 (uygulama üst sınırı zorlar) · SL ≥ 0,35×ATR14(H4) (uygulama otomatik genişletir) · TP 0,8–1,5R ve hızlı kapat. Scalp, swing setup\'ını gölgelemesin; izin kapalıysa scalp yasak (işaret yok sayılır).',
+  '· İSTİSNA — SCALP (yalnız dinamik [İŞLEM TARZI] bloğu izin veriyorsa): ara sıra kısa vadeli scalp yapabilirsin; emri "scalp":true ile işaretle. Scalp: risk ≤ %0,5 (uygulama üst sınırı zorlar) · SL ~0,35×ATR14(H4) · TP 0,8–1,5R ve hızlı kapat. Scalp, swing setup\'ını gölgelemesin; izin kapalıysa scalp yasak (işaret yok sayılır).',
   '',
   '1) Sembolü değiştir / grafiği kaydır-yakınlaştır:  <<CHART {"symbol":"XAUUSD"}>>   (yalnız değiştirmek istediğin alanı yaz)',
   '   GÖRÜNÜM KONTROLÜ (aynı komutta ya da tek başına): zoom ({"zoom":"in"} yakınlaştır · {"zoom":"out"} uzaklaştır · {"zoom":80} görünür mum sayısı), sağa-sola kaydırma ({"pan":-20} eskiye/geri · {"pan":20} yeniye/ileri), en sona dön ({"end":true}).',
@@ -12378,7 +12366,7 @@ const JEV_SYSTEM_PROMPT = [
   '   SEN HESAPLARSIN — YETKİ SENDE: "risk" (yüzde, örn 1.5) alanı verirsen hacim o risk % ile hesaplanır (sekme ayarı yerine); "leverage" (örn 20) verirsen kaldıraç o olur. Risk yüzdesi, hacim, kaldıraç, SL/TP ve EV hesabı tamamen senin sorumluluğunda: GÜN ÖZETİ\'ndeki gün başı bakiyesi, bugünkü net K/Z ve bugünkü işlemleri dikkate alarak riski kendin belirle; seri kayıpta riski düşür ya da hiç işlem açma.',
   '   SENİN GERÇEK EMİR AÇMA YETKİN VAR: kullanıcı işlem açmanı istediğinde ya da alarm/zamansal analizde geçerli bir setup görürsen plan kutusu çizmekle kalma; yön + giriş/SL/TP ile <<ORDER>> göndererek işlemi AÇ. Açtığın işlemi yanıt metninde (yön, tür, hacim, SL/TP) sayısal olarak belirt. Emin değilsen "işlem yok" de.',
   '   İŞLEM NOTU (grade): her emirde "grade" ver — "A+" (mükemmel: HTF uyumu + likidite süpürme + OB/breaker retest + RR≥2), "A" (güçlü), "B+" (orta), "B" (zayıf ama pozitif EV), "C" (deneme). Risk nota göre OTOMATİK ölçeklenir: A+ ×1.5 · A ×1 · B+ ×0.6 · B ×0.35 · C ×0.2 (verdiğin risk% ya da sekme riski × çarpan). Anlık scalp/fırsat işlemlerinde de not ver; A+/A ise lot otomatik büyür, B/C küçülür. Toplam açık riski andırmayı unutma.',
-  '   SCALP İŞARETİ: yalnız [İŞLEM TARZI] bloğu izin veriyorsa kısa vadeli scalp emirlerini "scalp":true ile gönder; risk %0,5 ile sınırlanır, SL en az 0,35×ATR14(H4) tabanına çekilir, TP 0,8–1,5R hızlı olmalı. Normal (swing) emirlerde scalp işareti kullanma.',
+  '   SCALP İŞARETİ: yalnız [İŞLEM TARZI] bloğu izin veriyorsa kısa vadeli scalp emirlerini "scalp":true ile gönder; risk %0,5 ile sınırlanır, SL ~0,35×ATR14(H4) olabilir, TP 0,8–1,5R hızlı olmalı. Normal (swing) emirlerde scalp işareti kullanma.',
   '   GÜN KURTARMA (recover): gün neti negatifken lotu hedefe göre hesaplat — <<ORDER {"type":"market","side":"buy","sl":92.1,"tp":95.8,"p":0.7,"grade":"A","recover":0.5}>> (0.5 = günün kalan net zararının %50\'sini TP\'de kapatacak lot; true = tamamı; "tp" zorunlu). Lot, TP kazancı hedefi karşılayacak şekilde hesaplanır; tek işlem riski "maxRisk" yüzdesiyle (varsayılan %2) sınırlanır, sınır aşılırsa lot otomatik kısılır ve logda gerçek kurtarma yüzdesi yazılır.',
   '   KURTARMA KURALLARI: yalnız A/A+ ve pozitif EV\'li, DÖNÜŞÜ TEYİTLİ setuplarda kullan (üst üste stoplar sonrası dönüş sinyali yoksa işlem açma); rövanş için değil yapı için gir; gün zararını tek işlemde tamamen kovalamak yerine %25–50 parçalarla kapat; üst üste 2 başarısız kurtarma turundan sonra riski düşür ve günü korumaya geç; maxRisk\'i asla yükseltme. Gün neti pozitifse recover kullanma.',
   '   Örnek: <<ORDER {"type":"market","side":"buy","sl":92.1,"tp":95.8,"p":0.7,"grade":"A+"}>>',
@@ -13493,70 +13481,6 @@ function setOrderGrade(ticket, symbol, grade) {
   try { localStorage.setItem(ORDER_GRADES_KEY, JSON.stringify(g)); } catch {}
 }
 
-/* ---------- SWING KORUMA: çok dar stoplu işlem yok ----------
-   SL mesafesi en az SWING_ATR_MULT × ATR14(H4) olur; daha dar stoplar girişe göre
-   orantılı genişletilir (SL ve TP aynı oranda → RR/EV korunur). Lot SL mesafesinden
-   hesaplandığı için risk % aynı kalır, yalnız hacim küçülür.
-   Scalp izni açıkken ve emir "scalp":true ise daha küçük taban (SCALP_ATR_MULT)
-   uygulanır — yine de tamamen kontrolsüz stop geçemez. */
-const SWING_ATR_MULT = 1.25;
-const SCALP_ATR_MULT = 0.35;
-
-async function swingExpandLevels(o) {
-  const side = o && o.side === 'buy' ? 'buy' : (o && o.side === 'sell' ? 'sell' : '');
-  if (!side) return null;
-  const scalp = !!(o && o.scalp) && scalpAllowed();
-  const symbol = String((o && o.symbol) || '').toUpperCase();
-  const sl0 = Number(o && o.sl) || 0;
-  const tp0 = Number(o && o.tp) || 0;
-  if (!(sl0 > 0)) return null;
-  let rates = null;
-  if (exName === 'mt5' && symbol) {
-    const r = await jev.mt5Rates({ symbol, timeframe: 'H4', count: 60 }).catch(() => null);
-    if (r && r.ok && r.data && Array.isArray(r.data.rates) && r.data.rates.length >= 15) rates = sanitizeRates(r.data.rates);
-  }
-  if ((!rates || rates.length < 15) && symbol && symbol === String(chartState.symbol || '').toUpperCase()) {
-    rates = chartState.rates || [];
-  }
-  if (!rates || rates.length < 15) return null;
-  const atr = atrLike(rates, 14);
-  if (!(atr > 0)) return null;
-  /* giriş: emrin kendi fiyatı → canlı tick → son mum kapanışı */
-  let entry = Number(o && o.entry) || 0;
-  if (!(entry > 0) && exName === 'mt5' && symbol) {
-    const t = await jev.mt5Ticks({ symbol }).catch(() => null);
-    const tk = t && t.ok && t.data ? t.data.tick : null;
-    const bid = tk ? Number(tk.bid) || 0 : 0;
-    const ask = tk ? Number(tk.ask) || 0 : 0;
-    if (bid > 0 && ask > 0) entry = (bid + ask) / 2;
-  }
-  if (!(entry > 0)) entry = Number(rates[rates.length - 1].close) || 0;
-  if (!(entry > 0)) return null;
-  const dir = side === 'buy' ? 1 : -1;
-  const risk = Math.abs(entry - sl0);
-  if (!(risk > 0)) return null;
-  const mult = scalp ? SCALP_ATR_MULT : SWING_ATR_MULT;
-  const minRisk = atr * mult;
-  if (risk >= minRisk - 1e-12) return null;
-  const scale = minRisk / risk;
-  let nsl = entry - dir * minRisk;
-  let ntp = tp0 > 0 ? entry + dir * Math.abs(tp0 - entry) * scale : 0;
-  /* sembol ondalığı: grafik sembolünde hazır, diğerinde bilgi önbelleğinden */
-  let dg = 0;
-  if (symbol === String(chartState.symbol || '').toUpperCase() && chartState.digits > 0) {
-    dg = chartState.digits;
-  } else if (exName === 'mt5' && symbol) {
-    await ensureSymInfo(symbol).catch(() => {});
-    const info = symInfoOf(symbol);
-    if (info && info.digits > 0) dg = info.digits;
-  }
-  if (dg > 0) {
-    nsl = Number(nsl.toFixed(Math.min(8, dg)));
-    if (ntp > 0) ntp = Number(ntp.toFixed(Math.min(8, dg)));
-  }
-  return { sl: nsl, tp: ntp, risk, minRisk, scale, atr, entry, scalp, mult };
-}
-
 async function jevPlaceOrder(d) {
   if (!d || typeof d !== 'object') return { ok: false, error: 'geçersiz emir' };
   if (!inTradeHours()) {
@@ -13610,24 +13534,12 @@ async function jevPlaceOrder(d) {
     toast('Jev işlem açamadı: ' + m);
     return { ok: false, error: m };
   }
-  let sl = Number(d.sl) || 0;
-  let tp = Number(d.tp) || 0;
-  /* SWING KORUMA: dar stoplar H4 ATR tabanına genişletilir (SL+TP orantılı → RR korunur).
-     "scalp":true + scalp izni açıksa daha küçük taban uygulanır. */
+  const sl = Number(d.sl) || 0;
+  const tp = Number(d.tp) || 0;
   const scalpOrd = isScalpOrder(d) && scalpAllowed();
-  let swingTxt = '';
-  const sw = await swingExpandLevels({
-    side, symbol, sl, tp, scalp: scalpOrd,
-    entry: type === 'market' ? 0 : price,
-  }).catch(() => null);
-  if (sw) {
-    sl = sw.sl;
-    tp = sw.tp;
-    const fD = (v) => nf(v, v < 1 ? 5 : 2);
-    swingTxt = (sw.scalp ? ' · SCALP stopu tabana çekildi (' : ' · SWING SL genişletildi (') +
-      fD(sw.risk) + ' → ' + fD(sw.minRisk) + ' · ATR H4)';
-    jevLogAdd((sw.scalp ? 'SCALP KORUMA' : 'SWING KORUMA') + ' · ' + symbol + ' dar SL genişletildi: ' + fD(sw.risk) + ' → ' + fD(sw.minRisk) + ' (ATR14 H4 × ' + sw.mult + ')', 'info');
-  }
+  /* SL/TP, gönderildiği gibi kullanılır; uygulama stop mesafesini genişletmez. */
+  /* market emirde lot/EV için tek canlı fiyat (tick → son kapanış) */
+  const marketEntry = type === 'market' ? await liveMidPrice(symbol) : 0;
   /* LLM yetkisi: "risk" (yüzde) verilirse hacim o risk % ile, "leverage" verilirse kaldıraç o değerle.
      "grade" (A+/A/B+/B/C) verilirse risk nota göre ölçeklenir (A+ 1.5× ... B 0.35×, C 0.2×). */
   const riskPct = Number(d.risk != null ? d.risk : d.riskPct) || 0;
@@ -13649,10 +13561,7 @@ async function jevPlaceOrder(d) {
   const recoverAsked = Number.isFinite(recoverPct) && recoverPct > 0;
   if (!(vol > 0)) {
     /* hacim verilmediyse risk % ve SL mesafesinden hesapla */
-    const rates = chartState.rates || [];
-    const entry = type !== 'market'
-      ? price
-      : (sw && sw.entry > 0 ? sw.entry : (rates.length ? Number(rates[rates.length - 1].close) || 0 : 0));
+    const entry = type !== 'market' ? price : marketEntry;
     if (entry > 0 && sl > 0 && entry !== sl) {
       if (recoverAsked) {
         if (!(tp > 0)) {
@@ -13690,7 +13599,7 @@ async function jevPlaceOrder(d) {
   }
   /* beklenen değer: p (kazanma olasılığı) komutla gelir; otomatik emir min EV altında reddedilir */
   const evEntry = type === 'market'
-    ? (sw && sw.entry > 0 ? sw.entry : ((chartState.rates && chartState.rates.length ? Number(chartState.rates[chartState.rates.length - 1].close) : 0) || price || 0))
+    ? (marketEntry || price || 0)
     : price;
   const evP = normProb(d.p != null ? d.p : (d.prob != null ? d.prob : d.olasilik));
   const ev = evOf(evEntry, sl, tp, evP);
@@ -13740,7 +13649,7 @@ async function jevPlaceOrder(d) {
       const txt = (type === 'market' ? 'piyasa' : type) + ' ' + side.toUpperCase() + ' ' + symbol + ' ' + vol +
         (type !== 'market' ? ' @ ' + price : '') + (sl > 0 ? ' SL ' + sl : '') + (tp > 0 ? ' TP ' + tp : '') +
         riskTxt + recTxt + (levOverride > 0 ? ' · ' + levOverride + 'x' : '') +
-        evTxt + (volAuto && ev.ok ? evMoneyTxt(ev.evR, riskEff || riskPct) : '') + swingTxt;
+        evTxt + (volAuto && ev.ok ? evMoneyTxt(ev.evR, riskEff || riskPct) : '');
       toast('Jev işlem açtı: ' + txt + orderWarnSuffix(res.data));
       termLogAdd('JEV İŞLEM · ' + txt, 'open');
       jevLogAdd('İŞLEM AÇTI · ' + txt + orderWarnSuffix(res.data), 'jev');

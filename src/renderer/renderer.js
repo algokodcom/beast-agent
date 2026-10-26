@@ -1664,7 +1664,9 @@ async function renderUsagePane() {
           .map(
             (m) =>
               `<div class="usage-row"><span class="ur-model">${escapeHtml(m.model)}</span>` +
-               `<span class="ur-meta">${m.calls} ${_t('ws_calls')} · ${fmtTokens(m.pin)}/${fmtTokens(m.pout)} ${_t('ws_token')}</span>` +
+               `<span class="ur-meta">${m.calls} ${_t('ws_calls')} · ${fmtTokens(m.pin)}/${fmtTokens(m.pout)} ${_t('ws_token')}` +
+               (m.cread || m.cwrite ? ` · ↓${fmtTokens(m.cread || 0)} ↑${fmtTokens(m.cwrite || 0)}` : '') +
+               `</span>` +
               `<span class="ur-cost">${m.cost ? '$' + Number(m.cost).toFixed(4) : ''}</span></div>`
           )
           .join('')
@@ -1675,6 +1677,7 @@ async function renderUsagePane() {
     '<div class="usage-cards">' +
     card(_t('us_today_calls'), String(t.calls || 0)) +
     card(_t('us_today_tokens'), `${fmtTokens(t.pin || 0)} / ${fmtTokens(t.pout || 0)}`) +
+    card(_t('us_today_cache'), `↓${fmtTokens(t.cread || 0)} ↑${fmtTokens(t.cwrite || 0)}`) +
     card(_t('us_today_cost'), t.cost ? '~$' + Number(t.cost).toFixed(4) : '—') +
     card(_t('us_month_cost'), mo.cost ? '~$' + Number(mo.cost).toFixed(4) : '—') +
     '</div>' +

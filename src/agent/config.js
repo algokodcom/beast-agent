@@ -196,6 +196,10 @@ function resolveProviders(cfg, env) {
       /* opsiyonel 1M-token fiyatları: maliyet sayacı için */
       costIn: Number(p.price_in) || null,
       costOut: Number(p.price_out) || null,
+      /* opsiyonel prompt-cache ayarları (cache.js): rota tahminini ezebilir */
+      cache: p.cache != null ? p.cache : null,
+      cacheFormat: p.cache_format || p.cacheFormat || null,
+      cacheTtlSeconds: Number(p.cache_ttl_seconds ?? p.cacheTtlSeconds) || null,
     });
   }
   return candidates;
@@ -266,6 +270,9 @@ function loadBeastConfig() {
       key: keyOverride || active.key,
       costIn: active.costIn,
       costOut: active.costOut,
+      cache: active.cache,
+      cacheFormat: active.cacheFormat,
+      cacheTtlSeconds: active.cacheTtlSeconds,
     };
   }
 
@@ -274,7 +281,18 @@ function loadBeastConfig() {
   for (const p of providers) {
     if (active && p.id === active.id) continue;
     for (const model of p.models.slice(0, 3)) {
-      chain.push({ providerId: p.id, providerName: p.name, model, url: p.url, key: p.key, costIn: p.costIn, costOut: p.costOut });
+      chain.push({
+        providerId: p.id,
+        providerName: p.name,
+        model,
+        url: p.url,
+        key: p.key,
+        costIn: p.costIn,
+        costOut: p.costOut,
+        cache: p.cache,
+        cacheFormat: p.cacheFormat,
+        cacheTtlSeconds: p.cacheTtlSeconds,
+      });
     }
   }
 

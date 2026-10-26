@@ -290,6 +290,9 @@ function customChain(list) {
         key: p.key,
         costIn: Number(p.priceIn ?? p.price_in) || null,
         costOut: Number(p.priceOut ?? p.price_out) || null,
+        cache: p.cache != null ? p.cache : null,
+        cacheFormat: p.cacheFormat || p.cache_format || null,
+        cacheTtlSeconds: Number(p.cacheTtlSeconds ?? p.cache_ttl_seconds) || null,
       });
     }
   }
@@ -771,6 +774,11 @@ class Engine {
         model: e.model,
         url: base.url,
         key: e.key,
+        costIn: base.costIn,
+        costOut: base.costOut,
+        cache: base.cache,
+        cacheFormat: base.cacheFormat,
+        cacheTtlSeconds: base.cacheTtlSeconds,
       };
       const k = sel.providerId + '::' + sel.model + '::' + sel.key;
       if (k === exKey) continue; // aktif seçimle birebir aynıysa anlamsız
@@ -823,12 +831,25 @@ class Engine {
   /* Adayları sırayla dene. Hata olursa durumu kaydet, zincirdeki sonrakine geç.
      413/TPM "Requested N" hatası → gerçek token sayısı öğrenilir, tahmin
      kalibre edilir ve aynı model BİR KEZ daha sıkı sıkıştırmayla denenir. */
-  async _streamWithFallbacks(session, payload, activeTools, signal, onDelta, sel, wasVision) {
+  /* opencode SessionAffinity.get portu: alt-ajan/arka plan oturumu ana
+     oturumun cache affinitesini kullanır; fork edilen oturumlar kaynağı
+     paylaşır. Aynı önek cache'ine yönlendirme için sabit anahtar. */
+  _cacheAffinity(session) {
+    const sid = String((session && session.id) || '');
+    if (!sid) return '';
+    const job = this._bgJobs ? this._bgJobs.get(sid) : null;
+    return String((job && (job.parentId || job.parent)) || sid);
+  }
+
+  async _streamWithFallbacks(session, payload, activeTools, signal, onDelta, sel, wasVision, toolChoice) {
     /* SQUEEZE (varsayılan kapalı): istek kopyası sıkıştırılır — oturum kaydı
        değişmez. Provider limiti kontrolünden ÖNCE uygulanır ki limit hesabı
        küçülmüş gövdeyi görsün. */
+    const affinity = this._cacheAffinity(session);
+    const bgJob =
+      session && session.id && this._bgJobs ? this._bgJobs.get(String(session.id)) : null;
     if (squeeze.isEnabled()) {
-      payload = squeeze.apply(payload, { cacheKey: String(session.id || '') });
+      payload = squeeze.apply(payload, { cacheKey: affinity });
     }
     const cands = this._chatCandidates(sel, wasVision);
     /* AYLIK KOTASI DOLAN SAĞLAYICILAR: aynı sağlayıcının diğer modellerini
@@ -881,8 +902,15 @@ class Engine {
             tools: activeTools,
             reasoningEffort: this._thinkEffortFor(session),
             /* opencode cache disiplini (transform.ts:1270): oturum-sabit
-               önbellek anahtarı — destekleyen sağlayıcıda önek cache'i tutar */
-            cacheKey: String(session.id || ''),
+               önbellek anahtarı — destekleyen sağlayıcıda önek cache'i tutar.
+               Arka plan ajanı ana oturumun affinitesini taşır. */
+            cacheKey: affinity,
+            sessionId: String((session && session.id) || ''),
+            parentSessionId: bgJob
+              ? String(bgJob.parentId || bgJob.parent || '') || undefined
+              : undefined,
+            /* son adım: araç şemalarını koru, tool_choice:'none' ile kapat */
+            toolChoice: toolChoice || undefined,
           },
           {
             signal,
@@ -1929,26 +1957,31 @@ class Engine {
   }
 
 
-  async buildSystem(queryText, session) {
+  async buildSystem(queryText, session, opts = {}) {
+    const stable = !!(opts && opts.stable);
     /* BOT OTURUMU: non-admin bota bağlıysa global Beast hafızası HIÇ girmez —
        o botun kendi SOUL/USER/MEMORY dosyaları kullanılır (tam izolasyon) */
     const bctx = this._sessionBotCtx(session);
-    let mem, relevantMemory, rules;
+    let mem, relevantMemory = '', rules;
     if (bctx && this.botMemory) {
       mem = {
         soul: this.botMemory.read(bctx.id, 'SOUL.md'),
         user: this.botMemory.read(bctx.id, 'USER.md'),
         memory: this.botMemory.read(bctx.id, 'MEMORY.md'),
       };
-      relevantMemory = this.mem0Enabled
-        ? await mem0.relevant('bot:' + bctx.id, String(queryText || ''))
-        : this.botMemory.relevant(bctx.id, String(queryText || ''));
+      if (!stable) {
+        relevantMemory = this.mem0Enabled
+          ? await mem0.relevant('bot:' + bctx.id, String(queryText || ''))
+          : this.botMemory.relevant(bctx.id, String(queryText || ''));
+      }
       rules = []; // global kurallar Beast'e özeldir — müşteri botuna karışmaz
     } else {
       mem = memory.loadAll();
-      relevantMemory = this.mem0Enabled
-        ? await mem0.relevant('main', String(queryText || ''))
-        : memory.relevantFor(String(queryText || ''), {});
+      if (!stable) {
+        relevantMemory = this.mem0Enabled
+          ? await mem0.relevant('main', String(queryText || ''))
+          : memory.relevantFor(String(queryText || ''), {});
+      }
       rules = memory.listRules();
     }
     const sk = skills.scan().map((s) => `- ${s.name}: ${s.description} [${s.path}]`);
@@ -1980,22 +2013,32 @@ class Engine {
       parts.push('# PROJE TALİMATLARI (workspace AGENTS/CLAUDE/CONTEXT dosyalarından — daima uy)\n' + projChat);
     }
     /* Beast Code (bcCode) oturumları buildBcSystem kullanır — buraya düşmez */
-    const nowD = new Date();
-    const localDate = nowD.toLocaleDateString('tr-TR');
-    /* önek-cache disiplini (opencode Context Epoch): dakika yerine saat —
-       system prompt her dakika değişse sağlayıcı önbelleği sürekli bozulur */
-    const localTime = String(nowD.getHours()).padStart(2, '0') + ':00';
-    let tz = '';
-    try {
-      tz = Intl.DateTimeFormat().resolvedOptions().timeZone || '';
-    } catch {}
-    parts.push(
-      `# ORTAM\nWindows + PowerShell. Çalışma klasörü: ${(session && session.workspace) || this.workspace}\n` +
-        `Yerel tarih: ${localDate} (${['Pazar','Pazartesi','Salı','Çarşamba','Perşembe','Cuma','Cumartesi'][nowD.getDay()]})\n` +
-        `Yerel saat: ${localTime}${tz ? ` (saat dilimi: ${tz})` : ''}\n` +
-        'Tarih/saat gerektiren her işte bu YEREL zamanı esas al; UTC varsayma, kendin dönüşüm yapma. Bu satırlar her mesajda güncellenir.\n' +
-        'Kısa ve net cevap ver. Konuşmaya özgü geçici detayları hafızaya yazma — oturum kayıtları zaten saklar. Sadece kalıcı/genel bilgileri kaydet.'
-    );
+    if (stable) {
+      /* Sabit system: tarih/saat ve sorguya özgü hafıza DIŞARIDA (istek
+         kuyruğundaki GÜNCEL BAĞLAM mesajında) → önek cache'i korunur. */
+      parts.push(
+        `# ORTAM\nWindows + PowerShell. Çalışma klasörü: ${(session && session.workspace) || this.workspace}\n` +
+          'Yerel tarih, saat ve ilgili hafıza her isteğin sonundaki GÜNCEL BAĞLAM bloğunda verilir; tarih/saat gerektiren işlerde onu esas al, UTC varsayma.\n' +
+          'Kısa ve net cevap ver. Konuşmaya özgü geçici detayları hafızaya yazma — oturum kayıtları zaten saklar. Sadece kalıcı/genel bilgileri kaydet.'
+      );
+    } else {
+      const nowD = new Date();
+      const localDate = nowD.toLocaleDateString('tr-TR');
+      /* önek-cache disiplini (opencode Context Epoch): dakika yerine saat —
+         system prompt her dakika değişse sağlayıcı önbelleği sürekli bozulur */
+      const localTime = String(nowD.getHours()).padStart(2, '0') + ':00';
+      let tz = '';
+      try {
+        tz = Intl.DateTimeFormat().resolvedOptions().timeZone || '';
+      } catch {}
+      parts.push(
+        `# ORTAM\nWindows + PowerShell. Çalışma klasörü: ${(session && session.workspace) || this.workspace}\n` +
+          `Yerel tarih: ${localDate} (${['Pazar','Pazartesi','Salı','Çarşamba','Perşembe','Cuma','Cumartesi'][nowD.getDay()]})\n` +
+          `Yerel saat: ${localTime}${tz ? ` (saat dilimi: ${tz})` : ''}\n` +
+          'Tarih/saat gerektiren her işte bu YEREL zamanı esas al; UTC varsayma, kendin dönüşüm yapma. Bu satırlar her mesajda güncellenir.\n' +
+          'Kısa ve net cevap ver. Konuşmaya özgü geçici detayları hafızaya yazma — oturum kayıtları zaten saklar. Sadece kalıcı/genel bilgileri kaydet.'
+      );
+    }
     parts.push(
       '# KULLANICI TAKİBİ (SIKI — zorunlu disiplin)\n' +
         [
@@ -2062,6 +2105,51 @@ class Engine {
       );
     }
     return parts.filter(Boolean).join('\n\n');
+  }
+
+  /* Konuşmanın sonuna eklenen taze bağlam: tarih/saat + sorguya özgü hafıza.
+     Oturum mesajlarına YAZILMAZ; yalnız istek kopyasına girer. Böylece system
+     ve geçmiş öneki turlar arasında değişmez, önek cache'i korunur. */
+  async buildDynamicContext(queryText, session) {
+    const nowD = new Date();
+    const localDate = nowD.toLocaleDateString('tr-TR');
+    const localTime =
+      String(nowD.getHours()).padStart(2, '0') +
+      ':' +
+      String(nowD.getMinutes()).padStart(2, '0');
+    let tz = '';
+    try {
+      tz = Intl.DateTimeFormat().resolvedOptions().timeZone || '';
+    } catch {}
+    const day = ['Pazar', 'Pazartesi', 'Salı', 'Çarşamba', 'Perşembe', 'Cuma', 'Cumartesi'][nowD.getDay()];
+
+    const bctx = this._sessionBotCtx(session);
+    let relevantMemory = '';
+    try {
+      if (bctx && this.botMemory) {
+        relevantMemory = this.mem0Enabled
+          ? await mem0.relevant('bot:' + bctx.id, String(queryText || ''))
+          : this.botMemory.relevant(bctx.id, String(queryText || ''));
+      } else {
+        relevantMemory = this.mem0Enabled
+          ? await mem0.relevant('main', String(queryText || ''))
+          : memory.relevantFor(String(queryText || ''), {});
+      }
+    } catch {}
+
+    const parts = [
+      '# GÜNCEL BAĞLAM (her istekte tazelenir — kullanıcı mesajı değildir)',
+      `Yerel tarih: ${localDate} (${day})`,
+      `Yerel saat: ${localTime}${tz ? ` (saat dilimi: ${tz})` : ''}`,
+      'Tarih/saat gerektiren her işte bu YEREL zamanı esas al; UTC varsayma, kendin dönüşüm yapma.',
+    ];
+    if (relevantMemory) parts.push('# İLGİLİ HAFIZA\n' + relevantMemory);
+    return parts.join('\n');
+  }
+
+  _appendDynamicContext(payload, text) {
+    if (!Array.isArray(payload) || !text) return payload;
+    return [...payload, { role: 'user', content: text }];
   }
 
   _payloadTokens(payload) {
@@ -3751,13 +3839,23 @@ class Engine {
     /* opencode agent.ts port: özel ajan tanımı — prompt/model/araç/steps */
     const adef = this._agentDefFor(session, !!session.bgJob);
     const promptText = this._lastUserText(session);
-    let system = session.bgJob
-      ? this.buildBgSystem(session)
-      : session.studio
-        ? this.buildStudioSystem(session)
-        : bcAgent
-          ? this.buildOcSystem(session, bcAgent)
-          : await this.buildSystem(promptText, session);
+    /* ÖNEK-CACHE: normal sohbetlerde system SABİT içerikten kurulur; değişen
+       tarih/saat + ilgili hafıza isteğin EN SONUNA ayrı bir bağlam mesajı
+       olarak eklenir. Böylece araçlar + system + geçmiş öneki turlar arasında
+       aynı kalır (OpenCode context/instruction sıralaması disiplini). */
+    const useStableSystem = !session.bgJob && !session.studio && !bcAgent;
+    let system;
+    let dynamicCtx = '';
+    if (useStableSystem) {
+      system = await this.buildSystem(promptText, session, { stable: true });
+      dynamicCtx = await this.buildDynamicContext(promptText, session);
+    } else {
+      system = session.bgJob
+        ? this.buildBgSystem(session)
+        : session.studio
+          ? this.buildStudioSystem(session)
+          : this.buildOcSystem(session, bcAgent);
+    }
     // Granül izin: oturumun yetki seviyesine göre araç seti daraltılır.
     // Çoklu izin (ör. web+read) seçiliyse kümeler BİRLEŞİR — hepsinin araçları açık olur.
     // BC'de opencode adları Beast adına çevrilerek denetlenir (read → read_file).
@@ -3856,13 +3954,24 @@ class Engine {
         !!this._bcWasPlan.get(String(session.id))
       );
     }
-    let payload = this._buildPayload(system, msgsForPayload, session.notes, dynBudget, session.summary);
-    if (bcAgent && bcOpts && bcOpts.isLastStep) {
-      /* opencode prompt.ts:1178-1181 — isLastStep: MAX_STEPS_PROMPT assistant
-         mesajı olarak akışa eklenir; araçlar kilitlenir (yalnız metin kapanışı) */
-      if (Array.isArray(payload.messages)) payload.messages.push({ role: 'assistant', content: opencode.MAX_STEPS_PROMPT });
-      activeTools = [];
-    }
+    /* Dinamik bağlamı EN SONA ekle: system/geçmiş öneki değişmez, yalnızca
+       kuyruk mesajı tazelenir → sağlayıcı önek cache'i korunur. */
+    let toolChoice = null;
+    const buildPayload = () => {
+      let out = this._buildPayload(system, msgsForPayload, session.notes, dynBudget, session.summary);
+      if (dynamicCtx) out = this._appendDynamicContext(out, dynamicCtx);
+      if (bcAgent && bcOpts && bcOpts.isLastStep) {
+        /* opencode prompt.ts:1178-1181 — isLastStep: MAX_STEPS_PROMPT assistant
+           mesajı olarak akışa eklenir. Araç ŞEMALARI korunur (önek cache'i
+           bozulmasın), yalnız tool_choice:'none' ile çağrı kapatılır. */
+        const finalPrompt = { role: 'assistant', content: opencode.MAX_STEPS_PROMPT };
+        if (Array.isArray(out)) out.push(finalPrompt);
+        else if (Array.isArray(out.messages)) out.messages.push(finalPrompt);
+        toolChoice = 'none';
+      }
+      return out;
+    };
+    let payload = buildPayload();
     // Vision model sadece mesajda görsel varsa devreye girer; terminal ise prompt'un
     // shell/command işi olduğunda. Aksi halde ana model kullanılır.
     let role = this._lastUserHasImage(session) ? 'vision' : null;
@@ -3893,7 +4002,8 @@ class Engine {
         signal,
         onDelta,
         sel,
-        role === 'vision'
+        role === 'vision',
+        toolChoice
       );
     } catch (e) {
       /* GÖRSEL DÖNGÜSÜ KORUMASI: görüntü desteklemeyen model hata verirse görsel
@@ -3911,7 +4021,7 @@ class Engine {
             type: 'status',
             status: `🧠 düşük uyumlu sağlayıcı: geçmişteki düşünme içerikleri temizlendi (${dropped} mesaj) — tur yeniden deneniyor`,
           });
-          payload = this._buildPayload(system, msgsForPayload, session.notes, dynBudget, session.summary);
+          payload = buildPayload();
           res = await this._streamWithFallbacks(
             session,
             payload,
@@ -3919,7 +4029,8 @@ class Engine {
             signal,
             onDelta,
             sel,
-            role === 'vision'
+            role === 'vision',
+            toolChoice
           );
           const actualR = res.usage && res.usage.prompt_tokens;
           if (actualR > 0) {
@@ -3945,7 +4056,7 @@ class Engine {
         type: 'status',
         status: `\u{1F5BC} bu model görüntü girişini desteklemiyor — sohbetten ${removed} görsel kaldırıldı, mesaj görüntüsüz yanıtlanıyor (/change ile görsel destekli modele geçebilirsin)`,
       });
-      payload = this._buildPayload(system, msgsForPayload, session.notes, dynBudget, session.summary);
+      payload = buildPayload();
       res = await this._streamWithFallbacks(
         session,
         payload,
@@ -3953,7 +4064,8 @@ class Engine {
         signal,
         onDelta,
         sel,
-        false
+        false,
+        toolChoice
       );
     }
     // Gerçek kullanım ile tahmini bütçeyi kalibre et

@@ -119,6 +119,40 @@ test('chatStreamAuto: length kesintisinde kaldığı yerden devam eder', async (
   }
 });
 
+test('chatStreamAuto: çoklu devam turlarında usage toplanır', async () => {
+  const { srv } = sseServer((n) => [
+    'data: ' +
+      JSON.stringify({
+        choices: [
+          {
+            delta: { content: n === 1 ? 'a' : n === 2 ? 'b' : 'c' },
+            finish_reason: n === 3 ? 'stop' : 'length',
+          },
+        ],
+        usage: {
+          prompt_tokens: n * 10,
+          completion_tokens: 1,
+          prompt_tokens_details: { cached_tokens: n },
+        },
+      }) +
+      '\n\n',
+    'data: [DONE]\n\n',
+  ]);
+  await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+  try {
+    const port = srv.address().port;
+    const sel = { url: `http://127.0.0.1:${port}/v1/chat/completions`, key: 'k', model: 'm' };
+    const r = await chatStreamAuto(sel, { messages: [{ role: 'user', content: 'selam' }] });
+    assert.equal(r.content, 'abc');
+    assert.equal(r.usage.prompt_tokens, 60);
+    assert.equal(r.usage.completion_tokens, 3);
+    assert.equal(r.usage.cacheReadTokens, 6);
+    assert.equal(r.usage.nonCachedInputTokens, 54);
+  } finally {
+    srv.close();
+  }
+});
+
 test('chatStreamAuto: normal (stop) yanıtta hiç devam turu açılmaz', async () => {
   const { srv, calls } = sseServer(() => [
     'data: ' + JSON.stringify({ choices: [{ delta: { content: 'tam cevap' }, finish_reason: 'stop' }] }) + '\n\n',
@@ -338,6 +372,158 @@ test('ilgisiz 400 (context length) parametre düşülmeden aynen fırlatılır',
       /400/
     );
     assert.equal(bodies.length, 1, 'tek istek — sessiz retry YOK');
+  } finally {
+    srv.close();
+  }
+});
+
+test('chatOnce: OpenRouter Anthropic isteğine cache_control ve oturum affinitesi ekler', async () => {
+  resetCaps();
+  const http = require('node:http');
+  let seen = null;
+  const srv = http.createServer((req, res) => {
+    let raw = '';
+    req.on('data', (c) => (raw += c));
+    req.on('end', () => {
+      seen = { body: JSON.parse(raw), headers: req.headers };
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }],
+          usage: { prompt_tokens: 100, prompt_tokens_details: { cached_tokens: 64 } },
+        })
+      );
+    });
+  });
+  await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+  try {
+    const port = srv.address().port;
+    const sel = {
+      url: `http://127.0.0.1:${port}/v1/chat/completions`,
+      key: 'k',
+      model: 'anthropic/claude-3.5-sonnet',
+      providerId: 'openrouter',
+    };
+    const r = await chatOnce(sel, {
+      messages: [
+        { role: 'system', content: 'sistem' },
+        { role: 'user', content: 'selam' },
+      ],
+      tools: [{ type: 'function', function: { name: 'f', parameters: { type: 'object' } } }],
+      cacheKey: 'aff-1',
+      sessionId: 'ses-child',
+      parentSessionId: 'ses-parent',
+      toolChoice: 'none',
+      temperature: 0,
+    });
+    assert.equal(r.content, 'ok');
+    assert.equal(r.usage.cacheReadTokens, 64);
+    assert.equal(r.usage.nonCachedInputTokens, 36);
+    assert.equal(seen.body.tool_choice, 'none');
+
+    assert.deepStrictEqual(seen.body.tools[0].cache_control, { type: 'ephemeral' });
+    assert.ok(Array.isArray(seen.body.messages[0].content));
+    assert.deepStrictEqual(seen.body.messages[0].content[0].cache_control, { type: 'ephemeral' });
+    assert.deepStrictEqual(seen.body.messages[1].content[0].cache_control, { type: 'ephemeral' });
+    assert.equal('prompt_cache_key' in seen.body, false);
+
+    assert.equal(seen.headers['x-opencode-session'], 'aff-1');
+    assert.equal(seen.headers['x-opencode-session-id'], 'ses-child');
+    assert.equal(seen.headers['x-session-affinity'], 'aff-1');
+    assert.equal(seen.headers['x-session-id'], 'aff-1');
+    assert.equal(seen.headers['x-opencode-parent-session-id'], 'ses-parent');
+    assert.equal(seen.headers['x-parent-session-id'], 'ses-parent');
+  } finally {
+    srv.close();
+  }
+});
+
+test('chatOnce: cache_control reddedilirse işaretsiz yeniden dener ve kalıcı öğrenir', async () => {
+  resetCaps();
+  const { srv, bodies } = capsServer((parsed, res) => {
+    if (JSON.stringify(parsed).includes('cache_control')) {
+      return bad400(res, 'cache_control is not supported by this provider');
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] }));
+  });
+  await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+  try {
+    const port = srv.address().port;
+    const sel = {
+      url: `http://127.0.0.1:${port}/v1/chat/completions`,
+      key: 'k',
+      model: 'anthropic/claude-3.5-sonnet',
+      providerId: 'openrouter',
+    };
+    const body = {
+      messages: [
+        { role: 'system', content: 'sistem' },
+        { role: 'user', content: 'selam' },
+      ],
+      tools: [{ type: 'function', function: { name: 'f', parameters: { type: 'object' } } }],
+      temperature: 0,
+    };
+    const drops = [];
+    const r = await chatOnce(sel, body, { onParamDrop: (p) => drops.push(p) });
+    assert.equal(r.content, 'ok');
+    assert.equal(bodies.length, 2);
+    assert.ok(JSON.stringify(bodies[0]).includes('cache_control'));
+    assert.ok(!JSON.stringify(bodies[1]).includes('cache_control'));
+    assert.deepStrictEqual(drops, ['noCacheControl']);
+    assert.equal(capsFor(sel).noCacheControl, true);
+
+    /* sonraki çağrıda işaret hiç gönderilmez */
+    await chatOnce(sel, body);
+    assert.equal(bodies.length, 3);
+    assert.ok(!JSON.stringify(bodies[2]).includes('cache_control'));
+  } finally {
+    srv.close();
+  }
+});
+
+test('chatOnce: tool_choice reddedilirse son adımda araçlar da gönderilmez', async () => {
+  resetCaps();
+  const { srv, bodies } = capsServer((parsed, res) => {
+    if ('tool_choice' in parsed) {
+      return bad400(res, 'tool_choice is not supported by this provider');
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] }));
+  });
+  await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+  try {
+    const port = srv.address().port;
+    const sel = {
+      url: `http://127.0.0.1:${port}/v1/chat/completions`,
+      key: 'k',
+      model: 'anthropic/claude-3.5-sonnet',
+      providerId: 'openrouter',
+    };
+    const body = {
+      messages: [
+        { role: 'system', content: 'sistem' },
+        { role: 'user', content: 'selam' },
+      ],
+      tools: [{ type: 'function', function: { name: 'f', parameters: { type: 'object' } } }],
+      toolChoice: 'none',
+      temperature: 0,
+    };
+    const drops = [];
+    const r = await chatOnce(sel, body, { onParamDrop: (p) => drops.push(p) });
+    assert.equal(r.content, 'ok');
+    assert.equal(bodies.length, 2);
+    assert.equal(bodies[0].tool_choice, 'none');
+    assert.ok(Array.isArray(bodies[0].tools));
+    assert.equal('tool_choice' in bodies[1], false);
+    assert.equal('tools' in bodies[1], false, 'tool_choice reddedilince araçlar da düşer');
+    assert.deepStrictEqual(drops, ['noToolChoice']);
+    assert.equal(capsFor(sel).noToolChoice, true);
+
+    /* sonraki son-adım isteğinde de araç şemaları gönderilmez */
+    await chatOnce(sel, body);
+    assert.equal(bodies.length, 3);
+    assert.equal('tools' in bodies[2], false);
   } finally {
     srv.close();
   }

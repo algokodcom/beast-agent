@@ -13,7 +13,7 @@ function file() {
   return path.join(beastRoot(), 'usage.json');
 }
 
-let days = []; // [{ date:'YYYY-MM-DD', models:{ 'pid::model': {calls,pin,pout,cost} } }]
+let days = []; // [{ date:'YYYY-MM-DD', models:{ 'pid::model': {calls,pin,pout,cread,cwrite,cost} } }]
 let loaded = false;
 
 function today() {
@@ -58,17 +58,35 @@ function keyOf(providerId, model) {
 
 /* Bir çağrının kullanımını işle. meta: {providerId, model, costIn, costOut}
    (1M token fiyatları, opsiyonel). Saf davranış + disk. */
-function record({ providerId, model, promptTokens = 0, completionTokens = 0, costIn = null, costOut = null } = {}) {
+function record({
+  providerId,
+  model,
+  promptTokens = 0,
+  completionTokens = 0,
+  cacheReadTokens = 0,
+  cacheWriteTokens = 0,
+  costIn = null,
+  costOut = null,
+} = {}) {
   load();
   const pin = Math.max(0, Math.round(Number(promptTokens) || 0));
   const pout = Math.max(0, Math.round(Number(completionTokens) || 0));
-  if (!pin && !pout) return;
+  const cread = Math.max(0, Math.round(Number(cacheReadTokens) || 0));
+  const cwrite = Math.max(0, Math.round(Number(cacheWriteTokens) || 0));
+  if (!pin && !pout && !cread && !cwrite) return;
   const row = dayRow(today());
   const k = keyOf(providerId, model);
-  const m = row.models[k] || (row.models[k] = { calls: 0, pin: 0, pout: 0, cost: 0 });
-  m.calls += 1;
-  m.pin += pin;
-  m.pout += pout;
+  const m =
+    row.models[k] ||
+    (row.models[k] = { calls: 0, pin: 0, pout: 0, cread: 0, cwrite: 0, cost: 0 });
+  /* eski usage.json satırlarında cread/cwrite yok — migration sırasında
+     undefined + sayı = NaN olmasın */
+  m.calls = (Number(m.calls) || 0) + 1;
+  m.pin = (Number(m.pin) || 0) + pin;
+  m.pout = (Number(m.pout) || 0) + pout;
+  m.cread = (Number(m.cread) || 0) + cread;
+  m.cwrite = (Number(m.cwrite) || 0) + cwrite;
+  m.cost = Number(m.cost) || 0;
   if (Number.isFinite(costIn) && Number.isFinite(costOut)) {
     m.cost += (pin * costIn + pout * costOut) / 1000000;
   }
@@ -79,10 +97,12 @@ function sumRows(rows) {
   const out = {};
   for (const r of rows) {
     for (const [k, v] of Object.entries(r.models || {})) {
-      const t = out[k] || (out[k] = { calls: 0, pin: 0, pout: 0, cost: 0 });
+      const t = out[k] || (out[k] = { calls: 0, pin: 0, pout: 0, cread: 0, cwrite: 0, cost: 0 });
       t.calls += v.calls || 0;
       t.pin += v.pin || 0;
       t.pout += v.pout || 0;
+      t.cread += v.cread || 0;
+      t.cwrite += v.cwrite || 0;
       t.cost += v.cost || 0;
     }
   }
@@ -110,11 +130,13 @@ function report() {
 }
 
 function totalOf(models) {
-  let calls = 0, pin = 0, pout = 0, cost = 0;
+  let calls = 0, pin = 0, pout = 0, cread = 0, cwrite = 0, cost = 0;
   for (const v of Object.values(models)) {
-    calls += v.calls; pin += v.pin; pout += v.pout; cost += v.cost;
+    calls += v.calls; pin += v.pin; pout += v.pout;
+    cread += v.cread || 0; cwrite += v.cwrite || 0;
+    cost += v.cost;
   }
-  return { calls, pin, pout, cost: Math.round(cost * 10000) / 10000 };
+  return { calls, pin, pout, cread, cwrite, cost: Math.round(cost * 10000) / 10000 };
 }
 
 function reset() {

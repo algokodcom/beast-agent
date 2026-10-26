@@ -4215,8 +4215,10 @@ function reloadBackend() {
           usageMod.record({
             providerId: ev.meta ? ev.meta.providerId : null,
             model: ev.meta ? ev.meta.model : null,
-            promptTokens: ev.usage.prompt_tokens || 0,
-            completionTokens: ev.usage.completion_tokens || 0,
+            promptTokens: ev.usage.prompt_tokens ?? ev.usage.input_tokens ?? 0,
+            completionTokens: ev.usage.completion_tokens ?? ev.usage.output_tokens ?? 0,
+            cacheReadTokens: ev.usage.cacheReadTokens || 0,
+            cacheWriteTokens: ev.usage.cacheWriteTokens || 0,
             costIn: ev.meta ? ev.meta.costIn : null,
             costOut: ev.meta ? ev.meta.costOut : null,
           });

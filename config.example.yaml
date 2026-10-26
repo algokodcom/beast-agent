@@ -32,6 +32,27 @@ providers:
       gpt-4o-mini: {}
       gpt-4o: {}
 
+  # Optional prompt-cache overrides (per provider). Beast auto-detects the
+  # provider/model route; use these only when a custom endpoint needs a hint.
+  #   cache: auto | qwen | anthropic | none
+  #     auto      = last tool + system boundaries + conversation tail (4 breakpoints)
+  #     qwen      = Qwen-style cache_control on system + conversation tail
+  #                 (Qwen caches tools together with the system prompt)
+  #     anthropic = same as auto (explicit Anthropic-compatible route)
+  #     none      = no inline cache_control; OpenAI-style providers still use
+  #                 prompt_cache_key/session affinity where supported
+  #   cache_format: anthropic   # alias for cache: anthropic
+  #   cache_ttl_seconds: 3600   # >=3600 sends ttl:"1h" where supported
+  #
+  # openrouter:
+  #   name: OpenRouter
+  #   base_url: https://openrouter.ai/api/v1
+  #   key_env: OPENROUTER_API_KEY
+  #   cache: auto
+  #   cache_ttl_seconds: 3600
+  #   models:
+  #     anthropic/claude-sonnet-4.5: {}
+
 model:
   provider: opencode  # default provider id (the first provider is used if omitted)
   default: glm-5.2    # default model

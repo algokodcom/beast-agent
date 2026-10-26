@@ -19,6 +19,7 @@ Beast Agent is a personal AI agent that runs on your machine and connects to **a
 
 - **Voice reply engine** — 5 motor seçimi: eMa Lightning + Ahenk Cep (yerel PyTorch), Edge TTS (ücretsiz online), Piper (~21 MB yerel), Supertonic (31 dil ONNX); motor yanıt verirse zincir düşer, ses asla susmaz. Yayın sırasında cümle kuyruğu kayıpsızdır (kısa parça taşınır, sentez hatası tek tekrarla korunur)
 - **Local document library (doc_chat)** — belge klasörünü indeksle (PDF sayfa bazlı + metin/kod), MiniLM embedding ile semantik+keyword arama, dosya+sayfa alıntıları; tamamen offline
+- **Prompt-cache discipline** — stable system prompt + a tail "current context" message, OpenCode-style `cache_control` breakpoints and session affinity (child agents share the parent's cache prefix); per-provider overrides available via `cache`, `cache_format` and `cache_ttl_seconds` in config.yaml
 - **Multi-provider** — unlimited models from config.yaml; instant switching in the picker, role-based models (vision / terminal / coding / subagent)
 - **FALLOUT chain** ⚛ — if a model fails, Beast automatically moves to the next provider and resumes where it left off
 - **CEO mode** — the talking agent does no work itself; it delegates orders to parallel agents with a live monitoring panel

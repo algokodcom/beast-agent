@@ -962,3 +962,42 @@ test('send: mention mesajı bekleyen bağlam mesajıyla birleşir ve run başlar
   assert.ok(events.some((e) => e.type === 'error' || e.type === 'done'));
 });
 
+/* ---------- prompt-cache disiplini: sabit system + kuyruk bağlamı ---------- */
+
+test('cache: stable system tarih/saat içermez, dinamik bağlam kuyruğa eklenir', async () => {
+  const eng = makeEngine();
+  const s = eng._load(eng.createSession().id);
+  const stable = await eng.buildSystem('test', s, { stable: true });
+  const dynamic = await eng.buildDynamicContext('test', s);
+  assert.ok(!/Yerel saat:/.test(stable), 'stable system saat içermemeli');
+  assert.ok(!/Yerel tarih:/.test(stable), 'stable system tarih içermemeli');
+  assert.match(stable, /GÜNCEL BAĞLAM/);
+  assert.match(dynamic, /# GÜNCEL BAĞLAM/);
+  assert.match(dynamic, /Yerel tarih:/);
+  assert.match(dynamic, /Yerel saat:/);
+  /* varsayılan buildSystem eski davranışı korur (testler/consumerlar) */
+  const legacy = await eng.buildSystem('test', s);
+  assert.match(legacy, /Yerel saat:/);
+});
+
+test('cache: dinamik bağlam payload kopyasına eklenir, oturum dizisi değişmez', () => {
+  const eng = makeEngine();
+  const payload = [
+    { role: 'system', content: 'sistem' },
+    { role: 'user', content: 'soru' },
+  ];
+  const out = eng._appendDynamicContext(payload, '# GÜNCEL BAĞLAM\nYerel saat: 10:00');
+  assert.equal(payload.length, 2, 'girdi dizisi mutasyona uğramamalı');
+  assert.equal(out.length, 3);
+  assert.equal(out[2].role, 'user');
+  assert.match(out[2].content, /GÜNCEL BAĞLAM/);
+});
+
+test('cache: arka plan ajanı ana oturumun affinitesini paylaşır', () => {
+  const eng = makeEngine();
+  const sid = eng.createSession().id;
+  assert.equal(eng._cacheAffinity({ id: sid }), sid);
+  eng._bgJobs.set(sid, { parentId: 'parent-123' });
+  assert.equal(eng._cacheAffinity({ id: sid }), 'parent-123');
+});
+

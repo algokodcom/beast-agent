@@ -11,6 +11,7 @@
 
 const fs = require('fs');
 const crypto = require('crypto');
+const cache = require('./cache');
 
 const RETRYABLE_STATUS = new Set([408, 409, 425, 429, 500, 502, 503, 504]);
 const MAX_RETRIES = 3; /* sağlayıcı geçici HTTP hataları */
@@ -159,15 +160,17 @@ function wantsCacheKey(sel) {
    isteklerde reddedilen parametre hiç gönderilmez. models.dev metadata'sına
    internet bağımlılığı olmadan çalışma-zamanında eşdeğer davranır. */
 
-const CAPS_FLAGS = ['noReasoning', 'noTemperature', 'noCacheKey'];
+const CAPS_FLAGS = ['noReasoning', 'noTemperature', 'noCacheKey', 'noCacheControl', 'noToolChoice'];
 const PARAM_LABELS = {
   noReasoning: 'reasoning_effort',
   noTemperature: 'temperature',
   noCacheKey: 'prompt_cache_key',
+  noCacheControl: 'cache_control',
+  noToolChoice: 'tool_choice',
 };
 
 let _capsFile = null;
-const _caps = new Map(); /* "providerId::model" -> { noReasoning?, noTemperature?, noCacheKey? } */
+const _caps = new Map(); /* "providerId::model" -> { noReasoning?, noTemperature?, noCacheKey?, noCacheControl?, noToolChoice? } */
 
 function capsKey(sel) {
   return String((sel && sel.providerId) || '') + '::' + String((sel && sel.model) || '');
@@ -265,15 +268,31 @@ async function withParamFallbacks(sel, body0, run, { signal, onParamDrop, onEffo
       const generic = GENERIC_400_RE.test(msg);
       const reasonHint = /reason|effort|thinking/i.test(msg);
       const tempHint = /temperature/i.test(msg);
+      const cacheHint = /cache[_ -]?control|ephemeral/i.test(msg);
+      const toolHint = /tool[_ -]?choice|tool choice/i.test(msg);
+      const canCacheControl =
+        body0.cache !== false &&
+        body0.cache !== 'none' &&
+        !active.noCacheControl &&
+        cache.wantsCacheControl(sel);
 
       /* denenecek atlamalar öncelik sırasıyla: önce reasoning merdiveni
          (seviye düşür — Mimo: max reddedilir, low çalışır), sonra diğerleri */
       const actions = [];
-      if ((reasonHint || generic) && body0.reasoningEffort && !active.noReasoning) actions.push('reasoning');
-      if ((generic || tempHint) && !active.noTemperature) actions.push('temperature');
+      const add = (a) => {
+        if (a && !actions.includes(a)) actions.push(a);
+      };
+      if (cacheHint && canCacheControl) add('cacheControl');
+      if (toolHint && body0.toolChoice && !active.noToolChoice) add('toolChoice');
+      if ((reasonHint || generic) && body0.reasoningEffort && !active.noReasoning) add('reasoning');
+      if ((generic || tempHint) && !active.noTemperature) add('temperature');
       if ((generic || /cache/i.test(msg)) && body0.cacheKey && wantsCacheKey(sel) && !active.noCacheKey) {
-        actions.push('cacheKey');
+        add('cacheKey');
       }
+      /* genel 400: hangi alan olduğu belli değil — zararsız cache/tool alanlarını
+         da sırayla düşür (başarılı kombinasyon kalıcı öğrenilir) */
+      if (generic && canCacheControl) add('cacheControl');
+      if (generic && body0.toolChoice && !active.noToolChoice) add('toolChoice');
       const act = actions[0];
       if (!act) throw e;
 
@@ -312,6 +331,16 @@ async function withParamFallbacks(sel, body0, run, { signal, onParamDrop, onEffo
         active.noCacheKey = true;
         try {
           onParamDrop && onParamDrop('noCacheKey');
+        } catch {}
+      } else if (act === 'cacheControl') {
+        active.noCacheControl = true;
+        try {
+          onParamDrop && onParamDrop('noCacheControl');
+        } catch {}
+      } else if (act === 'toolChoice') {
+        active.noToolChoice = true;
+        try {
+          onParamDrop && onParamDrop('noToolChoice');
         } catch {}
       }
     }
@@ -416,13 +445,43 @@ function sessionHeaderId(body) {
   return _sessionFallback;
 }
 
+/* OpenCode model-request.ts:271-288 portu: sağlayıcı cache yönlendirmesi için
+   oturum kimliği + affinite başlıkları. Alt-ajan/arka plan oturumları ana
+   oturumun affinitesini taşır → aynı önek cache'ini paylaşırlar. */
+function sessionHeaders(body) {
+  const affinity = sessionHeaderId(body);
+  const sid = String((body && body.sessionId) || affinity).trim() || affinity;
+  const parent = String((body && body.parentSessionId) || '').trim();
+  return {
+    'x-opencode-session-id': sid,
+    'x-session-affinity': affinity,
+    'X-Session-Id': affinity,
+    'x-opencode-session': affinity,
+    ...(parent
+      ? { 'x-opencode-parent-session-id': parent, 'x-parent-session-id': parent }
+      : {}),
+  };
+}
+
 async function openChat(sel, body, { stream, signal, drops } = {}) {
   const d = drops || {};
+  /* Satır içi cache_control işaretleri yalnız destekleyen rotalara; istek
+     mesajlarının KOPYASINA uygulanır (oturum kaydı değişmez). */
+  const cached = cache.applyCachePolicy(body.messages, body.tools, sel, {
+    disabled: d.noCacheControl || body.cache === false || body.cache === 'none',
+    ttlSeconds: body.cacheTtlSeconds,
+  });
+  /* tool_choice reddedilmişse son adımda araçları da gönderme: aksi halde
+     model son turda yeni bir araç çağırıp tur limitini aşabilir. */
+  const toolsForRequest =
+    cached.tools && cached.tools.length && !(body.toolChoice && d.noToolChoice)
+      ? cached.tools
+      : null;
   const payload = {
     model: sel.model,
-    messages: body.messages,
+    messages: cached.messages,
     stream,
-    ...(body.tools && body.tools.length ? { tools: body.tools } : {}),
+    ...(toolsForRequest ? { tools: toolsForRequest } : {}),
   };
   if (!d.noTemperature) {
     payload.temperature = body.temperature ?? 0.6;
@@ -437,6 +496,11 @@ async function openChat(sel, body, { stream, signal, drops } = {}) {
   if (body.cacheKey && wantsCacheKey(sel) && !d.noCacheKey) {
     payload.prompt_cache_key = String(body.cacheKey);
   }
+  /* Son adımda araç şemalarını KORU (önek cache'i bozulmasın) ama araç
+     çağrısını kapat — OpenCode runner/llm.ts final-step disiplini. */
+  if (body.toolChoice && !d.noToolChoice && toolsForRequest) {
+    payload.tool_choice = body.toolChoice;
+  }
   const target = sel.url;
   return fetch(target, {
     method: 'POST',
@@ -446,7 +510,7 @@ async function openChat(sel, body, { stream, signal, drops } = {}) {
       Authorization: `Bearer ${sel.key}`,
       'HTTP-Referer': 'https://localhost/beast',
       'X-Title': 'Beast Agent',
-      'x-opencode-session': sessionHeaderId(body),
+      ...sessionHeaders(body),
     },
     body: JSON.stringify(payload),
   });
@@ -517,7 +581,7 @@ async function streamOnce(sel, body, { signal, onDelta, onRetry } = {}, drops = 
             return;
           }
 
-          if (json.usage) state.usage = json.usage;
+          if (json.usage) state.usage = cache.normalizeUsage(json.usage);
           const ch = json.choices && json.choices[0];
           if (!ch) return;
           if (ch.finish_reason) state.finishReason = ch.finish_reason;
@@ -635,7 +699,7 @@ async function chatStreamAuto(sel, body, opts = {}) {
     }
     if (!cont.content || (cont.toolCalls && cont.toolCalls.length)) break;
     full += cont.content;
-    last = { ...cont, content: full, usage: sumUsage(first.usage, cont.usage) };
+    last = { ...cont, content: full, usage: sumUsage(last.usage, cont.usage) };
     if (cont.finishReason !== 'length') break;
   }
   return last;
@@ -668,7 +732,7 @@ async function chatOnce(sel, body, { signal, onRetry, onParamDrop, onEffortDowng
     content: msg.content || '',
     reasoning: msg.reasoning_content || msg.reasoning || '',
     toolCalls: msg.tool_calls || [],
-    usage: json.usage || null,
+    usage: cache.normalizeUsage(json.usage),
     finishReason: json.choices?.[0]?.finish_reason,
   };
 }
@@ -689,5 +753,7 @@ module.exports = {
   PARAM_LABELS,
   isNetworkError,
   wantsCacheKey,
+  wantsCacheControl: cache.wantsCacheControl,
+  normalizeUsage: cache.normalizeUsage,
   parseRetryAfter,
 };

@@ -14,6 +14,7 @@ const OPENCODE_SESSION = 'beast-' + crypto.randomUUID();
 const { spawn } = require('child_process');
 const { Engine, OBSERVE_MARK, stripAiDashes } = require('./agent/engine');
 const { loadBeastConfig, parseEnvFile, beastDir } = require('./agent/config');
+const { OpenCodeBridge, BRIDGE_PROVIDER_ID, DEFAULT_FREE_MODELS, findOpenCodeBin } = require('./agent/opencode-bridge');
 const bots = require('./agent/bots');
 const mqueue = require('./agent/mqueue');
 const memory = require('./agent/memory');
@@ -540,6 +541,8 @@ function parseSettingsText(text) {
   }
   if (typeof parsed.typesafe.model !== 'string' || !parsed.typesafe.model.trim()) parsed.typesafe.model = 'jev-latest';
   if (typeof parsed.typesafe.enabled !== 'boolean') parsed.typesafe.enabled = true;
+  /* OpenCode Bridge yalnız kullanıcı tek tıkla kurduysa açık kalır. */
+  if (typeof parsed.opencodeBridge !== 'boolean') parsed.opencodeBridge = false;
   return parsed;
 }
 
@@ -4587,6 +4590,21 @@ app.whenReady().then(() => {
     createSplash();
     createWindow();
     log.info('main', 'Beast Agent başlatıldı');
+    /* Daha önce kurulmuş OpenCode Bridge varsa sunucusunu erkenden ayağa
+       kaldır; böylece kayıtlı provider portu/anahtarı tazelenir. */
+    try {
+      const bridgeWanted =
+        settings.opencodeBridge === true ||
+        (Array.isArray(settings.customProviders) &&
+          settings.customProviders.some((p) => p && p.id === BRIDGE_PROVIDER_ID));
+      if (bridgeWanted) {
+        ensureOpenCodeBridge()
+          .then(() => {
+            try { win && !win.isDestroyed() && win.webContents.send('agent:event', { type: 'modelChanged' }); } catch {}
+          })
+          .catch((e) => log.error('main', 'OpenCode bridge başlatılamadı: ' + String((e && e.message) || e)));
+      }
+    } catch {}
     createTray();
     /* BEAST MOBILE: cihaz kodu garanti (yoksa üretilir, diskte kalıcı) +
        WS köprüsü WhatsApp/Telegram gibi AYNI süreçte otomatik başlar —
@@ -4690,6 +4708,7 @@ app.whenReady().then(() => {
       try { stopMobileWatchdog(); } catch {} // Beast Mobile bekçisi dur
       try { toolsMod.disposeShellSessions(); } catch {} // kalıcı shell oturumlarını kapat
       try { require('./agent/mcp').stopAll(); } catch {} // MCP server süreçlerini kapat
+      try { stopOpenCodeBridge(); } catch {} // OpenCode bridge + alt sunucu
       try { if (jevMod) jevMod.backend.shutdown(); } catch {} // JevTrader köprüleri (MT5/api/wa/tg/dc)
     });
 
@@ -13049,6 +13068,14 @@ ipcMain.handle('custom:set', (_e, list) => {
     if ((k === SECRET_MASK || !k) && old && old.key) item.key = String(old.key);
     return item;
   });
+  const hadBridge = prev.some((p) => p && p.id === BRIDGE_PROVIDER_ID);
+  const hasBridge = settings.customProviders.some((p) => p && p.id === BRIDGE_PROVIDER_ID);
+  if (hadBridge && !hasBridge) {
+    settings.opencodeBridge = false;
+    try { stopOpenCodeBridge(); } catch {}
+  } else if (hasBridge) {
+    settings.opencodeBridge = true;
+  }
   saveSettings();
   engine.setCustomProviders(settings.customProviders);
   return engine.publicState();
@@ -13108,6 +13135,203 @@ async function refreshModelsAll() {
 ipcMain.handle('models:refresh', async () => refreshModelsAll());
 
 ipcMain.handle('providers:builtin', () => BUILTIN_PROVIDERS);
+
+/* ---------------- OPENCODE BRIDGE (FREE ZEN MODELS) ----------------
+   Zen free modelleri doğrudan Beast'ten çağrılamıyor (FreeUsageLimitError).
+   Bu köprü, gerçek OpenCode CLI'sini `opencode serve` ile çalıştırır ve
+   Beast'in OpenAI uyumlu sohbet isteklerini OpenCode oturumlarına çevirir.
+   Header taklidi YOK; ücretsiz kota gerçek OpenCode istemcisi üzerinden
+   kullanılır. Provider, tek tıkla kurulur ve model listesine eklenir. */
+
+const OPENCODE_BRIDGE_DEFAULT_PORT = 8646;
+let opencodeBridge = null;
+let opencodeBridgeStarting = null;
+
+function hasOpencodeZenAuth() {
+  for (const c of opencodeAuthCandidates()) {
+    if (!c) continue;
+    if (!String(c).toLowerCase().endsWith('auth.json')) {
+      if (String(c).length > 8) return true; // OPENCODE_API_KEY env değeri
+      continue;
+    }
+    try {
+      const j = JSON.parse(fs.readFileSync(c, 'utf8'));
+      if (j && j.opencode && typeof j.opencode.key === 'string' && j.opencode.key.length > 8) return true;
+      if (findZenKeyDeep(j, /^opencode$/i)) return true;
+    } catch {}
+  }
+  return false;
+}
+
+async function ensureOpenCodeBridgePrereqs() {
+  if (!findOpenCodeBin()) {
+    log.info('main', 'OpenCode CLI yok — npm install -g opencode-ai');
+    const ins = await runNpmGlobalInstall();
+    if (!ins.ok) throw new Error('OpenCode CLI kurulamadı (' + (ins.error || '?') + ') — npm kurulu mu?');
+    if (!findOpenCodeBin()) throw new Error('OpenCode CLI kuruldu ama bulunamadı — terminali yeniden aç');
+  }
+  if (!hasOpencodeZenAuth()) {
+    if (!openZenAuthWindow()) {
+      throw new Error('OpenCode giriş penceresi açılamadı — terminalde `opencode auth login` çalıştır');
+    }
+    const deadline = Date.now() + 180000;
+    while (Date.now() < deadline && !hasOpencodeZenAuth()) {
+      await new Promise((r) => setTimeout(r, 3000));
+    }
+    if (!hasOpencodeZenAuth()) {
+      throw new Error('OpenCode girişi tamamlanmadı (3 dk) — giriş yapıp tekrar dene');
+    }
+  }
+}
+
+function applyOpenCodeBridgeProvider(info) {
+  const entry = {
+    id: BRIDGE_PROVIDER_ID,
+    name: 'OpenCode Bridge (Free)',
+    baseUrl: info.baseUrl,
+    key: info.key,
+    models: Array.isArray(info.models) ? info.models.slice() : [],
+    bridge: true,
+  };
+  const list = Array.isArray(settings.customProviders)
+    ? settings.customProviders.filter((p) => p && p.id !== BRIDGE_PROVIDER_ID)
+    : [];
+  list.unshift(entry);
+  settings.customProviders = list;
+  settings.opencodeBridge = true;
+  saveSettings();
+  if (engine) {
+    engine.setCustomProviders(settings.customProviders);
+    try { engine.setModelOverride(settings.modelOverride || null); } catch {}
+  }
+  return entry;
+}
+
+async function ensureOpenCodeBridge() {
+  if (opencodeBridge && opencodeBridge.baseUrl) return opencodeBridge.info();
+  if (opencodeBridgeStarting) return opencodeBridgeStarting;
+  opencodeBridgeStarting = (async () => {
+    let key = String(settings.opencodeBridgeKey || '').trim();
+    if (key.length < 16) {
+      key = 'beast-' + crypto.randomBytes(18).toString('hex');
+      settings.opencodeBridgeKey = key;
+      saveSettings();
+    }
+    const b = new OpenCodeBridge({
+      dataDir: APP_DIR,
+      log,
+      models: DEFAULT_FREE_MODELS,
+      key,
+      port: Number(settings.opencodeBridgePort) || OPENCODE_BRIDGE_DEFAULT_PORT,
+    });
+    try {
+      const info = await b.start();
+      opencodeBridge = b;
+      applyOpenCodeBridgeProvider(info);
+      log.info('main', 'OpenCode bridge hazır: ' + info.baseUrl + ' · ' + info.models.length + ' model');
+      return info;
+    } catch (e) {
+      try { await b.stop(); } catch {}
+      throw e;
+    }
+  })().finally(() => { opencodeBridgeStarting = null; });
+  return opencodeBridgeStarting;
+}
+
+async function stopOpenCodeBridge() {
+  const b = opencodeBridge;
+  opencodeBridge = null;
+  if (b) {
+    try { await b.stop(); } catch {}
+  }
+}
+
+async function testOpenCodeBridgeModel(info, model) {
+  try {
+    const res = await fetch(info.baseUrl + '/chat/completions', {
+      method: 'POST',
+      headers: { authorization: 'Bearer ' + info.key, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model,
+        messages: [{ role: 'user', content: 'Reply with exactly: pong' }],
+        stream: false,
+        max_tokens: 8,
+      }),
+      signal: AbortSignal.timeout(90000),
+    });
+    const j = await res.json().catch(() => null);
+    if (!res.ok) {
+      return {
+        ok: false,
+        status: res.status,
+        error: (j && j.error && j.error.message) || ('HTTP ' + res.status),
+      };
+    }
+    const ch = j && j.choices && j.choices[0];
+    const msg = ch && ch.message;
+    const ok = !!(msg && (typeof msg.content === 'string' || Array.isArray(msg.tool_calls)));
+    return { ok, status: res.status, error: ok ? '' : 'boş yanıt' };
+  } catch (e) {
+    return { ok: false, status: 0, error: String((e && e.message) || e) };
+  }
+}
+
+ipcMain.handle('bridge:oneClick', async () => {
+  try {
+    await ensureOpenCodeBridgePrereqs();
+    let info = await ensureOpenCodeBridge();
+    if (opencodeBridge) {
+      try {
+        await opencodeBridge.refreshModels();
+        info = opencodeBridge.info();
+      } catch {}
+    }
+    const candidates = [];
+    for (const m of ['big-pickle', 'beam-free', ...(info.models || [])]) {
+      if (m && !candidates.includes(m)) candidates.push(m);
+      if (candidates.length >= 4) break;
+    }
+    if (!candidates.length) return { ok: false, error: 'OpenCode free model listesi boş' };
+
+    let chosen = '';
+    let lastErr = '';
+    let authFail = false;
+    for (const model of candidates) {
+      const r = await testOpenCodeBridgeModel(info, model);
+      if (r.ok) {
+        chosen = model;
+        break;
+      }
+      if (r.status === 401 || r.status === 403) authFail = true;
+      lastErr = model + ': ' + (r.error || ('HTTP ' + r.status));
+      log.warn('main', 'OpenCode bridge test başarısız: ' + lastErr);
+    }
+    if (!chosen) {
+      return {
+        ok: false,
+        error: authFail
+          ? 'OpenCode Zen yetkisi yok/geçersiz — terminalde `opencode auth login` ile OpenCode hesabına giriş yap'
+          : 'Hiçbir free model yanıt vermedi — ' + lastErr,
+      };
+    }
+
+    const entry = applyOpenCodeBridgeProvider(info);
+    const sel = 'custom:' + BRIDGE_PROVIDER_ID + '::' + chosen;
+    settings.opencodeBridge = true;
+    settings.modelOverride = sel;
+    saveSettings();
+    if (engine) {
+      engine.setCustomProviders(settings.customProviders || []);
+      engine.setModelOverride(sel);
+    }
+    try { win && !win.isDestroyed() && win.webContents.send('agent:event', { type: 'modelChanged' }); } catch {}
+    log.info('main', `OpenCode bridge tek tık: ${chosen} seçildi (${info.models.length} model)`);
+    return { ok: true, models: info.models, model: chosen, provider: entry.name, baseUrl: info.baseUrl };
+  } catch (e) {
+    log.error('main', 'bridge oneClick hata: ' + String((e && e.message) || e));
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+});
 
 /* ---------------- FEATURE 1: TEK TIKLA MODEL (OpenCode Zen Free) ----------------
    Akış: token var mı (env / opencode auth.json) → yoksa CLI kur (npm) →

@@ -3,6 +3,9 @@
 # (For portable setups, set the BEAST_DATA environment variable to use another folder.)
 
 # RECOMMENDED: OpenCode Zen — free models, no credit card required (opencode.ai/auth)
+# NOTE: Zen free models may reject direct requests with 429 FreeUsageLimitError.
+# Use Settings → Provider → “OpenCode Bridge Kur (Free Zen)” for the official
+# OpenCode-client bridge; it registers a local provider automatically.
 providers:
   opencode:
     name: OpenCode Zen
@@ -11,8 +14,9 @@ providers:
     models:
       glm-5.2: {}
       kimi-k2.7-code: {}
-      deepseek-v4-flash-free: {}
       big-pickle: {}
+      beam-free: {}
+      deepseek-v4.1-flash-free: {}
       minimax-m3: {}
   # If you have an OpenCode Go subscription, use base_url: https://opencode.ai/zen/go/v1
 

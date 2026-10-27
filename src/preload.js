@@ -194,6 +194,7 @@ contextBridge.exposeInMainWorld('beast', {
   fetchModels: (opts) => ipcRenderer.invoke('custom:fetchModels', opts),
   builtinProviders: () => ipcRenderer.invoke('providers:builtin'),
   zenOneClick: () => ipcRenderer.invoke('zen:oneClick'),
+  bridgeOneClick: () => ipcRenderer.invoke('bridge:oneClick'),
 
   sandboxList: () => ipcRenderer.invoke('sandbox:list'),
   sandboxClone: (input) => ipcRenderer.invoke('sandbox:clone', input),

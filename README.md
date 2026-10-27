@@ -72,7 +72,41 @@ providers:
       - minimax-m3
 ```
 
-> Free models include `deepseek-v4-flash-free`, `big-pickle`, `mimo-v2.5-free`, `nemotron-3-ultra-free`. If you have an **OpenCode Go** subscription, use the same config with `baseUrl: https://opencode.ai/zen/go/v1`.
+> Free models include `big-pickle`, `beam-free`, `deepseek-v4.1-flash-free`, `flint-40b-free`, `glm-5.3-flash-free`, `jev-1.13-free`, `mimo-v2.6-flash-free`, `nemotron-3.5-lightning-free`, `nemotron-3.5-super-vl-free`. The list changes; Beast refreshes it automatically. If you have an **OpenCode Go** subscription, use the same config with `baseUrl: https://opencode.ai/zen/go/v1`.
+
+#### Free Zen models: OpenCode Bridge (recommended)
+
+OpenCode Zen restricts **free** models to the real OpenCode client. Calling
+`https://opencode.ai/zen/v1` directly from another app can return
+`429 FreeUsageLimitError` even when the same account works inside OpenCode.
+Beast therefore ships an optional local bridge that runs the official OpenCode
+CLI (`opencode serve`) and translates Beast's OpenAI-compatible chat requests
+to OpenCode sessions.
+
+1. Open **Settings → Provider** and click **“OpenCode Bridge Kur (Free Zen)”**.
+2. Beast installs the OpenCode CLI if needed, opens `opencode auth login` if no
+   OpenCode account is connected, starts the local bridge on
+   `127.0.0.1:8646`, tests the free models and selects the first working one.
+3. The provider appears as **OpenCode Bridge (Free)**. A typical model
+   selection is `custom:preset-opencode-bridge::big-pickle`.
+
+The bridge is enabled only after you click the button. It auto-starts on later
+launches while the provider exists; deleting the provider disables it. It does
+**not** spoof OpenCode headers or call Zen directly — the child process is the
+official CLI and uses your normal OpenCode login.
+
+Notes and troubleshooting:
+
+- The bridge is text-only and uses a JSON prompt protocol to emulate OpenAI
+  `tool_calls`; Beast's own tools continue to work normally.
+- Free models have per-account quotas. A `429` means the quota is exhausted or
+  temporarily rate-limited; wait for the reset or subscribe to OpenCode Go.
+- If setup fails, run `opencode auth login` in a terminal, verify with
+  `opencode run --standalone -m opencode/big-pickle "Reply with pong"`, then
+  retry the button.
+- Bridge logs are written to `%APPDATA%\beast\opencode-bridge.log` (on Windows).
+- The bridge is local-only (`127.0.0.1`) and protected by a random bearer key
+  stored in Beast settings.
 
 ### Any other OpenAI-compatible provider
 

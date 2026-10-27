@@ -2062,6 +2062,8 @@ async function renderProviderPane() {
     `<div class="zen-hero">` +
     `<button id="zenOneClick" class="btn"><span class="zen-load" hidden></span><span class="zen-label">⚡ ${_t('p_zen_btn')}</span></button>` +
     `<div class="sub" style="margin-top:6px">${_t('p_zen_hint')}</div>` +
+    `<button id="bridgeOneClick" class="btn" style="margin-top:10px"><span class="zen-load" hidden></span><span class="bridge-label">🌉 ${_t('p_bridge_btn')}</span></button>` +
+    `<div class="sub" style="margin-top:6px">${_t('p_bridge_hint')}</div>` +
     `</div>` +
     `<label class="mem-label">${_t('p_preset')}</label>` +
     `<select id="cpPreset" class="inp">` +
@@ -2132,6 +2134,33 @@ async function renderProviderPane() {
       renderProviderPane();
     } else {
       toast(_t('p_zen_fail') + (r && r.error ? ' — ' + r.error : ''));
+    }
+  });
+
+  /* TEK TİKLA MODEL: OpenCode Bridge — free Zen modelleri gerçek OpenCode
+     istemcisi üzerinden Beast sohbetine bağlar. */
+  $('#bridgeOneClick').addEventListener('click', async () => {
+    const btn = $('#bridgeOneClick');
+    const label = btn.querySelector('.bridge-label');
+    const spinner = btn.querySelector('.zen-load');
+    const old = label.textContent;
+    btn.disabled = true;
+    btn.classList.add('loading');
+    spinner.hidden = false;
+    label.textContent = _t('p_bridge_busy');
+    let r;
+    try { r = await beast.bridgeOneClick(); } catch (e) { r = { ok: false, error: String((e && e.message) || e) }; }
+    btn.disabled = false;
+    btn.classList.remove('loading');
+    spinner.hidden = true;
+    label.textContent = old;
+    if (r && r.ok) {
+      toast(_ti('p_bridge_ok', (r.models || []).length) + ' · ' + (r.model || ''));
+      state = await beast.getState();
+      applyState();
+      renderProviderPane();
+    } else {
+      toast(_t('p_bridge_fail') + (r && r.error ? ' — ' + r.error : ''));
     }
   });
 

@@ -1,21 +1,22 @@
 'use strict';
 
-/* ---------- opencode permission/index.ts portu (birebir) ----------
-   Kural şeması: { permission, pattern, action: 'allow' | 'deny' | 'ask' }
-   Değerlendirme: kümeler düzleştirilir, SON eşleşen kural kazanır (findLast).
-   Eşleşme yoksa varsayılan { action: 'ask', pattern: '*' }.
+/* ---------- opencode v2.1.4 permission portu ----------
+   Kaynak: packages/core/src/permission.ts + packages/schema/src/permission.ts
+           + packages/core/src/util/wildcard.ts
 
-   fromConfig: { "*": "allow", read: { "*.env": "ask" }, bash: { "git push": "ask" } }
-     → kural listesi (~/, $HOME genişletmesi dahil)
+   Kural şeması (v2.1.4): { action, resource, effect: 'allow' | 'deny' | 'ask' }
+   Değerlendirme: kümeler düzleştirilir, SON eşleşen kural kazanır (findLast).
+   Eşleşme yoksa varsayılan { action, resource: '*', effect: 'ask' }.
+
+   fromConfig: { "*": "allow", read: { "*.env": "ask" }, shell: { "git push": "ask" } }
+     → kural listesi (~/, $HOME genişletmesi kaynakta read/load anında yapılır)
    merge: kümeleri sırayla birleştirir (sonraki öncekini gölgeler)
-   disabled: ruleset'te pattern:'*' + deny olan ARAÇLARI bulur —
-     opencode'da edit/write/apply_patch aynı "edit" iznine takılır,
-     MCP resource araçları (list_mcp_resources vb.) "read" iznine. */
+   whollyDisabled: bir aracın TAMAMEN kapalı olup olmadığı — eşleşen son kural
+     resource:'*' + effect:'deny' ise araç istek listesinden düşer (opencode tool.ts:293). */
 
 const os = require('os');
 
-/* opencode core util/wildcard.ts portu — Windows'ta yolsayıç ayracı
-   normalize edilir, * → .*, ? → ., " <-> sondaki " .*" opsiyonel grup */
+/* opencode util/wildcard.ts birebir */
 function wildcardMatch(input, pattern) {
   const normalized = String(input).replaceAll('\\', '/');
   let escaped = String(pattern)
@@ -27,81 +28,96 @@ function wildcardMatch(input, pattern) {
   return new RegExp('^' + escaped + '$', process.platform === 'win32' ? 'si' : 's').test(normalized);
 }
 
-/* opencode permission.evaluate — findLast: SON eşleşen kural kazanır */
-function evaluate(permission, pattern, ...rulesets) {
+/* opencode Permission.evaluate(action, resource, ...rulesets) */
+function evaluate(action, resource, ...rulesets) {
   return (
     rulesets
       .flat()
-      .findLast((rule) => wildcardMatch(permission, rule.permission) && wildcardMatch(pattern, rule.pattern)) || {
-      action: 'ask',
-      permission,
-      pattern: '*',
+      .findLast((rule) => rule && wildcardMatch(action, rule.action) && wildcardMatch(resource, rule.resource)) || {
+      action,
+      resource: '*',
+      effect: 'ask',
     }
   );
 }
 
-function expand(pattern) {
-  if (pattern.startsWith('~/')) return os.homedir() + pattern.slice(1);
-  if (pattern === '~') return os.homedir();
-  if (pattern.startsWith('$HOME/')) return os.homedir() + pattern.slice(5);
-  if (pattern.startsWith('$HOME')) return os.homedir() + pattern.slice(5);
-  return pattern;
+function merge(...rulesets) {
+  return rulesets.filter(Boolean).flat();
 }
 
-/* opencode permission.fromConfig — {"*":"allow"} veya {read:{"*.env":"ask"}} */
+function expand(resource) {
+  if (resource.startsWith('~/')) return os.homedir() + resource.slice(1);
+  if (resource === '~') return os.homedir();
+  if (resource.startsWith('$HOME/')) return os.homedir() + resource.slice(5);
+  if (resource.startsWith('$HOME')) return os.homedir() + resource.slice(5);
+  return resource;
+}
+
+function normalizeRule(rule) {
+  if (!rule || typeof rule !== 'object') return null;
+  const action = String(rule.action ?? '');
+  const resource = String(rule.resource ?? '*');
+  const effect = String(rule.effect ?? '');
+  if (!action || !['allow', 'deny', 'ask'].includes(effect)) return null;
+  return { action, resource, effect };
+}
+
+/* opencode config normalize: { "*": "allow" } veya { read: { "*.env": "ask" } }
+   Native dizi ({action,resource,effect}[]) de kabul edilir. */
 function fromConfig(permission) {
+  if (Array.isArray(permission)) return permission.map(normalizeRule).filter(Boolean);
+  if (!permission || typeof permission !== 'object') return [];
   const ruleset = [];
-  if (!permission || typeof permission !== 'object') return ruleset;
-  for (const [key, value] of Object.entries(permission)) {
+  for (const [action, value] of Object.entries(permission)) {
     if (typeof value === 'string') {
-      ruleset.push({ permission: key, action: value, pattern: '*' });
+      ruleset.push({ action, resource: '*', effect: value });
       continue;
     }
     if (value && typeof value === 'object') {
-      for (const [pattern, action] of Object.entries(value)) {
-        ruleset.push({ permission: key, pattern: expand(pattern), action: String(action) });
+      for (const [resource, effect] of Object.entries(value)) {
+        ruleset.push({ action, resource: expand(resource), effect: String(effect) });
       }
     }
   }
   return ruleset;
 }
 
-/* opencode permission.merge — kümeleri sırayla birleştirir */
-function merge(...rulesets) {
-  return rulesets.flat();
+/* opencode config migrate: write ve patch aynı "edit" iznine iner */
+const TOOL_ACTION = { write: 'edit', patch: 'edit' };
+function actionForTool(name) {
+  return TOOL_ACTION[name] || String(name || '');
 }
 
-/* opencode permission.disabled — ruleset'te * pattern ile deny edilmiş araç adları.
-   edit/write/apply_patch "edit" iznine, MCP resource araçları "read" iznine indirgenir. */
+/* opencode tool.ts whollyDisabled(action, rules) */
+function whollyDisabled(action, ruleset) {
+  const rule = (ruleset || []).findLast((rule) => rule && wildcardMatch(action, rule.action));
+  return !!(rule && rule.resource === '*' && rule.effect === 'deny');
+}
+
+/* opencode Tool.snapshot: araç adı veya options.permission ile tamamen kapalı */
 function disabled(tools, ruleset) {
-  const edits = ['edit', 'write', 'apply_patch'];
-  const reads = ['list_mcp_resources', 'list_mcp_resource_templates', 'read_mcp_resource'];
-  return new Set(
-    (tools || []).filter((tool) => {
-      const permission = edits.includes(tool) ? 'edit' : reads.includes(tool) ? 'read' : tool;
-      const rule = (ruleset || []).findLast((r) => wildcardMatch(permission, r.permission));
-      return rule && rule.pattern === '*' && rule.action === 'deny';
-    })
-  );
+  return new Set((tools || []).filter((tool) => whollyDisabled(actionForTool(tool), ruleset)));
 }
 
-/* opencode permission.visibleTools — deny edilmişleri listeden düşürür */
 function visibleTools(tools, ruleset) {
   const hidden = disabled(Object.keys(tools || {}), ruleset);
   return Object.fromEntries(Object.entries(tools || {}).filter(([name]) => !hidden.has(name)));
 }
 
-/* opencode v1/permission.ts hata metinleri — modele geri beslenir */
+/* opencode permission.ts hata metinleri (modele geri beslenir) */
 const MESSAGES = {
-  rejected: 'The user rejected the permission request. Do not try this action again unless the user explicitly asks you to.',
-  denied: 'Permission denied',
+  blocked: (action) => `Permission denied: ${action}`,
+  declined: 'The user rejected the permission request.',
+  corrected: (feedback) => String(feedback || ''),
 };
 
 module.exports = {
   wildcardMatch,
   evaluate,
-  fromConfig,
   merge,
+  fromConfig,
+  actionForTool,
+  whollyDisabled,
   disabled,
   visibleTools,
   MESSAGES,

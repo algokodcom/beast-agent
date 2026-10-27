@@ -1,14 +1,16 @@
 'use strict';
 
-/* ---------- opencode tool seti → Beast araç köprüsü ----------
-   Beast Code (bcCode) oturumlarında model opencode'un ARAÇ DİLİYLE konuşur:
-   read · edit · write · bash · glob · grep · list · fetch · websearch ·
-   todowrite · task · skill  (opencode builtin registry sırası)
+/* ---------- opencode v2.1.4 tool seti → Beast araç köprüsü ----------
+   Kaynak: packages/core/src/tool/plugin/*.ts (read/edit/write/shell/grep/glob/
+           webfetch/websearch/todo/subagent/skill) + tool/todowrite.txt
 
-   Tanımlar opencode-dev'den birebir: açıklama metinleri tool/*.txt,
-   parametre şemaları opencode Schema.Struct karşılıkları (JSON Schema).
+   Model opencode v2.1.4 ARAÇ DİLİYLE konuşur:
+     read · edit · write · shell · grep · glob · webfetch · websearch ·
+     todowrite · subagent · skill
+   (v2.1.4'te ayrı "list" aracı yoktur — read dizinleri de okur.)
+
    execMap() çağrıyı Beast'in yerleşik aracına çevirir — implementasyon
-   değişmez, modelin gördüğü dünya opencode olur. */
+   değişmez, modelin gördüğü dünya opencode v2.1.4 olur. */
 
 const fs = require('fs');
 const path = require('path');
@@ -17,165 +19,171 @@ const PROMPT_DIR = path.join(__dirname, 'prompts');
 function loadPrompt(name) {
   try {
     let t = fs.readFileSync(path.join(PROMPT_DIR, name), 'utf8');
-    if (t.charCodeAt(0) === 0xfeff) t = t.slice(1); // BOM-strip
+    if (t.charCodeAt(0) === 0xfeff) t = t.slice(1);
     return t.replace(/\s+$/, '') + '\n';
   } catch {
     return '';
   }
 }
 
-/* opencode tool/shell/prompt.ts Windows (PowerShell) açıklaması — Beast
-   değerleriyle: varsayılan timeout 120s, 2000 satır / 50KB tavan, tam
-   çıktı geçici dosyaya düşer (Beast run_command zaten bu disiplinde) */
-function bashDescription() {
-  const defaultTimeoutMs = 120000;
-  const maxLines = 2000;
-  const maxBytes = '50KB';
-  return `Executes a given PowerShell command in a persistent shell session.
+const OS =
+  process.platform === 'darwin'
+    ? 'macOS'
+    : process.platform === 'win32'
+      ? 'Windows'
+      : process.platform === 'linux'
+        ? 'Linux'
+        : process.platform;
+const DEFAULT_TIMEOUT_MS = 2 * 60 * 1000;
 
-## Command Execution
-
-Before executing the command, please follow these steps:
-  1. If the command will create new directories or files, first use \`Test-Path -LiteralPath <parent>\` to verify the parent directory exists and is the correct location
-  2. If the command will modify or delete files, first verify the paths are correct
-  3. For commands expected to create new directories or files, verify the expected file/folder location is inside the working directory
-
-After ensuring proper quoting, execute the command.
-  - Capture the output of the command.
-
-## Usage Notes
-
-  - The command argument is required.
-  - You can specify an optional timeout in milliseconds. If not specified, commands will time out after ${defaultTimeoutMs}ms.
-  - If the output exceeds ${maxLines} lines or ${maxBytes} bytes, it will be truncated and the full output will be written to a file. You can use Read with offset/limit to read specific sections or Grep to search the full content. Do NOT use \`Select-Object -First\`, \`Select-Object -Last\`, or other truncation commands to limit output; the full output will already be captured to a file for more precise searching.
-  - Avoid using Shell with PowerShell file/content cmdlets unless explicitly instructed or when these cmdlets are truly necessary for the task. Instead, always prefer using the dedicated tools for reading, searching, and editing files:
-    - Read: Reading and analyzing file contents (with line numbers)
-    - Edit: Making targeted changes to specific sections of files
-    - Write: Creating new files from scratch
-    - Grep: Searching file contents with regex patterns
-    - Glob: Finding files by patterns (e.g., "src/**/*.ts")
-  - When issuing multiple commands:
-    - If the commands are independent and can run in parallel, make multiple bash tool calls in a single message. For example, if you need to run "git status" and "git diff", send a single message with two bash tool calls in parallel.
-    - Use ';' only when you need to run commands sequentially but don't care if earlier commands fail
-    - If the commands depend on each other and must run sequentially, avoid '&&' in this shell because Windows PowerShell (5.1) does not support it. Use PowerShell conditionals such as \`cmd1; if ($?) { cmd2 }\` when later commands must depend on earlier success.
-    - DO NOT use newlines to separate commands (newlines are ok in quoted strings)
-  - The shell is PERSISTENT: working directory and environment variables are preserved between calls.
-  - Commands run in Windows PowerShell (5.1).
-  - Commands are NON-INTERACTIVE: no REPLs/editors/pagers (\`node\`, \`python\`, \`vi\`, \`notepad\`), no input-waiting commands (\`git commit\` without -m, \`npm init\` without -y, \`ssh\` without BatchMode). They are rejected or aborted to avoid stalling. Use non-interactive flags (-y, -m, --yes) and write scripts to files instead.
-  - NEVER start long-running servers (npm run dev/start, vite, uvicorn, flask run...) with this tool — they are aborted after 10s. Use panel_run (run panel) or a background process (Start-Process with output redirected to a log file).`;
+/* opencode shell.ts description() — Windows/PowerShell */
+function shellDescription() {
+  return [
+    'Execute a shell command and return its output.',
+    `Commands run on ${OS} using Windows PowerShell.`,
+    'Quote file paths containing spaces or special characters.',
+    'Prefer dedicated tools over shell commands when possible.',
+    'When output is large, the full result is saved to a file and a truncated preview is returned.',
+    'Rely on automatic truncation unless filtering the output is more useful.',
+    'Commands accept an optional timeout, background commands have no timeout by default.',
+    'Background commands return immediately, and you will be notified when they complete.',
+  ].join(' ');
 }
 
-/* opencode tool şemaları — Schema.Struct karşılığı JSON Schema'lar */
+const SUBAGENT_DESCRIPTION = [
+  'Spawns an agent in a child session to work on the specified task.',
+  'The output includes a sessionID you can pass back later to continue that specific conversation with the subagent.',
+  'New child sessions start with fresh context, so include all relevant context and instructions when you don\'t pass a sessionID.',
+  'Foreground (default) runs the subagent to completion and returns its final response.',
+  'Background mode (background=true) launches it asynchronously and returns immediately; you are notified when it finishes.',
+  'Use background only for independent work that can run while you continue elsewhere.',
+].join('\n');
+
+/* v2.1.4 tool şemaları — Schema.Struct karşılığı JSON Schema */
 const DEFS = () => [
   {
-    name: 'bash',
-    description: bashDescription(),
+    name: 'read',
+    description:
+      'Read the contents of a file or directory. Supports text files, images, and PDFs. Images and PDFs are presented directly to the model. Each text line is prefixed by its 1-based line number as <line>: <content>. The prefix is for reference and is not part of the file content. Directory entries are returned one per line. Use offset and limit to read large files or directories in sections. Prefer one larger read over many small slices, and use grep to find specific content in large files.',
     parameters: {
       type: 'object',
       properties: {
-        command: { type: 'string', description: 'The command to execute' },
-        timeout: { type: 'integer', description: 'Optional timeout in milliseconds' },
+        path: { type: 'string', description: 'File or directory to read' },
+        offset: { type: 'integer', description: 'The line or directory entry to start reading from (1-based)' },
+        limit: { type: 'integer', description: 'The maximum number of lines or directory entries to read (defaults to and capped at 2000)' },
+      },
+      required: ['path'],
+    },
+  },
+  {
+    name: 'edit',
+    description:
+      'Edit the contents of a file by finding and replacing exact text. When editing text from Read output, preserve the exact indentation (tabs or spaces) and omit the line-number prefix, such as `1: `. Never include the prefix in oldString or newString. Write line breaks as \\n; the file\'s existing CRLF or LF line endings are matched and preserved. To change line endings themselves, make oldString and newString differ only in \\r; that edit applies to the exact bytes. If there is no exact match, the edit retries while ignoring typographic quote, dash, and space variants, then trailing whitespace on each line. The edit fails if oldString is not found. By default, oldString must identify a UNIQUE location. Multiple matches FAIL unless replaceAll is true. Add more surrounding context to disambiguate, or set replaceAll to true to replace every occurrence. Use replaceAll when the change should apply to every occurrence, such as renaming a variable.',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'File to edit' },
+        oldString: { type: 'string', description: 'Exact text to find and replace' },
+        newString: { type: 'string', description: 'Text to replace oldString with (must differ from oldString)' },
+        replaceAll: {
+          type: 'boolean',
+          description:
+            'Whether to replace every occurrence of oldString. When false, oldString must match exactly once. Defaults to false.',
+        },
+      },
+      required: ['path', 'oldString', 'newString'],
+    },
+  },
+  {
+    name: 'write',
+    description:
+      'Writes a file to the local filesystem, overwriting if one exists.\n\nMissing parent directories are created automatically.\n\nUse this tool to create new files or overwrite existing files. For partial changes, use the edit tool instead.',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Path to the file to write to' },
+        content: { type: 'string', description: 'Content to write to the file' },
+      },
+      required: ['path', 'content'],
+    },
+  },
+  {
+    name: 'shell',
+    description: shellDescription(),
+    parameters: {
+      type: 'object',
+      properties: {
+        command: { type: 'string', description: 'Shell command string to execute' },
+        workdir: {
+          type: 'string',
+          description:
+            'Working directory to execute the command in. Defaults to the current working directory. When possible, avoid changing directories in the command and set the working directory here instead.',
+        },
+        timeout: {
+          type: 'integer',
+          description: `Timeout in milliseconds. Set to 0 to disable the timeout. Defaults to ${DEFAULT_TIMEOUT_MS} for foreground commands. Background commands have no timeout by default.`,
+        },
+        background: {
+          type: 'boolean',
+          description:
+            "Run the command in the background and return immediately (useful for dev servers and long-running builds). You do not need to use '&' at the end of the command when using this parameter. You will be notified when it completes. DO NOT poll for completion.",
+        },
       },
       required: ['command'],
     },
   },
   {
-    name: 'read',
-    description: loadPrompt('read.txt'),
+    name: 'grep',
+    description:
+      "Search file contents using ripgrep's regular expression syntax or literal text matching. Use it to locate specific code, symbols, or text patterns, and narrow searches with `path` or `include`. Returns matching file paths, line numbers, and line previews.",
     parameters: {
       type: 'object',
       properties: {
-        filePath: { type: 'string', description: 'The absolute path to the file or directory to read' },
-        offset: { type: 'integer', description: 'The line number to start reading from (1-indexed)' },
-        limit: { type: 'integer', description: 'The maximum number of lines to read (defaults to 2000)' },
+        pattern: { type: 'string', description: 'Regular expression or literal text to match in file contents.' },
+        path: { type: 'string', description: 'File or directory to search. Defaults to the current working directory.' },
+        include: { type: 'string', description: 'Glob pattern to filter files (for example, "*.js" or "*.{ts,tsx}")' },
+        literal: { type: 'boolean', description: 'Treat `pattern` as exact text instead of a regular expression (default: false).' },
+        caseSensitive: { type: 'boolean', description: 'Use case-sensitive matching (default: true).' },
+        limit: { type: 'integer', description: 'Maximum number of matching lines to return (default: 100)' },
       },
-      required: ['filePath'],
-    },
-  },
-  {
-    name: 'edit',
-    description: loadPrompt('edit.txt'),
-    parameters: {
-      type: 'object',
-      properties: {
-        filePath: { type: 'string', description: 'The absolute path to the file to modify' },
-        oldString: { type: 'string', description: 'The text to replace' },
-        newString: { type: 'string', description: 'The text to replace it with (must be different from oldString)' },
-        replaceAll: { type: 'boolean', description: 'Replace all occurrences of oldString (default false)' },
-      },
-      required: ['filePath', 'oldString', 'newString'],
-    },
-  },
-  {
-    name: 'write',
-    description: loadPrompt('write.txt'),
-    parameters: {
-      type: 'object',
-      properties: {
-        filePath: { type: 'string', description: 'The absolute path to the file to write (will create the file if it does not exist, will overwrite if it does)' },
-        content: { type: 'string', description: 'The content to write' },
-      },
-      required: ['filePath', 'content'],
+      required: ['pattern'],
     },
   },
   {
     name: 'glob',
-    description: loadPrompt('glob.txt'),
+    description: 'Search file paths using a glob pattern (examples: "**/*.ts", "src/**/*.tsx").',
     parameters: {
       type: 'object',
       properties: {
-        pattern: { type: 'string', description: 'The glob pattern to match files against' },
-        path: { type: 'string', description: 'The directory to search in. If not specified, the current working directory will be used. IMPORTANT: Omit this field to use the default directory. DO NOT enter "undefined" or "null" - simply omit it for the default behavior. Must be a valid directory path if provided.' },
+        pattern: { type: 'string', description: 'Glob pattern to match files against' },
+        path: { type: 'string', description: 'Directory to search. Defaults to the current working directory.' },
+        hidden: { type: 'boolean', description: 'Include hidden files and directories (default: false).' },
+        limit: { type: 'integer', description: 'Maximum number of matching files to return (default: 100)' },
       },
       required: ['pattern'],
-    },
-  },
-  {
-    name: 'grep',
-    description: loadPrompt('grep.txt'),
-    parameters: {
-      type: 'object',
-      properties: {
-        pattern: { type: 'string', description: 'The regex pattern to search for in file contents' },
-        path: { type: 'string', description: 'The directory to search in. Defaults to the current working directory.' },
-        include: { type: 'string', description: 'File pattern to include in the search (e.g. "*.js", "*.{ts,tsx}")' },
-      },
-      required: ['pattern'],
-    },
-  },
-  {
-    name: 'list',
-    description: 'List files and directories in a given path. Returns entries sorted by name (directories first, then files), with type indicator and size.',
-    parameters: {
-      type: 'object',
-      properties: {
-        path: { type: 'string', description: 'The directory path to list. Defaults to the current working directory.' },
-      },
     },
   },
   {
     name: 'webfetch',
-    description: loadPrompt('webfetch.txt'),
+    description:
+      'Fetch content from an HTTP or HTTPS URL and return it as text, markdown, or HTML. Markdown is the default.\n\nUse a more targeted tool when one is available. This tool is read-only. Large text results may be replaced with a preview while the complete output is retained in managed storage.',
     parameters: {
       type: 'object',
       properties: {
-        url: { type: 'string', description: 'The URL to fetch' },
-        format: { type: 'string', enum: ['text', 'markdown', 'html'], description: 'The format to return the content in (text, markdown, or html). Defaults to markdown.' },
-        timeout: { type: 'integer', description: 'Optional timeout in seconds (max 120)' },
-        max_chars: { type: 'integer', description: 'Optional maximum characters to return' },
+        url: { type: 'string', description: 'The HTTP or HTTPS URL to fetch content from' },
+        format: { type: 'string', enum: ['text', 'markdown', 'html'], description: 'The format to return the content in. Defaults to markdown.' },
+        timeout: { type: 'integer', description: 'Optional timeout in seconds (maximum: 120)' },
       },
       required: ['url'],
     },
   },
   {
     name: 'websearch',
-    description: loadPrompt('websearch.txt'),
+    description: `Search the web using the user's selected search integration. Use this for current information beyond knowledge cutoff.\n\nThe current year is ${new Date().getFullYear()}. Use this year when searching for recent information or current events.`,
     parameters: {
       type: 'object',
       properties: {
         query: { type: 'string', description: 'Websearch query' },
-        numResults: { type: 'integer', description: 'Number of search results to return (default: 8)' },
-        type: { type: 'string', enum: ['auto', 'fast', 'deep'], description: "Search type - 'auto': balanced search (default), 'fast': quick results, 'deep': comprehensive search" },
       },
       required: ['query'],
     },
@@ -193,8 +201,11 @@ const DEFS = () => [
             type: 'object',
             properties: {
               content: { type: 'string', description: 'Brief description of the task' },
-              status: { type: 'string', enum: ['pending', 'in_progress', 'completed', 'cancelled'], description: 'Current status of the task' },
-              priority: { type: 'string', enum: ['high', 'medium', 'low'], description: 'Priority level of the task' },
+              status: {
+                type: 'string',
+                enum: ['pending', 'in_progress', 'completed', 'cancelled'],
+                description: 'Current status of the task: pending, in_progress, completed, cancelled',
+              },
             },
             required: ['content', 'status'],
           },
@@ -204,36 +215,56 @@ const DEFS = () => [
     },
   },
   {
-    name: 'task',
-    description: loadPrompt('task.txt'),
+    name: 'subagent',
+    description: SUBAGENT_DESCRIPTION,
     parameters: {
       type: 'object',
       properties: {
-        description: { type: 'string', description: 'A short description of the task (max 80 chars)' },
-        prompt: { type: 'string', description: 'The full task description for the subagent to execute' },
-        subagent_type: { type: 'string', enum: ['general', 'explore'], description: 'Type of subagent to launch (options: explore, general)' },
+        agent: {
+          type: 'string',
+          description:
+            'The type of specialized agent to use for this task. If the user asks for a subagent by a name that is not one of the available subagents, they most likely mean a model: pick a suitable agent and pass the name through the model parameter instead.',
+        },
+        description: { type: 'string', description: 'A short 3-5 word label for the task, displayed to the user' },
+        prompt: { type: 'string', description: 'The task for the subagent to perform' },
+        model: {
+          type: 'string',
+          description:
+            'NEVER set this unless the user explicitly asks for a particular model or variant. The value is written as "providerID/modelID", or "providerID/modelID#variant" to include a variant. Do not guess the ID: look the model up with the models tool, filtering to your own provider first.',
+        },
+        sessionID: {
+          type: 'string',
+          description: 'Continue a specific previous subagent conversation by passing its sessionID. Calls without a sessionID start a new conversation.',
+        },
+        background: {
+          type: 'boolean',
+          description:
+            'Run the subagent in the background and return immediately. You will be notified when it completes. DO NOT sleep, poll, or proactively check on its progress.',
+        },
       },
-      required: ['description', 'prompt', 'subagent_type'],
+      required: ['agent', 'description', 'prompt'],
     },
   },
   {
     name: 'skill',
-    description: loadPrompt('skill.txt'),
+    description: [
+      "Load a specialized skill's instructions and resources into the current conversation when the task at hand matches its description.",
+      '',
+      'The skill ID must match an available skill or a skill explicitly referenced by the user.',
+    ].join('\n'),
     parameters: {
       type: 'object',
       properties: {
-        name: { type: 'string', description: 'The name of the skill from available_skills' },
+        id: { type: 'string', description: 'The ID of an available skill or a skill explicitly referenced by the user' },
       },
-      required: ['name'],
+      required: ['id'],
     },
   },
   {
-    /* Beast Sandbox'a özgü: UZUN SÜRELİ süreçleri (dev server vb.) ÇALIŞTIR
-       paneline devreder — tur BLOKLAMAZ. panel_run izni yalnız sandbox
-       ajanında allow edilir (agents.js); BC build/plan'da gizlidir. */
+    /* Beast Sandbox'a özgü: UZUN SÜRELİ süreçleri ÇALIŞTIR paneline devreder */
     name: 'panel_run',
     description:
-      'Run a LONG-RUNNING process (dev server, background service) in the managed RUN panel instead of the blocking shell. The turn does not wait for it to finish; output streams live in the panel and can be stopped by the user. Use this instead of starting servers with bash — a blocking bash call would stall the whole job. Only ONE process runs at a time.',
+      'Run a LONG-RUNNING process (dev server, background service) in the managed RUN panel instead of the blocking shell. The turn does not wait for it to finish; output streams live in the panel and can be stopped by the user. Use this instead of starting servers with shell — a blocking shell call would stall the whole job. Only ONE process runs at a time.',
     parameters: {
       type: 'object',
       properties: {
@@ -244,62 +275,108 @@ const DEFS = () => [
   },
 ];
 
-/* OpenAI function-call formatına çevirir (engine TOOLS formatı) */
 function definitions() {
   return DEFS().map((d) => ({ type: 'function', function: d }));
 }
 
+function names() {
+  return DEFS().map((d) => d.name);
+}
+
 const TO_BUILTIN = {
-  bash: 'run_command',
   read: 'read_file',
   edit: 'edit_file',
   write: 'write_file',
+  shell: 'run_command',
   glob: 'glob',
   grep: 'grep',
-  list: 'list_dir',
   webfetch: 'webfetch',
   websearch: 'web_search',
   todowrite: 'todo_write',
-  task: 'delegate_task',
+  subagent: 'delegate_task',
+  skill: 'skill',
   panel_run: 'panel_run',
+  /* eski BC oturumları / geriye uyum */
+  bash: 'run_command',
+  list: 'read_file',
+  task: 'delegate_task',
 };
+
+function shellQuote(value) {
+  return "'" + String(value).replace(/'/g, "''") + "'";
+}
+
+function literalPattern(text) {
+  return String(text || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
 
 /* opencode parametreleri → Beast araç parametreleri */
 function execMap(name, args) {
   const a = args || {};
   switch (name) {
     case 'read':
-      return { name: 'read_file', args: { path: a.filePath, offset: a.offset, limit: a.limit } };
+      return { name: 'read_file', args: { path: a.path, offset: a.offset, limit: a.limit } };
     case 'edit':
       return {
         name: 'edit_file',
-        args: { path: a.filePath, old_string: a.oldString, new_string: a.newString, replace_all: a.replaceAll === true },
+        args: { path: a.path, old_string: a.oldString, new_string: a.newString, replace_all: a.replaceAll === true },
       };
     case 'write':
-      return { name: 'write_file', args: { path: a.filePath, content: a.content } };
-    case 'bash':
-      return { name: 'run_command', args: { command: a.command, timeout_ms: a.timeout } };
-    case 'list':
-      return { name: 'list_dir', args: { path: a.path } };
+      return { name: 'write_file', args: { path: a.path, content: a.content } };
+    case 'shell':
+    case 'bash': {
+      let command = String(a.command || '');
+      if (a.workdir) {
+        const dir = String(a.workdir);
+        command = `Set-Location -LiteralPath ${shellQuote(path.isAbsolute(dir) ? dir : path.resolve(dir))}; ${command}`;
+      }
+      return { name: 'run_command', args: { command, timeout_ms: a.timeout } };
+    }
+    case 'grep': {
+      const pattern = a.literal ? literalPattern(a.pattern) : String(a.pattern || '');
+      return {
+        name: 'grep',
+        args: {
+          pattern,
+          path: a.path,
+          include: a.include,
+          ...(a.caseSensitive === false ? { case_insensitive: true } : {}),
+          ...(a.limit !== undefined ? { limit: a.limit } : {}),
+        },
+      };
+    }
+    case 'glob':
+      return {
+        name: 'glob',
+        args: {
+          pattern: a.pattern,
+          path: a.path,
+          ...(a.hidden !== undefined ? { hidden: a.hidden } : {}),
+          ...(a.limit !== undefined ? { limit: a.limit } : {}),
+        },
+      };
     case 'webfetch':
-      return { name: 'webfetch', args: { url: a.url, format: a.format, timeout: a.timeout, max_chars: a.max_chars } };
+      return { name: 'webfetch', args: { url: a.url, format: a.format, timeout: a.timeout } };
     case 'websearch':
       return { name: 'web_search', args: { query: a.query, max_results: a.numResults || a.max_results } };
     case 'todowrite':
       return { name: 'todo_write', args: { items: (a.todos || []).map(opencodeTodoToItem) } };
+    case 'subagent':
     case 'task':
       return {
         name: 'delegate_task',
-        args: { task: a.prompt || a.description, context: a.description || '', subagent_type: a.subagent_type },
+        args: { task: a.prompt || a.description, context: a.description || '', subagent_type: a.agent || a.subagent_type },
       };
+    case 'skill':
+      return { name: 'skill', args: { name: a.id || a.name } };
+    case 'panel_run':
+      return { name: 'panel_run', args: { command: a.command } };
     default:
       return { name: TO_BUILTIN[name] || name, args: a };
   }
 }
 
-/* opencode Todo.Info {content, status, priority} → Beast iç depo {title, status}
-   opencode durum makinesi: pending → in_progress → completed | cancelled
-   Beast iç durumu: pending | active | done */
+/* opencode Todo.Info {content, status} → Beast {title, status} */
 const OC_TODO_STATUS = { pending: 'pending', in_progress: 'active', completed: 'done', cancelled: 'done' };
 function opencodeTodoToItem(t) {
   const it = t || {};
@@ -307,12 +384,6 @@ function opencodeTodoToItem(t) {
     title: String(it.content ?? '').replace(/\s+/g, ' ').trim().slice(0, 120),
     status: OC_TODO_STATUS[String(it.status || 'pending')] || 'pending',
   };
-}
-
-/* BC oturumunda modele sunulan opencode araç adları (permission filtresinden
-   önce tam set — opencode registry builtin sırası) */
-function names() {
-  return DEFS().map((d) => d.name);
 }
 
 module.exports = { definitions, names, execMap, TO_BUILTIN, opencodeTodoToItem };

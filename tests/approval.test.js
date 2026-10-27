@@ -58,7 +58,7 @@ test('onay kapısı: güvenlik açıkken yalnızca SİLME işlemleri sorar', asy
   assert.ok(out3.length > 0);
 });
 
-test('BeastCode/Sandbox: kapalıyken hiç sormaz, açıkken yalnız silme sorar', async () => {
+test('BeastCode/Sandbox: izin katmanı kapalı — hiçbir işlem sormaz', async () => {
   const os = require('os');
 
   // güvenlik KAPALI (varsayılan) — BeastCode/Sandbox dahil hiçbir ask olmaz
@@ -72,26 +72,16 @@ test('BeastCode/Sandbox: kapalıyken hiç sormaz, açıkken yalnız silme sorar'
   assert.equal(off.bcAskApprovals, false);
   assert.equal(off._perm.autoAllow, true);
 
-  // güvenlik AÇIK — silme sorusu gelir, normal komut gelmez
+  // güvenlik AÇIK olsa da Beast Code izin katmanı sormaz (her şey serbest)
   const on = mkEngine({ request: async () => true });
   on.cache.set('bc2', { id: 'bc2', bcCode: true, workspace: os.tmpdir() });
-  await on._execTool('bash', { command: 'echo x' }, null, 'bc2');
+  assert.ok((await on._execTool('bash', { command: 'echo x' }, null, 'bc2')).length > 0);
   assert.equal(on._perm.list().length, 0);
 
-  const pend = on._execTool('bash', { command: 'rm -rf yok-boyle-birsey' }, null, 'bc2');
-  await new Promise((r) => setImmediate(r));
-  const list = on._perm.list();
-  assert.equal(list.length, 1);
-  assert.equal(list[0].permission, 'delete');
-  on.replyPermission(list[0].id, 'reject');
-  const out = JSON.parse(await pend);
-  assert.equal(out.ok, false);
+  assert.ok((await on._execTool('bash', { command: 'rm -rf yok-boyle-birsey' }, null, 'bc2')).length > 0);
+  assert.equal(on._perm.list().length, 0);
 
-  // canlı kapatma: setApprovals(false) → silme de artık sorulmaz
+  // canlı kapatma davranışı korunur
   on.setApprovals(false);
   assert.equal(on._perm.autoAllow, true);
-  const pend2 = on._execTool('bash', { command: 'rm -rf yok-boyle-birsey' }, null, 'bc2');
-  await new Promise((r) => setImmediate(r));
-  assert.equal(on._perm.list().length, 0);
-  assert.ok((await pend2).length > 0);
 });

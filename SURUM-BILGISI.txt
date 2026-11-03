@@ -1,0 +1,19 @@
+Beast Agent — v2.96.0
+Tarih: 2026-11-04
+Kaynak: C:\Users\fokusyazilim\Desktop\Beast Agent ana kod
+Git: v2.96.0 (release)
+npm: https://www.npmjs.com/package/beast-agent
+
+İçerik:
+- H1 Range İçi: deterministik H1 kırılım/sıkışma + M5 tetik motoru
+  (src/jev/renderer/structure.js), panel, otomatik çizimler, H1↔M5 serbest gezinme.
+- chat.js: sohbet LLM çekirdeği; tüm çizim araçları, çizim/alarm envanteri,
+  analizde eskimiş çizim ve alarmları temizleyip yeniden çizme mantığı.
+- Beast Code mobil köprüsü: bc-sessions / bc-open / bc-send / bc-stop / bc-new;
+  Android Beast Code APK (apk/BeastCode.apk) ve aynı host + eşleşme koduyla
+  uzaktan bağlantı.
+- Destek/direnç çizimleri tam genişlik; çizimler ve alarmlar her analizde
+  yeniden değerlendirilir.
+
+Not: Bu kopya yalnız kaynaktır; node_modules, dist, .git ve yedek/ hariçtir.
+Test durumu: 463/463 geçti.

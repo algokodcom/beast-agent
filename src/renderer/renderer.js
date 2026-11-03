@@ -10891,6 +10891,12 @@ function bcNoteStream(delta) {
 /* Beast Code oturumunun engine olayları → panel çıktısı */
 function bcIngest(ev) {
   switch (ev.type) {
+    case 'bc-user':
+      /* Telefondan yazılan Beast Code görevi masaüstü panelinde de görünsün */
+      bcFlushStream();
+      bcCloseToolGroup();
+      bcLine('t-cmd', '📱 ' + (ev.text || ''));
+      break;
     case 'wa-user':
       /* WhatsApp'tan gelen kullanıcı mesajı panelde görünür — ajan cevabı
          zaten akar; bu olay kullanıcının KENDİ yazdığını gösterir */

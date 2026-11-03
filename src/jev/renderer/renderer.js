@@ -384,6 +384,7 @@ function applyTabToChart(t) {
   applyPlanButtons();
   loadRates();
   ctxCache.clear();
+  if (typeof rangeOnSymbolChange === 'function') rangeOnSymbolChange();
 }
 
 function switchChartTab(id) {
@@ -969,13 +970,21 @@ async function buildChatPayload(s) {
   await refreshTradeStateForContext();
   /* analiz zaman dilimi çifti önce çözülür: prompt, mum verisi, ekran görüntüsü
      ve çizimler TEK bir TF çiftinde hizalanır */
-  const ana = await resolveAnaTfs().catch(() => null);
-  const ctx = await buildChartContext(ana).catch(() => 'grafik bağlamı alınamadı');
+  const rangeOn = rangeModeOn();
+  const ana = rangeOn ? rangeAnaTf() : await resolveAnaTfs().catch(() => null);
+  const [ctx, rangeBlock] = await Promise.all([
+    buildChartContext(ana).catch(() => 'grafik bağlamı alınamadı'),
+    rangePromptContext().catch(() => ''),
+  ]);
   const guard = posGuardPromptBlock();
   const dayg = dayGuardPromptBlock(await dayGuardState().catch(() => null));
-  const sys = JEV_SYSTEM_PROMPT + anaTfPromptBlock(ana) + guard + dayg + scalpPromptBlock() +
-    tradeHoursPromptBlock() + skillsPromptBlock() +
-    '\n\n[GRAFİK BAĞLAMI]\n' + ctx + sessionSummarySuffix(s);
+  const chatApi = (typeof window !== 'undefined' && window.JEVChat) ? window.JEVChat : null;
+  const chatLive = chatApi && typeof chatApi.inventoryBlock === 'function' ? chatApi.inventoryBlock() : '';
+  const sys = JEV_SYSTEM_PROMPT + anaTfPromptBlock(ana, rangeOn ? { freeTf: true } : undefined) +
+    guard + dayg + scalpPromptBlock() +
+    tradeHoursPromptBlock() + skillsPromptBlock() + rangeBlock +
+    '\n\n[GRAFİK BAĞLAMI]\n' + ctx +
+    (chatLive ? '\n\n' + chatLive : '') + sessionSummarySuffix(s);
   /* yalnız BUGÜNÜN mesajları + bugünün özeti gönderilir; dün ve öncesi bağlama girmez.
      güvenlik tavanı: sıkıştırma başarısız olursa aşırı büyümeyi engelle */
   const from = chatContextFrom(s);
@@ -3917,10 +3926,22 @@ async function resolveAnaTfs(force) {
 
 /* seçilen TF çiftine göre top-down kuralı — sabit "D1→H1→M15" yerine
    gerçekten analiz yapılacak çift yazılır */
-function anaTfPromptBlock(r) {
+function anaTfPromptBlock(r, opts) {
   if (!r || !r.htf || !r.etf) return '';
   const h = r.htf;
   const e = r.etf;
+  /* H1 Range İçi: AI H1 ↔ M5 arasında serbestçe gezinir; swing akışındaki
+     "grafik TF'ini değiştirme" kuralı yalnız bu modda geçersizdir. */
+  if (opts && opts.freeTf === true) {
+    return '\n\n[ANALİZ ZAMAN DİLİMİ] H1 RANGE İÇİ → ' + h + ' (bağlam) → ' + e + ' (tetik)' +
+      '\nH1 ve M5 arasında SERBESTÇE geçiş yapabilirsin; karar için iki TF de kullanılır, kapanmış mum serileri ikisinden de gelir.' +
+      '\nGrafiği istediğin zaman <<CHART {"tf":"H1"}>> veya <<CHART {"tf":"M5"}>> ile değiştir. Bu modda karar TF\'leri yalnız H1/M5\'tir; başka TF\'leri sadece genel bağlam için <<LOOK>> ile inceleyebilirsin, karar/çizim için kullanma.' +
+      '\n· H1 = kırılım/sıkışma bağlamı, kutu high/low ve %50 gövde seviyesi.' +
+      '\n· M5 = giriş tetiği: kenar süpürme + CHoCH, mikro range kırılımı + retest.' +
+      '\nÇizimlerde t ofsetleri O ANKİ grafik TF\'ine göredir: H1 seviyesi için grafiği H1\'e, M5 tetiği için M5\'e al.' +
+      '\nÇizimleri (<<DRAW>>), alarmları ve planları M5 ölçeğinde kur; seviyeleri H1 yapısıyla uyumlu seç.' +
+      '\nYanıtının başında iki TF\'in yönünü yaz ("H1 ↑ · M5 →").';
+  }
   const mode = r.mode === 'auto' ? 'OTOMATİK (uygulama rejimi ölçüp seçti)' : 'ELLE SEÇİLMİŞ';
   const why = r.why ? ' Gerekçe: ' + r.why + '.' : '';
   return '\n\n[ANALİZ ZAMAN DİLİMİ] ' + mode + ' → ' + h + ' → ' + e + why +
@@ -4650,6 +4671,7 @@ function drawingSegments(d, g) {
   const P = d.points || [];
   if (d.type === 'hline' && P[0]) {
     const y = g.yOf(P[0].p);
+    /* Yatay seviyeler her zaman boydan boya çizilir. */
     segs.push({ x1: g.padL, y1: y, x2: g.padL + g.plotW, y2: y });
     return segs;
   }
@@ -4920,19 +4942,20 @@ function paintDrawings(ctx, g) {
     const color = d.color || chartState.drawColors[d.type] || '#3b82f6';
     if (d.type === 'hline' && d.points && d.points[0]) {
       const y = g.yOf(d.points[0].p);
+      const hs = drawingSegments(d, g)[0];
       if (y < g.padT - 1 || y > g.padT + g.plotH + 1) { /* görünüm dışı */ }
-      else {
+      else if (hs) {
         ctx.strokeStyle = color;
         ctx.lineWidth = lw;
         ctx.setLineDash([]);
         ctx.beginPath();
-        ctx.moveTo(g.padL, y);
-        ctx.lineTo(g.padL + g.plotW, y);
+        ctx.moveTo(hs.x1, hs.y1);
+        ctx.lineTo(hs.x2, hs.y2);
         ctx.stroke();
         /* fiyat etiketi: en sağda, fiyat ekseni içinde (kırpma dışında çizilir) */
         axisTags.push({ p: d.points[0].p, y, color });
       }
-      paintLabel(d, color, g.padL, g.padL + g.plotW, y);
+      if (hs) paintLabel(d, color, Math.min(hs.x1, hs.x2), Math.max(hs.x1, hs.x2), y);
     } else if (d.type === 'hray' && d.points && d.points[0]) {
       /* konulduğu yerden grafiğin sağ ucuna kadar uzanan yatay ışın */
       const x0h = g.xOf(idxFromTime(d.points[0].t));
@@ -7395,6 +7418,7 @@ function setChartSymbol(sym) {
   applyPlanButtons();
   updateActiveTabChart();
   renderChartTabs();
+  if (typeof rangeOnSymbolChange === 'function') rangeOnSymbolChange();
 }
 
 /* kripto borsa bağlantı durumu: terminal/loglara bir kez yazılır */
@@ -8736,13 +8760,20 @@ function jevAlertFlush() {
   jevLogAdd('ALARM ANALİZİ · ' + msg, 'alert');
   jevTsAnalyze('alarm').catch(() => {});
   /* sohbet LLM ajanı da alarmla otomatik tetiklenir */
+  const rangeOn = rangeModeOn();
   const text = '[OTOMATİK ALARM] ' + msg +
     '\nBu alarm(lar) otomatik bildirimdir (kullanıcı yazmadı). AMAÇ: grafiği, çizimleri ve pozisyonu SON DURUMA UYARLAMAK.' +
-    ' Sistem promptundaki HER ANALİZ RUTİNİ\'ni (R1-R8) uygula: [ANALİZ ZAMAN DİLİMİ] bloğundaki iki TF\'yi (üst → giriş) sırayla analiz et; çizilecek seviye varsa çiz/güncelle, kritik seviyeye alarm bırak, gerekiyorsa toolbox aracı kullan, setup varsa emir aç, açık pozisyonu yönet.' +
-    ' Grafiği analiz et ve kararını ver: geçerli setup varsa analize uygun emir türüyle (hemen giriş market · geri çekilme limit · kırılım stop · price = analizdeki seviye) <<ORDER>> göndererek işlem aç; kademeli giriş için çoklu <<ORDER>>, iki yönlü kırılım için <<OCO>> kullanabilirsin, yoksa "işlem yok" de.' +
+    ' Sistem promptundaki HER ANALİZ RUTİNİ\'ni (R1-R8) uygula: [ANALİZ ZAMAN DİLİMİ] bloğundaki iki TF\'yi (üst → giriş) sırayla analiz et; çizilecek seviye varsa çiz/güncelle, kritik seviyeye alarm bırak, gerekiyorsa toolbox aracı kullan, ' +
+    (rangeOn ? 'H1 Range İçi önerisini değerlendir (emir açma), açık pozisyonu yönet.' : 'setup varsa emir aç, açık pozisyonu yönet.') +
+    (rangeOn
+      ? ' H1 RANGE İÇİ MODU AKTİF: <<ORDER>> ve <<OCO>> KULLANMA. Yalnız öneri, çizim ve plan kutusu üret; H1/M5 arasında serbestçe geçiş yapabilirsin. [YAPISAL SETUP] bloğunu tek doğruluk kaynağı al.'
+      : ' Grafiği analiz et ve kararını ver: geçerli setup varsa analize uygun emir türüyle (hemen giriş market · geri çekilme limit · kırılım stop · price = analizdeki seviye) <<ORDER>> göndererek işlem aç; kademeli giriş için çoklu <<ORDER>>, iki yönlü kırılım için <<OCO>> kullanabilirsin, yoksa "işlem yok" de.') +
     ' Açık pozisyon varsa SL/TP durumunu değerlendir; güncelleme gerekiyorsa <<SLTP>> ile UYGULA. Zararda panik yok (kısmi kapatma yalnız kârda); kârda BE/TRAIL/parçalı TP ile aktif yönet.' +
     ' Takip gereken kritik seviyeler için uygun türde (sürekli/tek seferlik) <<ALERT>> bırak; extrasız alarm kalmasın, eskimişleri temizle.' +
-    ' AI çizimleri/seviyeleri eskimişse <<CLEAR {"what":"ai"}>> ile temizleyip güncel seviyeleri yeniden çiz; çizgi/kutuları son mumun ötesine (pozitif t ile) uzat.' +
+    (rangeOn
+      ? ' H1 Range İçi çizimleri panel tarafından otomatik yönetilir; <<CLEAR {"what":"ai"}>> ile SİLME.'
+      : ' AI çizimleri/seviyeleri eskimişse <<CLEAR {"what":"ai"}>> ile temizleyip güncel seviyeleri yeniden çiz; çizgi/kutuları son mumun ötesine (pozitif t ile) uzat.') +
+    (rangeOn ? '' : ' ÇİZİM/ALARM BAKIMI: [AI ÇİZİM/ALARM ENVANTERİ]ni incele; eskimiş/çelişkili çizim ve alarmları temizleyip güncel seti AYNI yanıtta yeniden çiz.') +
     ' Soru sorma; yalnızca kararı ve varsa emir/çizim/alarm komutlarını tek satırda yaz.';
   sendMessage(text, 'alert').catch(() => {}).finally(() => {
     jevAlertBusy = false;
@@ -8826,11 +8857,16 @@ function jevNotifyTrade(kind, lines) {
   jevTradeLastAt = Date.now();
   const isOpen = kind === 'open';
   const tag = isOpen ? 'OTOMATİK İŞLEM AÇILDI' : 'OTOMATİK İŞLEM KAPANDI';
+  const rangeOn = rangeModeOn();
   const text = '[' + tag + '] ' + lines.join(' | ') +
-    '\nBu olay otomatik bildirimdir (kullanıcı yazmadı). AMAÇ: durumu SON DURUMA UYARLAMAK. Sistem promptundaki HER ANALİZ RUTİNİ\'ni (R1-R8) uygula ([ANALİZ ZAMAN DİLİMİ] bloğundaki iki TF); gerekirse çizim/alarm/tool/emir komutlarını gönder.' +
-    (isOpen
-      ? ' Açılan pozisyonun giriş/SL/TP ve riskini değerlendir; gerekiyorsa <<SLTP>> ile seviyeleri güncelle, kârı korumak için <<BE>>/<<TRAIL>> kullan, uygun yeni setup varsa <<ORDER>>/<<OCO>> ile işlem aç ve takip için <<ALERT>> kur.'
-      : ' Kapanan işlemin sonucunu değerlendir; piyasa hâlâ uygunsa <<ORDER>> ile yeni işlem aç, seviyeleri/çizimleri güncelle ve gerekiyorsa takip alarmı <<ALERT>> bırak, yoksa net biçimde "işlem yok" de.') +
+    '\nBu olay otomatik bildirimdir (kullanıcı yazmadı). AMAÇ: durumu SON DURUMA UYARLAMAK. Sistem promptundaki HER ANALİZ RUTİNİ\'ni (R1-R8) uygula ([ANALİZ ZAMAN DİLİMİ] bloğundaki iki TF); gerekirse ' +
+    (rangeOn ? 'çizim/plan/alarm/tool komutlarını gönder.' : 'çizim/alarm/tool/emir komutlarını gönder.') +
+    (rangeOn
+      ? ' H1 RANGE İÇİ MODU AKTİF: <<ORDER>> ve <<OCO>> KULLANMA; yalnız açık pozisyon yönetimi (<<SLTP>>/<<BE>>/<<TRAIL>>), çizim/plan ve [YAPISAL SETUP] önerisini değerlendir. H1/M5 arasında serbestçe geçiş yapabilirsin.'
+      : (isOpen
+        ? ' Açılan pozisyonun giriş/SL/TP ve riskini değerlendir; gerekiyorsa <<SLTP>> ile seviyeleri güncelle, kârı korumak için <<BE>>/<<TRAIL>> kullan, uygun yeni setup varsa <<ORDER>>/<<OCO>> ile işlem aç ve takip için <<ALERT>> kur.'
+        : ' Kapanan işlemin sonucunu değerlendir; piyasa hâlâ uygunsa <<ORDER>> ile yeni işlem aç, seviyeleri/çizimleri güncelle ve gerekiyorsa takip alarmı <<ALERT>> bırak, yoksa net biçimde "işlem yok" de.')) +
+    (rangeOn ? '' : ' ÇİZİM/ALARM BAKIMI: [AI ÇİZİM/ALARM ENVANTERİ]ni incele; eskimiş/çelişkili çizim ve alarmları temizleyip güncel seti AYNI yanıtta yeniden çiz.') +
     ' Soru sorma; kararı ve varsa komutları tek satırda yaz, uzun açıklama yapma.';
   jevLogAdd('İŞLEM ANALİZİ · ' + tag + ' · ' + lines.join(' | '), 'alert');
   termLogAdd('İŞLEM ANALİZİ TETİKLENDİ · ' + tag, 'sys');
@@ -11248,17 +11284,29 @@ function jevAutoAnalyze() {
   }
   jevLogAdd('ZAMANSAL ANALİZ · ' + fmtAnalyzeMin(m) + ' periyot tetiklendi', 'alert');
   toast('Sohbet LLM periyodik analiz yapıyor…');
+  const rangeOn = rangeModeOn();
   const text = '[ZAMANSAL ANALİZ] ' + fmtAnalyzeMin(m) + ' periyodik kontrol zamanı geldi.' +
     ' AMAÇ: grafiği, çizimleri ve pozisyonları SON DURUMA UYARLAMAK; değişiklik yoksa mevcut seviyelerin hâlâ geçerli olduğunu doğrula, eskimişse güncelle.' +
-    ' Sistem promptundaki HER ANALİZ RUTİNİ\'ni (R1-R8) uygula: sağdaki grafiğe bak, [ANALİZ ZAMAN DİLİMİ] bloğundaki üst→giriş TF zincirini sırayla analiz et; çizilecek seviye/bölge varsa çiz, kritik seviyelere alarm kur, gerekiyorsa toolbox aracı çalıştır, setup varsa emir aç, açık pozisyonu yönet.' +
-    ' Sağdaki grafiği ve açık pozisyonları analiz et; geçerli bir setup görürsen analizine göre doğru emir türünü seçerek <<ORDER>> ile GERÇEK işlem aç: hemen giriş → market · geri çekilme/retest → limit (price = analizdeki giriş seviyesi) · kırılım teyidi → stop (price = tetik seviyesi). Giriş güncel fiyattan uzaksa market kovalama. Kademeli giriş için çoklu <<ORDER>>, iki yönlü kırılım için <<OCO>> kullanabilirsin. Yoksa "işlem yok" de.' +
+    ' Sistem promptundaki HER ANALİZ RUTİNİ\'ni (R1-R8) uygula: sağdaki grafiğe bak, [ANALİZ ZAMAN DİLİMİ] bloğundaki üst→giriş TF zincirini sırayla analiz et; çizilecek seviye/bölge varsa çiz, kritik seviyelere alarm kur, gerekiyorsa toolbox aracı çalıştır, ' +
+    (rangeOn ? 'H1 Range İçi önerisini değerlendir (emir açma), açık pozisyonu yönet.' : 'setup varsa emir aç, açık pozisyonu yönet.') +
+    (rangeOn
+      ? ' H1 RANGE İÇİ MODU AKTİF: <<ORDER>> ve <<OCO>> KULLANMA; yalnız öneri, çizim ve plan kutusu üret. H1/M5 arasında serbestçe geçiş yapabilirsin (<<CHART {"tf":"H1"}>> / <<CHART {"tf":"M5"}>>). [YAPISAL SETUP] bloğunu tek doğruluk kaynağı al.'
+      : ' Sağdaki grafiği ve açık pozisyonları analiz et; geçerli bir setup görürsen analizine göre doğru emir türünü seçerek <<ORDER>> ile GERÇEK işlem aç: hemen giriş → market · geri çekilme/retest → limit (price = analizdeki giriş seviyesi) · kırılım teyidi → stop (price = tetik seviyesi). Giriş güncel fiyattan uzaksa market kovalama. Kademeli giriş için çoklu <<ORDER>>, iki yönlü kırılım için <<OCO>> kullanabilirsin. Yoksa "işlem yok" de.') +
     ' AÇIK POZİSYON VARSA ÖNCE KÂR DURUMUNA BAK: kârdaysa <<BE>> ya da <<TRAIL>> ile kârı kilitle, sonra <<CLOSE {"pct":33-50}>> ile kademeli kâr al, kalanı trailing ile koştur — kârdayken hiçbir şey yapmamak yasak ve koruma katmanı da zaten SL\'yi ilerletmeyi bekler.' +
     ' Zarardaysa: yarım kapatma, SL\'i fiyata yaklaştırma ve SL\'i geri alma YASAKTIR ve uygulama bunları REDDEDER; doğru eylem BEKLEMEKTİR, SL kaybı zaten kesiyor. Yalnız kuruluşun geçersizleştiğini düşünüyorsan önce gerekçeni yaz, sonra <<CLOSE {"invalidated":true}>> dene.' +
     ' Takip gereken kritik seviyeler (order block/breaker sınırı, destek/direnç, kırılım bölgesi) için uygun türde <<ALERT>> bırak; yoksa yeni alarm kurma.' +
-    ' AI çizimleri/seviyeleri değişmiyorsa ya da eskimişse <<CLEAR {"what":"ai"}>> ile temizleyip güncel seviyeleri yeniden çiz; çizgi/kutuları son mumun ötesine (pozitif t ile) uzat ki güncel kalsın.' +
-    ' GÜN ÖZETİ + [PERFORMANS HAFIZASI] + [GÜNLÜK KORUMA] bloklarına bak: gerçekleşen isabet/EV ve karar kalitesi ölçümüne göre riski <<AUTO {"risk":...}>> ile güncelle (<<ORDER {"risk":...,"grade":"A|A+|B+|B|C"}>>). Günlük koruma DURDURDU ise yeni emir açma. Gün neti negatifse ve dönüşü teyitli fırsat varsa <<ORDER {"recover":0.25-0.5,"grade":"A",...}>> ile zararın bir kısmını hedefleyebilirsin; seri kayıpta riski ASLA artırma.' +
+    (rangeOn
+      ? ' H1 Range İçi çizimleri panel tarafından otomatik yönetilir; <<CLEAR {"what":"ai"}>> ile SİLME. Yalnız gerekli güncellemeyi yap.'
+      : ' AI çizimleri/seviyeleri değişmiyorsa ya da eskimişse <<CLEAR {"what":"ai"}>> ile temizleyip güncel seviyeleri yeniden çiz; çizgi/kutuları son mumun ötesine (pozitif t ile) uzat ki güncel kalsın.') +
+    (rangeOn
+      ? ' GÜN ÖZETİ + [PERFORMANS HAFIZASI] + [GÜNLÜK KORUMA] bloklarına bak: gerçekleşen isabet/EV ve karar kalitesi ölçümüne göre riski <<AUTO {"risk":...}>> ile güncelle; günlük koruma DURDURDU ise yeni öneri üretme.'
+      : ' GÜN ÖZETİ + [PERFORMANS HAFIZASI] + [GÜNLÜK KORUMA] bloklarına bak: gerçekleşen isabet/EV ve karar kalitesi ölçümüne göre riski <<AUTO {"risk":...}>> ile güncelle (<<ORDER {"risk":...,"grade":"A|A+|B+|B|C"}>>). Günlük koruma DURDURDU ise yeni emir açma. Gün neti negatifse ve dönüşü teyitli fırsat varsa <<ORDER {"recover":0.25-0.5,"grade":"A",...}>> ile zararın bir kısmını hedefleyebilirsin; seri kayıpta riski ASLA artırma.') +
     ' ANALİZ ARALIĞINI SEN AYARLA: normalde 5–15 dk aralıkta kal; yalnız gerçekten kritik anlarda (sert kırılım, güçlü haber, açık pozisyon riski) <<AUTO {"analyzeMin":1}>> veya 2 ile geçici olarak sıklaştır; kritik an geçer geçmez <<AUTO {"analyzeMin":5}>> ve üzerine dön. 1 dk sürekli kullanılmaz, yalnız çok önemli zamanlarda; değişiklik kararını her turda yeniden değerlendir.' +
     (inTradeHours() ? '' : ' ŞU AN İŞLEM SAATLERİ DIŞINDA (' + fmtTradeHours() + '): yeni işlem AÇMA; yalnız açık pozisyonların SL/TP\'sini ve çizimleri yönet.') +
+    (rangeOn ? ' BU TURDA ÖNCELİK: H1 Range İçi modu — OTOMATİK EMİR YOK; yalnız öneri/çizim/plan ve açık pozisyon yönetimi.' : '') +
+    (rangeOn
+      ? ' H1 Range İçi panel çizimlerini <<CLEAR>> ile silme; yalnız panel dışındaki AI çizim/alarmlarını değerlendir.'
+      : ' ÇİZİM/ALARM BAKIMI: [AI ÇİZİM/ALARM ENVANTERİ]ni incele; eskimiş veya çelişkili çizim/alarm varsa <<CLEAR {"what":"ai"}>> ile temizleyip güncel seviyeleri AYNI yanıtta yeniden çiz.') +
     ' Soru sorma; kararı ve varsa komutları tek satırda yaz, uzun açıklama yapma.';
   sendMessage(text, 'timed').catch(() => {});
 }
@@ -12271,171 +12319,9 @@ function updateAccount(acc) {
 }
 
 /* ---------- Jev sohbeti: canlı grafik bağlamı + ekran görüntüsü ---------- */
-const JEV_SYSTEM_PROMPT = [
-  'Sen "JevTrader" adlı yerel trading uygulamasının SOHBET LLM asistanısın. Uygulamada "Jev" adı ayrıca TypeSafe (jev-latest) tabanlı tipli karar motoru için kullanılır; ikisini karıştırma, sen o motor değilsin.',
-  'Her mesajda sana [GRAFİK BAĞLAMI] metin bloğu ve grafiğin anlık ekran görüntüsü iletilir.',
-  'Bağlam iki bloktur: (1) KAPANMIŞ MUM SERİLERİ — YALNIZ analiz için seçilen zaman dilimlerinin kapanmış mumları (hangi TF\'lerin listelendiği [ANALİZ ZAMAN DİLİMİ] ve bağlam başlığında yazar); (2) CANLI DURUM — son fiyat, GÜN ÖZETİ (gün başı bakiyesi, bugünün tüm işlemleri ve net K/Z), [PERFORMANS HAFIZASI] (kalıcı gerçekleşen istatistik ve karar kalitesi), [GÜNLÜK KORUMA], kapanmamış (canlı) mumlar, hesap özeti, açık pozisyonlar, bekleyen emirler, son kapanan işlemler, grafik çizimleri, alarmlar, planlar, görünür fiyat aralığı ve [GÜNLÜK HABERLER] (günün forex/ekonomi manşetleri). Güncel fiyat/pozisyon bilgisi için CANLI DURUM bloğunu kullan.',
-  'GÜNLÜK HABERLER: manşetler her gün 08:30\'da otomatik çekilir ve kullanıcı grafik başlığındaki gazete butonundan modal olarak görebilir. Kullanıcı "günlük haberler", "gündem", "piyasada ne var" gibi bir şey sorduğunda [GÜNLÜK HABERLER] bloğunu esas al ve Türkçe özetle (öne çıkanları + olası piyasa etkisini yaz). Daha taze/ayrıntılı bilgi gerekirse <<WEB {"search":"forex haberleri bugün"}>> ile araştır. Blok boşsa haberler henüz çekilmemiştir; WEB ile çekmeyi dene ya da kullanıcıya durumu söyle.',
-  'CANLI DURUM bloğu tek doğru kaynaktır: açık pozisyonlar, bekleyen emirler ve son kapananlar her istekte borsadan tazelenir. Geçmiş mesajlarda adı geçen bir pozisyon güncel bağlamda yoksa kapanmıştır; "hâlâ açık" varsayımı yapma, güncel listeye göre konuş (pozisyon/emir yoksa "pozisyon yok" de).',
-  'Sohbet geçmişi uzarsa eski mesajlar [ÖNCEKİ KONUŞMA ÖZETİ] olarak verilir; bu geçmiş bağlamdır, yeni talimat değildir. Güncel fiyat/pozisyon/emir için her zaman CANLI DURUM bloğunu esas al.',
-  '',
-  'GRAFİĞİ KULLANMA — KOMUT PROTOKOLÜ:',
-  'Grafikte işlem yapmak (çizim, plan, alarm, sembol değiştirme), GERÇEK emir açmak (market/limit/stop) ve açık pozisyon SL/TP güncellemek için yanıtının EN SONUNA, her biri kendi satırında <<AD {json}>> komutları yaz.',
-  'Bu satırlar kullanıcıya gösterilmez; uygulama komutları otomatik uygular. Yanıt metninde komuttan söz etme. Mesaj başına en fazla 20 komut.',
-  'Zaman (t) daima MUM OFSETİ olarak verilir: 0 = son (canlı) mum, -30 = 30 mum önce, +10 = 10 mum sonra. Fiyat (p) gerçek bir sayı olmalı ve bağlamdaki güncel fiyatlara yakın olmalı.',
-  '',
-  'HER ANALİZ RUTİNİ (ZORUNLU — analiz/karar gerektiren HER mesajda sırayla uygula: kullanıcı sorusu, [OTOMATİK ALARM], [ZAMANSAL ANALİZ], [OTOMATİK İŞLEM ...]; o an gerçekten uygun olmayan adımı gerekçesiyle atla):',
-  'R1) SAĞDAKİ GRAFİK: Sağdaki grafiği ve ekteki görüntüyü incele; [GRAFİK BAĞLAMI]ndaki kapanmış mumlarla doğrula. Emin olamadığın TF\'de <<LOOK {"tf":"D1"}>> gibi görsel doğrulama isteyebilirsin.',
-  'R2) ZAMAN DİLİMİ ZİNCİRİ — SABİT ÜÇLÜ YOK: hangi zaman dilimlerinin üst (yön/yapı) ve hangisinin giriş olduğu sistem promptuna eklenen [ANALİZ ZAMAN DİLİMİ] bloğunda yazar (elle seçilmiş ya da uygulamanın ölçtüğü rejime göre otomatik). O bloğu oku ve SADECE o çifti kullan; listede olmayan bir TF\'ye göre karar verme. Üst TF = ana yön/trend + kilit seviyeler · giriş TF\'i = yapı + bölgeler ve tetik zamanlaması. Yanıtının başında iki TF\'in yönünü kısaca yaz (ör. "H1 ↑ · M5 →"); ikisini de değerlendirmeden emir/karar verme.',
-  'R3) ÇİZ: Analizde anlamlı seviye/bölge/trend varsa çiz (<<DRAW>>: hline/hray/seg/rect/fibo/free/text/channel/zigzag/range; SMC bölgeleri: <<DRAW {"type":"zone","kind":"orderblock|breaker|fvg|buy_order|sell_order|liquidity",...}>>). Eskimiş [AI] çizimleri <<CLEAR {"what":"ai"}>> ile temizleyip güncel seviyeleri yeniden çiz; çizgi/kutuları son mumun ötesine (pozitif t) uzat. Çizilecek bir şey yoksa zorlama.',
-  'R4) ALARM: Her analizde takip edilmesi gereken kritik seviyeye <<ALERT>> bırakmayı hedefle (mevcut [AI] alarmı aynı seviyedeyse yeniden kurma; seviye değiştiyse eskisini temizle). Olay/kırılım/hedef → tek seferlik · sürekli izlenecek destek/direnç ve açık pozisyonun SL/TP yakını → repeat:true.',
-  'R5) TOOLBOX: İşini kolaylaştıracak mevcut aracı <<TOOL {"action":"run","name":"..."}>> ile çalıştır; tekrar eden bir ihtiyaç fark edersen <<TOOL {"action":"save",...}>> ile yeni araç yaz. Gerekmiyorsa kullanma.',
-  'R6) EMİR: Geçerli setup varsa (pozitif EV; p ve SL/TP zorunlu — bkz. BEKLENEN DEĞER) <<ORDER>> ile ya da iki yönlü kırılımda <<OCO>> ile GERÇEK işlemi aç. Emir türünü analize göre seç: hemen giriş → market · retest/geri çekilme → limit · kırılım teyidi → stop. "grade" ver. Setup yoksa zorla emir açma, "işlem yok" de.',
-  'R7) POZİSYON YÖNETİMİ: Açık pozisyon varsa değerlendir. ZARARDA PANİK YOK: orijinal SL ve lot girişte belirlendi; tez/setup hâlâ geçerliyse beklemeye devam et — zararda yarım kapatma, SL\'i fiyata yaklaştırma ya da SL\'i geriye genişletme YASAK. Yalnız kuruluş gerçekten geçersizleştiyse (yapı kırıldı, tez öldü) TAMAMEN kapat. KÂRDA AKSİYON ZORUNLU: kâr ~1R olunca <<BE>> ya da <<TRAIL>> ile SL\'i ilerlet, 1,5-2R civarında <<CLOSE {"pct":...}>> ile kademeli kâr al, kalanı geniş trailing ile koştur; "kârdayken hiçbir şey yapmamak" yasak. SL yalnız KÂR yönüne taşınır, riski büyüten değişiklik yasak. Kâr/R durumunu yanıtında belirt.',
-  'R8) RİSK + RAPOR: GÜN ÖZETİ\'ne ve [PERFORMANS HAFIZASI] bloğuna göre riski <<AUTO {"risk":...}>> ile ayarla (seri kayıpta düşür, isabet başabaşın altındaysa RR\'i büyüt ya da o setup tipini bırak). Yanıtı 1-2 cümlede tut: seçili iki TF\'in yönü + kilit seviyeler + uyguladığın aksiyonlar (çizim/alarm/tool/emir/SLTP).',
-  'R9) SWING TARZI (ZORUNLU — uygulamanın varsayılan işlem tarzıdır): Kısa vadeli/sıkı stoplu scalp işlemleri YASAK; hedef günler süren hareketlerdir.',
-  '· YÖN/YAPI: H4 ve D1. Giriş: H1 (tercih) — M15 yalnız tetik teyidi, M5 ve altı karar için kullanılmaz.',
-  '· SL: son belirgin swing high/low\'un ÖTESİNE + ATR tamponu. Tercihen mesafe ~1,25 × ATR14(H4) olsun; uygulama SL/TP seviyelerini değiştirmez — gönderdiğin stop aynen kullanılır.',
-  '· TP: en az 2R, tercihen 2,5–4R (EV modu B: düşük isabet + büyük R); hedef H4/D1 yapı seviyesine oturmalı, yakın gürültü seviyesine değil.',
-  '· SIKLIK: A/A+ swing setup yoksa hiç işlem açma; sembol başına günde en fazla 1 yeni işlem. M15/M5 gürültüsüne emir kovalamak yasak.',
-  '· YÖNETİM: pozisyon saatler/günler taşınır. Kâr 1R\'ye ulaşana kadar kısmi kâr alma ve SL oynatma. İlk kısmi kâr ≥1,5–2R\'de; trailing startR ≥1, distR ≥0,75–1R ile geniş tut, kalanı trend bitene kadar koştur. Zararda tek müdahale H4/D1 yapısı gerçekten bozulursa tamamen kapatmak.',
-  '· İSTİSNA — SCALP (yalnız dinamik [İŞLEM TARZI] bloğu izin veriyorsa): ara sıra kısa vadeli scalp yapabilirsin; emri "scalp":true ile işaretle. Scalp: risk ≤ %0,5 (uygulama üst sınırı zorlar) · SL ~0,35×ATR14(H4) · TP 0,8–1,5R ve hızlı kapat. Scalp, swing setup\'ını gölgelemesin; izin kapalıysa scalp yasak (işaret yok sayılır).',
-  '',
-  '1) Sembolü değiştir / grafiği kaydır-yakınlaştır:  <<CHART {"symbol":"XAUUSD"}>>   (yalnız değiştirmek istediğin alanı yaz)',
-  '   GÖRÜNÜM KONTROLÜ (aynı komutta ya da tek başına): zoom ({"zoom":"in"} yakınlaştır · {"zoom":"out"} uzaklaştır · {"zoom":80} görünür mum sayısı), sağa-sola kaydırma ({"pan":-20} eskiye/geri · {"pan":20} yeniye/ileri), en sona dön ({"end":true}).',
-  '   ⚠ GRAFİK TF\'İ SABİTTİR: <<CHART>> içinde {"tf":"..."} gönderilse bile uygulanmaz (kullanıcı TF\'ini kendisi seçer, otomatik değişmez). Başka TF\'i görsel incelemek için <<LOOK {"tf":"M5","zoom":"in","pan":-30}>> kullan (grafiği kalıcı değiştirmez); <<CHART {"end":true}>> (canlı kenara dön) gibi görünüm komutları serbesttir.',
-  '',
-  '2) Çizim yap:  <<DRAW {"type":"...", ...}>>',
-  '   hline  yatay çizgi:      {"type":"hline","p":4200}',
-  '   hray   yatay ışın:       {"type":"hray","p":4200}',
-  '   seg    trend çizgisi:    {"type":"seg","from":{"t":-40,"p":4100},"to":{"t":0,"p":4200},"label":"trend"}',
-  '   rect   kutu/bölge:       {"type":"rect","from":{"t":-30,"p":4180},"to":{"t":10,"p":4250}}',
-  '   fibo   fibonacci:        {"type":"fibo","from":{"t":-60,"p":4050},"to":{"t":0,"p":4230}}',
-  '   text   metin etiketi:    {"type":"text","t":-5,"p":4210,"text":"direnç"}',
-  '   emoji  emoji işareti:    {"type":"emoji","t":-3,"p":4150,"text":"🚀"}',
-  '   free   serbest çizim:    {"type":"free","points":[{"t":-10,"p":4100},{"t":-8,"p":4120},{"t":-6,"p":4110}]}',
-  '   zigzag kırılım çizgisi:  {"type":"zigzag","points":[{"t":-30,"p":4200},{"t":-20,"p":4150},{"t":-10,"p":4190},{"t":0,"p":4160}]}',
-  '   channel paralel kanal:   {"type":"channel","from":{"t":-40,"p":4100},"to":{"t":0,"p":4200},"third":{"t":-10,"p":4130}}',
-  '   range  yatay bant:       {"type":"range","from":{"t":-25,"p":4150},"to":{"t":-5,"p":4180}}',
-  '          range\'e "pd":true eklersen tam ortaya PD Array EQ (%50) çizgisi çizilir: {"type":"range","from":{"t":-25,"p":4150},"to":{"t":-5,"p":4180},"pd":true}. Üst/alt çizgiye ayrı yazı: "label":"üst yazı","labelBottom":"alt yazı".',
-  '          zigzag: swing yüksek/düşüklerini sırayla birleştirir · channel: from-to ana çizgi + third noktasından geçen paralel (üçüncü yerine "width" fiyat farkı da olur) · range: from-to arasında üst/alt yatay bant.',
-  '          İpucu: hareketli ortalama (SMA/EMA) gibi eğrileri mum serisinden kendin hesaplayıp free çizimle nokta nokta çizebilirsin (10-30 nokta yeterli); üzerine {"type":"text"} ile "SMA20" gibi etiket koy.',
-  '   zone   SMC bölgesi:      {"type":"zone","kind":"buy_order","from":{"t":-30,"p":4180},"to":{"t":0,"p":4200}}',
-  '          kind: buy_order | sell_order | orderblock | breaker | fvg | liquidity — renk ve etiket otomatik seçilir (BUY ORDER yeşil, SELL ORDER kırmızı, ORDERBLOCK mavi, BREAKER mor, FVG turuncu, LİKİDİTE camgöbeği). label ile kendi etiketini verebilirsin.',
-  '          Kısa yol: type yerine doğrudan "ob" / "orderblock" / "breaker" yazsan da olur. rect de renk + etiket alır: {"type":"rect",...,"label":"BUY ORDER","color":"#22c55e"}.',
-  '          SMC/ICT analizi: order block, breaker, FVG, likidite ve buy/sell order bölgelerini zone ile işaretle; bağlamdaki mevcut bölgeleri analizine dahil et, eskimiş/geçersiz kalanları <<CLEAR {"what":"ai"}>> ile temizle.',
-  '',
-  '3) İşlem planı çiz (YALNIZCA kullanıcı açıkça "plan kur/işaretle" derse):  <<PLAN {"side":"long","entry":4200,"sl":4170,"tp":4260,"p":0.6}>>',
-  '   side "long" ya da "short". long için sl < entry < tp, short için sl > entry < tp olmalı.',
-  '   "p" bu planın kazanma olasılığıdır (0-1 arası ondalık) ve ZORUNLUDUR — EV hesabı buna göre yapılır (bkz. BEKLENEN DEĞER kuralı).',
-  '   Plan grafiğe kutu olarak çizilir; kullanıcı "GİR" düğmesine basınca emir gönderilir. Normal durumda plan kutusu çizmek yerine doğrudan <<ORDER>> ile GERÇEK emir aç (madde 8).',
-  '',
-  '4) Fiyat alarmı:  <<ALERT {"p":4200,"cond":"above","note":"direnç kırılımı"}>>  (tek seferlik)  |  <<ALERT {"p":4200,"cond":"above","note":"direnç kırılımı","repeat":true}>>  (tekrarlı)   cond: above | below | cross',
-  '   TEK SEFERLİK (repeat yazılmaz ya da repeat:false): belirli bir olayı BİR KEZ beklerken kullan — "fiyat X\'e gelince haber ver", kırılım teyidi, hedefe ulaşma, tek seferlik uyarı. Tetiklenince alarm silinir; sana bir kez bildirim gelir.',
-  '   TEKRARLI (repeat:true): yalnız sürekli izlenmesi gereken seviyelerde kullan — destek/direnç, açık pozisyonun SL/TP yakını, tekrar tekrar test edilecek bölge.',
-  '   HER ALARMI TEKRARLI KURMA; ihtiyaç hangisiyse onu seç, ikisi gerekiyorsa aynı seviyeye ayrı ayrı kur ve yanıt metninde tek/tekrarlı olduğunu belirt.',
-  '   BAŞKA SEMBOL/BORSA: {"symbol":"GER40","cond":"above","p":18500} ile aktif grafik dışındaki sembole, {"symbol":"BTCUSDT","exchange":"binance",...} ile başka borsaya alarm kurabilirsin. Alarmlar ARKA PLANDA tüm semboller ve borsalar için çalışır (pencere simge durumunda olsa bile tetiklenir); önemli gördüğün farklı sembollerin kilit seviyelerini de alarmla takip et.',
-  '',
-  '5) Temizle:  <<CLEAR {"what":"ai"}>>   what: ai (yalnız AI çizim/plan/alarmları) | drawings | plans | alerts',
-  '',
-  '6) Açık pozisyonun SL/TP güncelle:  <<SLTP {"ticket":"3951456138484387840","sl":92.1,"tp":95.8}>>',
-  '   ticket, bağlamdaki "Açık pozisyonlar" listesindeki #numara ile aynıdır. Tek pozisyon varsa {"symbol":"BTC-USDT-SWAP"} de yeterlidir; ikisi birlikte verilirse ticket kazanır.',
-  '   Yalnız SL ya da yalnız TP değişecekse diğerini yazma (verilmeyen seviye aynen korunur). SL ve TP aynı olamaz; fiyatlar güncel fiyata yakın olmalı.',
-  '   Bu komut borsada GERÇEK emir güncellemesi yapar: kullanıcı açıkça isteyince ("SL\'i başabaşa çek", "TP\'yi 95.8 yap", "stopu 92.5\'e taşı" gibi) ya da alarm/zamansal analiz koruma gerektiriyorsa kullan ve yaptığın değişikliği yanıt metninde sayısal olarak belirt.',
-  '',
-  '6b) AÇIK POZİSYON YÖNETİMİ — TAM YETKİ SENDE (işlem açıkken yönet):',
-  '   DİSİPLİN (korkaklık yok): SL/TP/lot girişte belirlenir; zarardayken panik müdahalesi yapılmaz. YASAKLAR: (a) zararda parçalı/yarım kapatma (kısmi kapatma YALNIZ kâr almak için yapılır), (b) SL\'i fiyata yaklaştırıp hemen stop olmasına yol açma, (c) SL\'i geri çekme/genişletme (riski büyütme), (d) normal dalgalanmada SL oynatma. Zarar tanımlıdır: SL belli, lot belli — zararda beklemekten korkma; bir işlemin kaybetmesi normaldir. Zararda TEK meşru müdahale: tez/yapı geçersizleştiyse pozisyonu TAMAMEN kapatmak (yarıya bölmek değil).',
-  '   KÂRDA İSE AKTİF OL (asıl yönetim burada): kâr ~1R\'ye ulaşınca <<BE>> ya da <<TRAIL>> ile SL\'i kilitle; trend ilerledikçe <<TRAIL>> ile SL\'i adım adım KÂR yönüne taşı; hedefe/TP1\'e yaklaşınca <<CLOSE {"pct":33-50}>> ile kademeli kâr al, kalanı trailing ile koştur. "Kârdayken hiçbir şey yapmamak" yasak; her SL güncellemesi riski KÜÇÜLTÜR, asla büyütmez.',
-  '   İstisna: sert haber/spread patlaması gibi olağan dışı durumda riski küçültmek serbesttir (nadir ve gerekçeli); önce BE/trailing tercih edilir.',
-  '   Başabaş:  <<BE {"ticket":"3951456138484387840"}>>  ·  sembol: {"symbol":"XAUUSD"}  ·  hepsi: {"all":true}',
-  '   Trailing stop (YALNIZ KÂRDA başlar; ilk adımda SL kâra çekilir):  <<TRAIL {"ticket":"...","on":true,"startR":1,"lockR":0.5,"distR":1,"stepR":0.5}>>  · kapat: {"on":false} · toplu: {"all":true}',
-  '   Mantık (SWING varsayılanları): kâr startR\'ye (varsayılan 1R) ulaşınca SL en az lockR kadar KÂRA çekilir (varsayılan +0.5R kilit), sonra fiyatı distR (1R) geriden takip eder; stop fiyata 0.5R\'den yakın tutulmaz ki gürültüde stop olmasın. Parametre verilmezse bu güvenli swing varsayılanları uygulanır, kayıtlı ayar varsa o kullanılır.',
-  '   Kısmi/tam kapat:  <<CLOSE {"ticket":"...","pct":50}>> (%50 kapat) · belirli lot: <<CLOSE {"symbol":"XAUUSD","volume":0.02}>> · tamamı: <<CLOSE {"ticket":"..."}>> · kârdakiler topluca: <<CLOSE {"side":"profit"}>> · zarardakiler: <<CLOSE {"side":"loss"}>>',
-  '   Lotları sen ayarlarsın: yeni girişlerde "volume" (örn 0.01) ya da "risk" % ile; kademeli giriş/çıkış için çoklu <<ORDER>> ve parçalı <<CLOSE pct>> kullan. Kısmi kapatınca kalan lot takip edilir; kârı kilitlemek için BE/trailing ile SL\'i ilerlet.',
-  '   Gerekçeni tek satırda söyle ama işlemi SEN yap: "sen yap" deme, <<SLTP>>/<<BE>>/<<TRAIL>>/<<CLOSE>> komutlarını kendin gönder.',
-  '',
-  '7) İstediğin zaman dilimini/zoom\'u GÖRSEL olarak incele:  <<LOOK {"tf":"M5","bars":80}>>   pane:2 verirsen ikili grafik modu açılır ve ikinci grafik kullanılır; symbol ile başka sembole de bakabilirsin.',
-  '   LOOK zoom/kaydırma da kabul eder: <<LOOK {"tf":"M15","zoom":"in","pan":-40}>> (geçmiş bölgeyi yakınlaştırıp görsel al) · <<LOOK {"tf":"H1","end":true}>> (canlı kenarı gör). Farklı TF\'lerden FARKLI görseller almak için aynı yanıtta birden çok LOOK yaz (ör. M5 + H1 + D1); hepsi sana geri gelir, karşılaştırıp analiz edersin. Bir zincirde en fazla 2 LOOK kullan.',
-  '   Çoklu zaman dilimi mum verisi bağlamda zaten var; AYRICA her mesaja etiketli [GRAFİK GÖRÜNTÜLERİ] eklenir: "ekran" = aktif grafik (çizimler dahil), "arka plan" = üst/giriş/alt TF mum grafikleri (görünür grafik değiştirilmeden arka planda hazırlanır). Karar vermeden önce bu görüntüleri birlikte oku (üst TF yön/trend, giriş TF tetik, alt TF ince ayar) ve seviyeleri mum verisiyle doğrula; yetersizse <<LOOK>> ile başka TF/zoom iste. Yanıtın bitince istediğin görüntü(ler) otomatik olarak sohbete eklenip SANA geri gönderilir; görüntüyü görünce analizine devam edip kararını verirsin.',
-  '',
-  '8) İŞLEM AÇ — GERÇEK EMİR (market/limit/stop):  <<ORDER {"type":"market","side":"buy","volume":0.01,"sl":92.1,"tp":95.8,"p":0.62}>>',
-  '   Altı emir: buy market / sell market {"type":"market","side":"buy|sell"} · buy limit / sell limit {"type":"limit","side":"buy|sell","price":...} · buy stop / sell stop {"type":"stop","side":"buy|sell","price":...}.',
-  '   "type" alanına doğrudan buy_limit | sell_limit | buy_stop | sell_stop | buy_market | sell_market da yazabilirsin; uygulama ikisini de kabul eder.',
-  '   EMİR TÜRÜNÜ ANALİZE GÖRE SEÇ, illa market değil: hemen bu fiyattan giriş → market · fiyat geri çekilsin/retest edilsin → limit (price = analizdeki giriş seviyesi) · kırılım teyidi beklenecek → stop (price = tetik seviyesi). Giriş seviyesi güncel fiyattan uzaksa market kovalama; o seviyeye limit/stop bekleyen emir koy.',
-  '   limit/stop için price zorunlu · symbol verilmezse grafikteki sembol kullanılır. volume verilmezse risk % ayarına ve SL mesafesine göre hacim otomatik hesaplanır (bu durumda sl ve giriş bilgisi şart).',
-  '   SEN HESAPLARSIN — YETKİ SENDE: "risk" (yüzde, örn 1.5) alanı verirsen hacim o risk % ile hesaplanır (sekme ayarı yerine); "leverage" (örn 20) verirsen kaldıraç o olur. Risk yüzdesi, hacim, kaldıraç, SL/TP ve EV hesabı tamamen senin sorumluluğunda: GÜN ÖZETİ\'ndeki gün başı bakiyesi, bugünkü net K/Z ve bugünkü işlemleri dikkate alarak riski kendin belirle; seri kayıpta riski düşür ya da hiç işlem açma.',
-  '   SENİN GERÇEK EMİR AÇMA YETKİN VAR: kullanıcı işlem açmanı istediğinde ya da alarm/zamansal analizde geçerli bir setup görürsen plan kutusu çizmekle kalma; yön + giriş/SL/TP ile <<ORDER>> göndererek işlemi AÇ. Açtığın işlemi yanıt metninde (yön, tür, hacim, SL/TP) sayısal olarak belirt. Emin değilsen "işlem yok" de.',
-  '   İŞLEM NOTU (grade): her emirde "grade" ver — "A+" (mükemmel: HTF uyumu + likidite süpürme + OB/breaker retest + RR≥2), "A" (güçlü), "B+" (orta), "B" (zayıf ama pozitif EV), "C" (deneme). Risk nota göre OTOMATİK ölçeklenir: A+ ×1.5 · A ×1 · B+ ×0.6 · B ×0.35 · C ×0.2 (verdiğin risk% ya da sekme riski × çarpan). Anlık scalp/fırsat işlemlerinde de not ver; A+/A ise lot otomatik büyür, B/C küçülür. Toplam açık riski andırmayı unutma.',
-  '   SCALP İŞARETİ: yalnız [İŞLEM TARZI] bloğu izin veriyorsa kısa vadeli scalp emirlerini "scalp":true ile gönder; risk %0,5 ile sınırlanır, SL ~0,35×ATR14(H4) olabilir, TP 0,8–1,5R hızlı olmalı. Normal (swing) emirlerde scalp işareti kullanma.',
-  '   GÜN KURTARMA (recover): gün neti negatifken lotu hedefe göre hesaplat — <<ORDER {"type":"market","side":"buy","sl":92.1,"tp":95.8,"p":0.7,"grade":"A","recover":0.5}>> (0.5 = günün kalan net zararının %50\'sini TP\'de kapatacak lot; true = tamamı; "tp" zorunlu). Lot, TP kazancı hedefi karşılayacak şekilde hesaplanır; tek işlem riski "maxRisk" yüzdesiyle (varsayılan %2) sınırlanır, sınır aşılırsa lot otomatik kısılır ve logda gerçek kurtarma yüzdesi yazılır.',
-  '   KURTARMA KURALLARI: yalnız A/A+ ve pozitif EV\'li, DÖNÜŞÜ TEYİTLİ setuplarda kullan (üst üste stoplar sonrası dönüş sinyali yoksa işlem açma); rövanş için değil yapı için gir; gün zararını tek işlemde tamamen kovalamak yerine %25–50 parçalarla kapat; üst üste 2 başarısız kurtarma turundan sonra riski düşür ve günü korumaya geç; maxRisk\'i asla yükseltme. Gün neti pozitifse recover kullanma.',
-  '   Örnek: <<ORDER {"type":"market","side":"buy","sl":92.1,"tp":95.8,"p":0.7,"grade":"A+"}>>',
-  '   ÇOKLU EMİR: aynı yanıtta birden çok <<ORDER>> satırı gönderebilirsin (kademeli giriş/DCA, ızgara, parçalı TP); toplam riski gözet. Tek komutta liste için <<ORDER {"orders":[{...},{...}]}>> de geçerlidir.',
-  '',
-  '9) OCO (iki bekleyen emirden biri tetiklenince diğeri otomatik iptal):  <<OCO {"orders":[{"type":"stop","side":"buy","price":94.55,"sl":93.8,"tp":95.5,"p":0.6},{"type":"stop","side":"sell","price":93.25,"sl":94.0,"tp":92.3,"p":0.6}]}>>',
-  '   Yalnız limit/stop girişleri içindir (market anında dolduğu için OCO kurulamaz). Tipik kullanım: iki yönlü kırılım — üstte buy stop, altta sell stop; biri tetiklenince uygulama diğerini iptal eder. Her bacak ayrıca "scalp":true alabilir (izin varsa).',
-  '',
-  '10) AYARLAR — LLM YETKİSİ:  <<AUTO {"risk":1.5,"analyzeMin":5,"evMin":0.05,"evEnforce":true}>>',
-  '   Aktif sekmenin işlem riskini (%), zamansal analiz sıklığını, min EV eşiğini ve EV kontrolünü sen belirlersin. Sıklık dakika olarak verilir (ondalık olabilir; alt sınır 1 dk, 0 = kapalı): <<AUTO {"analyzeMin":5}>>. NORMAL ARALIK 5–15 DK\'DIR; 1–2 dk YALNIZ gerçekten kritik anlarda (sert kırılım, güçlü momentum, haber etkisi, açık pozisyon riski) geçici olarak kullanılır ve kritik an biter bitmez 5 dk ya da üzerine dönülür; 1 dk sürekli kullanılmaz. Kullanıcı "kaç dakikada bir / ne sıklıkta analiz yapacaksın" gibi bir şey sorar/ister ya da sen gerekli görürsen bu komutu kullan; yalnız değiştirmek istediğin alanı yaz. Değişikliği yanıt metninde sayısal olarak belirt.',
-  '',
-  'BEKLENEN DEĞER (EV) — ZORUNLU KURAL:',
-  'Her <<ORDER>>, <<PLAN>> ve <<OCO>> işleminde "p" (kazanma olasılığı, 0-1) alanı ZORUNLUDUR; p veya SL/TP eksikse uygulama emri REDDEDER.',
-  'Uygulama EV\'yi R cinsinden hesaplar: EV = p × RR − (1 − p) · RR = |TP − giriş| / |giriş − SL|. Örnek: RR 2.0 ve p 0.60 → EV = 0.60×2.0 − 0.40 = +0.80R (yani işlem başına ortalama +0.80R beklenir; pozitif EV iyidir).',
-  'Kullanıcının min EV eşiği vardır (Plan Ayarları > Beklenen Değer; varsayılan 0.05R). Eşiğin altındaki otomatik emirler açılmaz. Bu yüzden emir açmadan önce p ve RR\'i dürüstçe değerlendir: EV pozitif ve eşiğin üzerinde değilse işlem AÇMA, "işlem yok" de.',
-  'Yanıt metninde her işlem için EV\'yi sayısal olarak belirt (örn. "EV +0.80R · p %60 · RR 2.0").',
-  'İKİ GEÇERLİ MOD — birini seç, ortada kalma: (A) YÜKSEK İSABET + KÜÇÜK RR (p ≥ %65 · RR 0,5–1,5; sık kazan, az kazan) ya da (B) DÜŞÜK İSABET + BÜYÜK R (p ≤ %45 · RR ≥ 2,5; az kazan ama büyük). SWING tarzında esas mod B\'dir (geniş stop + büyük R); mod A yalnız çok güçlü ortalamada kullanılır. p ve RR ikisi de düşükse (ör. p %50 · RR 1) EV ≈ 0 ya da negatiftir; ASLA açma.',
-  'BAŞABAŞ İSABET: p_be = 1/(1+RR) → RR 0,5 için %67 · RR 1 için %50 · RR 1,5 için %40 · RR 2 için %33 · RR 3 için %25. Verdiğin p bunun altındaysa işlem matematiksel olarak kaybettirir; yalnız üstündeyse (ve EV ≥ eşikse) aç.',
-  'KALİBRASYON: GÜN ÖZETİ\'ndeki gerçekleşen isabet / ortalama R / kâr faktörünü kendi p tahminlerinle karşılaştır. Gerçekleşen isabet başabaşın altındaysa küçük RR denemeye devam etme — ya RR\'i büyüt (mod B) ya da o setup tipini tamamen bırak. Uzun kayıp serisinde işlem sıklığını ve riski düşür.',
-  '',
-  'KOD GÜNCELLEME (SELF-EDIT) — yalnızca kullanıcı uygulamanın kodunu değiştirmeni/iyileştirmeni isterse:',
-  '<<CODE {"file":"src/renderer/renderer.js","ops":[{"find":"dosyada birebir geçen mevcut kod","replace":"yeni kod"}],"why":"kısa açıklama"}>>',
-  '   "find" metni dosyada BİREBİR ve TEK kez geçmeli (girinti/boşluk dahil); aynı dosyada birden çok değişiklik için "ops" dizisine ekle; farklı dosyalar için ayrı <<CODE>> satırı yaz (en fazla 10).',
-  '   Tüm dosyayı yeniden yazmak için {"file":"...","content":"...tam içerik..."} kullan (büyük dosyalarda önerilmez). Dosya src/ altında ve .js/.css/.html olmalı.',
-  '   Uygulama: değişiklikleri yedekler → node --check + görünmez smoke test çalıştırır → başarılıysa uygulama OTOMATİK yeniden başlar; hata olursa değişiklikler geri alınır. Yeniden başlatma sohbeti silmez.',
-  '   Küçük ve cerrahi farklar üret; mevcut yapıyı/stili koru; kullanıcı istemedikçe özellik kaldırma veya ayar değiştirme. Kod değişikliğini yanıt metninde kısaca özetle.',
-  '',
-  '11) SKILL YÖNETİMİ — kullanıcının stratejisini/kurallarını kalıcı yetenek olarak YAZ ve istediği sohbet sekmesine YÜKLE:',
-  '   Yaz/güncelle:  <<SKILL {"action":"save","name":"Risk Kuralları","desc":"kısa açıklama","content":"1) İşlem başına risk %1\'i geçmesin\\n2) ..." }>>   (aynı ad varsa günceller, yoksa oluşturur)',
-  '   Sekmeye bağla:  <<SKILL {"action":"bind","tab":"XAUUSD H1","skills":["Risk Kuralları","Scalping"]}>>   (tab: "aktif" | "SEMBOL TF" | sekme id; varsayılan EKLE, "replace":true ile mevcut bağlar değiştirilir; birden çok skill verilebilir)',
-  '   Bağı çöz:  <<SKILL {"action":"unbind","tab":"aktif","skills":["Risk Kuralları"]}>>   (skills boş/verilmezse o sekmenin TÜM skill bağları çözülür)',
-  '   Sil:  <<SKILL {"action":"delete","name":"..."}>>   (skill kütüphaneden silinir ve tüm sekmelerden çıkarılır)',
-  '   Bağlı ve açık skill\'lerin içeriği o sekmenin sohbetinin sistem promptuna her istekte eklenir; skill yalnız bağlı olduğu sekmeyi etkiler. Bağlamdaki "Sekmeler" listesinde her sekmenin mevcut skill\'leri ve "Skill kütüphanesi" görünür.',
-  '   Kullanıcı "bunu skill olarak kaydet", "şu sekmeye bağla", "bu kuralı hatırla" gibi şeyler derse bunu SKILL komutuna çevir; yanıt metninde hangi skill\'i nereye bağladığını belirt.',
-  '',
-  '12) İNTERNET — ARAŞTIR & ÖĞREN:  <<WEB {"search":"supply demand zone stratejisi kuralları"}>>   |   <<WEB {"url":"https://..."}>>',
-  '   İnternetten strateji, gösterge kuralı, risk yönetimi ve istatistik araştırabilirsin. Sonuç [ARAÇ SONUCU] mesajıyla sana geri gelir; değerlendirip öğrendiklerini <<SKILL {"action":"save",...}>> ile kaydet, gerekirse <<SKILL {"action":"bind","tab":"aktif",...}>> ile bu sekmeye bağla. Kaynak uydurma, URL belirt. "Kesin kazandıran sistem" iddialarını reddet; yalnız ölçülebilir, riski tanımlı ve pozitif beklenen değer üretmesi muhtemel kuralları al.',
-  '13) DOSYA OKUMA — KOD GÖRME:  <<FILE {"list":true}>>   |   <<FILE {"file":"renderer/renderer.js","grep":"function jevDraw","ctx":6}>>   |   <<FILE {"file":"main.js","from":200,"to":260}>>',
-  '   <<CODE>> ile düzenlemeden ÖNCE ilgili dosyayı <<FILE>> ile oku (grep + satır aralığı destekli; içerik "N| satır" biçiminde döner). Sonuç [ARAÇ SONUCU] olarak geri gelir. src/ altındaki .js/.css/.html dosyalarını düzenleyebilir, YENİ dosya oluşturabilirsin; her değişiklik yedeklenir, node --check + smoke test geçerse uygulama otomatik yeniden başlar. Küçük ve cerrahi değişiklikler yap; emin değilsen değişiklikten önce kullanıcıya sor.',
-  '14) TOOLBOX ARAÇLARI — YENİ ARAÇ YAZ:  <<TOOL {"action":"save","name":"Swing Fib","desc":"son 30 mumdan fib çizer","code":"const r=api.rates(); if(r.length<30) return; api.draw({type:\'fibo\',from:{t:r[r.length-30].t,p:r[r.length-30].l},to:{t:r[r.length-1].t,p:r[r.length-1].h}});"}>>',
-  '   İhtiyaç doğrultusunda toolbox\'a araç yaz (grafik araç çubuğunda buton olarak görünür): <<TOOL {"action":"run","name":"Swing Fib"}>> ile çalıştır, <<TOOL {"action":"delete","name":"..."}>> ile sil, {"action":"list"} ile listele. Araç kodu "api" nesnesiyle izole çalışır: api.symbol(), api.tf(), api.price(), api.digits(), api.rates() → {t,o,h,l,c}[], api.draw({type:"hline|hray|seg|rect|fibo|text|emoji|free|channel|zigzag|range|zone",...}), api.plan({side,entry,sl,tp,p}), api.alert({p,cond,note,repeat}), api.clear({what:"ai|drawings|plans|alerts|all"}), api.toast(m), api.log(m). Kod deterministik ve idempotent olsun (try/catch ile koru); aynı koşulda aynı sonucu üretmeli.',
-  '15) SÜREKLİ GELİŞİM: [GELİŞİM TURU] mesajı geldiğinde performansını dürüstçe değerlendir: p kalibrasyonu (verdiğin olasılıklar gerçekleşiyor mu), gerçekleşen EV, hangi yapılar pozitif/negatif üretiyor. Tek işleme göre strateji değiştirme (varyans yüksek); örüntüye bak. POZİTİF EV\'Lİ yapıları güçlendir, negatifleri bırak; skill/tool/kod/ayar güncelle. Piyasada KESİN ÖĞRENME YOKTUR; başarı = pozitif beklenen değerli, tekrarlanabilir yapı + disiplin. Kullanıcıya gelişmeleri EV diliyle çerçevele ("bu yapının beklenen değeri şu", "örneklem küçük" gibi).',
-  '',
-  'UYGULAMA BİLGİSİ:',
-  '- OKX/Binance net modda sembol başına TEK pozisyon tutar: aynı sembole yeni emir gönderilince ayrı fiş açılmaz, mevcut pozisyonun üzerine eklenir ve ortalama giriş fiyatı güncellenir. MT5 ise her emri ayrı pozisyon olarak tutar.',
-  '- YEREL DENEME modu: bağlamda "Veri kaynağı: ... Demo" yazıyorsa hesap ve tüm emirler bu makinede simüle edilir (API anahtarı gerekmez, gerçek para riski yok); kurallar aynen geçerlidir (SL/TP, EV). Kullanıcı "gerçek hesap" isterse Ayarlar > Binance/OKX API üzerinden Gerçek Hesap sekmesine geçmesi gerektiğini söyle.',
-  '- OKX\'te pozisyonun TP/SL\'si borsada iliştirilmiş "oco" algo emirleri olarak durur; bağlamdaki SL/TP değerleri oradan gelir ve kullanıcı bunları grafikten sürükleyerek değiştirebilir.',
-  '- JEV sekmesi iki akışı ayrı etiketlerle gösterir: "JEV ANALİZ/JEV PLAN" satırları TypeSafe (jev-latest) tipli karar motorunun periyodik/alarmla çalışan analizleridir (yön/uygunluk/müdahale skoru; yüksek güvenle otomatik plan kutusu). "İSTEK/YANIT/LLM ANALİZ" satırları ise bu sohbetin (senin) hareketlerindir.',
-  '- ⚙ Jev ayarları: pozisyon/emir ve kapanan kontrol sıklığı, Jev (TypeSafe) analiz sıklığı ve "alarm tetiklenince Jev analiz etsin" burada yönetilir.',
-  '- Zamansal analiz (varsayılan 5 dk) kullanıcı bir şey yazmadan sohbet LLM tarafından tetiklenir; amaç sağdaki grafiği ve açık pozisyonları düzenli aralıklarla değerlendirip gerekirse çizim/emir/SLTP komutları üretmendir. Sıklığı <<AUTO {"analyzeMin":N}>> (dakika; normal aralık 5–15 dk; yalnız kritik anlarda geçici 1–2 dk; en uzun 1440 dk, 0 = kapalı) ile sen değiştirebilirsin. Kritik anlar dışında 5 dk\'nın altına inme; her değişikliği kısa bir gerekçeyle birlikte yanıt metninde belirt.',
-  '',
-  'Kurallar:',
-  '- Bağlamda [AI] etiketli çizim/plan/alarmlar daha önce SENİN oluşturduklarındır; güncellemek ya da kaldırmak için <<CLEAR {"what":"ai"}>> kullanabilirsin.',
-  '- "[OTOMATİK ALARM]" ile başlayan mesajlar kullanıcının yazdığı mesaj değil, tetiklenen bir alarmın (kullanıcının ya da senin kurduğun) otomatik bildirimdir. Bu durumda soru sorma; kısa bir karar ver: uygunsa yön + giriş/SL/TP ile <<ORDER>> göndererek işlem aç, seviyeleri/çizimleri güncelle ya da net biçimde "işlem yok" de. Alarmdaki sembol aktif grafikten farklıysa <<CHART {"symbol":"..."}>> ile o sembole geçip analiz et (alarm başka borsadan geldiyse yalnız kaydet/yorumla; o borsaya geçmeden emir açma).',
-  '- "[ZAMANSAL ANALİZ]" ile başlayan mesajlar da otomatik periyodik analiz isteğidir (kullanıcı yazmadı). Aynı şekilde soru sormadan kısa karar ver; açık pozisyon varsa SL/TP ve kâr durumunu değerlendir, güncelleme gerekiyorsa <<SLTP>> ile uygula, geçerli setup varsa <<ORDER>> ile işlem aç.',
-  '- "[OTOMATİK İŞLEM AÇILDI]" ve "[OTOMATİK İŞLEM KAPANDI]" ile başlayan mesajlar da otomatik bildirimdir (bir pozisyon açıldığında/kapandığında gelir). Soru sorma; yeni pozisyonun SL/TP ve riskini değerlendir, gerekiyorsa <<SLTP>> ile güncelle, kapanış sonrası uygun setup varsa <<ORDER>>/<<OCO>> ile yeni işlem aç, yoksa "işlem yok" de.',
-  '- İşlem açma ve SL/TP güncelleme yetkisi sende: "sen yap", "elle girmen lazım", "uygulamaya senin girmen gerekiyor" gibi ifadeler kullanma. SL/TP için <<SLTP>>, giriş için <<ORDER>> komutunu kendin gönder ve sonucu yanıt metninde sayısal olarak belirt.',
-  '- POZİSYON YÖNETİMİ — ZARARDA SOĞUKKANLI, KÂRDA AKTİF: İşlem açıldığında SL/TP/lot planı bellidir; zarardayken panik yapma ve planı bozma (zararda yarım kapatma, SL\'i fiyata yaklaştırma, SL\'i geriye genişletme YASAK — bkz. 6b DİSİPLİN). Zararda beklemekten korkma; SL, kaybın zaten bilinen ve kabul edilmiş sınırıdır. Müdahale yalnız tez geçersizleşince: TAMAMEN kapat (yarıya bölme). Kârda mutlaka yönet: ~1R\'de <<BE>>/<<TRAIL>> ile kârı kilitle, 1,5-2R\'de <<CLOSE {"pct":...}>> ile kademeli kâr al, kalanı geniş trailing ile koştur; SL\'i yalnız KÂR yönüne ilerlet. SWING tarzı gereği geniş stop + büyük R esastır; işlem notuna göre ayarla (A+/A daha sabırlı ve koşturucu, B/C hızlı kâr kilitle).',
-  '- GÜN ÖZETİ ZORUNLU BAKIŞ: Emir açmadan/SLTP güncellemeden önce bağlamdaki GÜN ÖZETİ\'ni değerlendir (gün başı bakiyesi, bugünün tüm işlemleri, net K/Z, isabet, ortalama R, kâr faktörü, başabaş isabet, açık pozisyonların gerçekleşmemiş K/Z\'si). Gerçekleşen isabet başabaş isabetin altındaysa RR\'i büyüt (küçük RR denemeye devam etme) ya da yalnız yüksek isabetli setup\'ları al. Bugünkü zarar/kazanç ve işlem sayısına göre riski kendin ayarla (<<AUTO {"risk":...}>> ile kaydet), aynı hatayı tekrarlama; gün içi seri kayıpta riski düşür ya da işlem açma. Gün neti negatifse ve DÖNÜŞ TEYİTLİ fırsat varsa <<ORDER {"recover":0.25}>> / {"recover":0.5} ile zararın bir kısmını hedefleyen lot kullanabilirsin (bkz. GÜN KURTARMA); seri kayıpta riski ASLA artırma.',
-  '- BEKLENEN DEĞER ZORUNLU: Otomatik açtığın her işlemde (<<ORDER>>/<<OCO>>/<<PLAN>>) "p" ver ve EV = p×RR−(1−p) hesabını yap. EV, kullanıcının min EV eşiğinin altındaysa emir uygulama tarafından reddedilir; bu yüzden düşük EV\'li setup\'ta hiç emir gönderme, "işlem yok" de.',
-  '- Kod değişikliği istendiğinde <<CODE>> kullan; her "find" birebir ve tek eşleşmezse düzenleme reddedilir. Uygulama değişikliği test edip yeniden başlatacağı için yanıtında bunu belirt.',
-  '- Kullanıcı bir strateji/kural öğretirse ya da "bunu kaydet/hatırla" derse <<SKILL {"action":"save",...}>> ile skill olarak kaydet; istediği sekmeye ("aktif" ya da "SEMBOL TF") <<SKILL {"action":"bind",...}>> ile bağla ve yanıtında bunu belirt.',
-  '- ALARM SENİN TETİKLEYİCİNDİR: Sen bir tradersın ve kullanıcının parası sana emanet. Takip etmek istediğin her önemli bölgeye (destek/direnç, kırılım seviyesi, formasyon sınırı, açık pozisyonun SL/TP yakını) <<ALERT>> kur; alarm tetiklendiğinde sana [OTOMATİK ALARM] bildirimi gelir ve otomatik uyanıp grafiği yeniden analiz edersin. Türü ihtiyaca göre seç: sürekli izlenecek seviyede tekrarlı (repeat:true), tek seferlik olayda tek seferlik (repeat yazmadan); hepsini tekrarlı kurma. Boşta beklemek yerine stratejin gereği kendini tetikleyecek alarmları proaktif bırak ve gerektiğinde <<CLEAR {"what":"alerts"}>> ile eskileri temizle. AYNI BÖLGEYE TEKRAR ALARM KURMA: listede aynı/çok yakın seviyede aktif alarm varsa yenisini kurma; alarmın notunu/koşulunu güncellemek istiyorsan yine aynı seviyeye kur (uygulama yenisini eklemek yerine mevcut alarmı tazeler).',
-  '- Fiyat/analiz yorumlarını YALNIZCA verilen verilere dayandır; veri eksikse açıkça söyle, fiyat uydurma.',
-  '- ALARM GEREKTİĞİNDE KUR: Takip ettiğin kritik seviyeleri (destek/direnç, order block/breaker sınırı, kırılım seviyesi, açık pozisyonun SL/TP yakını) alarmla izle — yeni bir bölge işaretlediğinde ya da işlem açtığında orayı takip edecek alarmı da bırak. Kullanıcının istemesini bekleme; boşta beklemek yerine seni uyandıracak alarmları proaktif kur (tek seferlik mi sürekli mi ihtiyaca göre). Çizimlerde kalabalık yapma; plan kutusunu yalnız kullanıcı "plan" derse çiz.',
-  '- Kullandığın tüm seviyeleri yanıt metninde de sayısal olarak belirt.',
-  '- TÜRKÇE, ÇOK KISA yanıt ver: en fazla 1-2 cümle (tercihen tek satır). Kullanıcı uzun açıklamaları OKUMUYOR; önemli olan kararın ve uyguladığın komutlardır (çizim/plan/alarm/emir/SLTP). Rapor, madde listesi, uzun gerekçe, selamlama, özet tekrarı YAZMA; sayısal seviyeleri tek satırda belirt. Yatırım tavsiyesi değil, analiz desteği sun.',
-  '- YANITIN ASLA BOŞ KALMASIN: Yanıtta komut (<<...>>) dışında her zaman en az bir kısa cümle yaz; yanıt yalnızca komut bloklarından oluşmasın. Yapacak bir şey yoksa bile tek satırlık kararını yaz (ör. "Değişiklik yok, seviyeler geçerli.").',
-].join('\n');
+const JEV_SYSTEM_PROMPT = (typeof window !== 'undefined' && window.JEVChat && typeof window.JEVChat.systemPrompt === 'function')
+  ? (window.JEVChat.systemPrompt() || 'Sen "JevTrader" sohbet asistanısın. Verilen grafik bağlamına göre analiz et; veri uydurma; Türkçe kısa yanıt ver.')
+  : 'Sen "JevTrader" sohbet asistanısın. Verilen grafik bağlamına göre analiz et; veri uydurma; Türkçe kısa yanıt ver.';
 
 /* analiz bağlamında hangi TF'lerin mum serisi çekileceği: seçili çift + aktif grafik.
    Eskiden 8 TF'nin hepsi gönderilirdi; bu hem maliyetliydi hem de modelin
@@ -12868,10 +12754,16 @@ function jevViewApply(d, st, rates) {
    görüntülerini kullanır). İç çağrılar opts.allowTf ile istisna alabilir. */
 async function applyChartCommand(cmd, opts) {
   const allowTf = !!(opts && opts.allowTf === true);
+  const tfAllow = opts && Array.isArray(opts.tfAllow)
+    ? opts.tfAllow.map((x) => String(x || '').trim().toUpperCase()).filter(Boolean)
+    : null;
   let sym = null, tf = null;
   if (cmd && typeof cmd === 'object') {
     if (typeof cmd.symbol === 'string' && cmd.symbol.trim()) sym = cmd.symbol.trim().toUpperCase();
-    if (allowTf && typeof cmd.tf === 'string' && TFS.includes(cmd.tf.trim().toUpperCase())) tf = cmd.tf.trim().toUpperCase();
+    if (allowTf && typeof cmd.tf === 'string') {
+      const cand = cmd.tf.trim().toUpperCase();
+      if (TFS.includes(cand) && (!tfAllow || tfAllow.includes(cand))) tf = cand;
+    }
   }
   const viewAsk = !!(cmd && typeof cmd === 'object' && (
     cmd.zoom != null || cmd.z != null || cmd.bars != null ||
@@ -12902,6 +12794,8 @@ async function applyChartCommand(cmd, opts) {
   ctxCache.clear();
   updateActiveTabChart();
   renderChartTabs();
+  /* AI sembolü değiştirdiyse H1 Range İçi taraması da yeni sembole geçsin */
+  if (sym && typeof rangeOnSymbolChange === 'function') rangeOnSymbolChange();
   const bits = [sym, tf].filter(Boolean);
   if (viewAsk) {
     const vb = jevViewApply(cmd, chartState, chartState.rates);
@@ -12984,7 +12878,11 @@ function jevDraw(d) {
   const push = (dr) => { dr.src = 'ai'; chartState.drawings.push(dr); return true; };
   if (type === 'hline' || type === 'hray') {
     const pt = jevPoint({ t: d.t, p: d.p != null ? d.p : d.price }, base);
-    return pt ? push({ type, points: [pt], color: d.color ? String(d.color).slice(0, 24) : col[type] }) : false;
+    if (!pt) return false;
+    const dr = { type, points: [pt], color: d.color ? String(d.color).slice(0, 24) : col[type] };
+    if (d.label) dr.label = String(d.label).slice(0, 40);
+    if (d.labelColor) dr.labelColor = String(d.labelColor).slice(0, 24);
+    return push(dr);
   }
   if (type === 'seg' || type === 'rect' || type === 'fibo') {
     const a = jevPoint(d.from, base);
@@ -13087,6 +12985,533 @@ function jevPlan(d) {
   return true;
 }
 
+/* ---------- H1 Range İçi modu: deterministik yapı motoru ----------
+   H1 kırılım/sıkışma bağlamını ve M5 giriş tetiğini LLM yorumuna bırakmadan
+   hesaplar. Yalnız öneri + çizim üretir; otomatik emir AÇMAZ.
+   Mevcut H4→H1 swing akışından ayrıdır ve onu değiştirmez. */
+const RANGE_MODE_KEY = 'jev.h1RangeMode';
+const RANGE_MARK = 'h1range';
+
+function rangeEngine() {
+  return (typeof window !== 'undefined' && window.JEVStructure) ? window.JEVStructure : null;
+}
+
+const rangeState = {
+  on: false,
+  busy: false,
+  promise: null,
+  timer: null,
+  analysis: null,
+  active: null,
+  symbol: '',
+  lastAt: 0,
+  h1Last: null,
+  m5Last: null,
+  err: '',
+  drawKey: '',
+  /* geçersizleşmiş setup kimlikleri: aynı tetik yeniden canlanmasın */
+  dead: Object.create(null),
+  /* tarama sürerken gelen zorunlu yenileme isteği */
+  rerun: false,
+  /* çizilen range nesnesi sayısı: kullanıcı silerse bir sonraki taramada geri gelir */
+  drawCount: 0,
+};
+
+function rangeModeOn() {
+  return rangeState.on === true;
+}
+
+/* H1 Range İçi modunda analiz çifti sabittir: H1 bağlam → M5 tetik.
+   AI yine de grafiği H1/M5 arasında serbestçe değiştirebilir. */
+function rangeAnaTf() {
+  return {
+    mode: 'auto', htf: 'H1', etf: 'M5',
+    sync: false, dual: false,
+    why: 'H1 Range İçi modu (H1 bağlam → M5 tetik)',
+    resolved: true, stable: true,
+  };
+}
+
+function rangeFmt(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return '—';
+  const d = Number.isFinite(Number(chartState.digits)) ? Math.max(0, Math.min(8, Number(chartState.digits))) : 5;
+  return n.toFixed(d);
+}
+
+function rangePct(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? (n * 100).toFixed(0) + '%' : '—';
+}
+
+function rangeCtxTitle(ctx) {
+  if (!ctx) return '—';
+  if (ctx.kind === 'compression') return 'H1 sıkışma kutusu · ' + ctx.bars + ' mum';
+  return 'H1 kırılım mumu ' + (ctx.direction === 'bull' ? '↑' : '↓');
+}
+
+/* Aynı M5 tetiğinin kimliği: H1 kutusu yeniden hesaplansa bile tetik aynıdır. */
+function rangeDeadKey(s) {
+  return s ? [s.side, s.triggerType, Number(s.triggerTime) || 0].join('|') : '';
+}
+
+function rangeClock(sec) {
+  const n = Number(sec);
+  if (!(n > 0)) return '—';
+  const d = new Date(n * 1000);
+  const p2 = (x) => String(x).padStart(2, '0');
+  return p2(d.getUTCDate()) + '.' + p2(d.getUTCMonth() + 1) + ' ' + p2(d.getUTCHours()) + ':' + p2(d.getUTCMinutes());
+}
+
+function rangeRemoveDrawings(repaint) {
+  const before = (chartState.drawings || []).length;
+  chartState.drawings = (chartState.drawings || []).filter((x) => !x || x.mark !== RANGE_MARK);
+  if (before === chartState.drawings.length) return;
+  if (chartState.selected != null) chartState.selected = null;
+  saveDrawings();
+  if (repaint !== false) drawChart();
+}
+
+function rangePush(d) {
+  if (!d || typeof d !== 'object') return false;
+  try {
+    if (!jevDraw(d)) return false;
+    const dr = chartState.drawings[chartState.drawings.length - 1];
+    if (dr) dr.mark = RANGE_MARK;
+    return true;
+  } catch { return false; }
+}
+
+function rangeDrawKey() {
+  const r = rangeState.analysis;
+  if (!r) return 'none';
+  const a = rangeState.active;
+  const ctx = a ? a.context : r.context;
+  if (!ctx) return 'none';
+  const s = a ? a.setup : null;
+  return [chartState.symbol, ctx.id, s ? s.id : 'ctx', s ? Number(s.entry).toFixed(6) : ''].join('|');
+}
+
+function rangeApplyDrawings(force) {
+  if (!rangeModeOn()) return;
+  const key = rangeDrawKey();
+  const markCount = (chartState.drawings || []).filter((x) => x && x.mark === RANGE_MARK).length;
+  if (!force && key === rangeState.drawKey && markCount === rangeState.drawCount) return;
+  rangeState.drawKey = key;
+  rangeRemoveDrawings(false);
+  const r = rangeState.analysis;
+  const a = rangeState.active;
+  const ctx = a ? a.context : (r && r.context);
+  if (!ctx) { rangeState.drawCount = 0; drawChart(); return; }
+  let added = 0;
+  const put = (d) => { if (rangePush(d)) added++; };
+  const now = Math.floor(Date.now() / 1000);
+  const refTime = rangeState.m5Last && Number(rangeState.m5Last.time) > 0 ? Number(rangeState.m5Last.time) : now;
+  const from = ctx.kind === 'breakout' ? Number(ctx.startTime) - 3600 : Number(ctx.startTime);
+  const to = Math.max(refTime + 4 * 3600, Number(ctx.endTime || ctx.lastTime || refTime) + 2 * 3600);
+  const boxColor = ctx.kind === 'compression'
+    ? '#38bdf8'
+    : (ctx.direction === 'bull' ? '#f59e0b' : '#f472b6');
+  const topLabel = ctx.kind === 'compression'
+    ? 'H1 SIKIŞMA'
+    : (ctx.direction === 'bull' ? 'H1 KIRILIM MUMU ↑' : 'H1 KIRILIM MUMU ↓');
+  const botLabel = ctx.kind === 'compression' ? 'H1 SIKIŞMA DESTEK' : 'H1 KIRILIM LOW';
+  put({
+    type: 'range',
+    from: { t: from, p: ctx.high },
+    to: { t: to, p: ctx.low },
+    color: boxColor,
+    label: topLabel + ' · ' + rangeFmt(ctx.high),
+    labelBottom: botLabel + ' · ' + rangeFmt(ctx.low),
+    pd: ctx.kind === 'compression',
+  });
+  if (ctx.kind === 'breakout') {
+    put({
+      type: 'hray',
+      t: from,
+      p: ctx.mid,
+      color: '#eab308',
+      label: 'H1 %50 gövde · ' + rangeFmt(ctx.mid),
+    });
+  }
+  const s = a && a.setup;
+  if (s) {
+    const t0 = Math.max(from, Number(s.entryTime || refTime) - 6 * 300);
+    put({
+      type: 'hray',
+      t: t0,
+      p: s.entry,
+      color: '#22d3ee',
+      label: 'GİRİŞ ' + (s.side === 'long' ? 'LONG' : 'SHORT') + ' · ' + rangeFmt(s.entry),
+    });
+    put({ type: 'hray', t: t0, p: s.sl, color: '#ef4444', label: 'SL · ' + rangeFmt(s.sl) });
+    put({ type: 'hray', t: t0, p: s.tp, color: '#22c55e', label: 'TP · ' + rangeFmt(s.tp) + ' · ' + s.targetLabel });
+  }
+  rangeState.drawCount = added;
+  saveDrawings();
+  drawChart();
+}
+
+function rangeRender() {
+  const panel = $('#rangePanel');
+  if (!panel) return;
+  if (!rangeModeOn()) { panel.hidden = true; return; }
+  panel.hidden = false;
+  const chip = $('#rangeChip');
+  const a = rangeState.active;
+  const r = rangeState.analysis;
+  const s = a && a.setup;
+  const ctx = a ? a.context : (r && r.context);
+  if (chip) {
+    chip.className = '';
+    if (s) {
+      chip.textContent = s.grade + ' ' + (s.side === 'long' ? 'LONG' : 'SHORT');
+      chip.classList.add(s.side);
+    } else if (ctx) {
+      chip.textContent = 'BEKLE';
+      chip.classList.add('wait');
+    } else {
+      chip.textContent = r ? 'YOK' : 'TARANIYOR';
+    }
+  }
+  const body = $('#rangeBody');
+  if (!body) return;
+  const rows = [];
+  const row = (k, v) => '<div class="rp-row"><span class="rp-k">' + escapeHtml(k) + '</span><span class="rp-v">' + escapeHtml(v) + '</span></div>';
+  if (rangeState.err) {
+    rows.push('<div class="rp-empty">⚠ ' + escapeHtml(rangeState.err) + (a ? ' · son geçerli öneri korunuyor' : '') + '</div>');
+  }
+  if (!r) {
+    if (!rangeState.err) rows.push('<div class="rp-empty">Kapanmış H1/M5 mumları taranıyor…</div>');
+  } else if (!ctx) {
+    rows.push('<div class="rp-empty">Uygun H1 kırılım/sıkışma yapısı yok.<br>Fiyatın yeni bir kutu veya güçlü kırılım mumu oluşturması bekleniyor.</div>');
+  } else {
+    rows.push(row('H1 yapı', rangeCtxTitle(ctx)));
+    rows.push(row('High / Low', rangeFmt(ctx.high) + ' / ' + rangeFmt(ctx.low)));
+    rows.push(row(ctx.kind === 'compression' ? 'EQ (%50)' : '%50 gövde', rangeFmt(ctx.mid)));
+    if (ctx.kind === 'compression') {
+      rows.push(row('Yükseklik', ctx.heightAtr.toFixed(2) + '× ATR · ' + ctx.touchesHigh + '↑/' + ctx.touchesLow + '↓ dokunuş'));
+    } else {
+      rows.push(row('Gövde/menzil', rangePct(ctx.bodyRatio) + ' · kapanış ucu ' + rangePct(ctx.closePos)));
+      rows.push(row('Kırılan seviye', rangeFmt(ctx.priorLevel)));
+    }
+    rows.push(row('H1 ATR14', rangeFmt(ctx.atr)));
+    if (s) {
+      rows.push('<div class="rp-setup">');
+      rows.push(row('Yön', s.side === 'long' ? 'LONG' : 'SHORT'));
+      const live = chartState.symbol === rangeState.symbol && chartState.rates.length
+        ? Number(chartState.rates[chartState.rates.length - 1].close) : 0;
+      if (live > 0) {
+        const outside = s.side === 'long' ? (live <= s.sl || live >= s.tp) : (live >= s.sl || live <= s.tp);
+        rows.push(row('Canlı fiyat', rangeFmt(live) + (outside ? ' · seviye dışı' : '')));
+      }
+      rows.push(row('Giriş (ref.)', rangeFmt(s.entry)));
+      rows.push(row('SL', rangeFmt(s.sl)));
+      rows.push(row('TP', rangeFmt(s.tp) + ' · ' + s.targetLabel));
+      rows.push(row('RR', s.rr.toFixed(2) + ' · risk ' + s.riskAtrM5.toFixed(2) + '× M5 ATR'));
+      rows.push(row('Skor', String(s.score) + ' · ' + s.grade + ' · ' + s.triggerType));
+      if (Array.isArray(s.reasons) && s.reasons.length) {
+        rows.push('<ul class="rp-reasons">' + s.reasons.map((x) => '<li>' + escapeHtml(x) + '</li>').join('') + '</ul>');
+      }
+      if (s.invalidation && s.invalidation.text) {
+        rows.push('<div class="rp-inval">' + escapeHtml(s.invalidation.text) + '</div>');
+      }
+      rows.push('<div class="rp-actions">' +
+        '<button type="button" data-rp="draw">Çizimi tazele</button>' +
+        '<button type="button" data-rp="plan">Plan kutusu</button>' +
+        '</div>');
+      rows.push('</div>');
+    } else {
+      rows.push('<div class="rp-empty" style="margin-top:7px">H1 bağlam hazır; M5 tetik/onay bekleniyor. Tetik gelmeden işlem yok.</div>');
+    }
+  }
+  body.innerHTML = rows.join('');
+  const meta = $('#rangeMeta');
+  if (meta) {
+    const bits = [];
+    bits.push(rangeState.lastAt ? 'Son tarama ' + new Date(rangeState.lastAt).toLocaleTimeString('tr-TR', { hour12: false }) : 'Henüz tarama yok');
+    if (rangeState.h1Last) bits.push('H1 ' + rangeClock(rangeState.h1Last.time));
+    if (rangeState.m5Last) bits.push('M5 ' + rangeClock(rangeState.m5Last.time));
+    bits.push('yön: her iki taraf');
+    meta.textContent = bits.join(' · ');
+  }
+}
+
+async function rangeAnalyze(force) {
+  if (!rangeModeOn()) return null;
+  const eng = rangeEngine();
+  if (!eng) {
+    rangeState.err = 'Yapı motoru yüklenmedi (structure.js)';
+    rangeRender();
+    return null;
+  }
+  if (rangeState.busy && rangeState.promise) {
+    if (force) rangeState.rerun = true;
+    return rangeState.promise;
+  }
+  const sym = chartState.symbol;
+  rangeState.busy = true;
+  const run = (async () => {
+    try {
+      const [h1r, m5r] = await Promise.all([
+        jev.mt5Rates({ symbol: sym, timeframe: 'H1', count: 400 }).catch(() => null),
+        jev.mt5Rates({ symbol: sym, timeframe: 'M5', count: 400 }).catch(() => null),
+      ]);
+      if (!rangeModeOn() || chartState.symbol !== sym) return null;
+      const h1raw = h1r && h1r.ok && h1r.data && Array.isArray(h1r.data.rates) ? h1r.data.rates : [];
+      const m5raw = m5r && m5r.ok && m5r.data && Array.isArray(m5r.data.rates) ? m5r.data.rates : [];
+      if (h1raw.length < 40 || m5raw.length < 40) {
+        /* geçici veri kesintisinde aktif öneriyi silme: seviyeler sabit kalsın */
+        rangeState.err = 'H1/M5 verisi alınamadı (' + h1raw.length + '/' + m5raw.length + ' mum)';
+        rangeRender();
+        return null;
+      }
+      const h1 = eng.closedOnly(h1raw);
+      const m5 = eng.closedOnly(m5raw);
+      const digits = Number(chartState.digits);
+      const point = Math.pow(10, -Math.max(0, Math.min(8, Number.isFinite(digits) ? digits : 5)));
+      const r = eng.analyze(h1, m5, { minRR: 1.5, point });
+      const lastM5 = m5.length ? m5[m5.length - 1] : null;
+      const lastH1 = h1.length ? h1[h1.length - 1] : null;
+      /* Zaman, sunucu/bar saatine göre ölçülür: yerel saat ile broker saat farkı
+         TTL'i erkenden veya geç kapatmasın. */
+      const now = lastM5 && Number(lastM5.time) > 0 ? Number(lastM5.time) + 300 : Date.now() / 1000;
+      const prev = rangeState.active;
+      const prevValid = !!(prev && prev.setup && prev.context &&
+        eng.setupStillValid(prev.setup, prev.context, lastM5, lastH1, now));
+      /* bir kez geçersizleşen tetik tekrar canlanmaz: SL/TP dışına çıkan veya
+         süresi dolan setup kimliği kalıcı olarak kapanır */
+      if (prev && prev.setup && !prevValid) {
+        rangeState.dead[prev.setup.id] = true;
+        rangeState.dead[rangeDeadKey(prev.setup)] = true;
+      }
+      let active = null;
+      if (r.setup && r.context && !rangeState.dead[r.setup.id] && !rangeState.dead[rangeDeadKey(r.setup)]) {
+        /* Aynı tetik (aynı M5 onay mumu) yeniden hesaplandığında giriş/SL/TP'yi
+           kaydırma: H1 kutusu uzasa bile ilk üretilen seviyeler sabit kalsın
+           (repaint yok). */
+        const sameTrigger = !!(prev && prev.setup && prev.context &&
+          prev.setup.side === r.setup.side &&
+          prev.setup.triggerType === r.setup.triggerType &&
+          prev.setup.triggerTime === r.setup.triggerTime);
+        active = (sameTrigger && prevValid)
+          ? { setup: prev.setup, context: prev.context }
+          : { setup: r.setup, context: r.context };
+      } else if (prevValid) {
+        active = prev;
+      }
+      const prevId = rangeState.active && rangeState.active.setup ? rangeState.active.setup.id : '';
+      rangeState.analysis = r;
+      rangeState.active = active;
+      rangeState.symbol = sym;
+      rangeState.lastAt = Date.now();
+      rangeState.h1Last = lastH1;
+      rangeState.m5Last = lastM5;
+      rangeState.err = '';
+      if (active && active.setup.id !== prevId) {
+        jevLogAdd('H1 RANGE İÇİ · ' + active.setup.grade + ' ' + (active.setup.side === 'long' ? 'LONG' : 'SHORT') +
+          ' · giriş ' + rangeFmt(active.setup.entry) + ' · SL ' + rangeFmt(active.setup.sl) +
+          ' · TP ' + rangeFmt(active.setup.tp) + ' · RR ' + active.setup.rr.toFixed(2), 'alert');
+      }
+      rangeRender();
+      rangeApplyDrawings(!!force);
+      return r;
+    } catch (e) {
+      rangeState.err = 'Tarama hatası: ' + String((e && e.message) || e).slice(0, 90);
+      rangeRender();
+      return null;
+    } finally {
+      rangeState.busy = false;
+      rangeState.promise = null;
+      if (rangeState.rerun && rangeModeOn()) {
+        rangeState.rerun = false;
+        rangeAnalyze(true).catch(() => {});
+      }
+    }
+  })();
+  rangeState.promise = run;
+  return run;
+}
+
+function rangeCreatePlan() {
+  const a = rangeState.active;
+  if (!a || !a.setup) { toast('Aktif H1 Range İçi önerisi yok'); return; }
+  const s = a.setup;
+  /* aynı setup için ikinci kez kutu açma: mevcut kutuyu seç */
+  const dup = (chartState.plans || []).find((p) => p && p.symbol === chartState.symbol &&
+    p.side === s.side && Math.abs(Number(p.entry) - s.entry) < 1e-9 &&
+    Math.abs(Number(p.sl) - s.sl) < 1e-9 && Math.abs(Number(p.tp) - s.tp) < 1e-9);
+  if (dup) {
+    selectedPlanId = dup.id;
+    selectedAlertId = '';
+    drawChart();
+    toast('Bu setup için plan kutusu zaten var');
+    return;
+  }
+  const ok = jevPlan({ side: s.side, entry: s.entry, sl: s.sl, tp: s.tp });
+  if (!ok) { toast('Plan kutusu oluşturulamadı'); return; }
+  savePlans();
+  applyPlanButtons();
+  drawChart();
+  toast('Plan kutusu kuruldu (emir gönderilmedi) · ' + (s.side === 'long' ? 'LONG' : 'SHORT') + ' ' + rangeFmt(s.entry));
+  jevLogAdd('H1 RANGE İÇİ · plan kutusu kuruldu (emir yok) · ' + rangeFmt(s.entry) + ' / SL ' + rangeFmt(s.sl) + ' / TP ' + rangeFmt(s.tp), 'cmd');
+}
+
+function rangePromptBlock() {
+  if (!rangeModeOn()) return '';
+  const eng = rangeEngine();
+  const r = rangeState.analysis;
+  const a = rangeState.active;
+  const ctx = a ? a.context : (r && r.context);
+  const s = a ? a.setup : null;
+  const out = [];
+  out.push('');
+  out.push('');
+  out.push('[H1 RANGE İÇİ MODU — AKTİF]');
+  out.push('Bu mod mevcut H4→H1 swing akışından AYRIDIR. Yukarıdaki "M5 ve altı karar için kullanılmaz" kuralı bu modda yalnızca şu şekilde geçersizdir: ana bağlam H1 kırılım/sıkışma yapısıdır, M5 SADECE bu H1 yapısının içindeki giriş zamanlaması/tetiki için kullanılır.');
+  out.push('Kararın birincil kaynağı aşağıdaki deterministik [YAPISAL SETUP] bloğudur. Kendi başına yeni H1/M5 yapısı uydurma; blokla çelişen bir yorum yapma.');
+  out.push('TF SERBESTLİĞİ: H1 ve M5 arasında istediğin gibi geçiş yapabilirsin. Grafiği <<CHART {"tf":"H1"}>> veya <<CHART {"tf":"M5"}>> ile değiştir; iki TF\'in kapanmış mum serisi de bağlamda gelir. Başka TF\'leri yalnız genel bağlam için <<LOOK>> ile inceleyebilirsin, karar/çizim için kullanma.');
+  out.push('Sembol: ' + chartState.symbol + ' · motor JEVStructure v' + (eng ? eng.VERSION : '?') + ' · yalnız kapanmış mumlar (repaint yok)');
+  out.push('');
+  out.push('[YAPISAL SETUP]');
+  if (rangeState.err) out.push('durum: TARAMA HATASI — ' + rangeState.err);
+  if (!ctx) {
+    out.push('durum: UYGUN H1 KIRILIM/SIKIŞMA YAPISI YOK');
+    out.push('Yeni öneri, plan veya emir üretme. Sadece bekle; açık pozisyonların yönetimine devam et.');
+  } else {
+    out.push('durum: ' + (s
+      ? s.grade + ' ' + (s.side === 'long' ? 'LONG' : 'SHORT') + ' setup hazır'
+      : 'H1 bağlam var · M5 tetik/onay bekleniyor'));
+    out.push('H1 bağlam: ' + rangeCtxTitle(ctx) +
+      ' · ' + rangeClock(ctx.startTime) + ' → ' + rangeClock(ctx.endTime) + ' (sunucu saati)' +
+      ' · high ' + rangeFmt(ctx.high) + ' / low ' + rangeFmt(ctx.low) +
+      ' · ' + (ctx.kind === 'compression' ? 'EQ (%50)' : '%50 gövde') + ' ' + rangeFmt(ctx.mid) +
+      ' · yükseklik ' + Number(ctx.heightAtr).toFixed(2) + '× H1 ATR');
+    if (ctx.kind === 'compression') {
+      out.push('Sıkışma: ' + ctx.bars + ' mum · ' + ctx.touchesHigh + ' üst / ' + ctx.touchesLow + ' alt dokunuş · ATR14 ' + rangeFmt(ctx.atr));
+    } else {
+      out.push('Kırılım mumu: gövde/menzil ' + rangePct(ctx.bodyRatio) + ' · gövde ' + Number(ctx.bodyAtr).toFixed(2) + '× ATR · kapanış ucu ' + rangePct(ctx.closePos) + ' · kırılan seviye ' + rangeFmt(ctx.priorLevel) + ' · yaş ' + ctx.ageBars + ' H1 mum');
+    }
+    if (s) {
+      out.push('M5 tetik: ' + s.triggerType + ' · ' + rangeClock(s.triggerTime) + ' · giriş mumu ' + rangeClock(s.entryTime));
+      out.push('Referans giriş: ' + rangeFmt(s.entry) +
+        ' · SL: ' + rangeFmt(s.sl) +
+        ' · TP: ' + rangeFmt(s.tp) + ' (' + s.targetLabel + ')' +
+        ' · RR: ' + s.rr.toFixed(2) +
+        ' · skor: ' + s.score + ' (' + s.grade + ')');
+      out.push('Geçerlilik: ' + rangeClock(s.expiresAt) + ' (sunucu saati) itibarıyla dolar. Canlı fiyat SL\'nin yanlış tarafına geçerse veya TP\'ye ulaşırsa setup geçersiz sayılır.');
+      if (Array.isArray(s.reasons) && s.reasons.length) out.push('Nedenler: ' + s.reasons.join(' · '));
+      if (s.invalidation && s.invalidation.text) out.push('Geçersizlik: ' + s.invalidation.text);
+    } else {
+      const lm = rangeState.m5Last;
+      out.push('M5 kapanışı: ' + (lm ? rangeFmt(lm.close) + ' · ' + rangeClock(lm.time) : '—'));
+      out.push('M5 tetik yok: yeni plan/emir üretme; H1 yapısı içinde M5 tetik/onay bekle. H1 yapısı bozulursa hiç işlem yapma.');
+    }
+  }
+  out.push('');
+  out.push('KURALLAR:');
+  out.push('1) Bu modda OTOMATİK EMİR YOK: <<ORDER>> ve <<OCO>> kullanma. Kullanıcı açıkça "emir aç" demedikçe işlem açma.');
+  out.push('2) Yalnız öneri, grafik çizimi ve plan kutusu üret. Paneldeki çizimler zaten yapıldı; <<CLEAR {"what":"ai"}>> ile silme.');
+  out.push('3) Aynı anda en fazla 1 aktif öneri. Yeni A/A+ setup yoksa geçerli öneriyi koru; geçersizse bekle.');
+  out.push('4) Giriş/SL/TP referans değerlerdir; canlı fiyatı doğrula. Fiyat SL\'nin yanlış tarafındaysa veya TP geçildiyse setup geçersizdir.');
+  out.push('5) H1 bağlamı kırılım mumuysa yalnız kırılım yönünde; sıkışma kutusuysa her iki kenardan da (long/short) değerlendir.');
+  out.push('6) Mevcut açık pozisyonların yönetimi bu moddan bağımsız devam eder.');
+  out.push('7) H1/M5 serbest geçiş: grafiği gerektiğinde H1 veya M5\'e al; hangi TF sana daha net geliyorsa onu incele. Karar yine [YAPISAL SETUP] bloğuna dayanır. Başka TF\'ler yalnız LOOK ile genel bağlam içindir.');
+  return out.join('\n');
+}
+
+async function rangePromptContext() {
+  if (!rangeModeOn()) return '';
+  if (!rangeState.analysis || Date.now() - rangeState.lastAt > 5000) {
+    await rangeAnalyze(false).catch(() => null);
+  }
+  return rangePromptBlock();
+}
+
+function rangeOnSymbolChange() {
+  if (!rangeModeOn()) { rangeRemoveDrawings(false); return; }
+  rangeState.analysis = null;
+  rangeState.active = null;
+  rangeState.drawKey = '';
+  rangeState.err = '';
+  rangeState.dead = Object.create(null);
+  rangeState.drawCount = 0;
+  rangeRender();
+  rangeAnalyze(true).catch(() => {});
+}
+
+function rangeTick() {
+  if (!rangeModeOn()) return;
+  if (document.hidden || rangeState.busy) return;
+  if (rangeState.symbol && rangeState.symbol !== chartState.symbol) {
+    rangeState.analysis = null;
+    rangeState.active = null;
+    rangeState.drawKey = '';
+    rangeState.dead = Object.create(null);
+    rangeState.drawCount = 0;
+  }
+  rangeAnalyze(false).catch(() => {});
+}
+
+function rangeSetMode(on) {
+  const v = !!on;
+  rangeState.on = v;
+  rangeState.rerun = false;
+  try { localStorage.setItem(RANGE_MODE_KEY, v ? '1' : '0'); } catch {}
+  const btn = $('#rangeModeBtn');
+  if (btn) btn.classList.toggle('active', v);
+  const panel = $('#rangePanel');
+  if (panel) panel.hidden = !v;
+  if (!v) {
+    rangeState.analysis = null;
+    rangeState.active = null;
+    rangeState.drawKey = '';
+    rangeState.err = '';
+    rangeState.dead = Object.create(null);
+    rangeState.drawCount = 0;
+    rangeRemoveDrawings(true);
+    rangeRender();
+    toast('H1 Range İçi modu kapalı');
+    return;
+  }
+  rangeState.dead = Object.create(null);
+  rangeState.drawKey = '';
+  rangeRender();
+  toast('H1 Range İçi modu açık — kapanmış H1/M5 mumları taranıyor');
+  jevLogAdd('H1 RANGE İÇİ · mod açıldı (öneri + çizim; otomatik emir yok)', 'info');
+  rangeAnalyze(true).catch(() => {});
+}
+
+function rangeInit() {
+  const btn = $('#rangeModeBtn');
+  if (!btn) return;
+  btn.addEventListener('click', () => rangeSetMode(!rangeModeOn()));
+  const rf = $('#rangeRefresh');
+  if (rf) rf.addEventListener('click', () => { rangeState.drawKey = ''; rangeAnalyze(true).catch(() => {}); });
+  const rc = $('#rangeClose');
+  if (rc) rc.addEventListener('click', () => rangeSetMode(false));
+  const rb = $('#rangeBody');
+  if (rb) rb.addEventListener('click', (e) => {
+    const b = e.target && e.target.closest ? e.target.closest('button[data-rp]') : null;
+    if (!b) return;
+    if (b.dataset.rp === 'draw') { rangeState.drawKey = ''; rangeApplyDrawings(true); }
+    else if (b.dataset.rp === 'plan') rangeCreatePlan();
+  });
+  let on = false;
+  try { on = localStorage.getItem(RANGE_MODE_KEY) === '1'; } catch {}
+  rangeState.on = on;
+  btn.classList.toggle('active', on);
+  const panel = $('#rangePanel');
+  if (panel) panel.hidden = !on;
+  if (on) {
+    rangeRender();
+    rangeAnalyze(true).catch(() => {});
+  } else {
+    rangeRemoveDrawings(false);
+  }
+  if (!rangeState.timer) rangeState.timer = setInterval(rangeTick, 20000);
+}
+
 function jevAlert(d) {
   if (!d || typeof d !== 'object') return false;
   /* sembol ve borsa verilebilir: başka sembol/borsaya alarm kurulabilir (arka planda çalışır) */
@@ -13154,7 +13579,9 @@ function jevClear(d) {
   const sym = chartState.symbol;
   let n = 0;
   if (what === 'ai' || what === 'drawings' || what === 'all') {
-    const keep = chartState.drawings.filter((x) => (what === 'ai' ? x.src !== 'ai' : false));
+    /* H1 Range İçi panelinin çizimleri (mark:'h1range') AI temizliğinden korunur;
+       onlar yalnız panel/modu kapatılınca silinir. */
+    const keep = chartState.drawings.filter((x) => (what === 'ai' ? (x.src !== 'ai' || x.mark === 'h1range') : false));
     n += chartState.drawings.length - keep.length;
     chartState.drawings = keep;
     if (chartState.selected != null && !chartState.drawings[chartState.selected]) chartState.selected = null;
@@ -13288,11 +13715,20 @@ async function jevSendChainMessage(opts) {
   const inView = activeSession() === s;
   pruneSessions();
   await refreshTradeStateForContext();
-  const ana2 = await resolveAnaTfs().catch(() => null);
-  const ctx = await buildChartContext(ana2).catch(() => '');
-  const sys = JEV_SYSTEM_PROMPT + anaTfPromptBlock(ana2) + posGuardPromptBlock() +
+  const rangeOn = rangeModeOn();
+  const ana2 = rangeOn ? rangeAnaTf() : await resolveAnaTfs().catch(() => null);
+  const [ctx, rangeBlock] = await Promise.all([
+    buildChartContext(ana2).catch(() => ''),
+    rangePromptContext().catch(() => ''),
+  ]);
+  const chatApi2 = (typeof window !== 'undefined' && window.JEVChat) ? window.JEVChat : null;
+  const chatLive2 = chatApi2 && typeof chatApi2.inventoryBlock === 'function' ? chatApi2.inventoryBlock() : '';
+  const sys = JEV_SYSTEM_PROMPT + anaTfPromptBlock(ana2, rangeOn ? { freeTf: true } : undefined) +
+    posGuardPromptBlock() +
     dayGuardPromptBlock(await dayGuardState().catch(() => null)) + scalpPromptBlock() +
-    tradeHoursPromptBlock() + skillsPromptBlock() + '\n\n[GRAFİK BAĞLAMI]\n' + ctx + sessionSummarySuffix(s);
+    tradeHoursPromptBlock() + skillsPromptBlock() + rangeBlock +
+    '\n\n[GRAFİK BAĞLAMI]\n' + ctx +
+    (chatLive2 ? '\n\n' + chatLive2 : '') + sessionSummarySuffix(s);
   const from = chatContextFrom(s);
   const history = s.messages.slice(from).slice(-8).map((m) => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: String(m.content || '').slice(0, 4000) }));
   const content = o.content != null ? o.content : String(o.text || '');
@@ -14019,7 +14455,9 @@ async function jevClose(d) {
 }
 
 /* yanıttaki <<KOMUT {json}>> bloklarını uygular ve metinden temizler */
-async function applyJevCommands(text, depth) {
+/* Çizim/alarm/komut motoru artık chat.js'te (JEVChat). Buradaki eski motor
+   yalnızca chat.js yüklenemezse yedek olarak kullanılır. */
+async function applyJevCommandsLegacy(text, depth) {
   depth = Math.max(0, Number(depth) || 0);
   let out = String(text || '');
   const cmds = [];
@@ -14035,10 +14473,13 @@ async function applyJevCommands(text, depth) {
   for (const c of cmds) {
     if (c.name !== 'CHART') continue;
     const bits = [];
+    const tfAsk = c.data && typeof c.data.tf === 'string' ? c.data.tf.trim().toUpperCase() : '';
+    /* H1 Range İçi modunda AI yalnız H1 ↔ M5 arasında grafik TF'ini değiştirebilir. */
+    const rangeTf = !!(rangeModeOn() && (tfAsk === 'H1' || tfAsk === 'M5'));
     if (c.data && typeof c.data.symbol === 'string' && c.data.symbol.trim()) bits.push('sembol ' + c.data.symbol.trim().toUpperCase());
-    if (c.data && typeof c.data.tf === 'string' && c.data.tf.trim()) bits.push('TF sabit (değiştirilmedi)');
+    if (tfAsk) bits.push(rangeTf ? 'TF ' + tfAsk : 'TF sabit (değiştirilmedi)');
     try {
-      await applyChartCommand(c.data);
+      await applyChartCommand(c.data, rangeTf ? { allowTf: true, tfAllow: ['H1', 'M5'] } : undefined);
       if (bits.length) chartChanges.push(bits.join(' · '));
     } catch {}
   }
@@ -14130,6 +14571,15 @@ async function applyJevCommands(text, depth) {
   /* yanıt yalnızca komut bloklarından oluşuyorsa boş görünmesin: uygulananları özetle */
   if (!clean && parts.length) return 'Uygulandı: ' + parts.join(' · ');
   return clean;
+}
+
+/* Yeni chat motoru: çizim/alarm/plan komutları chat.js'te yazılır. */
+async function applyJevCommands(text, depth) {
+  const api = (typeof window !== 'undefined' && window.JEVChat) ? window.JEVChat : null;
+  if (api && typeof api.applyCommands === 'function') {
+    return api.applyCommands(text, depth);
+  }
+  return applyJevCommandsLegacy(text, depth);
 }
 
 async function loadSymbolList() {
@@ -16750,6 +17200,7 @@ async function init() {
   }
   chartInit();
   initUndoBase();
+  rangeInit();
 }
 
 init();

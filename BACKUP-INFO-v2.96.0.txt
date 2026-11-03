@@ -1,0 +1,13 @@
+BEAST AGENT v2.96.0 — 2026-11-04
+Kaynak: C:\Users\fokusyazilim\Desktop\Beast Agent ana kod
+GitHub: https://github.com/algokodcom/beast-agent/releases/tag/v2.96.0
+npm: https://www.npmjs.com/package/beast-agent
+
+Bu sürümün öne çıkanları:
+- H1 Range İçi deterministik yapı motoru (structure.js) + panel/çizimler.
+- chat.js sohbet LLM çekirdeği: tüm çizim araçları, envanter, yeniden çizim.
+- Beast Code mobil köprüsü ve Android Beast Code APK (apk/BeastCode.apk).
+- Destek/direnç çizimleri tam genişlik; analizde çizim/alarm bakımı.
+
+Test: 463/463 geçti.
+Not: node_modules, dist, .git ve yedek/ hariçtir.

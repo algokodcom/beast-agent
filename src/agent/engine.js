@@ -31,6 +31,8 @@ const log = require('./logger');
    Beast Code (bcCode) oturumları bu çekirdek üzerinden koşar */
 const opencode = require('./opencode');
 const { AskService } = opencode;
+/* ANA KOD KİLİDİ: founder parolası — kilit varsayılan kapalı */
+const anakodlock = require('./anakodlock');
 
 const MAX_TURNS = 40;
 const SUB_MAX_TURNS = 8;
@@ -2030,7 +2032,7 @@ class Engine {
           'PDF ÇIKTI KURALI: PDF üretirken pip\u2019ten pdf paketi (fpdf, fpdf2, markdown-pdf, weasyprint, reportlab vb.) KURMA/KULLANMA — bunlar Türkçe karakterleri bozar. İLK TERCİH pdf_write aracı: tek çağrıda başlık+markdown-lite içeriği düzenli, Türkçe-güvenli PDF\u2019e çevirir (Windows fontu otomatik gömülür; ğ ş ı İ bozulmaz) — script YAZMA, pip KULLANMA. Sıradışı ihtiyaç (form doldurma, PDF birleştirme, sayfa işleme) için doğru kit Node\u2019ta ZATEN kurulu: `pdf-lib` + `@pdf-lib/fontkit` ve `pdfkit` — o zaman write_file ile .js script yazıp run_command ile `node script.js` çalıştır (python_run İLE DEĞİL). md→pdf çevirici YOKTUR ve kurulmaz: kullanıcıya rapor/özet/belge çıktısı vereceksen .md dosyası gönderme — pdf_write ile DOĞRUDAN PDF üret ve send_file ile gönder. Ayrıntılı örnekler: pdf skill\u2019i (SKILL.md).',
           'Eski bir hafıza kaydına ihtiyacın olursa memory_search ile ara; kalıcı bilgi/birikim için kb_search kullan, yeni bilgi öğrenirsen kb_add ile kaynak belirt.',
           'Bir oturumda 3+ kez memory_write yaptıysan iş bitince memory_hygiene çağır (duplike/eskime temizliği).',
-          'BEAST KAYNAK KORUMASI: Beast\u2019in kendi kurulum/kaynak kod klasörü KİLİTLİDİR — oraya dosya yazamaz, silamaz, komut/betikle değiştiremezsin; okumak serbest. Kullanıcı kodu ancak kendi eliyle dışarıdan değiştirir; böyle bir istek gelirse yapamayacağını söyle ve kullanıcının elle yapması için yol göster.',
+          'BEAST KAYNAK KORUMASI: Beast\u2019in kendi kurulum/kaynak kod klasörü KİLİTLİDİR — oraya dosya yazamaz, silemez, komut/betikle değiştiremezsin; okumak serbest. Kilit yalnızca founder parolası söylenince açılır: parolayı TAHMİN ETME, İSTEME, TEKRARLAMA. Sistem parolayı doğruladığında mesaja "[SİSTEM — FOUNDER PAROLASI DOĞRULANDI]" notu düşer; o andan itibaren bu uygulama oturumunda korumalı klasörde işlem yapabilirsin. Bu not yoksa kilit kapalıdır — kullanıcıya founder parolasını söylemesini hatırlat, kendi başına kilidi açmaya çalışma.',
         ].join('\n')
     );
     if (this.ceoMode) {
@@ -2692,6 +2694,16 @@ class Engine {
     const s = this._load(String(sessionId));
     if (!s) return false;
 
+    /* ANA KOD KİLİDİ: founder parolası yalnızca GERÇEK kullanıcı mesajında
+       aranır — sistem raporu, cron, tool çıktısı veya ajan DM'i kilidi açamaz. */
+    let founderUnlocked = false;
+    let founderPhrase = false;
+    if (userAction) {
+      const rawText = typeof payload === 'string' ? payload : String((payload && payload.text) || '');
+      founderPhrase = anakodlock.isFounderPhrase(rawText);
+      founderUnlocked = anakodlock.noteUserText(rawText);
+    }
+
     let msg;
     if (typeof payload === 'string') {
       msg = { role: 'user', content: payload.slice(0, USER_MAX) };
@@ -2742,6 +2754,21 @@ class Engine {
            düşer; prune/compaction görselleri metne indirse bile kayıp yok. */
         const media = this._saveMedia(s.id, imgs, files, audios);
         if (media) msg.media = media;
+      }
+    }
+
+    if (founderPhrase) {
+      /* Parola oturum geçmişine düz metin düşmesin; ajan da görüp tekrar etmesin */
+      const clean = (t) => anakodlock.redact(String(t || ''));
+      const note = founderUnlocked
+        ? '[SİSTEM — FOUNDER PAROLASI DOĞRULANDI] ANA KOD KİLİDİ bu uygulama oturumu için AÇILDI. ' +
+          'Korumalı kaynak klasöründe artık write_file/edit_file/run_command kullanabilirsin. ' +
+          'Kullanıcı istemedikçe kaynak koda dokunma; parolayı ASLA yazma, tekrar etme veya açıklama.\n\n'
+        : '';
+      if (typeof msg.content === 'string') {
+        msg.content = note + clean(msg.content);
+      } else if (Array.isArray(msg.content) && msg.content[0] && typeof msg.content[0].text === 'string') {
+        msg.content[0] = { ...msg.content[0], text: note + clean(msg.content[0].text) };
       }
     }
 
@@ -5306,7 +5333,7 @@ const skills = require('./skills');
 
   /* ANA KOD KİLİDİ: yıkıcı işlem desenleri (korumalı yol + bu desen = engel) */
   static DESTRUCTIVE_RE =
-    /(remove-item|\bri\s|\bdel\s|\bdel\b|\brd\b|\brmdir\b|\berase\b|set-content|out-file|add-content|new-item|clear-content|move-item|rename-item|\bren\s|\bcopy-item|\bmove\b|\bmv\s|\bcp\s|>>|[^|]>\s|\bicacls|\btakeown|\bformat\b|\bfsutil|\breg\s+(add|delete)|schtasks|stop-process|\btaskkill|\bkill\b|\brm\s|\bunlink|shutil|os\.remove|os\.unlink|open\([^)]*['"][wa]['"]\)|write_text|to_csv\(|savefig\(|\.write\()/i;
+    /(remove-item|\bri\s|\bdel\s|\bdel\b|\brd\b|\brmdir\b|\berase\b|set-content|out-file|add-content|new-item|clear-content|move-item|rename-item|\bren\s|\bcopy-item|\bmove\b|\bmv\s|\bcp\s|>>|[^|]>\s|\bicacls|\btakeown|\bformat\b|\bfsutil|\breg\s+(add|delete)|schtasks|stop-process|\btaskkill|\bkill\b|\brm\s|\bunlink|shutil|os\.remove|os\.unlink|open\([^)]*['"][wa]['"]\)|write_text|writefile|writefilesync|appendfile|copyfile|createwritestream|rename\(|to_csv\(|savefig\(|\.write\(|git\s+(checkout|reset|restore|apply|stash|clean)|npm\s+(i|install|uninstall)\b|pnpm\s+(add|install)|yarn\s+add|electron-builder)/i;
 
   _isProtectedPath(p) {
     try {
@@ -5330,17 +5357,29 @@ const skills = require('./skills');
   /* Engelleyici: korumalı bölgeye müdahaleyi kırar; null = serbest */
   _guardTool(name, args) {
     if (!args || !this.protectedDirs.length) return null;
+    /* Founder parolası doğrulandıysa kilit açık — korumalı bölge serbest */
+    if (anakodlock.isUnlocked()) return null;
+    const n = String(name || '');
     const deny = (what) =>
       JSON.stringify({
         ok: false,
         error:
           `ANA KOD KİLİDİ: Beast kendi kaynak koduna ${what} izni yok (korumalı bölge). ` +
-          'Okumak serbesttir; kod yalnızca kullanıcının kendi eliyle, dışarıdan değiştirilebilir.',
+          'Okumak serbesttir. Kilit yalnızca founder parolası söylenince açılır; parolayı ' +
+          'tahmin etme/isteme — kullanıcıya founder parolasını söylemesini hatırlat.',
       });
-    if (name === 'write_file' && this._isProtectedPath(args.path)) return deny('yazma');
-    if (name === 'edit_file' && this._isProtectedPath(args.path)) return deny('düzenleme');
-    if (name === 'run_command' && this._cmdTouchesProtected(String(args.command || ''))) return deny('komutla değiştirme');
-    if (name === 'python_run' && this._cmdTouchesProtected(String(args.code || ''))) return deny('betikle değiştirme');
+    const isEdit = n === 'edit_file' || n === 'edit' || n === 'xlsx_edit';
+    const isWrite =
+      n === 'write_file' || n === 'write' || n === 'pdf_write' || n === 'xlsx_write';
+    if (isWrite && this._isProtectedPath(args.path)) return deny('yazma');
+    if (isEdit && this._isProtectedPath(args.path)) return deny('düzenleme');
+    if (
+      (n === 'run_command' || n === 'bash' || n === 'shell' || n === 'panel_run') &&
+      this._cmdTouchesProtected(String(args.command || ''))
+    ) {
+      return deny('komutla değiştirme');
+    }
+    if (n === 'python_run' && this._cmdTouchesProtected(String(args.code || ''))) return deny('betikle değiştirme');
     return null;
   }
 
@@ -5691,11 +5730,11 @@ const skills = require('./skills');
           return JSON.stringify({ ok: false, error: 'olay merkezi kapalı — Ayarlar > Entegrasyonlar' });
         }
         if (name === 'event_list') {
-          const rows = this.bus.list().filter((s) => s.sessionId === sessionId);
+          const rows = this.bus.listSubs().filter((s) => s.sessionId === sessionId);
           return JSON.stringify({ ok: true, subscriptions: rows });
         }
         if (name === 'event_subscribe') {
-          const r = this.bus.add({
+          const r = this.bus.addSub({
             type: args && args.type,
             sessionId,
             op: args && args.op,
@@ -5707,7 +5746,7 @@ const skills = require('./skills');
           }
           return JSON.stringify(r);
         }
-        return JSON.stringify(this.bus.remove(String((args && args.id) || '')));
+        return JSON.stringify(this.bus.removeSub(String((args && args.id) || '')));
       }
       if (name === 'email_list' || name === 'email_read' || name === 'email_send') {
         if (!this.email || typeof this.email[name === 'email_list' ? 'list' : name === 'email_read' ? 'read' : 'send'] !== 'function') {

@@ -15,6 +15,18 @@ const typingEl = $('#typing'), attwrapEl = $('#attwrap');
 const exitEl = $('#exit'), slashEl = $('#slashMenu');
 const setPage = $('#settingsPage'), setBack = $('#settingsBack'), segTheme = $('#segTheme');
 const toastEl = $('#toast');
+/* BEAST CODE */
+const codeBtn = $('#codeMode');
+const bcEls = {
+  page: $('#bcPage'), list: $('#bcList'), view: $('#bcView'), msgs: $('#bcMsgs'),
+  meta: $('#bcMeta'), sub: $('#bcSub'), input: $('#bcInput'), send: $('#bcSend'),
+  stop: $('#bcStop'), back: $('#bcBack'), refresh: $('#bcRefresh'), newBtn: $('#bcNew'),
+};
+const bcState = {
+  open: false, sid: localStorage.getItem('bmBcSid') || '', busy: false, list: [],
+  streamEl: null, streamBuf: '', lastToolEl: null, recentUsers: [],
+  toolMap: {}, todoEl: null, agent: 'build', ws: '',
+};
 
 let ws = null;
 let joined = false;
@@ -858,6 +870,407 @@ function mdLite(t) {
   return parts.join('');
 }
 
+/* =================== BEAST CODE (uzaktan kod oturumu) =================== */
+function bcScroll() {
+  try { bcEls.msgs.scrollTop = bcEls.msgs.scrollHeight; } catch {}
+}
+function bcSendObj(obj) {
+  try {
+    if (!ws || ws.readyState !== 1 || !joined) { toast('bağlantı yok — birazdan tekrar dene'); return false; }
+    ws.send(JSON.stringify(obj));
+    return true;
+  } catch { return false; }
+}
+function bcTimeText(s) {
+  try {
+    const d = new Date(String(s || ''));
+    if (Number.isNaN(d.getTime())) return '';
+    return d.toLocaleString('tr-TR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+  } catch { return ''; }
+}
+function bcBaseName(p) {
+  const s = String(p || '').replace(/[\\/]+$/, '');
+  if (!s) return '';
+  const parts = s.split(/[\\/]/);
+  return parts[parts.length - 1] || s;
+}
+function bcMetaRender() {
+  if (!bcEls.meta) return;
+  const bits = [];
+  bits.push('<b>' + escHtml(bcState.agent === 'plan' ? 'PLAN' : 'BUILD') + '</b>');
+  if (bcState.ws) bits.push(escHtml(bcBaseName(bcState.ws)));
+  bits.push(bcState.busy ? 'çalışıyor' : 'hazır');
+  bcEls.meta.innerHTML = bits.join(' · ');
+  if (bcEls.sub) bcEls.sub.textContent = (bcState.ws ? bcBaseName(bcState.ws) + ' · ' : '') + (bcState.busy ? 'çalışıyor…' : 'hazır');
+}
+function bcCodeDot() {
+  if (!codeBtn) return;
+  const any = !!bcState.busy || (Array.isArray(bcState.list) && bcState.list.some((x) => x && x.busy));
+  codeBtn.classList.toggle('busy', any);
+}
+function bcSetBusy(v) {
+  bcState.busy = !!v;
+  if (bcEls.stop) bcEls.stop.hidden = !v;
+  bcCodeDot();
+  bcMetaRender();
+}
+function bcSys(text) {
+  const el = document.createElement('div');
+  el.className = 'bc-sys';
+  el.textContent = String(text || '');
+  bcEls.msgs.appendChild(el);
+  bcScroll();
+}
+function bcMsg(role, text) {
+  const row = document.createElement('div');
+  row.className = 'row' + (role === 'me' ? ' me' : '');
+  const b = document.createElement('div');
+  b.className = 'bub';
+  const raw = String(text == null ? '' : text);
+  b.innerHTML = role === 'me'
+    ? escHtml(raw).replace(/\n/g, '<br>')
+    : mdLite(raw);
+  row.appendChild(b);
+  bcEls.msgs.appendChild(row);
+  bcScroll();
+  return b;
+}
+function bcUserOnce(text) {
+  const txt = String(text == null ? '' : text).trim();
+  if (!txt) return false;
+  const now = Date.now();
+  const arr = (bcState.recentUsers || []).filter((x) => now - x.at < 4000);
+  if (arr.some((x) => x.text === txt)) {
+    bcState.recentUsers = arr;
+    return false;
+  }
+  arr.push({ text: txt, at: now });
+  bcState.recentUsers = arr.slice(-20);
+  return true;
+}
+function bcTool(name, args, result) {
+  const box = document.createElement('div');
+  box.className = 'bc-tool';
+  const head = document.createElement('div');
+  head.innerHTML = '<b>' + escHtml(String(name || 'araç')) + '</b>';
+  box.appendChild(head);
+  const a = String(args == null ? '' : args);
+  if (a.trim()) {
+    const pre = document.createElement('pre');
+    pre.textContent = a.slice(0, 2000);
+    box.appendChild(pre);
+  }
+  const r = String(result == null ? '' : result);
+  if (r.trim()) {
+    const pre = document.createElement('pre');
+    pre.className = 'bc-res';
+    pre.textContent = r.slice(0, 4000);
+    box.appendChild(pre);
+  }
+  bcEls.msgs.appendChild(box);
+  bcScroll();
+  return box;
+}
+function bcRenderTimeline(list) {
+  for (const it of Array.isArray(list) ? list : []) {
+    if (!it) continue;
+    if (it.kind === 'tool') bcTool(it.name, it.args, it.result);
+    else bcMsg(it.role === 'user' ? 'me' : 'assistant', it.text);
+  }
+}
+function bcStreamDelta(delta) {
+  const d = String(delta == null ? '' : delta);
+  if (!d) return;
+  if (!bcState.streamEl) {
+    const row = document.createElement('div');
+    row.className = 'row';
+    const b = document.createElement('div');
+    b.className = 'bub';
+    row.appendChild(b);
+    bcEls.msgs.appendChild(row);
+    bcState.streamEl = b;
+    bcState.streamBuf = '';
+  }
+  bcState.streamBuf += d;
+  bcState.streamEl.innerHTML = mdLite(bcState.streamBuf);
+  bcScroll();
+}
+function bcFlushStream() {
+  if (bcState.streamEl) {
+    if (!bcState.streamBuf.trim()) {
+      try { bcState.streamEl.parentElement.remove(); } catch {}
+    } else {
+      bcState.streamEl.innerHTML = mdLite(bcState.streamBuf);
+    }
+  }
+  bcState.streamEl = null;
+  bcState.streamBuf = '';
+}
+function bcHandleEvent(ev) {
+  if (!ev || typeof ev !== 'object') return;
+  const type = String(ev.type || ev.t || '');
+  if (type === 'bc-user') {
+    const txt = String(ev.text || '');
+    if (bcUserOnce(txt)) bcMsg('me', txt);
+    return;
+  }
+  if (type === 'token') {
+    if (!bcState.busy) bcSetBusy(true);
+    bcStreamDelta(ev.delta || '');
+    return;
+  }
+  if (type === 'message') {
+    const msg = ev.message || {};
+    const hasTools = Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0;
+    /* Araç kutuları canlı akışta tool-start ile basılır; burada da basmak çift kutu yapar. */
+    const txt = contentText(msg.content);
+    if (String(msg.role || '') === 'user') {
+      if (bcUserOnce(txt)) bcMsg('me', txt);
+      return;
+    }
+    if (txt) {
+      if (bcState.streamEl && bcState.streamBuf.trim() === txt) bcFlushStream();
+      else bcMsg('assistant', txt);
+    }
+    if (!hasTools) bcSetBusy(false);
+    return;
+  }
+  if (type === 'tool-start') {
+    bcSetBusy(true);
+    const box = bcTool(ev.name || ev.tool || 'araç', ev.args || '', '');
+    bcState.lastToolEl = box;
+    if (ev.callId) bcState.toolMap[String(ev.callId)] = box;
+    return;
+  }
+  if (type === 'tool-end') {
+    const box = (ev.callId && bcState.toolMap[String(ev.callId)]) || bcState.lastToolEl;
+    if (box) {
+      const pre = document.createElement('pre');
+      pre.className = 'bc-res';
+      pre.textContent = String(ev.result || '').slice(0, 4000);
+      if (pre.textContent.trim()) box.appendChild(pre);
+      bcScroll();
+    }
+    return;
+  }
+  if (type === 'status') {
+    if (String(ev.status || '') === 'idle') {
+      bcSetBusy(false);
+      if (bcEls.sub) bcEls.sub.textContent = 'hazır';
+    } else {
+      bcSetBusy(true);
+      if (bcEls.sub) bcEls.sub.textContent = String(ev.status || 'çalışıyor…');
+    }
+    return;
+  }
+  if (type === 'done') {
+    bcFlushStream();
+    bcSetBusy(false);
+    bcState.toolMap = {};
+    bcState.lastToolEl = null;
+    if (bcEls.sub) bcEls.sub.textContent = 'hazır';
+    return;
+  }
+  if (type === 'error') {
+    bcFlushStream();
+    bcSetBusy(false);
+    bcSys('hata: ' + String(ev.error || ev.message || 'bilinmiyor'));
+    return;
+  }
+  if (type === 'bc-agent') {
+    bcState.agent = String(ev.agent || 'build');
+    bcMetaRender();
+    if (ev.body) bcSys(String(ev.body));
+    return;
+  }
+  if (type === 'todos' && Array.isArray(ev.todos)) {
+    try { if (bcState.todoEl) bcState.todoEl.remove(); } catch {}
+    const box = document.createElement('div');
+    box.className = 'bc-tool';
+    const head = document.createElement('div');
+    const done = ev.todos.filter((t) => t && t.status === 'done').length;
+    head.innerHTML = '<b>GÖREVLER</b> · ' + done + '/' + ev.todos.length;
+    box.appendChild(head);
+    for (const t of ev.todos.slice(0, 20)) {
+      const line = document.createElement('div');
+      line.className = 'bc-todo-line';
+      const st = String((t && t.status) || '');
+      line.textContent = (st === 'done' ? '✓ ' : st === 'in_progress' ? '◐ ' : '• ') + String((t && t.title) || '');
+      box.appendChild(line);
+    }
+    bcEls.msgs.appendChild(box);
+    bcState.todoEl = box;
+    bcScroll();
+    return;
+  }
+  if (type === 'file') {
+    bcSys('dosya: ' + String(ev.name || ev.path || ''));
+    return;
+  }
+}
+function bcShow() {
+  if (!bcEls.page) return;
+  bcState.open = true;
+  try { localStorage.setItem('bmMode', 'bc'); } catch {}
+  bcEls.page.hidden = false;
+  bcEls.list.hidden = false;
+  bcEls.view.hidden = true;
+  bcEls.list.innerHTML = '<div class="bc-empty">oturumlar yükleniyor…</div>';
+  bcLoadSessions();
+  bcMetaRender();
+}
+function bcHide() {
+  bcState.open = false;
+  try { localStorage.setItem('bmMode', 'chat'); } catch {}
+  if (bcEls.page) bcEls.page.hidden = true;
+}
+function bcLoadSessions() {
+  bcSendObj({ t: 'bc-sessions' });
+}
+function bcRenderSessions(list) {
+  const arr = Array.isArray(list) ? list : [];
+  bcState.list = arr;
+  bcCodeDot();
+  if (!bcEls.list) return;
+  if (!bcEls.view.hidden) return; /* oturum açıkken listeyi öne getirme */
+  bcEls.list.innerHTML = '';
+  if (!arr.length) {
+    const e = document.createElement('div');
+    e.className = 'bc-empty';
+    e.textContent = 'Henüz Beast Code oturumu yok. Sağ üstteki + ile yeni oturum aç; masaüstündeki çalışma klasöründe başlar.';
+    bcEls.list.appendChild(e);
+    return;
+  }
+  for (const it of arr) {
+    const row = document.createElement('div');
+    row.className = 'bc-session' + (it.busy ? ' busy' : '');
+    const ic = document.createElement('div');
+    ic.className = 'bcs-ic';
+    ic.textContent = '</>';
+    const body = document.createElement('div');
+    body.className = 'bcs-b';
+    const t = document.createElement('div');
+    t.className = 'bcs-t';
+    t.textContent = String(it.title || 'Beast Code oturumu');
+    const d = document.createElement('div');
+    d.className = 'bcs-d';
+    const bits = [];
+    if (it.ws) bits.push(bcBaseName(it.ws));
+    if (it.updatedAt) bits.push(bcTimeText(it.updatedAt));
+    if (it.busy) bits.push('çalışıyor');
+    else if (it.count) bits.push(it.count + ' mesaj');
+    d.textContent = bits.filter(Boolean).join(' · ') || 'Beast Code';
+    body.appendChild(t);
+    body.appendChild(d);
+    row.appendChild(ic);
+    row.appendChild(body);
+    if (it.busy) {
+      const run = document.createElement('div');
+      run.className = 'bcs-run';
+      row.appendChild(run);
+    }
+    row.addEventListener('click', () => bcOpen(it.id));
+    bcEls.list.appendChild(row);
+  }
+}
+function bcOpen(id) {
+  const sid2 = String(id || '');
+  if (!sid2) return;
+  bcState.sid = sid2;
+  try { localStorage.setItem('bmBcSid', sid2); } catch {}
+  bcEls.list.hidden = true;
+  bcEls.view.hidden = false;
+  bcEls.meta.innerHTML = '';
+  bcEls.msgs.innerHTML = '';
+  bcState.toolMap = {};
+  bcState.lastToolEl = null;
+  bcState.todoEl = null;
+  bcSetBusy(false);
+  bcSys('yükleniyor…');
+  bcSendObj({ t: 'bc-open', sid: sid2 });
+}
+function bcRenderSnapshot(m) {
+  const sid2 = String(m.sid || m.sessionId || bcState.sid || '');
+  if (sid2) {
+    bcState.sid = sid2;
+    try { localStorage.setItem('bmBcSid', sid2); } catch {}
+  }
+  bcState.agent = String(m.agent || 'build');
+  bcState.ws = String(m.workspace || '');
+  bcEls.list.hidden = true;
+  bcEls.view.hidden = false;
+  bcFlushStream();
+  bcState.toolMap = {};
+  bcState.lastToolEl = null;
+  bcState.todoEl = null;
+  bcEls.msgs.innerHTML = '';
+  bcRenderTimeline(m.timeline || []);
+  if (!(Array.isArray(m.timeline) && m.timeline.length)) bcSys('henüz mesaj yok — aşağıdan ilk görevi yaz.');
+  bcSetBusy(!!m.busy);
+  if (bcEls.meta && m.title) bcEls.meta.title = String(m.title);
+}
+function bcSend() {
+  const text = String(bcEls.input.value || '').trim();
+  if (!text) return;
+  bcEls.input.value = '';
+  try { bcEls.input.style.height = '42px'; } catch {}
+  /* Kullanıcı balonu sunucudan gelen bc-user/message olayıyla basılır;
+     burada da basmak çift balon yapar. */
+  bcState.busy = true;
+  bcSetBusy(true);
+  if (!bcSendObj({ t: 'bc-send', sid: bcState.sid || '', text })) bcSetBusy(false);
+}
+function bcStop() {
+  bcSendObj({ t: 'bc-stop', sid: bcState.sid || '' });
+}
+function bcNew() {
+  bcSendObj({ t: 'bc-new' });
+}
+if (codeBtn) codeBtn.addEventListener('click', () => { if (bcState.open) bcHide(); else bcShow(); });
+if (bcEls.back) bcEls.back.addEventListener('click', () => {
+  if (!bcEls.view.hidden) {
+    bcEls.view.hidden = true;
+    bcEls.list.hidden = false;
+    bcLoadSessions();
+  } else bcHide();
+});
+if (bcEls.refresh) bcEls.refresh.addEventListener('click', () => {
+  if (!bcEls.view.hidden && bcState.sid) bcOpen(bcState.sid);
+  else bcLoadSessions();
+});
+if (bcEls.newBtn) bcEls.newBtn.addEventListener('click', bcNew);
+if (bcEls.send) bcEls.send.addEventListener('click', bcSend);
+if (bcEls.stop) bcEls.stop.addEventListener('click', bcStop);
+if (bcEls.input) {
+  bcEls.input.addEventListener('input', () => {
+    try {
+      bcEls.input.style.height = '42px';
+      bcEls.input.style.height = Math.min(110, Math.max(42, bcEls.input.scrollHeight)) + 'px';
+    } catch {}
+  });
+  bcEls.input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); bcSend(); }
+  });
+}
+/* Android geri tuşu: Beast Code içinde önce listeye, sonra sohbete dön */
+try {
+  const AppP = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.App;
+  if (AppP && typeof AppP.addListener === 'function') {
+    AppP.addListener('backButton', () => {
+      if (bcState.open) {
+        if (!bcEls.view.hidden) {
+          bcEls.view.hidden = true;
+          bcEls.list.hidden = false;
+          bcLoadSessions();
+        } else bcHide();
+        return;
+      }
+      if (settingsOpen) { closeSettings(); return; }
+      try { if (typeof AppP.exitApp === 'function') AppP.exitApp(); } catch {}
+    });
+  }
+} catch {}
+
 /* ---------- WS ---------- */
 const TUNNEL_SUFFIXES = ['.ngrok-free.app', '.ngrok.io', '.ngrok-fe.app', '.trycloudflare.com', '.loca.lt', '.localtunnel.app'];
 
@@ -909,7 +1322,7 @@ function connect() {
   if (!did) { did = 'bm-' + Math.random().toString(36).slice(2, 10); localStorage.setItem('bmDid', did); }
   ws.onopen = () => {
     ws.send(JSON.stringify({
-      t: 'auth', code, name: 'Beast Mobil', platform: (/iPhone|iPad|iOS/.test(navigator.userAgent) ? 'ios' : 'android'), did,
+      t: 'auth', code, name: 'Beast Code', platform: (/iPhone|iPad|iOS/.test(navigator.userAgent) ? 'ios' : 'android'), did,
     }));
   };
   ws.onmessage = (e) => { try { handle(JSON.parse(e.data)); } catch {} };
@@ -987,7 +1400,50 @@ function flushOutbox() {
 
 /* ---------- agent event akışı ---------- */
 function handle(m) {
-  const t = String(m.t || m.type || '');
+  const t0 = String(m.t || m.type || '');
+  /* BEAST CODE protokolü ve canlı engine olayları */
+  if (t0 === 'bc-sessions') { bcRenderSessions(m.list); return; }
+  if (t0 === 'bc-session') { bcRenderSnapshot(m); return; }
+  if (t0 === 'bc-send-ok') {
+    if (m.sessionId) {
+      bcState.sid = String(m.sessionId);
+      try { localStorage.setItem('bmBcSid', bcState.sid); } catch {}
+    }
+    if (m.ok === false || m.error) { bcSetBusy(false); bcSys('hata: ' + String(m.error || 'gönderilemedi')); }
+    return;
+  }
+  if (t0 === 'bc-stop-ok') {
+    if (m.ok !== false) bcSetBusy(false);
+    else bcSys('durdurulamadı: ' + String(m.error || ''));
+    return;
+  }
+  if (t0 === 'bc-new-ok') {
+    const id = String(m.sid || m.sessionId || '');
+    if (id) { bcState.sid = id; try { localStorage.setItem('bmBcSid', id); } catch {} bcOpen(id); }
+    bcLoadSessions();
+    return;
+  }
+  if (t0 === 'bc-del-ok') {
+    if (m.ok) bcSys('oturum silindi');
+    bcLoadSessions();
+    return;
+  }
+  if (t0 === 'bc-error') {
+    bcSetBusy(false);
+    bcSys('hata: ' + String(m.error || 'bilinmiyor'));
+    return;
+  }
+  if (t0 === 'bc-event') {
+    if (!bcEls.view.hidden && (!bcState.sid || String(m.sid || '') === String(bcState.sid))) bcHandleEvent(m.ev || {});
+    return;
+  }
+  /* Seçili Beast Code oturumunun canlı engine olayları */
+  if (bcState.open && !bcEls.view.hidden && m.sessionId &&
+      String(m.sessionId) === String(bcState.sid) && m.type) {
+    bcHandleEvent(m);
+    return;
+  }
+  const t = t0;
   switch (t) {
     case 'auth-ok':
       joined = true;
@@ -1002,6 +1458,8 @@ function handle(m) {
       syncKeep();
       phoneTtsSync(); /* telefonun ses motoru seçimini masaüstüne bildir */
       openSession(sid);
+      bcLoadSessions();
+      try { if ((localStorage.getItem('bmMode') || 'bc') === 'bc') setTimeout(() => bcShow(), 250); } catch {}
       break;
     case 'auth-bad':
       quitIntent = true; /* kod yanlış — sonsuza kadar deneme yapma, ekran açılsın */

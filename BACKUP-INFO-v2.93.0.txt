@@ -1,0 +1,4 @@
+BEAST AGENT v2.93.0 — 10/27/2026, 2:42:32 PM
+Source: C:\Users\fokusyazilim\Desktop\Beast Agent ana kod
+GitHub: https://github.com/algokodcom/beast-agent/releases/tag/v2.93.0
+npm: https://www.npmjs.com/package/beast-agent

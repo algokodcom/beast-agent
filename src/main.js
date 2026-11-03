@@ -3299,6 +3299,38 @@ const mobileHandlers = {
   onTtsStop: (sid) => {
     try { phoneTtsCancel(sid); } catch {}
   },
+  /* ---------- BEAST CODE (telefon) ---------- */
+  onBcSessions: (sendS) => {
+    try { sendS({ t: 'bc-sessions', list: bcMobileList() }); } catch {}
+  },
+  onBcOpen: (sid, sendS) => {
+    try { bcMobileOpen(sid, sendS); } catch (e) {
+      try { sendS({ t: 'bc-error', sid, error: String((e && e.message) || e) }); } catch {}
+    }
+  },
+  onBcSend: (sid, payload, sendS) => {
+    bcMobileSend(sid, payload).then((r) => {
+      try { if (sendS) sendS({ t: 'bc-send-ok', ...r }); } catch {}
+      if (r && r.ok) broadcastBcSessions();
+    }).catch((e) => {
+      try { if (sendS) sendS({ t: 'bc-error', sid, error: String((e && e.message) || e) }); } catch {}
+    });
+  },
+  onBcStop: (sid, sendS) => {
+    try { bcMobileStop(sid, sendS); } catch (e) {
+      try { sendS({ t: 'bc-stop-ok', sid, ok: false, error: String((e && e.message) || e) }); } catch {}
+    }
+  },
+  onBcNew: (sendS) => {
+    try { bcMobileNew(sendS); } catch (e) {
+      try { sendS({ t: 'bc-error', error: String((e && e.message) || e) }); } catch {}
+    }
+  },
+  onBcDelete: (sid, sendS) => {
+    try { bcMobileDelete(sid, sendS); } catch (e) {
+      try { sendS({ t: 'bc-del-ok', sid, ok: false, error: String((e && e.message) || e) }); } catch {}
+    }
+  },
   onPair: (meta) => {
     try {
       device.upsertPhone({ id: meta.did, name: meta.name, platform: meta.platform });
@@ -10763,9 +10795,208 @@ function bcMarkWs(s, folder) {
    talimatları) engine.js'e native port edildi; köprü/alt süreç yok. */
 
 function bcPanelEvent(sid, ev) {
+  const payload = { sessionId: sid, ...ev };
   try {
-    if (win && !win.isDestroyed()) win.webContents.send('agent:event', { sessionId: sid, ...ev });
+    if (win && !win.isDestroyed()) win.webContents.send('agent:event', payload);
   } catch {}
+  /* BEAST MOBILE: telefondaki Beast Code ekrani ayni olayi canli izler */
+  try { mobileWs.broadcast({ t: 'bc-event', sid, ev: payload }); } catch {}
+}
+
+/* ------------------------------------------------------------------ */
+/* BEAST CODE - MOBILE KOPRUSU                                         */
+/* Telefon ayni WebSocket/auth hattini kullanir; yalnizca Beast Code   */
+/* oturumlarini listeler, gecmisi okur, mesaj gonderir/durdurur.       */
+/* ------------------------------------------------------------------ */
+function bcSessionById(id) {
+  if (!engine || !id) return null;
+  let s;
+  try { s = engine._load(String(id)); } catch { return null; }
+  if (!s) return null;
+  /* Yalnız Beast Code oturumları telefondan açılabilir. */
+  if (s.bgTitle && s.bgTitle !== 'Beast Code') return null;
+  if (!s.bgTitle && !s.bcCode) return null;
+  return s;
+}
+
+function bcMobileList() {
+  try {
+    return engine.listBcSessions(100).map((it) => ({
+      ...it,
+      busy: engine.isBusy(it.id),
+    }));
+  } catch { return []; }
+}
+
+function broadcastBcSessions() {
+  const list = bcMobileList();
+  try { mobileWs.broadcast({ t: 'bc-sessions', list }); } catch {}
+  return list;
+}
+
+function bcMobileOpen(id, sendS) {
+  const s = bcSessionById(id);
+  if (!s) {
+    try { sendS({ t: 'bc-error', sid: String(id || ''), error: 'Beast Code oturumu bulunamadi' }); } catch {}
+    return { ok: false, error: 'oturum yok' };
+  }
+  const timeline = [];
+  const tools = new Map();
+  let title = '';
+  for (const m of s.messages || []) {
+    if (m && m.role === 'system') continue;
+    if (!title && m && m.role === 'user') {
+      const t = bcMsgText(m);
+      if (t) title = t.slice(0, 64);
+    }
+    if (m && Array.isArray(m.tool_calls) && m.tool_calls.length) {
+      const txt = bcMsgText(m);
+      if (txt) timeline.push({ kind: 'msg', role: 'assistant', text: txt.slice(0, 4000) });
+      for (const tc of m.tool_calls) {
+        const fn = (tc && (tc.function || tc)) || {};
+        const rec = {
+          kind: 'tool',
+          id: String((tc && tc.id) || ''),
+          name: String(fn.name || 'arac'),
+          args: String(fn.arguments || '').slice(0, 2000),
+          result: '',
+        };
+        timeline.push(rec);
+        if (tc && tc.id) tools.set(String(tc.id), rec);
+      }
+      continue;
+    }
+    if (m && m.role === 'tool') {
+      const rec = tools.get(String(m.tool_call_id || ''));
+      if (rec) rec.result = (bcMsgText(m) || String(m.content || '')).slice(0, 4000);
+      continue;
+    }
+    const txt = bcMsgText(m);
+    if (!txt) continue;
+    timeline.push({
+      kind: 'msg',
+      role: m.role === 'assistant' ? 'assistant' : 'user',
+      text: txt.slice(0, 4000),
+    });
+  }
+  const payload = {
+    t: 'bc-session',
+    sid: s.id,
+    sessionId: s.id,
+    title: title || 'Beast Code',
+    workspace: s.bcWs || '',
+    busy: !!engine.isBusy(s.id),
+    agent: s.bcAgent || 'build',
+    timeline: timeline.slice(-300),
+  };
+  try { sendS(payload); } catch {}
+  return { ok: true, sessionId: s.id };
+}
+
+async function bcMobileSend(id, payload) {
+  if (!engine) return { ok: false, error: 'ajan hazir degil' };
+  const text = String((payload && payload.text) || '').slice(0, 8000).trim();
+  const attachments = Array.isArray(payload && payload.attachments) ? payload.attachments : [];
+  if (!text && !attachments.length) return { ok: false, error: 'bos mesaj' };
+  if (!engine.publicState().hasModel) return { ok: false, error: 'model yok - Ayarlar > Provider' };
+
+  let s = bcSessionById(id);
+  let ws;
+  if (!s) {
+    ws = ideRoot();
+    s = bcBindOc(bcGetSession(ws), ws);
+  } else {
+    ws = s.bcWs || ideRoot();
+    bcBindOc(s, ws);
+    bcMarkWs(s, ws);
+  }
+  engine.cache.set(s.id, s);
+  bcSessions.set(ws, s.id);
+
+  const modeM = /^\/(plan|build|auto)\b/i.exec(text);
+  if (modeM) {
+    const agent = engine.setBcAgent(s.id, modeM[1].toLowerCase() === 'plan' ? 'plan' : 'build');
+    bcPanelEvent(s.id, {
+      type: 'bc-agent',
+      agent,
+      body: agent === 'plan'
+        ? 'PLAN AJANI - salt-okur: inceler, plan verir; uygulamak icin /build.'
+        : 'BUILD AJANI - inceler, planlar, uygular ve dogrular.',
+    });
+    broadcastBcSessions();
+    return { ok: true, sessionId: s.id, agent, mode: agent };
+  }
+
+  /* Telefonun yazdigi mesaj masaustu panelinde de gorunsun */
+  bcPanelEvent(s.id, { type: 'bc-user', text: text || '[ek]' });
+
+  if (engine.isBusy(s.id)) {
+    engine.send(s.id, attachments.length ? { text, attachments } : text, { userAction: true });
+    return { ok: true, sessionId: s.id, steered: true };
+  }
+  const q = bcQueuePush(ws, text, attachments);
+  clearTimeout(q.timer);
+  q.timer = setTimeout(() => { try { bcFlush(ws); } catch {} }, BC_DEBOUNCE_MS);
+  return { ok: true, sessionId: s.id, pending: true };
+}
+
+function bcMobileStop(id, sendS) {
+  const s = bcSessionById(id);
+  if (!s) {
+    try { sendS({ t: 'bc-stop-ok', sid: String(id || ''), ok: false, error: 'oturum yok' }); } catch {}
+    return { ok: false };
+  }
+  const ws = s.bcWs || ideRoot();
+  const q = bcQueue.get(ws);
+  if (q) {
+    clearTimeout(q.timer);
+    bcQueue.delete(ws);
+  }
+  const wasBusy = engine.isBusy(s.id);
+  let interrupted = false;
+  if (wasBusy) {
+    try { interrupted = engine.interrupt(s.id, 'telefondan durduruldu'); } catch {}
+  }
+  try { sendS({ t: 'bc-stop-ok', sid: s.id, ok: true, wasBusy, interrupted }); } catch {}
+  return { ok: true, wasBusy, interrupted };
+}
+
+function bcMobileNew(sendS) {
+  try {
+    const ws = ideRoot();
+    const q = bcQueue.get(ws);
+    if (q) {
+      clearTimeout(q.timer);
+      bcQueue.delete(ws);
+    }
+    bcSessions.delete(ws); /* eski oturumu silmeden taze oturum ac */
+    const s = bcBindOc(bcGetSession(ws), ws);
+    broadcastBcSessions();
+    try { sendS({ t: 'bc-new-ok', sid: s.id, sessionId: s.id }); } catch {}
+    return { ok: true, sessionId: s.id };
+  } catch (e) {
+    const msg = String((e && e.message) || e);
+    try { sendS({ t: 'bc-error', error: msg }); } catch {}
+    return { ok: false, error: msg };
+  }
+}
+
+function bcMobileDelete(id, sendS) {
+  const s = bcSessionById(id);
+  if (!s) {
+    try { sendS({ t: 'bc-del-ok', sid: String(id || ''), ok: false, error: 'oturum yok' }); } catch {}
+    return;
+  }
+  if (engine.isBusy(s.id)) {
+    try { sendS({ t: 'bc-del-ok', sid: s.id, ok: false, error: 'oturum calisiyor' }); } catch {}
+    return;
+  }
+  for (const [folder, sid] of [...bcSessions.entries()]) {
+    if (String(sid) === String(s.id)) bcSessions.delete(folder);
+  }
+  try { engine.deleteSession(s.id); } catch {}
+  broadcastBcSessions();
+  try { sendS({ t: 'bc-del-ok', sid: s.id, ok: true }); } catch {}
 }
 
 /* Beast Code mesaj kuyruğu: ajan çalışırken gelen mesajlar birikir, iş bitince
@@ -10814,11 +11045,7 @@ function bcFlush(folder) {
     if (q.retries > 5) {
       bcQueue.delete(folder);
       clearTimeout(q.timer);
-      try {
-        if (win && !win.isDestroyed()) {
-          win.webContents.send('agent:event', { sessionId: s.id, type: 'error', error: 'Beast Code mesajı gönderilemedi — panele tekrar yaz' });
-        }
-      } catch {}
+      try { bcPanelEvent(s.id, { type: 'error', error: 'Beast Code mesajı gönderilemedi — panele tekrar yaz' }); } catch {}
       return;
     }
     setTimeout(() => { try { bcFlush(folder); } catch {} }, 800);
@@ -10832,6 +11059,8 @@ function bcFlushOnDone(ev) {
       setTimeout(() => { try { bcFlush(folder); } catch {} }, 150);
     }
   }
+  /* Telefonun oturum listesindeki "çalışıyor" durumu tazelensin */
+  try { broadcastBcSessions(); } catch {}
 }
 
 ipcMain.handle('beastcode:send', async (_e, payload) => {
@@ -10851,12 +11080,10 @@ ipcMain.handle('beastcode:send', async (_e, payload) => {
     /* opencode ajan değişimi (agent.ts: plan/build primary ajanlar) — anında
        uygulanır, meşgulken de (yalnız ajan bayrağı; koşan tur çakışmaz) */
     const agent = engine.setBcAgent(s.id, modeM[1].toLowerCase() === 'plan' ? 'plan' : 'build');
-    if (win && !win.isDestroyed()) {
-      const body = agent === 'plan'
-        ? 'PLAN AJANI (opencode plan) — salt-okur: dosyaları okur/inceler, KOD YAZMAZ; adım adım uygulama planı verir. Uygulamak için /build.'
-        : 'BUILD AJANI (opencode build) — bağlamı inceler, todowrite ile planlar, uygular, doğrular.';
-      win.webContents.send('agent:event', { sessionId: s.id, type: 'bc-agent', agent, body });
-    }
+    const body = agent === 'plan'
+      ? 'PLAN AJANI (opencode plan) — salt-okur: dosyaları okur/inceler, KOD YAZMAZ; adım adım uygulama planı verir. Uygulamak için /build.'
+      : 'BUILD AJANI (opencode build) — bağlamı inceler, todowrite ile planlar, uygular, doğrular.';
+    bcPanelEvent(s.id, { type: 'bc-agent', agent, body });
     return { ok: true, sessionId: s.id, agent, mode: agent };
   }
   if (busy) {

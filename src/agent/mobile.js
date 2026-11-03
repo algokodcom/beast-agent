@@ -13,8 +13,13 @@
    client→ {t:'auth', code, name, platform, did}
    client→ {t:'send', sid, text, attachments?}
    client→ {t:'open', sid} | {t:'new'} | {t:'interrupt', sid} | {t:'sessions'} | {t:'ping'}
+   client→ BEAST CODE: {t:'bc-sessions'} | {t:'bc-open', sid} | {t:'bc-send', sid, text}
+                       | {t:'bc-stop', sid} | {t:'bc-new'} | {t:'bc-del', sid}
    server→ {t:'auth-ok', device, name} | {t:'auth-bad', why}
    server→ {t:'sessions', list, activeSid}
+   server→ BEAST CODE: {t:'bc-sessions', list} | {t:'bc-session', sid, timeline, ...}
+                       | {t:'bc-send-ok', sid, ...} | {t:'bc-stop-ok', sid, ...}
+                       | {t:'bc-new-ok', sid} | {t:'bc-event', sid, ev}
    server→ agent eventleri aynen ({sessionId, type, ...} — mobile composer UI'da
            aynı mesaj/token/done/status akışı WhatsApp kartı gibi gösterir)
 */
@@ -78,8 +83,15 @@ let handlers = {
   onDelete: null, /* telefondan oturum silme — bilgisayarla entegre */
   onTalk: null, /* eller-serbest mod bayrağı — telefon konuşma döngüsünü açar/kapatır */
   onTtsCfg: null, /* telefondan TTS motor seçimi */
-  onTtsStop: null, /* telefondan ses akışını kes (barge-in / yeni mesaj) */
+  onTtsStop: null, /* telefondan ses akisini kes (barge-in / yeni mesaj) */
   onPair: null,
+  /* BEAST CODE: telefondan uzaktan kod oturumu yonetimi */
+  onBcSessions: null,
+  onBcOpen: null,
+  onBcSend: null,
+  onBcStop: null,
+  onBcNew: null,
+  onBcDelete: null,
 };
 
 function setHandlers(h) {
@@ -305,6 +317,36 @@ function start(opts) {
         }
         if (t === 'interrupt') {
           if (handlers.onInterrupt) { handlers.onInterrupt(String(m.sid || '')); }
+          return;
+        }
+        /* ---------- BEAST CODE (uzaktan kod oturumu) ---------- */
+        if (t === 'bc-sessions') {
+          if (handlers.onBcSessions) { handlers.onBcSessions(sendS); }
+          return;
+        }
+        if (t === 'bc-open') {
+          if (handlers.onBcOpen) { handlers.onBcOpen(String(m.sid || ''), sendS); }
+          return;
+        }
+        if (t === 'bc-send') {
+          if (handlers.onBcSend) {
+            handlers.onBcSend(String(m.sid || ''), {
+              text: String(m.text || ''),
+              attachments: Array.isArray(m.attachments) ? m.attachments : [],
+            }, sendS);
+          }
+          return;
+        }
+        if (t === 'bc-stop') {
+          if (handlers.onBcStop) { handlers.onBcStop(String(m.sid || ''), sendS); }
+          return;
+        }
+        if (t === 'bc-new') {
+          if (handlers.onBcNew) { handlers.onBcNew(sendS); }
+          return;
+        }
+        if (t === 'bc-del') {
+          if (handlers.onBcDelete) { handlers.onBcDelete(String(m.sid || ''), sendS); }
           return;
         }
       } catch (e) {

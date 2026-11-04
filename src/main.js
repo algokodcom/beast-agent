@@ -3321,8 +3321,13 @@ const mobileHandlers = {
       try { sendS({ t: 'bc-stop-ok', sid, ok: false, error: String((e && e.message) || e) }); } catch {}
     }
   },
-  onBcNew: (sendS) => {
-    try { bcMobileNew(sendS); } catch (e) {
+  onBcNew: (sendS, payload) => {
+    try { bcMobileNew(sendS, payload); } catch (e) {
+      try { sendS({ t: 'bc-error', error: String((e && e.message) || e) }); } catch {}
+    }
+  },
+  onBcBrowse: (path, sendS) => {
+    try { bcMobileBrowse(path, sendS); } catch (e) {
       try { sendS({ t: 'bc-error', error: String((e && e.message) || e) }); } catch {}
     }
   },
@@ -10961,9 +10966,85 @@ function bcMobileStop(id, sendS) {
   return { ok: true, wasBusy, interrupted };
 }
 
-function bcMobileNew(sendS) {
+function bcMobileBrowse(rawPath, sendS) {
+  const safeSend = (o) => { try { if (sendS) sendS(o); } catch {} };
+  let base = String(rawPath || '').trim();
+  if (!base) {
+    try { base = ideRoot(); } catch { base = process.cwd(); }
+  }
+  let p;
+  try { p = path.resolve(base); } catch {
+    safeSend({ t: 'bc-error', error: 'gecersiz klasor yolu' });
+    return;
+  }
+  let st;
+  try { st = fs.statSync(p); } catch {
+    safeSend({ t: 'bc-error', error: 'klasor bulunamadi: ' + p });
+    return;
+  }
+  if (!st.isDirectory()) {
+    safeSend({ t: 'bc-error', error: 'bu yol klasor degil' });
+    return;
+  }
+  const skip = new Set(['node_modules', '.git', '.gradle', '$Recycle.Bin', 'System Volume Information']);
+  const dirs = [];
   try {
-    const ws = ideRoot();
+    for (const ent of fs.readdirSync(p, { withFileTypes: true })) {
+      if (!ent.isDirectory()) continue;
+      if (skip.has(ent.name) || ent.name.startsWith('.')) continue;
+      dirs.push({ name: ent.name, path: path.join(p, ent.name) });
+    }
+  } catch {}
+  dirs.sort((a, b) => a.name.localeCompare(b.name, 'tr'));
+  const parent = path.dirname(p) !== p ? path.dirname(p) : '';
+  const roots = [];
+  const addRoot = (label, rp) => {
+    try {
+      if (rp && fs.existsSync(rp) && fs.statSync(rp).isDirectory()) {
+        roots.push({ label, path: path.resolve(rp) });
+      }
+    } catch {}
+  };
+  try { addRoot('Çalışma', ideRoot()); } catch {}
+  try { addRoot('Ana dizin', app.getPath('home')); } catch {}
+  try { addRoot('Masaüstü', app.getPath('desktop')); } catch {}
+  try { addRoot('Belgeler', app.getPath('documents')); } catch {}
+  if (process.platform === 'win32') {
+    for (let i = 65; i <= 90; i++) {
+      const d = String.fromCharCode(i) + ':\\';
+      try { if (fs.existsSync(d)) roots.push({ label: d, path: d }); } catch {}
+    }
+  }
+  const seen = new Set();
+  const uniq = [];
+  for (const r of roots) {
+    const k = String(r.path || '').toLowerCase();
+    if (!k || seen.has(k)) continue;
+    seen.add(k);
+    uniq.push(r);
+  }
+  safeSend({ t: 'bc-dirs', path: p, parent, dirs: dirs.slice(0, 500), roots: uniq });
+}
+
+function bcMobileNew(sendS, payload) {
+  try {
+    let ws = ideRoot();
+    const rawFolder = String((payload && payload.folder) || '').trim();
+    if (rawFolder) {
+      const p = path.resolve(rawFolder);
+      const st = fs.statSync(p);
+      if (!st.isDirectory()) throw new Error('secilen yol klasor degil');
+      ws = p;
+    }
+    /* Seçilen klasör masaüstü Beast Code çalışma alanı olur. */
+    try {
+      if (String(settings.ideRoot || '') !== ws) {
+        settings.ideRoot = ws;
+        saveSettings();
+        try { ideWatchStart(); } catch {}
+        try { if (win && !win.isDestroyed()) win.webContents.send('agent:event', { type: 'ide-tree-changed' }); } catch {}
+      }
+    } catch {}
     const q = bcQueue.get(ws);
     if (q) {
       clearTimeout(q.timer);
@@ -10972,8 +11053,8 @@ function bcMobileNew(sendS) {
     bcSessions.delete(ws); /* eski oturumu silmeden taze oturum ac */
     const s = bcBindOc(bcGetSession(ws), ws);
     broadcastBcSessions();
-    try { sendS({ t: 'bc-new-ok', sid: s.id, sessionId: s.id }); } catch {}
-    return { ok: true, sessionId: s.id };
+    try { sendS({ t: 'bc-new-ok', sid: s.id, sessionId: s.id, workspace: ws }); } catch {}
+    return { ok: true, sessionId: s.id, workspace: ws };
   } catch (e) {
     const msg = String((e && e.message) || e);
     try { sendS({ t: 'bc-error', error: msg }); } catch {}

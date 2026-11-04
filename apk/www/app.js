@@ -21,11 +21,19 @@ const bcEls = {
   page: $('#bcPage'), list: $('#bcList'), view: $('#bcView'), msgs: $('#bcMsgs'),
   meta: $('#bcMeta'), sub: $('#bcSub'), input: $('#bcInput'), send: $('#bcSend'),
   stop: $('#bcStop'), back: $('#bcBack'), refresh: $('#bcRefresh'), newBtn: $('#bcNew'),
+  menu: $('#bcMenu'), drawer: $('#bcDrawer'), drawerClose: $('#bcDrawerClose'),
+  drawerNew: $('#bcDrawerNew'), drawerBackdrop: $('#bcDrawerBackdrop'),
+  folderSheet: $('#bcFolderSheet'), folderPath: $('#bcFolderPath'), folderRoots: $('#bcFolderRoots'),
+  folderList: $('#bcFolderList'), folderUp: $('#bcFolderUp'), folderPick: $('#bcFolderPick'),
+  folderClose: $('#bcFolderClose'), folderBackdrop: $('#bcFolderBackdrop'),
+  slash: $('#bcSlash'),
 };
 const bcState = {
-  open: false, sid: localStorage.getItem('bmBcSid') || '', busy: false, list: [],
-  streamEl: null, streamBuf: '', lastToolEl: null, recentUsers: [],
+  open: false, drawerOpen: false, opening: false, sid: localStorage.getItem('bmBcSid') || '',
+  busy: false, list: [], streamEl: null, streamBuf: '', lastToolEl: null, recentUsers: [],
   toolMap: {}, todoEl: null, agent: 'build', ws: '',
+  folderOpen: false, folderPath: '', folderParent: '', folderDirs: [], folderRoots: [],
+  slashList: [], slashSel: 0,
 };
 
 let ws = null;
@@ -1108,20 +1116,35 @@ function bcHandleEvent(ev) {
     return;
   }
 }
+function bcDrawer(open) {
+  bcState.drawerOpen = !!open;
+  if (bcEls.drawer) bcEls.drawer.hidden = !open;
+}
 function bcShow() {
   if (!bcEls.page) return;
   bcState.open = true;
   try { localStorage.setItem('bmMode', 'bc'); } catch {}
   bcEls.page.hidden = false;
-  bcEls.list.hidden = false;
-  bcEls.view.hidden = true;
+  bcEls.view.hidden = false;
+  bcDrawer(false);
+  bcSlashHide();
   bcEls.list.innerHTML = '<div class="bc-empty">oturumlar yükleniyor…</div>';
   bcLoadSessions();
   bcMetaRender();
+  if (bcState.sid) {
+    bcOpen(bcState.sid);
+  } else {
+    bcEls.msgs.innerHTML = '';
+    bcSys('Bir Beast Code oturumu seçmek için sol üstteki ☰ menüsünü aç veya + ile yeni oturum oluştur.');
+    bcDrawer(true);
+  }
 }
 function bcHide() {
   bcState.open = false;
   try { localStorage.setItem('bmMode', 'chat'); } catch {}
+  bcDrawer(false);
+  bcSlashHide();
+  bcFolderClose();
   if (bcEls.page) bcEls.page.hidden = true;
 }
 function bcLoadSessions() {
@@ -1132,12 +1155,11 @@ function bcRenderSessions(list) {
   bcState.list = arr;
   bcCodeDot();
   if (!bcEls.list) return;
-  if (!bcEls.view.hidden) return; /* oturum açıkken listeyi öne getirme */
   bcEls.list.innerHTML = '';
   if (!arr.length) {
     const e = document.createElement('div');
     e.className = 'bc-empty';
-    e.textContent = 'Henüz Beast Code oturumu yok. Sağ üstteki + ile yeni oturum aç; masaüstündeki çalışma klasöründe başlar.';
+    e.textContent = 'Henüz Beast Code oturumu yok. Üstteki + ile yeni oturum aç; masaüstündeki çalışma klasöründe başlar.';
     bcEls.list.appendChild(e);
     return;
   }
@@ -1169,16 +1191,36 @@ function bcRenderSessions(list) {
       run.className = 'bcs-run';
       row.appendChild(run);
     }
+    const del = document.createElement('button');
+    del.className = 'bcs-del';
+    del.textContent = '✕';
+    del.title = 'Oturumu sil';
+    del.setAttribute('aria-label', 'Oturumu sil');
+    del.addEventListener('click', (e) => {
+      e.stopPropagation();
+      bcDeleteSession(it);
+    });
+    row.appendChild(del);
     row.addEventListener('click', () => bcOpen(it.id));
     bcEls.list.appendChild(row);
   }
+}
+function bcDeleteSession(it) {
+  if (!it || !it.id) return;
+  const title = String(it.title || 'Beast Code oturumu');
+  if (!confirm('"' + title + '" oturumu silinsin mi?\n\nBu işlem geri alınamaz.')) return;
+  if (!bcSendObj({ t: 'bc-del', sid: it.id })) return;
+  toast('Oturum siliniyor…');
 }
 function bcOpen(id) {
   const sid2 = String(id || '');
   if (!sid2) return;
   bcState.sid = sid2;
+  bcState.opening = true;
   try { localStorage.setItem('bmBcSid', sid2); } catch {}
-  bcEls.list.hidden = true;
+  bcDrawer(false);
+  bcFolderClose();
+  bcSlashHide();
   bcEls.view.hidden = false;
   bcEls.meta.innerHTML = '';
   bcEls.msgs.innerHTML = '';
@@ -1197,7 +1239,9 @@ function bcRenderSnapshot(m) {
   }
   bcState.agent = String(m.agent || 'build');
   bcState.ws = String(m.workspace || '');
-  bcEls.list.hidden = true;
+  bcState.opening = false;
+  bcDrawer(false);
+  bcSlashHide();
   bcEls.view.hidden = false;
   bcFlushStream();
   bcState.toolMap = {};
@@ -1209,7 +1253,98 @@ function bcRenderSnapshot(m) {
   bcSetBusy(!!m.busy);
   if (bcEls.meta && m.title) bcEls.meta.title = String(m.title);
 }
+const BC_SLASH = [
+  { cmd: '/help', desc: 'Tüm Beast Code komutlarını göster' },
+  { cmd: '/plan', desc: 'Plan ajanı — kod yazmaz, plan verir' },
+  { cmd: '/build', desc: 'Build ajanı — uygular ve doğrular' },
+  { cmd: '/auto', desc: 'Otomatik mod — build gibi çalışır' },
+  { cmd: '/new', desc: 'Yeni oturum ve klasör seç' },
+  { cmd: '/folder', desc: 'Klasör seç ve yeni oturum aç' },
+  { cmd: '/sessions', desc: 'Oturum menüsünü aç' },
+  { cmd: '/stop', desc: 'Çalışan görevi durdur' },
+  { cmd: '/refresh', desc: 'Aktif oturumu yenile' },
+  { cmd: '/clear', desc: 'Sohbet görünümünü temizle' },
+];
+function bcSlashHide() {
+  bcState.slashList = [];
+  bcState.slashSel = 0;
+  if (bcEls.slash) bcEls.slash.hidden = true;
+}
+function bcSlashRender() {
+  if (!bcEls.slash) return;
+  bcEls.slash.innerHTML = '';
+  if (!bcState.slashList.length) { bcSlashHide(); return; }
+  bcState.slashList.forEach((item, i) => {
+    const row = document.createElement('div');
+    row.className = 'bc-slash-item' + (i === bcState.slashSel ? ' sel' : '');
+    const c = document.createElement('span');
+    c.className = 'c';
+    c.textContent = item.cmd;
+    const d = document.createElement('span');
+    d.className = 'd';
+    d.textContent = item.desc;
+    row.appendChild(c);
+    row.appendChild(d);
+    row.addEventListener('click', () => bcSlashExec(item.cmd));
+    bcEls.slash.appendChild(row);
+  });
+  bcEls.slash.hidden = false;
+}
+function bcSlashUpdate() {
+  const raw = String(bcEls.input.value || '');
+  const m = raw.match(/^\/([^\s]*)$/);
+  if (!m) { bcSlashHide(); return; }
+  const q = ('/' + m[1]).toLowerCase();
+  bcState.slashList = BC_SLASH.filter((x) => x.cmd.startsWith(q));
+  bcState.slashSel = 0;
+  bcSlashRender();
+}
+function bcSlashMove(delta) {
+  if (!bcState.slashList.length) return;
+  const n = bcState.slashList.length;
+  bcState.slashSel = (bcState.slashSel + delta + n) % n;
+  bcSlashRender();
+  try {
+    const el = bcEls.slash.querySelector('.bc-slash-item.sel');
+    if (el && el.scrollIntoView) el.scrollIntoView({ block: 'nearest' });
+  } catch {}
+}
+function bcHelp() {
+  const lines = BC_SLASH.map((x) => '`' + x.cmd + '` — ' + x.desc);
+  bcMsg('assistant', '**Beast Code komutları**\n\n' + lines.join('\n'));
+}
+function bcSlashExec(cmd) {
+  const c = String(cmd || '').toLowerCase();
+  bcSlashHide();
+  if (bcEls.input) bcEls.input.value = '';
+  if (c === '/help') { bcHelp(); return; }
+  if (c === '/new' || c === '/folder') { bcNew(); return; }
+  if (c === '/sessions') { bcDrawer(true); return; }
+  if (c === '/stop') { bcStop(); return; }
+  if (c === '/refresh') { if (bcState.sid) bcOpen(bcState.sid); else bcLoadSessions(); return; }
+  if (c === '/clear') {
+    bcFlushStream();
+    bcState.toolMap = {};
+    bcState.todoEl = null;
+    bcEls.msgs.innerHTML = '';
+    bcSys('Sohbet görünümü temizlendi.');
+    return;
+  }
+  if (c === '/plan' || c === '/build' || c === '/auto') {
+    bcSetBusy(true);
+    if (!bcSendObj({ t: 'bc-send', sid: bcState.sid || '', text: c })) bcSetBusy(false);
+    return;
+  }
+}
+function bcSubmit() {
+  const text = String(bcEls.input.value || '').trim();
+  if (!text) return;
+  const cmd = text.split(/\s+/)[0].toLowerCase();
+  if (BC_SLASH.some((x) => x.cmd === cmd)) { bcSlashExec(cmd); return; }
+  bcSend();
+}
 function bcSend() {
+  bcSlashHide();
   const text = String(bcEls.input.value || '').trim();
   if (!text) return;
   bcEls.input.value = '';
@@ -1223,23 +1358,107 @@ function bcSend() {
 function bcStop() {
   bcSendObj({ t: 'bc-stop', sid: bcState.sid || '' });
 }
+function bcFolderOpen() {
+  if (!bcEls.folderSheet) return;
+  bcDrawer(false);
+  bcState.folderOpen = true;
+  bcEls.folderSheet.hidden = false;
+  bcEls.folderPath.textContent = 'yükleniyor…';
+  bcEls.folderRoots.innerHTML = '';
+  bcEls.folderList.innerHTML = '';
+  if (bcEls.folderUp) bcEls.folderUp.disabled = true;
+  if (bcEls.folderPick) bcEls.folderPick.disabled = true;
+  if (!bcSendObj({ t: 'bc-browse', path: bcState.ws || '' })) bcFolderClose();
+}
+function bcFolderClose() {
+  bcState.folderOpen = false;
+  if (bcEls.folderSheet) bcEls.folderSheet.hidden = true;
+}
+function bcFolderGo(p) {
+  const target = String(p || '').trim();
+  if (!target) return;
+  bcEls.folderPath.textContent = 'yükleniyor…';
+  if (!bcSendObj({ t: 'bc-browse', path: target })) {
+    bcEls.folderPath.textContent = target;
+    toast('Bağlantı yok');
+  }
+}
+function bcFolderPick() {
+  const p = String(bcState.folderPath || '').trim();
+  if (!p) { toast('Önce bir klasör seç'); return; }
+  if (!bcSendObj({ t: 'bc-new', folder: p })) return;
+  bcFolderClose();
+  toast('Yeni Beast Code oturumu açılıyor…');
+}
+function bcRenderDirs(m) {
+  if (!m || !m.path) return;
+  bcState.folderPath = String(m.path || '');
+  bcState.folderParent = String(m.parent || '');
+  bcState.folderDirs = Array.isArray(m.dirs) ? m.dirs : [];
+  bcState.folderRoots = Array.isArray(m.roots) ? m.roots : [];
+  bcEls.folderPath.textContent = bcState.folderPath;
+  if (bcEls.folderUp) bcEls.folderUp.disabled = !bcState.folderParent;
+  if (bcEls.folderPick) bcEls.folderPick.disabled = false;
+  bcEls.folderRoots.innerHTML = '';
+  for (const r of bcState.folderRoots) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = String(r.label || r.path || '');
+    b.title = String(r.path || '');
+    b.addEventListener('click', () => bcFolderGo(r.path));
+    bcEls.folderRoots.appendChild(b);
+  }
+  bcEls.folderList.innerHTML = '';
+  if (!bcState.folderDirs.length) {
+    const e = document.createElement('div');
+    e.className = 'bc-folder-empty';
+    e.textContent = 'Alt klasör yok. Bu klasörü seçebilirsin.';
+    bcEls.folderList.appendChild(e);
+    return;
+  }
+  for (const d of bcState.folderDirs) {
+    const row = document.createElement('div');
+    row.className = 'bc-folder-row';
+    const ico = document.createElement('span');
+    ico.className = 'ico';
+    ico.textContent = '📁';
+    const nm = document.createElement('span');
+    nm.className = 'nm';
+    nm.textContent = String(d.name || d.path || '');
+    row.appendChild(ico);
+    row.appendChild(nm);
+    row.addEventListener('click', () => bcFolderGo(d.path));
+    bcEls.folderList.appendChild(row);
+  }
+}
 function bcNew() {
-  bcSendObj({ t: 'bc-new' });
+  bcFolderOpen();
 }
 if (codeBtn) codeBtn.addEventListener('click', () => { if (bcState.open) bcHide(); else bcShow(); });
 if (bcEls.back) bcEls.back.addEventListener('click', () => {
-  if (!bcEls.view.hidden) {
-    bcEls.view.hidden = true;
-    bcEls.list.hidden = false;
-    bcLoadSessions();
-  } else bcHide();
+  if (bcState.drawerOpen) { bcDrawer(false); return; }
+  bcHide();
 });
+if (bcEls.menu) bcEls.menu.addEventListener('click', () => {
+  const open = !bcState.drawerOpen;
+  bcDrawer(open);
+  if (open) bcLoadSessions();
+});
+if (bcEls.drawerClose) bcEls.drawerClose.addEventListener('click', () => bcDrawer(false));
+if (bcEls.drawerNew) bcEls.drawerNew.addEventListener('click', bcNew);
+if (bcEls.drawerBackdrop) bcEls.drawerBackdrop.addEventListener('click', () => bcDrawer(false));
+if (bcEls.folderClose) bcEls.folderClose.addEventListener('click', bcFolderClose);
+if (bcEls.folderBackdrop) bcEls.folderBackdrop.addEventListener('click', bcFolderClose);
+if (bcEls.folderUp) bcEls.folderUp.addEventListener('click', () => {
+  if (bcState.folderParent) bcFolderGo(bcState.folderParent);
+});
+if (bcEls.folderPick) bcEls.folderPick.addEventListener('click', bcFolderPick);
 if (bcEls.refresh) bcEls.refresh.addEventListener('click', () => {
-  if (!bcEls.view.hidden && bcState.sid) bcOpen(bcState.sid);
+  if (bcState.sid) bcOpen(bcState.sid);
   else bcLoadSessions();
 });
 if (bcEls.newBtn) bcEls.newBtn.addEventListener('click', bcNew);
-if (bcEls.send) bcEls.send.addEventListener('click', bcSend);
+if (bcEls.send) bcEls.send.addEventListener('click', bcSubmit);
 if (bcEls.stop) bcEls.stop.addEventListener('click', bcStop);
 if (bcEls.input) {
   bcEls.input.addEventListener('input', () => {
@@ -1247,22 +1466,39 @@ if (bcEls.input) {
       bcEls.input.style.height = '42px';
       bcEls.input.style.height = Math.min(110, Math.max(42, bcEls.input.scrollHeight)) + 'px';
     } catch {}
+    bcSlashUpdate();
   });
   bcEls.input.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); bcSend(); }
+    const menu = bcEls.slash && !bcEls.slash.hidden;
+    if (menu) {
+      if (e.key === 'ArrowDown') { e.preventDefault(); bcSlashMove(1); return; }
+      if (e.key === 'ArrowUp') { e.preventDefault(); bcSlashMove(-1); return; }
+      if (e.key === 'Escape') { e.preventDefault(); bcSlashHide(); return; }
+      if (e.key === 'Tab') {
+        e.preventDefault();
+        if (bcState.slashList[bcState.slashSel]) bcSlashExec(bcState.slashList[bcState.slashSel].cmd);
+        return;
+      }
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        if (bcState.slashList[bcState.slashSel]) bcSlashExec(bcState.slashList[bcState.slashSel].cmd);
+        else bcSubmit();
+        return;
+      }
+    }
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); bcSubmit(); }
   });
 }
-/* Android geri tuşu: Beast Code içinde önce listeye, sonra sohbete dön */
+/* Android geri tuşu: önce oturum menüsünü kapat, sonra Beast Code'dan çık */
 try {
   const AppP = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.App;
   if (AppP && typeof AppP.addListener === 'function') {
     AppP.addListener('backButton', () => {
       if (bcState.open) {
-        if (!bcEls.view.hidden) {
-          bcEls.view.hidden = true;
-          bcEls.list.hidden = false;
-          bcLoadSessions();
-        } else bcHide();
+        if (bcEls.slash && !bcEls.slash.hidden) { bcSlashHide(); return; }
+        if (bcState.folderOpen) { bcFolderClose(); return; }
+        if (bcState.drawerOpen) { bcDrawer(false); return; }
+        bcHide();
         return;
       }
       if (settingsOpen) { closeSettings(); return; }
@@ -1404,6 +1640,7 @@ function handle(m) {
   /* BEAST CODE protokolü ve canlı engine olayları */
   if (t0 === 'bc-sessions') { bcRenderSessions(m.list); return; }
   if (t0 === 'bc-session') { bcRenderSnapshot(m); return; }
+  if (t0 === 'bc-dirs') { bcRenderDirs(m); return; }
   if (t0 === 'bc-send-ok') {
     if (m.sessionId) {
       bcState.sid = String(m.sessionId);
@@ -1424,13 +1661,36 @@ function handle(m) {
     return;
   }
   if (t0 === 'bc-del-ok') {
-    if (m.ok) bcSys('oturum silindi');
+    if (m.ok) {
+      toast('Oturum silindi');
+      if (String(bcState.sid) === String(m.sid)) {
+        bcState.sid = '';
+        try { localStorage.removeItem('bmBcSid'); } catch {}
+        bcFlushStream();
+        bcState.toolMap = {};
+        bcState.todoEl = null;
+        bcState.ws = '';
+        bcSetBusy(false);
+        bcEls.msgs.innerHTML = '';
+        bcMetaRender();
+        bcSys('Oturum silindi. Yeni oturum seçmek için ☰ veya + kullan.');
+        bcDrawer(true);
+      }
+    } else {
+      toast('Silinemedi: ' + String(m.error || 'hata'));
+    }
     bcLoadSessions();
     return;
   }
   if (t0 === 'bc-error') {
+    const err = String(m.error || 'bilinmiyor');
     bcSetBusy(false);
-    bcSys('hata: ' + String(m.error || 'bilinmiyor'));
+    bcSys('hata: ' + err);
+    toast('Beast Code: ' + err.slice(0, 90));
+    if (bcState.opening) {
+      bcState.opening = false;
+      bcDrawer(true);
+    }
     return;
   }
   if (t0 === 'bc-event') {

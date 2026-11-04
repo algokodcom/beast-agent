@@ -3331,6 +3331,11 @@ const mobileHandlers = {
       try { sendS({ t: 'bc-error', error: String((e && e.message) || e) }); } catch {}
     }
   },
+  onBcMkdir: (parent, name, sendS) => {
+    try { bcMobileMkdir(parent, name, sendS); } catch (e) {
+      try { sendS({ t: 'bc-error', error: String((e && e.message) || e) }); } catch {}
+    }
+  },
   onBcDelete: (sid, sendS) => {
     try { bcMobileDelete(sid, sendS); } catch (e) {
       try { sendS({ t: 'bc-del-ok', sid, ok: false, error: String((e && e.message) || e) }); } catch {}
@@ -10848,6 +10853,20 @@ function bcMobileOpen(id, sendS) {
   const timeline = [];
   const tools = new Map();
   let title = '';
+  let attachBudget = 8 * 1024 * 1024;
+  const msgAtts = (m) => {
+    const out = [];
+    if (!m || !Array.isArray(m.attachments)) return out;
+    for (const a of m.attachments) {
+      if (!a || a.type !== 'image' || !a.dataUrl) continue;
+      const len = String(a.dataUrl).length;
+      if (len > 1500000 || attachBudget <= 0) continue;
+      if (out.length >= 2) break;
+      out.push({ type: 'image', name: String(a.name || '').slice(0, 80), dataUrl: String(a.dataUrl) });
+      attachBudget -= len;
+    }
+    return out;
+  };
   for (const m of s.messages || []) {
     if (m && m.role === 'system') continue;
     if (!title && m && m.role === 'user') {
@@ -10856,7 +10875,13 @@ function bcMobileOpen(id, sendS) {
     }
     if (m && Array.isArray(m.tool_calls) && m.tool_calls.length) {
       const txt = bcMsgText(m);
-      if (txt) timeline.push({ kind: 'msg', role: 'assistant', text: txt.slice(0, 4000) });
+      const atts = msgAtts(m);
+      if (txt || atts.length) {
+        timeline.push({
+          kind: 'msg', role: 'assistant', text: txt.slice(0, 4000),
+          ...(atts.length ? { attachments: atts } : {}),
+        });
+      }
       for (const tc of m.tool_calls) {
         const fn = (tc && (tc.function || tc)) || {};
         const rec = {
@@ -10877,11 +10902,13 @@ function bcMobileOpen(id, sendS) {
       continue;
     }
     const txt = bcMsgText(m);
-    if (!txt) continue;
+    const atts = msgAtts(m);
+    if (!txt && !atts.length) continue;
     timeline.push({
       kind: 'msg',
       role: m.role === 'assistant' ? 'assistant' : 'user',
       text: txt.slice(0, 4000),
+      ...(atts.length ? { attachments: atts } : {}),
     });
   }
   const payload = {
@@ -10933,7 +10960,11 @@ async function bcMobileSend(id, payload) {
   }
 
   /* Telefonun yazdigi mesaj masaustu panelinde de gorunsun */
-  bcPanelEvent(s.id, { type: 'bc-user', text: text || '[ek]' });
+  bcPanelEvent(s.id, {
+    type: 'bc-user',
+    text: text || (attachments.length ? '[ek]' : ''),
+    attachments: attachments.length ? attachments : undefined,
+  });
 
   if (engine.isBusy(s.id)) {
     engine.send(s.id, attachments.length ? { text, attachments } : text, { userAction: true });
@@ -11024,6 +11055,51 @@ function bcMobileBrowse(rawPath, sendS) {
     uniq.push(r);
   }
   safeSend({ t: 'bc-dirs', path: p, parent, dirs: dirs.slice(0, 500), roots: uniq });
+}
+
+function bcMobileMkdir(rawParent, rawName, sendS) {
+  const safeSend = (o) => { try { if (sendS) sendS(o); } catch {} };
+  let parent;
+  try {
+    parent = path.resolve(String(rawParent || '').trim() || ideRoot());
+  } catch {
+    safeSend({ t: 'bc-error', error: 'gecersiz klasor yolu' });
+    return;
+  }
+  let st;
+  try { st = fs.statSync(parent); } catch {
+    safeSend({ t: 'bc-error', error: 'klasor bulunamadi: ' + parent });
+    return;
+  }
+  if (!st.isDirectory()) {
+    safeSend({ t: 'bc-error', error: 'bu yol klasor degil' });
+    return;
+  }
+  const name = String(rawName || '').trim();
+  if (!name || name === '.' || name === '..') {
+    safeSend({ t: 'bc-error', error: 'gecersiz klasor adi' });
+    return;
+  }
+  if (name.length > 80 || /[<>:"\/\\|?*\x00-\x1F]/.test(name)) {
+    safeSend({ t: 'bc-error', error: 'klasor adinda gecersiz karakter var' });
+    return;
+  }
+  const target = path.join(parent, name);
+  if (path.dirname(target) !== parent) {
+    safeSend({ t: 'bc-error', error: 'gecersiz klasor yolu' });
+    return;
+  }
+  if (fs.existsSync(target)) {
+    safeSend({ t: 'bc-error', error: 'bu isimde klasor zaten var' });
+    return;
+  }
+  try {
+    fs.mkdirSync(target);
+  } catch (e) {
+    safeSend({ t: 'bc-error', error: 'klasor olusturulamadi: ' + String((e && e.message) || e) });
+    return;
+  }
+  safeSend({ t: 'bc-mkdir-ok', path: target, parent });
 }
 
 function bcMobileNew(sendS, payload) {

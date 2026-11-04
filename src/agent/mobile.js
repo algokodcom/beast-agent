@@ -15,13 +15,13 @@
    client→ {t:'open', sid} | {t:'new'} | {t:'interrupt', sid} | {t:'sessions'} | {t:'ping'}
    client→ BEAST CODE: {t:'bc-sessions'} | {t:'bc-open', sid} | {t:'bc-send', sid, text}
                        | {t:'bc-stop', sid} | {t:'bc-new', folder?} | {t:'bc-del', sid}
-                       | {t:'bc-browse', path?}
+                       | {t:'bc-browse', path?} | {t:'bc-mkdir', path, name}
    server→ {t:'auth-ok', device, name} | {t:'auth-bad', why}
    server→ {t:'sessions', list, activeSid}
    server→ BEAST CODE: {t:'bc-sessions', list} | {t:'bc-session', sid, timeline, ...}
                        | {t:'bc-send-ok', sid, ...} | {t:'bc-stop-ok', sid, ...}
                        | {t:'bc-new-ok', sid} | {t:'bc-dirs', path, parent, dirs, roots}
-                       | {t:'bc-event', sid, ev}
+                       | {t:'bc-mkdir-ok', path, parent} | {t:'bc-event', sid, ev}
    server→ agent eventleri aynen ({sessionId, type, ...} — mobile composer UI'da
            aynı mesaj/token/done/status akışı WhatsApp kartı gibi gösterir)
 */
@@ -95,6 +95,7 @@ let handlers = {
   onBcNew: null,
   onBcDelete: null,
   onBcBrowse: null,
+  onBcMkdir: null,
 };
 
 function setHandlers(h) {
@@ -354,6 +355,10 @@ function start(opts) {
         }
         if (t === 'bc-browse') {
           if (handlers.onBcBrowse) { handlers.onBcBrowse(String(m.path || ''), sendS); }
+          return;
+        }
+        if (t === 'bc-mkdir') {
+          if (handlers.onBcMkdir) { handlers.onBcMkdir(String(m.path || ''), String(m.name || ''), sendS); }
           return;
         }
       } catch (e) {

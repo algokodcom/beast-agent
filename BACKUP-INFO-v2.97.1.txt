@@ -1,0 +1,16 @@
+BEAST AGENT v2.97.1 — 2026-11-04
+Kaynak: C:\Users\fokusyazilim\Desktop\Beast Agent ana kod
+GitHub: https://github.com/algokodcom/beast-agent/releases/tag/v2.97.1
+npm: https://www.npmjs.com/package/beast-agent
+
+Bu sürümün öne çıkanları:
+- Beast Mobile Telegram benzeri koyu tema; karanlık mod tam siyah.
+- Beast Code mobil tam ekran sohbet + soldan oturum menüsü.
+- Mobil oturum silme, uzak klasör seçici ve yeni klasör oluşturma.
+- Beast Code fotoğraf ekleme.
+- Beast Code slash komutları (/help, /plan, /build, /auto, /new, /folder,
+  /sessions, /stop, /refresh, /clear).
+- H1 Range İçi motoru ve chat.js çizim/alarm çekirdeği korunur.
+
+Test: 463/463 geçti.
+Not: node_modules, dist, .git ve yedek/ hariçtir.

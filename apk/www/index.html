@@ -11,16 +11,16 @@
     --sab: var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px));
     --sal: var(--safe-area-inset-left, env(safe-area-inset-left, 0px));
     --sar: var(--safe-area-inset-right, env(safe-area-inset-right, 0px));
-    /* KOYU TEMA */
-    --bg:#0b1520; --panel:#12212e; --panel2:#16293a; --line:#22384c;
-    --me:#0e4d3a; --me2:#0f5c46; --mebd:#17493a;
-    --tx:#e8f1f8; --dim:#8ba3b8; --acc:#3fb6ff; --accent:#00cf70;
-    --hdr:#12212e; --hdrtx:#e8f1f8; --hdrdim:#8ba3b8; --hbtn:#cfe0ee;
-    --bub:#16293a; --chipbg:rgba(255,255,255,.07); --codebg:rgba(255,255,255,.09);
-    --sysbg:rgba(63,182,255,.10); --syscol:#9fd8ff; --sysline:rgba(63,182,255,.28); --errc:#ff8a8a;
-    --sheetbg:#16293a; --sheettx:#e8f1f8; --segbg:#0b1520; --segon:#00cf70; --segontx:#04240f;
-    --sheetline:#22384c; --btnfg:#04240f; --wall:#0b1520;
-    --card:#16293a; --cardline:#22384c; --rec:#ff5b5b;
+    /* KOYU TEMA - Telegram benzeri, tam siyah */
+    --bg:#000000; --panel:#000000; --panel2:#1c1c1e; --line:#2c2c2e;
+    --me:#2b5278; --me2:#2b5278; --mebd:#2b5278;
+    --tx:#f5f5f7; --dim:#8e8e93; --acc:#3390ec; --accent:#3390ec;
+    --hdr:#000000; --hdrtx:#f5f5f7; --hdrdim:#8e8e93; --hbtn:#f5f5f7;
+    --bub:#1c1c1e; --chipbg:rgba(255,255,255,.06); --codebg:rgba(255,255,255,.08);
+    --sysbg:rgba(51,144,236,.12); --syscol:#8abfff; --sysline:rgba(51,144,236,.28); --errc:#ff6961;
+    --sheetbg:#0f0f0f; --sheettx:#f5f5f7; --segbg:#1c1c1e; --segon:#3390ec; --segontx:#ffffff;
+    --sheetline:#2c2c2e; --btnfg:#ffffff; --wall:#000000;
+    --card:#0f0f0f; --cardline:#2c2c2e; --rec:#ff453a;
   }
   /* AYDINLIK TEMA (WhatsApp benzeri) */
   body[data-theme="light"]{
@@ -71,7 +71,7 @@
   header .stt{ color:var(--hdrdim); font-size:12px; font-weight:600; white-space:nowrap; overflow:hidden;
     text-overflow:ellipsis; min-width:0; flex:0 1 auto; }
   header .dot{ width:8px; height:8px; border-radius:50%; background:var(--accent); flex:0 0 auto; }
-  #sess{ background:rgba(255,255,255,.14); border:1px solid rgba(255,255,255,.22); color:var(--hdrtx); border-radius:10px;
+  #sess{ background:rgba(51,144,236,.14); border:0; color:var(--acc); border-radius:10px;
     max-width:158px; font-size:12.5px; padding:6px 9px; flex:0 0 auto; outline:none; display:flex; align-items:center; gap:5px; font-weight:800; }
   #sess .stx{ max-width:112px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   #sess .car{ opacity:.75; font-size:9px; flex:0 0 auto; }
@@ -113,17 +113,18 @@
     min-height:0; overscroll-behavior:contain; -webkit-overflow-scrolling:touch; }
   .row{ display:flex; }
   .row.me{ justify-content:flex-end; }
-  .bub{ max-width:82%; background:var(--bub); border:1px solid var(--line); border-radius:14px 14px 14px 4px;
-    padding:9px 12px; font-size:15px; word-wrap:break-word; overflow-wrap:anywhere; }
-  .row.me .bub{ background:linear-gradient(160deg,var(--me),var(--me2)); border-color:var(--mebd); border-radius:14px 14px 4px 14px; }
+  .bub{ max-width:82%; background:var(--bub); border:0; border-radius:12px 12px 12px 4px;
+    padding:8px 11px 7px; font-size:15px; word-wrap:break-word; overflow-wrap:anywhere;
+    box-shadow:0 1px 1px rgba(0,0,0,.18); }
+  .row.me .bub{ background:var(--me); border-radius:12px 12px 4px 12px; box-shadow:0 1px 1px rgba(0,0,0,.22); }
   .bub img{ max-width:100%; border-radius:10px; display:block; margin-top:6px; }
   .bub audio{ display:block; width:100%; max-width:250px; height:38px; margin-top:4px; }
   .bub .fchip{ display:inline-flex; align-items:center; gap:6px; background:var(--chipbg); border:1px solid var(--line);
     border-radius:9px; padding:5px 9px; font-size:13px; margin:4px 6px 4px 0; }
   .bub code{ background:var(--codebg); padding:1px 5px; border-radius:5px; font-size:13.5px; }
   .bub a{ color:var(--acc); word-break:break-all; }
-  .sysb{ align-self:center; background:var(--sysbg); color:var(--syscol); border:1px solid var(--sysline);
-    border-radius:10px; padding:5px 11px; font-size:12.5px; max-width:90%; text-align:center; }
+  .sysb{ align-self:center; background:var(--sysbg); color:var(--syscol); border:0;
+    border-radius:12px; padding:4px 10px; font-size:12px; max-width:90%; text-align:center; }
   /* ARAÇ (komut) BALONU — adı + kısa detay */
   .toolbubble{ max-width:88%; align-self:flex-start; background:var(--chipbg); border:1px solid var(--line);
     border-radius:10px; padding:6px 10px; font-size:12.5px; color:var(--dim); display:flex; flex-direction:column; gap:2px; }
@@ -156,13 +157,13 @@
     display:flex; align-items:center; justify-content:center; }
   #attach{ background:var(--panel2); border:1px solid var(--line); color:var(--dim); }
   #live{ background:var(--panel2); border:1px solid var(--line); color:var(--dim); }
-  #live.on{ background:linear-gradient(135deg,#00cf70,#0aa860); border:0; color:#04240f;
-    box-shadow:0 0 0 3px rgba(0,207,112,.22); }
+  #live.on{ background:var(--acc); border:0; color:#fff;
+    box-shadow:0 0 0 3px rgba(51,144,236,.22); }
   #mic{ background:var(--panel2); border:1px solid var(--line); color:var(--dim);
     touch-action:none; -webkit-user-select:none; user-select:none; -webkit-tap-highlight-color:transparent; }
   #mic.rec{ background:var(--rec); border-color:var(--rec); color:#fff; }
   #mic.delstate{ color:#ff6b6b; transform:translateX(-3px); }
-  #send{ border:0; background:linear-gradient(135deg,#00cf70,#0aa860); color:#04240f; }
+  #send{ border:0; background:var(--acc); color:#ffffff; }
   /* KAYIT ÇUBUĞU */
   #recbar{ flex:1; display:flex; align-items:center; gap:10px; min-height:42px; }
   #recbar[hidden]{ display:none; }
@@ -295,9 +296,10 @@
   #bcInput{ flex:1 1 0; min-width:0; background:var(--panel2); border:1px solid var(--line); color:var(--tx);
     border-radius:17px; padding:10px 13px; font-size:15px; outline:none; resize:none; max-height:110px; min-height:42px; }
   #bcInput:focus{ border-color:var(--acc); }
-  #bcSend,#bcStop{ width:42px; height:42px; border-radius:50%; flex:0 0 auto; display:flex;
+  #bcAttach,#bcSend,#bcStop{ width:42px; height:42px; border-radius:50%; flex:0 0 auto; display:flex;
     align-items:center; justify-content:center; }
-  #bcSend{ border:0; background:linear-gradient(135deg,#00cf70,#0aa860); color:#04240f; font-size:18px; }
+  #bcAttach{ background:var(--panel2); border:1px solid var(--line); color:var(--dim); }
+  #bcSend{ border:0; background:var(--acc); color:#ffffff; font-size:18px; }
   #bcStop{ border:0; background:var(--rec); color:#fff; font-size:17px; }
   #bcStop[hidden]{ display:none !important; }
   /* Beast Code slash komut menüsü */
@@ -320,6 +322,7 @@
   @keyframes bcUp{ from{ transform:translateY(100%); } to{ transform:none; } }
   #bcFolderHead{ display:flex; align-items:center; justify-content:space-between; flex:0 0 auto;
     padding:12px 14px 8px; font-size:11px; font-weight:800; letter-spacing:.6px; color:var(--dim); }
+  #bcFolderHead .bc-folder-actions{ display:flex; align-items:center; gap:2px; }
   #bcFolderHead button{ background:none; border:0; color:var(--dim); font-size:18px; padding:2px 6px; }
   #bcFolderPath{ padding:0 14px 8px; font-size:11.5px; color:var(--syscol); word-break:break-all; flex:0 0 auto; }
   #bcFolderRoots{ display:flex; gap:6px; overflow-x:auto; padding:0 12px 8px; flex:0 0 auto; }
@@ -386,7 +389,7 @@
       <span class="rdot"></span><span id="recTime">0:00</span><span id="recHint">kayıt ediliyor…</span>
       <button class="rb" id="recCancel" aria-label="İptal">✕</button>
       <button class="rb rbsend" id="recSend" aria-label="Gönder">
-        <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true"><path d="M2.01 21 23 12 2.01 3 2 10l15 2-15 2z" fill="#04240f"/></svg>
+        <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true"><path d="M2.01 21 23 12 2.01 3 2 10l15 2-15 2z" fill="currentColor"/></svg>
       </button>
     </div>
     <div id="livebar" hidden>
@@ -413,7 +416,7 @@
     </button>
     <button id="send" aria-label="Gönder">
       <svg viewBox="0 0 24 24" width="21" height="21" aria-hidden="true">
-        <path d="M2.01 21 23 12 2.01 3 2 10l15 2-15 2z" fill="#04240f"/>
+        <path d="M2.01 21 23 12 2.01 3 2 10l15 2-15 2z" fill="currentColor"/>
       </svg>
     </button>
   </footer>
@@ -453,7 +456,11 @@
       <div id="bcMeta"></div>
       <div id="bcMsgs"></div>
       <div id="bcSlash" hidden></div>
+      <div id="bcAttWrap" class="attrow" style="display:none"></div>
       <div id="bcComposer">
+        <button id="bcAttach" title="Fotoğraf ekle" aria-label="Fotoğraf ekle">
+          <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M21 11l-8.2 8.2a6 6 0 0 1-8.5-8.5l8.7-8.7a4 4 0 0 1 5.7 5.7l-8.4 8.4a2 2 0 0 1-2.8-2.8l7.5-7.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
         <textarea id="bcInput" rows="1" placeholder="Beast Code'a yaz" enterkeyhint="send"></textarea>
         <button id="bcStop" title="Durdur" aria-label="Durdur" hidden>■</button>
         <button id="bcSend" title="Gönder" aria-label="Gönder">➤</button>
@@ -466,7 +473,10 @@
       <div id="bcFolderPanel">
         <div id="bcFolderHead">
           <span>KLASÖR SEÇ</span>
-          <button id="bcFolderClose" aria-label="Kapat">✕</button>
+          <div class="bc-folder-actions">
+            <button id="bcFolderMkdir" title="Yeni klasör" aria-label="Yeni klasör">＋</button>
+            <button id="bcFolderClose" aria-label="Kapat">✕</button>
+          </div>
         </div>
         <div id="bcFolderPath">—</div>
         <div id="bcFolderRoots"></div>

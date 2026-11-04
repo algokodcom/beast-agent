@@ -1,18 +1,18 @@
-Beast Agent — v2.97.0
+Beast Agent — v2.97.1
 Tarih: 2026-11-04
 Kaynak: C:\Users\fokusyazilim\Desktop\Beast Agent ana kod
-Git: v2.97.0 (release)
+Git: v2.97.1 (release)
 npm: https://www.npmjs.com/package/beast-agent
 
 İçerik:
-- Beast Code mobil: tam ekran sohbet; oturumlar soldan açılan hamburger menüsünde.
-- Mobil oturum listesinde oturum silme (çalışan oturumlar korunur).
-- Mobil uzak klasör seçici: masaüstündeki klasörleri gez, seç ve o klasörde
-  yeni Beast Code oturumu aç; seçilen klasör masaüstü çalışma alanı olur.
-- Beast Code slash komutları: / yazınca otomatik liste; /help tüm komutları
-  gösterir. Komutlar: /help /plan /build /auto /new /folder /sessions
-  /stop /refresh /clear.
-- Beast Code giriş alanı yalnızca "Beast Code'a yaz" gösterir.
+- Beast Code mobil: tam ekran sohbet; oturumlar soldan hamburger menüsünde.
+- Mobil oturum listesinde oturum silme.
+- Mobil uzak klasör seçici: klasör gez, seç, yeni klasör oluştur ve o klasörde
+  yeni Beast Code oturumu aç.
+- Beast Code fotoğraf ekleme: galeriden resim seç, önizle, gönder.
+- Beast Code slash komutları: / yazınca otomatik liste; /help tüm komutlar.
+  /help /plan /build /auto /new /folder /sessions /stop /refresh /clear
+- Beast Mobile Telegram benzeri görünüm; karanlık mod tam siyah.
 - H1 Range İçi deterministik motor ve chat.js çizim/alarm çekirdeği korunur.
 
 Not: Bu kopya yalnız kaynaktır; node_modules, dist, .git ve yedek/ hariçtir.

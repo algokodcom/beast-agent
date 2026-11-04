@@ -25,15 +25,15 @@ const bcEls = {
   drawerNew: $('#bcDrawerNew'), drawerBackdrop: $('#bcDrawerBackdrop'),
   folderSheet: $('#bcFolderSheet'), folderPath: $('#bcFolderPath'), folderRoots: $('#bcFolderRoots'),
   folderList: $('#bcFolderList'), folderUp: $('#bcFolderUp'), folderPick: $('#bcFolderPick'),
-  folderClose: $('#bcFolderClose'), folderBackdrop: $('#bcFolderBackdrop'),
-  slash: $('#bcSlash'),
+  folderClose: $('#bcFolderClose'), folderMkdir: $('#bcFolderMkdir'), folderBackdrop: $('#bcFolderBackdrop'),
+  slash: $('#bcSlash'), attach: $('#bcAttach'), attWrap: $('#bcAttWrap'),
 };
 const bcState = {
   open: false, drawerOpen: false, opening: false, sid: localStorage.getItem('bmBcSid') || '',
   busy: false, list: [], streamEl: null, streamBuf: '', lastToolEl: null, recentUsers: [],
   toolMap: {}, todoEl: null, agent: 'build', ws: '',
   folderOpen: false, folderPath: '', folderParent: '', folderDirs: [], folderRoots: [],
-  slashList: [], slashSel: 0,
+  slashList: [], slashSel: 0, pending: [],
 };
 
 let ws = null;
@@ -929,19 +929,20 @@ function bcSys(text) {
   bcEls.msgs.appendChild(el);
   bcScroll();
 }
-function bcMsg(role, text) {
+function bcMsgHtml(role, html) {
   const row = document.createElement('div');
   row.className = 'row' + (role === 'me' ? ' me' : '');
   const b = document.createElement('div');
   b.className = 'bub';
-  const raw = String(text == null ? '' : text);
-  b.innerHTML = role === 'me'
-    ? escHtml(raw).replace(/\n/g, '<br>')
-    : mdLite(raw);
+  b.innerHTML = html || '&nbsp;';
   row.appendChild(b);
   bcEls.msgs.appendChild(row);
   bcScroll();
   return b;
+}
+function bcMsg(role, text) {
+  const raw = String(text == null ? '' : text);
+  return bcMsgHtml(role, role === 'me' ? escHtml(raw).replace(/\n/g, '<br>') : mdLite(raw));
 }
 function bcUserOnce(text) {
   const txt = String(text == null ? '' : text).trim();
@@ -955,6 +956,12 @@ function bcUserOnce(text) {
   arr.push({ text: txt, at: now });
   bcState.recentUsers = arr.slice(-20);
   return true;
+}
+function bcUserKey(text, atts) {
+  const t = String(text == null ? '' : text).trim();
+  if (t && t !== '[ek]') return t;
+  const list = Array.isArray(atts) ? atts : [];
+  return '[ek]|' + list.length + '|' + list.map((a) => String((a && a.name) || '')).join(',');
 }
 function bcTool(name, args, result) {
   const box = document.createElement('div');
@@ -982,8 +989,14 @@ function bcTool(name, args, result) {
 function bcRenderTimeline(list) {
   for (const it of Array.isArray(list) ? list : []) {
     if (!it) continue;
-    if (it.kind === 'tool') bcTool(it.name, it.args, it.result);
-    else bcMsg(it.role === 'user' ? 'me' : 'assistant', it.text);
+    if (it.kind === 'tool') {
+      bcTool(it.name, it.args, it.result);
+      continue;
+    }
+    const role = it.role === 'user' ? 'me' : 'assistant';
+    const atts = Array.isArray(it.attachments) ? it.attachments : [];
+    if (atts.length) bcMsgHtml(role, renderContent(it.text || '', atts));
+    else bcMsg(role, it.text);
   }
 }
 function bcStreamDelta(delta) {
@@ -1019,7 +1032,12 @@ function bcHandleEvent(ev) {
   const type = String(ev.type || ev.t || '');
   if (type === 'bc-user') {
     const txt = String(ev.text || '');
-    if (bcUserOnce(txt)) bcMsg('me', txt);
+    const atts = Array.isArray(ev.attachments) ? ev.attachments : [];
+    if (bcUserOnce(bcUserKey(txt, atts))) {
+      const display = (txt === '[ek]' && atts.length) ? '' : txt;
+      if (atts.length) bcMsgHtml('me', renderContent(display, atts));
+      else bcMsg('me', display);
+    }
     return;
   }
   if (type === 'token') {
@@ -1033,7 +1051,12 @@ function bcHandleEvent(ev) {
     /* Araç kutuları canlı akışta tool-start ile basılır; burada da basmak çift kutu yapar. */
     const txt = contentText(msg.content);
     if (String(msg.role || '') === 'user') {
-      if (bcUserOnce(txt)) bcMsg('me', txt);
+      const atts = Array.isArray(msg.attachments) ? msg.attachments : [];
+      if (bcUserOnce(bcUserKey(txt, atts))) {
+        const display = (!txt && atts.length) ? '' : txt;
+        if (atts.length) bcMsgHtml('me', renderContent(display, atts));
+        else bcMsg('me', txt);
+      }
       return;
     }
     if (txt) {
@@ -1227,6 +1250,8 @@ function bcOpen(id) {
   bcState.toolMap = {};
   bcState.lastToolEl = null;
   bcState.todoEl = null;
+  bcState.pending = [];
+  bcRenderAtt();
   bcSetBusy(false);
   bcSys('yükleniyor…');
   bcSendObj({ t: 'bc-open', sid: sid2 });
@@ -1336,24 +1361,78 @@ function bcSlashExec(cmd) {
     return;
   }
 }
+function bcRenderAtt() {
+  if (!bcEls.attWrap) return;
+  const list = Array.isArray(bcState.pending) ? bcState.pending : [];
+  if (!list.length) {
+    bcEls.attWrap.style.display = 'none';
+    bcEls.attWrap.innerHTML = '';
+    return;
+  }
+  bcEls.attWrap.style.display = 'flex';
+  bcEls.attWrap.innerHTML = '';
+  list.forEach((a, i) => {
+    const chip = document.createElement('span');
+    chip.className = 'c';
+    const label = document.createTextNode((a && a.type === 'image' ? '▣ ' : '≡ ') + String((a && a.name) || 'dosya'));
+    const x = document.createElement('span');
+    x.className = 'x';
+    x.textContent = '×';
+    x.addEventListener('click', () => {
+      bcState.pending.splice(i, 1);
+      bcRenderAtt();
+    });
+    chip.appendChild(label);
+    chip.appendChild(x);
+    bcEls.attWrap.appendChild(chip);
+  });
+}
+function bcAttachImage() {
+  const inp = document.createElement('input');
+  inp.type = 'file';
+  inp.accept = 'image/*';
+  inp.multiple = true;
+  inp.onchange = () => {
+    for (const f of [...inp.files]) {
+      if (f.size > 4 * 1024 * 1024) { toast('Çok büyük (max 4MB): ' + f.name); continue; }
+      if (!String(f.type).startsWith('image/')) { toast('Sadece resim: ' + f.name); continue; }
+      if (bcState.pending.length >= 3) { toast('En fazla 3 fotoğraf'); break; }
+      const r = new FileReader();
+      r.onload = () => {
+        bcState.pending.push({ type: 'image', name: f.name, dataUrl: String(r.result) });
+        bcRenderAtt();
+        try { bcEls.input.focus(); } catch {}
+      };
+      r.readAsDataURL(f);
+    }
+  };
+  inp.click();
+}
 function bcSubmit() {
   const text = String(bcEls.input.value || '').trim();
-  if (!text) return;
-  const cmd = text.split(/\s+/)[0].toLowerCase();
-  if (BC_SLASH.some((x) => x.cmd === cmd)) { bcSlashExec(cmd); return; }
+  if (!text && !bcState.pending.length) return;
+  if (text) {
+    const cmd = text.split(/\s+/)[0].toLowerCase();
+    if (BC_SLASH.some((x) => x.cmd === cmd)) { bcSlashExec(cmd); return; }
+  }
   bcSend();
 }
 function bcSend() {
   bcSlashHide();
   const text = String(bcEls.input.value || '').trim();
-  if (!text) return;
-  bcEls.input.value = '';
-  try { bcEls.input.style.height = '42px'; } catch {}
+  const atts = (bcState.pending || []).slice();
+  if (!text && !atts.length) return;
+  const payload = { t: 'bc-send', sid: bcState.sid || '', text };
+  if (atts.length) payload.attachments = atts;
   /* Kullanıcı balonu sunucudan gelen bc-user/message olayıyla basılır;
      burada da basmak çift balon yapar. */
   bcState.busy = true;
   bcSetBusy(true);
-  if (!bcSendObj({ t: 'bc-send', sid: bcState.sid || '', text })) bcSetBusy(false);
+  if (!bcSendObj(payload)) { bcSetBusy(false); return; }
+  bcEls.input.value = '';
+  try { bcEls.input.style.height = '42px'; } catch {}
+  bcState.pending = [];
+  bcRenderAtt();
 }
 function bcStop() {
   bcSendObj({ t: 'bc-stop', sid: bcState.sid || '' });
@@ -1453,6 +1532,15 @@ if (bcEls.folderUp) bcEls.folderUp.addEventListener('click', () => {
   if (bcState.folderParent) bcFolderGo(bcState.folderParent);
 });
 if (bcEls.folderPick) bcEls.folderPick.addEventListener('click', bcFolderPick);
+if (bcEls.folderMkdir) bcEls.folderMkdir.addEventListener('click', () => {
+  const name = prompt('Yeni klasör adı:');
+  if (!name) return;
+  const nm = name.trim();
+  if (!nm) return;
+  if (!bcSendObj({ t: 'bc-mkdir', path: bcState.folderPath, name: nm })) return;
+  toast('Klasör oluşturuluyor…');
+});
+if (bcEls.attach) bcEls.attach.addEventListener('click', bcAttachImage);
 if (bcEls.refresh) bcEls.refresh.addEventListener('click', () => {
   if (bcState.sid) bcOpen(bcState.sid);
   else bcLoadSessions();
@@ -1641,6 +1729,11 @@ function handle(m) {
   if (t0 === 'bc-sessions') { bcRenderSessions(m.list); return; }
   if (t0 === 'bc-session') { bcRenderSnapshot(m); return; }
   if (t0 === 'bc-dirs') { bcRenderDirs(m); return; }
+  if (t0 === 'bc-mkdir-ok') {
+    toast('Klasör oluşturuldu');
+    bcFolderGo(m.path || bcState.folderPath);
+    return;
+  }
   if (t0 === 'bc-send-ok') {
     if (m.sessionId) {
       bcState.sid = String(m.sessionId);
